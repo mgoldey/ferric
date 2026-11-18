@@ -2,11 +2,15 @@
 
 <!-- status: edit; registry: rs-mp2-rpa -->
 
-Section @sec:range-split-cross-term showed that splitting the operator does not split the MP2
-energy. This section states what that means for a method that uses MP2 at
-short range and the dRPA at long range, and fixes the rule that the two
-formulations of section @sec:two-formulations follow: correct full-Coulomb MP2 only by terms
-that start at third order.
+Split the Coulomb interaction into a short-range and a long-range part and
+compute MP2 with each. The two energies do not add up to MP2 with the full
+interaction. MP2 is quadratic in the interaction, so a pair of electrons
+that interacts once at short range and once at long range contributes a
+term that belongs to neither part (section @sec:range-split-cross-term).
+A method that uses MP2 at short range and the dRPA at long range has to
+keep that term. This section fixes the rule that the two formulations of
+section @sec:two-formulations follow: correct full-Coulomb MP2 only by
+terms that start at third order.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -28,7 +32,10 @@ $g^{\mathrm C} = g^{\mathrm{sr}} + g^{\mathrm{lr}}$, equation (@eq:mp2-rs-cross-
 $$ E_{\mathrm{MP2}}[\mathrm C] = E_{\mathrm{MP2}}[\mathrm{sr}] + E_{\mathrm{MP2}}[\mathrm{lr}] + X . \label{eq:cross-term-2} $$
 
 $X$ is second order and mixes the two ranges: one interaction of the pair
-is short-range, the other long-range.
+is short-range, the other long-range. The dissertation (section 7.2.3)
+writes the energy under $H = H_0 + \lambda V_{\mathrm{sr}} + \mu V_{\mathrm{lr}}$
+as a double perturbation series: $X$ is its $E^{(1,1)}$ term, and each
+energy term of MP$n$ has $2^n$ range contributions.
 
 ## Where the dRPA starts {#cross-term-drpa-starts}
 
@@ -102,13 +109,16 @@ It loses the cross term and the long-range second-order exchange.
 `delta-lr` formulation, as a diagnostic that makes the loss visible; it is
 never the returned energy.
 
-## Known limits (2026-11-15)
+## Known limits (2026-11-17)
 
 - No entry point returns $X$; section @sec:range-split-cross-term has the only smoke check of the
   three-operator decomposition.
-- In RI each operator has its own fit, so (@eq:cross-term-2) holds for the fitted
+- With erf each operator has its own fit, so (@eq:cross-term-2) holds for the fitted
   integrals only up to the differences of three fitting errors (section
-  @sec:range-split-cross-term-code). The rule of @sec:cross-term-rule does not depend on it: each bracket uses one
+  @sec:range-split-cross-term-code). With terf the long range is the
+  Coulomb fit minus the terfc fit (section @sec:two-formulations-terf-signed),
+  so it holds exactly for the fitted integrals. The rule of
+  @sec:cross-term-rule does not depend on either: each bracket uses one
   operator's integrals throughout.
 
 ## Sources

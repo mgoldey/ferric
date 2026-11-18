@@ -2,10 +2,12 @@
 
 <!-- status: edit; registry: rs-mp2-rpa -->
 
-The MP2 components and the dRPA energy of one operator need the same
-three-index tensor. The driver builds it once per operator and hands it
-to both kernels. This section describes that sharing, the memory it costs,
-and the tests that pin it.
+The expensive step of both kernels is the same: transforming the
+three-index integrals of one operator to the occupied–virtual block and
+dressing them with the metric. MP2 and the dRPA then read the same tensor.
+The driver builds it once per operator and hands it to both kernels. This
+section describes that sharing, the memory it costs, and the tests that pin
+it.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -20,17 +22,17 @@ and the tests that pin it.
 
 ## One transform per operator, and the ω-independent stage {#shared-intermediates-transform-per-operator-omega}
 
-The transform to $\tilde{\mathbf B}$ is the expensive step of both kernels.
 The driver (`rs_mp2_lr_rpa_scan`; `rs_mp2_lr_rpa` is its one-point case)
 builds each operator's tensor once and hands it to every kernel that needs
-that operator. Every term of (B) and (T) is a functional of one kernel
-(section @sec:shared-intermediates-transform-per-operator-omega), so the Coulomb tensor does not depend on
-$\omega$ and is built once per run, not once per point.
+that operator. Every term of (@eq:two-formulations-1) and
+(@eq:two-formulations-2) is a functional of one operator's integrals, and
+the Coulomb operator does not depend on $\omega$, so the Coulomb tensor is
+built once per run, not once per point.
 
 | Stage | Tensor | Used for | Built |
 |---|---|---|---|
 | ω-independent | $\tilde{\mathbf B}[\mathrm C]$ | $E_{\mathrm{MP2}}[v]$; $E_{\mathrm{dRPA}}[v]$ only when `coupled-rings` is requested | once per run |
-| per ω, long range | $\tilde{\mathbf B}[\mathrm{lr}]$ | $E_{\mathrm{OS}}[\mathrm{lr}]$ always; $E_{\mathrm{dRPA}}[\mathrm{lr}]$ only when `delta-lr` is requested | once per ω |
+| per ω, long range (erf only) | $\tilde{\mathbf B}[\mathrm{lr}]$ | $E_{\mathrm{OS}}[\mathrm{lr}]$ always; $E_{\mathrm{dRPA}}[\mathrm{lr}]$ only when `delta-lr` is requested | once per ω |
 | per ω, short range | $\tilde{\mathbf B}[\mathrm{sr}]$ | spin components always; $E_{\mathrm{dRPA}}[\mathrm{sr}]$ only when `coupled-rings` is requested | once per ω |
 
 A run over $n_\omega$ points therefore performs $1 + 2n_\omega$ transforms,
@@ -114,13 +116,15 @@ After each tensor is built, `warn_if_rss_over` compares the resident memory
 with the budget and prints one line if it is more than 10% over. It never
 stops the run.
 
-## Known limits (2026-11-15)
+## Known limits (2026-11-17)
 
 - The fusion test covers `coupled-rings` on H2 only; `delta-lr` has no
   separate-call comparison.
-- `delta-lr` builds the short-range tensor only for the reported
-  `e_sr_mp2` and `e_corr_naive`; `coupled-rings` builds the long-range one
-  only for `e_lr_mp2` and `e_dmp2_lr`. Neither enters the returned energy.
+- With erf, `delta-lr` builds the short-range tensor only for the reported
+  `e_sr_mp2` and `e_corr_naive`, and `coupled-rings` builds the long-range
+  one only for `e_lr_mp2` and `e_dmp2_lr`. Neither enters the returned
+  energy. With terf the terfc tensor enters both energies, and no
+  long-range tensor is built.
 
 ## Sources
 

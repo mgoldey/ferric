@@ -2,16 +2,19 @@
 
 This chapter is about one method: second-order perturbation theory at short
 range, combined with the direct random-phase approximation at long range.
-MP2 is accurate where electrons are close together. It fails at long range,
-where its unscreened ring diagrams overbind polarizable systems. The dRPA
-resums those rings. Splitting the Coulomb operator lets each method handle
-the range it is good at, but the split has to be done so that nothing is
-counted twice.
+MP2 is accurate where electrons are close together. At long range its
+unscreened ring diagrams overbind polarizable systems, because nothing
+weakens the interaction between two distant fragments. The dRPA resums
+those rings and screens the interaction. Splitting the Coulomb operator lets
+each method handle the range it is good at. The split has to keep the
+second-order term in which one interaction is short-range and the other
+long-range, and must count nothing twice.
 
 The chapter covers only what the code commits:
 
 - section @sec:cross-term, second order in a split interaction;
-- section @sec:two-formulations, the two formulations `rs_mp2_lr_rpa` evaluates;
+- section @sec:two-formulations, the two formulations `rs_mp2_lr_rpa` evaluates, and
+  the terf long range, whose kernel is not positive definite;
 - section @sec:shared-intermediates, the intermediates the two kernels share.
 
 Sections @sec:ring-series, @sec:coloring-the-rings, @sec:omega-scale-law and @sec:measurements are deferred until the work they draw on is
