@@ -426,6 +426,19 @@ fn make_err(e: impl std::fmt::Display) -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(format!("{e}"))
 }
 
+/// [`make_err`] for a [`ferric_core::FerricError`], keeping the typed
+/// refusal: `FerricError::Unsupported` (an option combination the method does
+/// not implement) becomes `NotImplementedError`, everything else
+/// `RuntimeError` as before.
+fn make_ferric_err(e: ferric_core::FerricError) -> PyErr {
+    match e {
+        ferric_core::FerricError::Unsupported { .. } => {
+            pyo3::exceptions::PyNotImplementedError::new_err(e.to_string())
+        }
+        other => make_err(other),
+    }
+}
+
 /// Convert an optional `memory_budget_gb` kwarg (GiB) to the explicit
 /// `Option<usize>` bytes expected by the method configs / the unified resolver.
 /// `None` (unset) stays `None` → the resolver auto-detects. A non-positive value

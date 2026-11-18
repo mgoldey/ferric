@@ -359,12 +359,12 @@ fn refuse_unsupported_signed_drpa(cfg: &RsMp2RpaConfig, mol: &Molecule) -> Resul
     };
     match why {
         None => Ok(()),
-        Some(w) => Err(FerricError::General(format!(
-            "rs-mp2-rpa terf, formulation B: the long-range dRPA is the signed log-det of \
-             Coulomb RI minus terfc RI (the terf kernel is not positive definite), which forms \
-             no static eigenbasis; {w} is not supported for it. Use trunc_thresh = 0, \
-             chi0_backend = dense and chi0_sparsity = dense"
-        ))),
+        Some(w) => Err(FerricError::unsupported(
+            format!("rs-mp2-rpa terf, formulation B, with {w}"),
+            "the long-range dRPA is the signed log-det of Coulomb RI minus terfc RI (the terf \
+             kernel is not positive definite), which forms no static eigenbasis. Use \
+             trunc_thresh = 0, chi0_backend = dense and chi0_sparsity = dense",
+        )),
     }
 }
 
