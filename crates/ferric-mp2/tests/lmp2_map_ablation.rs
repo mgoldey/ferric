@@ -19,7 +19,9 @@
 //! - `ABL_REF` (1): also run canonical `ri_mp2`;
 //! - `ABL_CONFIGS`: `;`-separated specs, each a `,`-separated list applied
 //!   left to right to the all-trivial base: `prod` (CLI defaults
-//!   aux=10,virt=12,tail=1e-3,skip=1e-5,merge=4), `aux=R` (R ≥ 1e5 or
+//!   aux=10,virt=20,tail=1e-4,skip=1e-5,merge=4), `oldprod` (the defaults
+//!   before 2026-11-17, virt=12,tail=1e-3, the 2026-11-17 ablation's
+//!   `prod`), `aux=R` (R ≥ 1e5 or
 //!   `off` = global), `virt=R|off`, `tail=x`, `skip=x`, `merge=k`,
 //!   `kappa=x|off`, `trivial` (reset).
 //!
@@ -105,6 +107,13 @@ fn parse_spec(spec: &str) -> DirectConfig {
         match k {
             "trivial" => d = trivial_maps(),
             "prod" => {
+                d.aux_radius_bohr = 10.0;
+                d.virt_radius_bohr = Some(20.0);
+                d.ao_tail = 1e-4;
+                d.schwarz_skip = 1e-5;
+                d.batch_merge = 4;
+            }
+            "oldprod" => {
                 d.aux_radius_bohr = 10.0;
                 d.virt_radius_bohr = Some(12.0);
                 d.ao_tail = 1e-3;
@@ -201,8 +210,11 @@ fn trivial_maps_match_canonical_aconf20_sto3g() {
 fn spec_parser_is_strict_and_composes() {
     let p = parse_spec("prod,aux=off");
     assert_eq!(p.aux_radius_bohr, 1e6);
-    assert_eq!(p.virt_radius_bohr, Some(12.0));
-    assert_eq!(p.ao_tail, 1e-3);
+    assert_eq!(p.virt_radius_bohr, Some(20.0));
+    assert_eq!(p.ao_tail, 1e-4);
+    let o = parse_spec("oldprod");
+    assert_eq!(o.virt_radius_bohr, Some(12.0));
+    assert_eq!(o.ao_tail, 1e-3);
     assert_eq!(p.schwarz_skip, 1e-5);
     assert_eq!(p.batch_merge, 4);
     let t = parse_spec("");

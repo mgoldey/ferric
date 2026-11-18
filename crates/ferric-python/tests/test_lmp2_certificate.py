@@ -96,6 +96,8 @@ def test_certificate_fields_round_trip_direct(water):
     assert sorted(loc["maps"]) == sorted(MAP_KEYS)
     assert loc["maps"]["batch_merge"] == 2
     assert loc["maps"]["virt_schwarz_kappa"] is None
+    # unset maps take the CLI [local] defaults (shared parser)
+    assert loc["maps"]["virt_radius"] == 20.0 and loc["maps"]["ao_tail"] == 1e-4
     assert sorted(loc["pair_fit"]) == sorted(PAIR_FIT_KEYS)
     assert loc["pair_fit"]["n_pair_groups"] > 0 and loc["pair_fit"]["n_trsm"] > 0
     assert loc["pair_fit"]["n_w_reused"] == 0  # no kappa screen, nothing to reuse

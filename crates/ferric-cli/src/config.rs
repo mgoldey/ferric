@@ -1591,8 +1591,8 @@ impl LocalCfg {
             }
             Some(LocalDirectKnobs {
                 aux_radius: pos("aux_radius", self.aux_radius, 10.0)?,
-                virt_radius: pos("virt_radius", self.virt_radius, 12.0)?,
-                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-3)?,
+                virt_radius: pos("virt_radius", self.virt_radius, 20.0)?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-4)?,
                 schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, 1e-5)?,
                 batch_merge: self.batch_merge.unwrap_or(4),
                 gate_cal: opt_pos("gate_cal", self.gate_cal)?,
@@ -6540,8 +6540,8 @@ mod compat_guard_tests {
             m.direct,
             Some(LocalDirectKnobs {
                 aux_radius: 10.0,
-                virt_radius: 12.0,
-                ao_tail: 1e-3,
+                virt_radius: 20.0,
+                ao_tail: 1e-4,
                 schwarz_skip: 1e-5,
                 batch_merge: 4,
                 gate_cal: None,

@@ -418,7 +418,7 @@ pub(crate) fn local_correlation_operator(
 /// `result.local["e_corr_canonical_ri"]`. `integral_direct=True` selects the
 /// integral-direct local MP2, which never forms the global 3-index tensor;
 /// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
-/// (Bohr, 12.0), `ao_tail` (1e-3), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
+/// (Bohr, 20.0), `ao_tail` (1e-4), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
 /// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
 /// `[local]` keys. The rules are the CLI's: every local kwarg is a
 /// `ValueError` on the exact method, and `kappa` is a `ValueError` on the

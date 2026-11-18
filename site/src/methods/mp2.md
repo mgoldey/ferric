@@ -507,7 +507,7 @@ domains (`aux_radius`, `virt_radius`), and truncation of each orbital's AO
 support (`ao_tail`). With every map at its trivial setting it reproduces the
 global 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
 
-**What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
 cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
 `bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`).
 The run froze the carbon cores (`frozen_core` = number of carbons) and
@@ -521,7 +521,7 @@ below do not cover:
 - Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
   kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.
 - It is at about parity with canonical RI-MP2 at C20 (about 1.1× slower)
-  and about 6× faster at C32 (5.7–6.3×).
+  and about 6× faster at C32 (5.7–6.3×). <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 -->
 
 **How to read it (provisional):** sub-quadratic on this series, but the fit
 has three points on one family of molecules in one basis. It is not shown
@@ -591,7 +591,7 @@ Each stage has a mutation test that breaks this. The local valence start
 the dense build's by up to 7e-10, the imprint of Boys's convergence
 tolerance. That changes energies by 1e-13.
 
-**Defaults (n-alkanes C8–C32, 6-31G/cc-pVDZ-RI, `eps` = 1e-4, production
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **Defaults (n-alkanes C8–C32, 6-31G/cc-pVDZ-RI, `eps` = 1e-4, production
 maps).** The local build moves the energy by 4e-13 (C8), 3e-10 (C16),
 1.6e-7 (C24) and 5.8e-8 (C32) Ha against the dense build. That is at most
 1.6e-5 of the `eps` truncation error itself (2.5e-3 to 1.4e-2 Ha). The
@@ -602,7 +602,7 @@ construction check stays at 7e-10 or below.
 shift comes from the 30 Bohr solve radius; with a global solve it is 4e-11
 at C24.
 
-**What it costs, measured** (2026-11-06; integral-direct local MP2 on
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **What it costs, measured** (2026-11-06; integral-direct local MP2 on
 n-alkanes, 6-31G/cc-pVDZ-RI, Coulomb, `eps` = 1e-3, production maps, carbon
 cores frozen; benchmark `bench_scaling_decisive` with
 `FERRIC_LMP2_VIRTUAL_SPACE`; release build, OPENBLAS_NUM_THREADS=1,

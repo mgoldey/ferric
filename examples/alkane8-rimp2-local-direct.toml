@@ -25,8 +25,8 @@ scheme = "amplitude-threshold"
 eps = 1e-4
 integral_direct = true
 aux_radius = 10.0
-virt_radius = 12.0
-ao_tail = 1e-3
+virt_radius = 20.0
+ao_tail = 1e-4
 schwarz_skip = 1e-5    # Cauchy-Schwarz triple cut; 0.0 = evaluate every triple
 batch_merge = 4
 gate_cal = 0.7         # ~0.7 Coulomb / ~0.02 erfc(1); omit = gate off

@@ -121,7 +121,7 @@ let g = if i == j {
 | `g` | $J_{ia,jb}$ over $a,b\in C_{ij}$, passed to the $\varepsilon$ mask of section @sec:amplitude-lmp2 (`mask_pair`) |
 
 Grouping by domain pays because pairs repeat domains: on the C20–C48 maps
-there are 6–9 times more surviving pairs than distinct pair domains, so one
+there are 6–9 times more surviving pairs than distinct pair domains, <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> so one
 Cholesky factor serves several pairs (`fit_pairs`).
 
 ## The algorithm and what each map truncates {#integral-direct-algorithm-each-map-truncates}
@@ -334,8 +334,8 @@ The two predictions differ, so the sweep can tell them apart.
 | Option | Trivial limit | CLI default | Effect |
 |---|---|---|---|
 | `aux_radius` | at least $10^5$ Bohr (global fit) | 10.0 Bohr | auxiliary fit domain |
-| `virt_radius` | all virtuals | 12.0 Bohr | virtual domain on dipole centroids |
-| `ao_tail` | 0.0 keeps every shell | 1e-3 | AO-shell support threshold |
+| `virt_radius` | all virtuals | 20.0 Bohr | virtual domain on dipole centroids |
+| `ao_tail` | 0.0 keeps every shell | 1e-4 | AO-shell support threshold |
 | `schwarz_skip` | 0.0 evaluates every triple (bit-identical to a run without the cut) | 1e-5 | Cauchy–Schwarz cut on batch triples, $\sqrt{\max(P\vert P)}\,Q(\mu\nu) <$ the threshold, with both factors from the run's operator |
 | `gate_cal` | none (gate off) | none | the pair gate of equation @eq:amplitude-lmp2-4 |
 | `virt_schwarz_kappa` | none (off) | none | $\varepsilon$-linked virtual-candidate screen: keep $a$ if $q_{ia}q^{\max}_j \ge \kappa\varepsilon$ or the mirror |
@@ -352,15 +352,15 @@ CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, trivial maps, integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri) | PySCF `DFMP2`, same auxiliary basis | at most $1.38\times10^{-11}$ Ha over the 24 comparisons of the validation page, bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `crates/ferric-mp2/tests/lmp2_direct.rs` |
-| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.98%, 99.65%, 95.0% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps, against 99.98%, 99.67%, 95.0% in core | same |
+| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.98%, 99.65%, 95.0% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps, against 99.98%, 99.67%, 95.0% in core <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
-On this molecule the integral-direct maps change the recovery by 0.02
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> On this molecule the integral-direct maps change the recovery by 0.02
 percentage points at $\varepsilon = 10^{-4}$, and not at the reported
 precision at the other two thresholds.
 
-**Cost and scaling (provisional).** On n-alkanes C20 to C48 (6-31G with
+**Cost and scaling (provisional).** <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> On n-alkanes C20 to C48 (6-31G with
 cc-pVDZ-RI, $\varepsilon = 10^{-4}$, frozen carbon cores, a calibrated pair
 gate), the correlation stage grew as about $N^{1.24}$ with the erfc kernel
 and $N^{1.4}$ with the Coulomb kernel, fitted to the last three sizes. The
