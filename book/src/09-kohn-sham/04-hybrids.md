@@ -303,6 +303,41 @@ the anchors below.
 | 5 | branch check: the cation's spin-population asymmetry against the nearest evaluated $\omega$ (tolerance $10^{-7}$) | `branch_tol` |
 | 6 | golden section to $\omega$ tolerance $5\times10^{-3}$, at most 24 evaluations | |
 
+Water with ωB97X-V in def2-SVP, from the `589b50832` build, sorted by
+$\omega$. The search makes 13 evaluations and returns the evaluated point
+with the smallest $\lvert J\rvert$. For this functional the build skips
+step 4 with a warning on stderr: ωB97X-V carries VV10, and no VV10 response
+kernel exists for the cation's orbital Hessian.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("def2-svp")
+
+res = ferric.tune_omega(mol, bs, "wB97X-V")
+print("omega* =", res["omega"], " J =", res["j"], " evaluations:", len(res["evals"]))
+for e in sorted(res["evals"], key=lambda e: e["omega"]):
+    print(f"  omega={e['omega']:.5f}  eps_HOMO={e['eps_homo']:.6f}  J={e['j']:+.3e}")
+```
+
+```text
+omega* = 0.5057647468726341  J = -0.00016734847345856174  evaluations: 13
+  omega=0.31246  eps_HOMO=-0.406423  J=+4.869e-02
+  omega=0.44377  eps_HOMO=-0.444084  J=+1.326e-02
+  omega=0.47477  eps_HOMO=-0.451253  J=+6.306e-03
+  omega=0.49392  eps_HOMO=-0.455392  J=+2.251e-03
+  omega=0.50124  eps_HOMO=-0.456917  J=+7.484e-04
+  omega=0.50404  eps_HOMO=-0.457492  J=+1.813e-04
+  omega=0.50576  eps_HOMO=-0.457845  J=-1.673e-04
+  omega=0.50683  eps_HOMO=-0.458062  J=-3.821e-04
+  omega=0.50856  eps_HOMO=-0.458412  J=-7.285e-04
+  omega=0.51308  eps_HOMO=-0.459321  J=-1.629e-03
+  omega=0.52492  eps_HOMO=-0.461648  J=-3.942e-03
+  omega=0.57508  eps_HOMO=-0.470704  J=-1.306e-02
+  omega=0.65623  eps_HOMO=-0.482924  J=-2.573e-02
+```
+
 Golden section keeps a bracket and two interior points at the fractions
 $1 - \varphi^{-1}$ and $\varphi^{-1}$ of it, $\varphi^{-1} = 0.618\ldots$
 (`INVPHI`). Each step discards the end next to the worse point and reuses

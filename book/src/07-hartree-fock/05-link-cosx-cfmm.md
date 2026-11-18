@@ -67,6 +67,30 @@ surviving quartets is a property of the density, not of the code. For a
 density that decays with distance, $\mathrm{dp}(j)$ holds the shells near $j$,
 and the third-shell loop shrinks from all shells to a neighbourhood.
 
+On water in cc-pVDZ (the `589b50832` build) LinK reproduces direct $K$ to
+rounding, while COSX at its default grids carries a grid error of a few
+times $10^{-8}$ Ha:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+e_direct = ferric.run_rhf(mol, bs).energy
+e_link = ferric.run_rhf(mol, bs, k_builder="link").energy
+e_cosx = ferric.run_rhf(mol, bs, k_builder="cosx").energy
+print(f"direct         {e_direct:.10f}")
+print(f"LinK - direct  {e_link - e_direct:.1e}")
+print(f"COSX - direct  {e_cosx - e_direct:.1e}")
+```
+
+```text
+direct         -76.0267679974
+LinK - direct  9.9e-14
+COSX - direct  -5.2e-08
+```
+
 ### COSX
 
 COSX (`CosxK`, `crates/ferric-scf/src/cosx_k.rs`) integrates one electron of

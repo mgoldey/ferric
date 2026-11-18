@@ -186,6 +186,31 @@ added to $F$ after the trace. Solvation, embedding and the Fock hook follow
 the same rule: their potentials go into $F$, their energies are separate
 terms.
 
+Water in cc-pVDZ, from the `589b50832` build, shows the factor. For Slater
+exchange alone the ratio $\mathrm{Tr}[DV_{xc}]/E_{xc}$ is $\tfrac43$ to six
+digits; for PBE, which mixes in gradient terms of other degree, it is a
+different number again:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+for name in ("LDA_X", "PBE"):
+    r = ferric.run_dft(mol, bs, functional=name)
+    d = r.density()
+    e_xc = r.e_xc
+    tr = float(np.sum(d * r.vxc()))
+    print(f"{name:6s} E={r.e_scf:.8f}  E_xc={e_xc:.8f}  Tr[D V_xc]={tr:.8f}  ratio={tr / e_xc:.6f}")
+```
+
+```text
+LDA_X  E=-75.18981222  E_xc=-8.10448253  Tr[D V_xc]=-10.80597671  ratio=1.333333
+PBE    E=-76.33351081  E_xc=-9.27952661  Tr[D V_xc]=-11.93826782  ratio=1.286517
+```
+
 **The density floor.** $E_{xc} = \sum_g w_g\rho_g\epsilon_g$ is summed over
 every grid point; libxc returns $\epsilon = 0$ below its own per-functional
 threshold. $V_{xc}$, the XC gradient and the response kernels skip points

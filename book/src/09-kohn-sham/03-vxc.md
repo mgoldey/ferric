@@ -187,6 +187,40 @@ polarized, to $10^{-9}$ relative (`test_vxc_is_the_derivative_of_exc` in
 packing, the independence of the two $\tau$ channels, and the values
 against PySCF's `eval_xc`.
 
+The same check by hand, on water / cc-pVDZ at the SCF's own grid, from the
+`589b50832` build. The step is $h = 10^{-4}$ along $X$, and the central
+difference and the trace agree to $2.8\times10^{-9}$ (PBE) and
+$1.2\times10^{-9}$ (SCAN) relative. In absolute terms both are under $10^{-10}$, inside the
+$10^{-9}$ bound the test asserts for $\lvert\mathrm dE_{xc}/\mathrm dt\rvert < 1$:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+ints = ferric.AoIntegrals(mol, bs)
+
+for name in ("PBE", "SCAN"):
+    d = ferric.run_dft(mol, bs, functional=name).density()
+    xc = ints.xc_functional(name)  # the SCF's own default grid
+    rng = np.random.default_rng(7)
+    x = rng.standard_normal(d.shape)
+    x = 0.5 * (x + x.T) * 1e-2
+    h = 1e-4
+    e_p, _ = xc.eval(d + h * x)
+    e_m, _ = xc.eval(d - h * x)
+    e0, v = xc.eval(d)
+    fd = (e_p - e_m) / (2 * h)
+    an = float(np.sum(v * x))
+    print(f"{name:5s} E_xc={e0:.8f}  FD dE_xc/dt={fd:.10e}  Tr[V_xc X]={an:.10e}  rel={abs(fd - an) / abs(an):.1e}")
+```
+
+```text
+PBE   E_xc=-9.27952661  FD dE_xc/dt=2.8974334905e-02  Tr[V_xc X]=2.8974334987e-02  rel=2.8e-09
+SCAN  E_xc=-9.34363993  FD dE_xc/dt=2.9795784284e-02  Tr[V_xc X]=2.9795784320e-02  rel=1.2e-09
+```
+
 **The dense reference in code.** `ferric-dft/src/vxc.rs::semilocal_vxc_closed_scratch`
 holds $\chi$ and $\nabla\chi$ over the whole grid and builds each term as a
 scaled GEMM. The energy is the grouped sum:

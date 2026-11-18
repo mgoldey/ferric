@@ -126,6 +126,32 @@ are f64. This halves the stored tensor, the largest object of an RI-J run
 energy carries an error first order in the rounding. Geometry and frequency
 tasks default to f64.
 
+Water in cc-pVDZ with def2-universal-jkfit for both fits, from the `589b50832`
+build, shows the two errors side by side: the fitting error of RI-JK against
+exact $J$ and $K$, and the f32 rounding on top of it, about fifty times smaller.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = "def2-universal-jkfit"
+
+e_direct = ferric.run_rhf(mol, bs).energy                      # exact J and K
+e_rijk64 = ferric.run_rhf(mol, bs, df_j_aux=aux, df_k_aux=aux,
+                          ri_j_precision="f64").energy         # fitted, f64 tensor
+e_rijk32 = ferric.run_rhf(mol, bs, df_j_aux=aux, df_k_aux=aux).energy  # f32 RI-J default
+print(f"direct              {e_direct:.10f}")
+print(f"RI-JK (f64) - direct {e_rijk64 - e_direct:.2e}")
+print(f"RI-JK f32 - f64      {e_rijk32 - e_rijk64:.2e}")
+```
+
+```text
+direct              -76.0267679974
+RI-JK (f64) - direct 3.26e-05
+RI-JK f32 - f64      -6.28e-07
+```
+
 ### RI-K
 
 Exchange pairs the two electrons differently:

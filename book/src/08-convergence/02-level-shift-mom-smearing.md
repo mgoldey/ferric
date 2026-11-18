@@ -117,6 +117,29 @@ The box proves the block structure and the unchanged density. The
 first-order step and the one-rotation model above are a perturbation
 argument, checked numerically for this section and not part of the proof.
 
+The same water / cc-pVDZ SCF with three shifts, from the `589b50832` build,
+lands on the same energy to every printed digit; only the iteration count
+moves:
+
+```python
+# Run from the repository root. The converged energy does not depend on the
+# level shift; the iteration count does.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+for shift in (0.0, 0.5, 2.0):
+    r = ferric.run_rhf(mol, bs, level_shift=shift, max_iter=200)
+    print(f"level_shift={shift}: E = {r.energy:.10f}  converged={r.converged}  iterations={r.iterations}")
+```
+
+```text
+level_shift=0.0: E = -76.0267679974  converged=True  iterations=10
+level_shift=0.5: E = -76.0267679974  converged=True  iterations=10
+level_shift=2.0: E = -76.0267679974  converged=True  iterations=11
+```
+
 ## The shift that is applied {#level-shift-mom-smearing-shift-applied}
 
 The value used is not always the option's value:

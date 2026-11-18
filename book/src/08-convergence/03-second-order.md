@@ -274,6 +274,34 @@ Points about it:
   $\max\lvert e\rvert <$ `newton_trigger` and the functional has no range
   separation ($\omega = 0$).
 
+On water / cc-pVDZ (the `589b50832` build) all three routes reach the same
+energy. Newton steps (`soscf=True`) save two iterations over DIIS alone, and
+TRAH engaged at $\max\lvert e\rvert < 10^{-2}$ saves three:
+
+```python
+# Run from the repository root. DIIS alone, DIIS with Newton steps (soscf), and
+# DIIS with TRAH engaged below max|e| = 1e-2, on water / cc-pVDZ.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+runs = {
+    "DIIS": {},
+    "soscf=True": {"soscf": True},
+    "trah_trigger=1e-2": {"trah_trigger": 1e-2},
+}
+for label, kw in runs.items():
+    r = ferric.run_rhf(mol, bs, max_iter=200, **kw)
+    print(f"{label:18s} E = {r.energy:.10f}  converged={r.converged}  iterations={r.iterations}")
+```
+
+```text
+DIIS               E = -76.0267679974  converged=True  iterations=10
+soscf=True         E = -76.0267679974  converged=True  iterations=8
+trah_trigger=1e-2  E = -76.0267679974  converged=True  iterations=7
+```
+
 ### Augmented Hessian
 
 Newton fails where $\mathbf H$ has a negative eigenvalue: $\kappa = -\mathbf H^{-1}g$

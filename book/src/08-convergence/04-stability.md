@@ -199,6 +199,32 @@ saddle is returned with a message that it is not established as the lowest
 state. Each round costs one Davidson solve and up to three SCFs, and there
 are at most three rounds (`MAX_DESCENT_ROUNDS`).
 
+Triplet O$_2$ in STO-3G is a case where the default guess converges to a
+saddle. With `stability_descent=True` the descent leaves it for a state
+1.327 mHa lower (the `589b50832` build):
+
+```python
+# Run from the repository root. Triplet O2 / STO-3G: the default-guess UHF
+# solution is a saddle (ferric.pyi, run_uhf docstring: 1.33 mHa above the UHF
+# minimum); the stability descent follows the downhill mode to the minimum.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/o2.xyz", charge=0, multiplicity=3)
+bs = ferric.BasisSet.bundled("sto-3g")
+
+plain = ferric.run_uhf(mol, bs)
+desc = ferric.run_uhf(mol, bs, stability_descent=True)
+print(f"default guess:      E = {plain.energy:.10f}  converged={plain.converged}")
+print(f"stability descent:  E = {desc.energy:.10f}  converged={desc.converged}")
+print(f"difference (mHa):   {1000 * (plain.energy - desc.energy):.3f}")
+```
+
+```text
+default guess:      E = -147.6339696433  converged=True
+stability descent:  E = -147.6352963864  converged=True
+difference (mHa):   1.327
+```
+
 The RHF descent is skipped, with a printed reason, when the SCF did not
 converge (the Hessian would be evaluated at a non-stationary point), when
 Fermi smearing is on (the integer-occupation Hessian does not describe

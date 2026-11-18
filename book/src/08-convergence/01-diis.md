@@ -173,6 +173,28 @@ in $F$.
 >
 > <!-- verified: id=scf.diis-system; script=scripts/scf_diis_sympy.py; claim=N3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/diis.rs::solve_diis_coeffs; registry=rhf -->
 
+Water in cc-pVDZ, from the `589b50832` build, with the default eight-vector
+history against `diis_size = 1`, which is plain Roothaan iteration: the same
+energy, in less than half the iterations.
+
+```python
+# Run from the repository root. DIIS (diis_size = 8, the default) against plain
+# Roothaan iteration (diis_size = 1) on water / cc-pVDZ.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+for size in (8, 1):
+    r = ferric.run_rhf(mol, bs, diis_size=size, max_iter=200)
+    print(f"diis_size={size}: E = {r.energy:.10f}  converged={r.converged}  iterations={r.iterations}")
+```
+
+```text
+diis_size=8: E = -76.0267679974  converged=True  iterations=10
+diis_size=1: E = -76.0267679974  converged=True  iterations=22
+```
+
 ## The algorithm {#diis-algorithm}
 
 | Step | Quantity | Where |
