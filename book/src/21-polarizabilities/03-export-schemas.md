@@ -172,18 +172,56 @@ section @sec:python-cube-provenance-cube-files.
 
 ## Reading a file back {#export-schemas-reading-file-back}
 
-A minimal reader needs only numpy.
+A minimal reader needs only numpy. The snippet below writes the bundle for
+water / cc-pVDZ with PDEP $C_6$, then reads it back: every key with its shape
+and dtype, the two string tags, the molecular $C_6$, the remainder identity
+and the certificate's keys. Output from the `589b50832` build, with the
+middle of the key list cut at `...` (30 keys in all):
 
 ```python
 import json
 import numpy as np
+import ferric
 
-with np.load("water.npz") as f:
-    q = f["lowdin_charges"]                      # (N_atoms,), e
-    alpha = f["alpha_tensor"]                    # (3, 3), Bohr^3
-    partition = f["c6_partition"].tobytes().decode()
-    c6 = f["c6_molecular_iso"][0]                # the observable, a.u.
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+path = "ch21-water.npz"
+ferric.run_pdep_rpa(mol, bs, aux, export_npz=path, compute_c6=True, c6_source="pdep")
+
+with np.load(path) as f:
+    for k in sorted(f.files):
+        print(f"{k:22s} {str(f[k].shape):18s} {f[k].dtype}")
+    print("c6_partition:", f["c6_partition"].tobytes().decode())
+    print("c6_source   :", f["c6_source"].tobytes().decode())
+    print("c6_molecular_iso:", f["c6_molecular_iso"][0])
+    print("c6_iso.sum() (not the molecular C6):", f["c6_iso"].sum())
+    if "alpha_ct" in f:
+        d = f["alpha_ct"] + f["alpha_atomic"].sum(0) - f["alpha_tensor"]
+        print("max |alpha_ct + alpha_atomic.sum(0) - alpha_tensor|:", np.abs(d).max())
     cert = json.loads(f["certificate"].tobytes().decode())
+    print("certificate keys:", sorted(cert))
+```
+
+```text
+alpha_atomic           (3, 3, 3)          float64
+alpha_atomic_dynamic   (3, 20, 3, 3)      float64
+alpha_ct               (3, 3)             float64
+alpha_ct_dynamic       (20, 3, 3)         float64
+alpha_tensor           (3, 3)             float64
+...
+orbital_centers        (24, 3)            float64
+orbital_energies       (24,)              float64
+orbital_spreads        (24,)              float64
+pdep_eigenvectors      (84, 60)           float64
+resp_charges           (3,)               float64
+c6_partition: hirshfeld
+c6_source   : pdep
+c6_molecular_iso: 11.51382707982529
+c6_iso.sum() (not the molecular C6): 5.940022214949585
+max |alpha_ct + alpha_atomic.sum(0) - alpha_tensor|: 0.0
+certificate keys: ['approximations', 'build', 'capability', 'grade', 'grade_source', 'measured_error', 'precision', 'routes', 'warnings']
 ```
 
 Every key is optional, so a consumer tests membership (`"alpha_ct" in f`)

@@ -328,6 +328,29 @@ the loop re-solves only the charges.
 The Lebedev orders with negative weights (74, 230, 266) are excluded,
 because a negative weight would give a tessera of negative area.
 
+The solvation energy of water / cc-pVDZ in water at three Lebedev orders, from
+the `589b50832` build. It moves by less than 0.1 kcal/mol from 50 to 302
+points per sphere; 110 is the default.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+e_vac = ferric.run_rhf(mol, bs).energy
+for order in (50, 110, 302):
+    e_sol = ferric.run_rhf(mol, bs, solvent="water", pcm_lebedev_order=order).energy
+    d = e_sol - e_vac
+    print(f"lebedev {order:4d}: E(solv) - E(vac) = {d:.8f} Ha = {d * 627.5095:.4f} kcal/mol")
+```
+
+```text
+lebedev   50: E(solv) - E(vac) = -0.00983213 Ha = -6.1698 kcal/mol
+lebedev  110: E(solv) - E(vac) = -0.00992420 Ha = -6.2275 kcal/mol
+lebedev  302: E(solv) - E(vac) = -0.00997667 Ha = -6.2605 kcal/mol
+```
+
 ## Numerical anchors {#cavity-and-bem-numerical-anchors}
 
 | Quantity | System | Result | Source |

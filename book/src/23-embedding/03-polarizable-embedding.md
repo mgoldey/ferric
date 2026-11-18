@@ -428,6 +428,68 @@ which adds the QM rows, the site rows and the charge rows to
 Check the trivial limit. With every $\alpha_i\to0$ the dipoles vanish and
 every term of this section is zero (claim T5).
 
+Here is one QM water at RHF/cc-pVDZ with two TIP3P waters whose oxygens
+carry $\alpha = 1.44$ Å$^3$, from the `589b50832` build. `thole_a=None` is
+the default damping, $a = 2.1304$, and `thole_a=0.0` is the bare tensor. The
+last line is a central difference of the energy, partition rebuilt, against
+the site row of `full_gradient`.
+
+```python
+# Prints E_pol with and without Thole damping, the vanishing-alpha limit, and a central difference
+# of the energy against the full gradient on a polarizable oxygen (its site row).
+import numpy as np
+import ferric
+
+sym = ["O", "H", "H", "O", "H", "H", "O", "H", "H"]
+xyz = [
+    (0.000, 0.000, 0.000), (0.757, 0.586, 0.000), (-0.757, 0.586, 0.000),
+    (0.000, -2.900, 0.000), (0.757, -3.486, 0.000), (-0.757, -3.486, 0.000),
+    (2.900, 1.200, 0.500), (3.400, 1.900, 0.900), (3.300, 0.400, 0.800),
+]
+chg = [0.0, 0.0, 0.0, -0.834, 0.417, 0.417, -0.834, 0.417, 0.417]
+def system(coords, alpha_o, alpha_h=0.0):
+    pol = [0.0, 0.0, 0.0, alpha_o, alpha_h, alpha_h, alpha_o, alpha_h, alpha_h]
+    return ferric.QmmmSystem(sym, coords, chg, qm_indices=[0, 1, 2],
+                             polarizabilities_angstrom3=pol)
+
+e_fixed = ferric.run_qmmm(system(xyz, 0.0), "cc-pvdz").energy
+for a in (None, 0.0):
+    r = ferric.run_qmmm(system(xyz, 1.44), "cc-pvdz", thole_a=a)
+    print(f"thole_a={a}: E = {r.energy:.10f}  E_pol = {r.e_pol:.3e}  E - E(fixed) = {r.energy - e_fixed:+.3e}")
+    print("  induced dipoles (a.u.):\n", r.induced_dipoles())
+r_small = ferric.run_qmmm(system(xyz, 1e-8), "cc-pvdz")
+print(f"alpha -> 0: E - E(fixed) = {r_small.energy - e_fixed:+.1e}")
+
+opts = dict(energy_conv=1e-11, density_conv=1e-9)
+r = ferric.run_qmmm(system(xyz, 1.44), "cc-pvdz", **opts)
+G = np.asarray(r.full_gradient())
+h = 1e-3; ang2bohr = 1.0 / 0.529177210903
+def e_at(d):
+    c = [list(p) for p in xyz]; c[3][0] += d
+    return ferric.run_qmmm(system([tuple(p) for p in c], 1.44), "cc-pvdz", **opts).energy
+fd = (e_at(h) - e_at(-h)) / (2 * h * ang2bohr)
+print(f"dE/dx(O of water 2): analytic {G[3, 0]:+.8f}  central difference {fd:+.8f}  diff {G[3, 0] - fd:.1e}")
+```
+
+```text
+thole_a=None: E = -76.2678003386  E_pol = -2.422e-01  E - E(fixed) = -2.413e-01
+  induced dipoles (a.u.):
+ [[-2.16830475e-04  1.59611279e+00  3.36944627e-03]
+ [-1.11815606e+00  1.50527566e-01 -9.10630529e-01]]
+thole_a=0.0: E = -76.2677591678  E_pol = -2.422e-01  E - E(fixed) = -2.413e-01
+  induced dipoles (a.u.):
+ [[-3.32698195e-04  1.59587228e+00  3.38253745e-03]
+ [-1.11778880e+00  1.50970297e-01 -9.10567341e-01]]
+alpha -> 0: E - E(fixed) = -1.7e-09
+dE/dx(O of water 2): analytic +0.00022669  central difference +0.00022669  diff -7.2e-10
+```
+
+The MM oxygens sit 2.9 and 3.2 Å from the QM oxygen, far enough that damping
+moves the energy by only $4\times10^{-5}$ Ha out of an $E_{\mathrm{pol}}$ of
+$-0.24$ Ha. With $\alpha = 10^{-8}$ Å$^3$ the energy is that of fixed charges
+to $2\times10^{-9}$ Ha, the trivial limit above, and the site row matches the
+central difference to $7\times10^{-10}$ Ha/Bohr.
+
 ## The algorithm {#polarizable-embedding-algorithm}
 
 | Step | Quantity | Cost | Function |

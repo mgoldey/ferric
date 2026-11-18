@@ -307,6 +307,70 @@ The analytic Hessian with external charges (QM–QM block, charges fixed) and
 the smeared-charge version are validated on the page named in the anchors
 table.
 
+Here are the limits of this page on water in cc-pVDZ, from the `589b50832`
+build: the empty charge list against vacuum, a smeared charge as its width
+shrinks to the point charge, the origin of the field term, and the net force
+of a uniform field on a neutral molecule.
+
+```python
+import numpy as np
+import ferric
+
+bs = ferric.BasisSet.bundled("cc-pvdz")
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+
+# 1. Exactness: no environment vs an empty charge list (both take the vacuum path).
+e_vac = ferric.run_rhf(mol, bs).energy
+e_empty = ferric.run_rhf(mol, bs, point_charges=[]).energy
+print(f"E(vacuum)               = {e_vac:.12f}")
+print(f"E(empty charge list)    = {e_empty:.12f}   diff = {e_empty - e_vac:.1e}")
+
+# 2. One charge 5 Bohr off the oxygen side (Bohr), point vs smeared with shrinking width (the w -> 0 limit).
+q = (-0.8, 0.0, 0.0, -5.0)
+e_pt = ferric.run_rhf(mol, bs, point_charges=[q]).energy
+print(f"E(point charge)         = {e_pt:.12f}   shift = {e_pt - e_vac:.6f} Ha")
+for w in (2.0, 1.0, 0.5, 0.1, 0.01):
+    e_sm = ferric.run_rhf(mol, bs, smeared_charges=[q + (w,)]).energy
+    print(f"  smeared w = {w:5.2f} Bohr: E - E(point) = {e_sm - e_pt:+.3e}")
+
+# 3. Field: a neutral molecule's energy does not depend on the origin (claim E4).
+#    Translating the molecule by t is the same as moving the origin by -t.
+field = (0.0, 0.0, 0.01)
+r0 = ferric.run_rhf(mol, bs, external_field=field, with_gradient=True)
+xyz = open("testdata/molecules/water.xyz").read().splitlines()
+shifted = xyz[:2] + [
+    " ".join([ln.split()[0]] + [f"{float(c) + 3.0:.10f}" for c in ln.split()[1:4]]) for ln in xyz[2:] if ln.strip()
+]
+mol_t = ferric.Molecule.from_xyz_string("\n".join(shifted) + "\n")
+e_t = ferric.run_rhf(mol_t, bs, external_field=field).energy
+print(f"E(field) = {r0.energy:.12f}; translated by 3 A: diff = {e_t - r0.energy:.1e}")
+
+# 4. Net force from a uniform field is Q E: zero for neutral water; the
+#    field-electron term is a finite difference, so the sum is zero to O(h^2).
+g = np.asarray(r0.gradient())
+print("sum of gradient rows (neutral, expect ~0):", g.sum(axis=0))
+```
+
+```text
+E(vacuum)               = -76.026767997377
+E(empty charge list)    = -76.026767997377   diff = 0.0e+00
+E(point charge)         = -76.051032944123   shift = -0.024265 Ha
+  smeared w =  2.00 Bohr: E - E(point) = -1.883e-03
+  smeared w =  1.00 Bohr: E - E(point) = -2.485e-05
+  smeared w =  0.50 Bohr: E - E(point) = -1.629e-06
+  smeared w =  0.10 Bohr: E - E(point) = -4.475e-08
+  smeared w =  0.01 Bohr: E - E(point) = -4.410e-10
+E(field) = -76.018909023183; translated by 3 A: diff = -1.1e-13
+sum of gradient rows (neutral, expect ~0): [-2.09048140e-29 -4.69277395e-14 -3.86668475e-11]
+```
+
+An empty charge list gives the vacuum energy bit for bit. The smeared charge
+approaches the point charge as $w$ shrinks, a factor of about $10^2$ per
+decade of $w$ at the small widths. Moving the molecule by 3 Å in the field
+changes the energy by $10^{-13}$ Ha, and the gradient rows sum to
+$4\times10^{-11}$ Ha/Bohr, inside the $O(h^2)$ error of the finite-difference
+field term.
+
 ## Options {#external-potentials-options}
 
 | Option | Values | Default | Effect |

@@ -521,6 +521,60 @@ disagree by design (the figure in section
 record it with the arrays. `c6_partition` is written into the file for the
 per-atom polarizability arrays; no equivalent tag exists for the charges.
 
+Both halves on one water / cc-pVDZ density, from the `589b50832` build. The
+first block is the Becke split of $\alpha$ and its charge-transfer remainder
+(@eq:part-ct-sum-rule), here 37.0% of $\alpha_{\rm iso}$ at cc-pVDZ; the residual of
+the sum rule prints as 0.0. The second block is the five charge rules: each sums
+to zero within $10^{-14}$, and the oxygen charge ranges from $-0.31$
+(Mulliken) to $-0.74$ (CHELPG).
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_pdep_rpa(mol, bs, aux, properties=True)
+alpha = np.asarray(r.alpha_tensor)
+atomic = np.asarray(r.alpha_atomic)  # (N, 3, 3), Becke
+ct = np.asarray(r.alpha_ct)
+print("alpha_iso       :", np.trace(alpha) / 3)
+for sym, a in zip(mol.symbols(), atomic):
+    print(f"alpha_atomic {sym:2s}: iso {np.trace(a) / 3:.6f}")
+print("alpha_ct iso    :", np.trace(ct) / 3, f"({100 * np.trace(ct) / np.trace(alpha):.1f}% of alpha)")
+print("max |sum_A alpha^A + alpha_ct - alpha|:", np.abs(atomic.sum(0) + ct - alpha).max())
+
+rhf = ferric.run_rhf(mol, bs)
+rules = {
+    "hirshfeld": ferric.hirshfeld_charges(mol, bs, rhf),
+    "lowdin": ferric.lowdin_charges(mol, bs, rhf),
+    "mulliken": ferric.mulliken_charges(mol, bs, rhf),
+    "chelpg": ferric.chelpg_charges(mol, bs, rhf),
+    "resp": ferric.resp_charges(mol, bs, rhf),
+}
+print("rule       " + "  ".join(f"{s:>9s}" for s in mol.symbols()) + "       sum")
+for name, q in rules.items():
+    q = np.asarray(q)
+    print(f"{name:9s}  " + "  ".join(f"{v:9.5f}" for v in q) + f"  {q.sum():9.2e}")
+```
+
+```text
+alpha_iso       : 3.110850466940373
+alpha_atomic O : iso 1.185806
+alpha_atomic H : iso 0.386672
+alpha_atomic H : iso 0.386672
+alpha_ct iso    : 1.1517009421877453 (37.0% of alpha)
+max |sum_A alpha^A + alpha_ct - alpha|: 0.0
+rule               O          H          H       sum
+hirshfeld   -0.32158    0.16079    0.16079   5.55e-16
+lowdin      -0.48085    0.24042    0.24042   9.66e-15
+mulliken    -0.30539    0.15269    0.15269   1.55e-15
+chelpg      -0.73999    0.37000    0.37000   0.00e+00
+resp        -0.73997    0.36998    0.36998   0.00e+00
+```
+
 ## How well these are checked {#atomic-partitions-well-these-checked}
 
 The figures are in section @sec:electrostatics-and-charges-well-these-checked. In summary: the potential and field at

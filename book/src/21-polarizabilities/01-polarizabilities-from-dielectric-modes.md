@@ -245,6 +245,62 @@ $s_{k,x}, s_{k,y}, s_{k,z}$ for the $k$-th kept mode.
 >
 > <!-- verified: id=pol.mode-expansion; script=scripts/rpa_response_modes_sympy.py; claim=M2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/response_modes.rs::polarizability_from_modes; rust_test=ferric-rpa/tests/response_modes.rs::full_rank_modes_reconstruct_the_static_polarizability; registry=rpa-polarizability-c6 -->
 
+Water / cc-pVDZ, from the `589b50832` build: the dielectric form of
+`run_pdep_rpa` and the mode form of `response_modes` with all 84 modes
+agree to $4\times10^{-16}$ Bohr$^3$. The leading 10 modes alone leave
+$\alpha_{\rm iso}$ 1% high, since the dropped modes screen too, and the
+unscreened $\alpha_{\rm bare}$ is 33% high. The last four lines are
+$\alpha_{\rm iso}(iu)$ along the imaginary axis.
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_pdep_rpa(mol, bs, aux, properties=True)
+alpha = np.asarray(r.alpha_tensor)
+print("alpha_tensor (Bohr^3):\n", alpha)
+print("alpha_iso = Tr/3 =", np.trace(alpha) / 3)
+
+rhf = ferric.run_rhf(mol, bs)
+# A large n_modes is clamped to the dressed auxiliary dimension: every mode kept.
+modes = ferric.response_modes(mol, bs, aux, rhf, n_modes=10_000, omega=0.0)
+full = np.asarray(modes.polarizability_from_modes())
+print("n_modes kept:", modes.n_modes, "of naux", modes.naux)
+print("lambda_min (>= 1):", np.asarray(modes.eigenvalues).min())
+print("max |mode form - dielectric form|:", np.abs(full - alpha).max())
+
+# Truncation: the leading 10 modes only.
+lead = ferric.response_modes(mol, bs, aux, rhf, n_modes=10, omega=0.0)
+print("alpha_iso, 10 modes:", np.trace(np.asarray(lead.polarizability_from_modes())) / 3)
+print("alpha_bare iso (no screening):", np.trace(np.asarray(lead.alpha_bare)) / 3)
+
+# Dynamic: alpha(iu) along the imaginary axis falls with u.
+for u in (0.0, 0.5, 1.0, 2.0):
+    m = ferric.response_modes(mol, bs, aux, rhf, n_modes=10_000, omega=u)
+    print(f"u = {u:4.1f}  alpha_iso(iu) = {np.trace(np.asarray(m.polarizability_from_modes())) / 3:.6f}")
+```
+
+```text
+alpha_tensor (Bohr^3):
+ [[ 2.03909217e+00  1.41768136e-15 -4.84218500e-16]
+ [ 1.41768136e-15  4.09661992e+00 -1.93510960e-14]
+ [-4.84218500e-16 -1.93510960e-14  3.19683930e+00]]
+alpha_iso = Tr/3 = 3.110850466940373
+n_modes kept: 84 of naux 84
+lambda_min (>= 1): 1.0000000000000002
+max |mode form - dielectric form|: 4.440892098500626e-16
+alpha_iso, 10 modes: 3.1460968880402302
+alpha_bare iso (no screening): 4.149029589112157
+u =  0.0  alpha_iso(iu) = 3.110850
+u =  0.5  alpha_iso(iu) = 2.721055
+u =  1.0  alpha_iso(iu) = 2.110306
+u =  2.0  alpha_iso(iu) = 1.261344
+```
+
 At $u=0$ the modes are the PDEP eigenpotentials of section @sec:pdep (test
 `leading_static_modes_are_the_pdep_eigenpotentials`). The physical
 coefficients $c_\xi = M^{\mathsf T}U_\xi$ obey

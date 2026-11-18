@@ -343,6 +343,72 @@ constants. `full_gradient_with_mm` adds the force-field gradient of
 @sec:polarizable-embedding have their own variant, `full_gradient_with_polarizable`, because the
 induced dipoles exert an extra force on every site and charge.
 
+Cut ethane at its C–C bond and keep one methyl group in the QM region. The
+snippet runs the four boundary schemes at RHF/6-31G, then checks the RCD full
+gradient: its column sums, and a central difference across the cut on the MM
+host carbon with the partition rebuilt at each displacement. From the
+`589b50832` build:
+
+```python
+# Ethane C1-C2 cut: QM = C1 + its three H, MM = C2 + its three H. Prints energies per scheme, the
+# link-H/charge distance, translation sum of the full gradient, and a central difference across the cut.
+import numpy as np
+import ferric
+
+sym = ["C", "C", "H", "H", "H", "H", "H", "H"]
+xyz = [
+    (0.0000, 0.0000, 0.7650), (0.0000, 0.0000, -0.7650),
+    (1.0186, 0.0000, 1.1580), (-0.5093, 0.8821, 1.1580), (-0.5093, -0.8821, 1.1580),
+    (-1.0186, 0.0000, -1.1580), (0.5093, -0.8821, -1.1580), (0.5093, 0.8821, -1.1580),
+]
+chg = [-0.27, -0.27, 0.09, 0.09, 0.09, 0.09, 0.09, 0.09]   # MM methyl group is neutral
+bonds = [(0, 1), (0, 2), (0, 3), (0, 4), (1, 5), (1, 6), (1, 7)]
+
+def system(coords, scheme):
+    s = ferric.QmmmSystem(sym, coords, chg, qm_indices=[0, 2, 3, 4])
+    s = s.with_link_atoms(bonds)
+    return s.with_boundary_charges(bonds, scheme)
+
+for scheme in ("keep", "delete-host", "rc", "rcd"):
+    s = system(xyz, scheme)
+    r = ferric.run_qmmm(s, "6-31g")
+    tot = sum(c[0] for c in s.point_charges())
+    print(f"{scheme:12s} E = {r.energy:.10f}  total MM charge = {tot:+.3f}  "
+          f"min link-H/charge = {s.min_link_to_charge_distance()} A")
+
+# Full gradient for RCD: rows sum to zero (translation), and a central difference of the
+# energy, with the partition rebuilt, matches the row of the MM host C2 (z component).
+s = system(xyz, "rcd")
+r = ferric.run_qmmm(s, "6-31g", energy_conv=1e-11, density_conv=1e-9)
+G = np.asarray(r.full_gradient())
+print("column sums of full_gradient:", G.sum(axis=0))
+h = 1e-3  # Angstrom
+ang2bohr = 1.0 / 0.529177210903
+def e_at(dz):
+    c = [list(p) for p in xyz]
+    c[1][2] += dz
+    return ferric.run_qmmm(system([tuple(p) for p in c], "rcd"), "6-31g",
+                           energy_conv=1e-11, density_conv=1e-9).energy
+fd = (e_at(h) - e_at(-h)) / (2 * h * ang2bohr)
+print(f"dE/dz(C2): analytic {G[1, 2]:+.8f}  central difference {fd:+.8f}  diff {G[1, 2] - fd:.1e}")
+```
+
+```text
+keep         E = -40.2867556873  total MM charge = -0.000  min link-H/charge = 0.44 A
+delete-host  E = -40.1799079285  total MM charge = +0.270  min link-H/charge = 1.3158175785419497 A
+rc           E = -40.1963977554  total MM charge = -0.000  min link-H/charge = 0.8151711323397068 A
+rcd          E = -40.2155151278  total MM charge = -0.000  min link-H/charge = 0.8151711323397068 A
+column sums of full_gradient: [-1.46323925e-15 -1.18481613e-15  5.76119014e-14]
+dE/dz(C2): analytic +0.01371129  central difference +0.01371153  diff -2.4e-07
+```
+
+`Keep` leaves the host charge 0.44 Å from the link hydrogen, the distance
+worked out in @sec:qmmm-boundaries-cutting-covalent-bond, and RC and RCD
+move the nearest charge out to 0.82 Å. Only `delete-host` changes the total
+MM charge, by $-q_{\mathrm{M1}} = +0.27$. The full gradient sums to zero to
+$6\times10^{-14}$ Ha/Bohr, and the host row matches the central difference to
+$2.4\times10^{-7}$ Ha/Bohr at $h = 10^{-3}$ Å.
+
 ## The additive MM terms {#qmmm-boundaries-additive-mm-terms}
 
 With a force field, `qmmm_mm_terms` adds the MM energy under the additive

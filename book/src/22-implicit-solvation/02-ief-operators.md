@@ -300,6 +300,33 @@ $3.2\times10^{-3}$ and $2.0\times10^{-3}$ at 50, 110 and 302 points. The
 cause is the self-term $1.0694\sqrt{4\pi/a_i}$ on a grid with unequal
 weights. This is why `GaussianSmeared` is the default.
 
+Water / cc-pVDZ against $\varepsilon$, from the `589b50832` build, printed
+next to the Born factor $(\varepsilon-1)/\varepsilon$. The energy rises with
+$\varepsilon$ and saturates, but it is not proportional to the Born factor.
+Water is neutral, so the $l = 0$ channel carries no charge; its leading
+channel is the dipole, whose Kirkwood factor $k_1 = 2(\varepsilon-1)/(2\varepsilon+1)$
+is smaller than the Born factor at small $\varepsilon$.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+e_vac = ferric.run_rhf(mol, bs).energy
+for eps in (1.88, 4.71, 32.6, 78.4, 1.0e4):
+    d = ferric.run_rhf(mol, bs, solvent=eps).energy - e_vac
+    print(f"eps {eps:9.2f}: dE = {d * 627.5095:9.4f} kcal/mol   (eps-1)/eps = {(eps - 1) / eps:.4f}")
+```
+
+```text
+eps      1.88: dE =   -2.2539 kcal/mol   (eps-1)/eps = 0.4681
+eps      4.71: dE =   -4.4408 kcal/mol   (eps-1)/eps = 0.7877
+eps     32.60: dE =   -6.0501 kcal/mol   (eps-1)/eps = 0.9693
+eps     78.40: dE =   -6.2275 kcal/mol   (eps-1)/eps = 0.9872
+eps  10000.00: dE =   -6.3551 kcal/mol   (eps-1)/eps = 0.9999
+```
+
 ## The algorithm {#ief-operators-algorithm}
 
 | Step | Quantity | Cost | Function |

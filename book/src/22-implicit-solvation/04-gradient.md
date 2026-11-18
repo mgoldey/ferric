@@ -55,6 +55,43 @@ on the geometry. The areas and the diagonal $S_{kk}$ depend on it only
 through $\mathrm{swf}_k$, the switch that measures how deep the tessera sits
 inside its neighbours' spheres.
 
+With the gradient, geometries can be optimized in the continuum. Water /
+cc-pVDZ optimized at RHF in vacuum and in IEF-PCM water, from the `589b50832`
+build. The optimizer's per-step tables are cut at `...`; the two summary
+lines are the end of the output. In the continuum the O–H bond lengthens
+and the angle closes.
+
+```python
+import math
+
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+
+
+def geometry(m):
+    o, h1, h2 = m.coords_bohr()
+    v1 = [h1[i] - o[i] for i in range(3)]
+    v2 = [h2[i] - o[i] for i in range(3)]
+    r1 = math.sqrt(sum(x * x for x in v1))
+    r2 = math.sqrt(sum(x * x for x in v2))
+    cos = sum(a * b for a, b in zip(v1, v2)) / (r1 * r2)
+    return r1, r2, math.degrees(math.acos(cos))
+
+
+for label, solvent in (("vacuum", None), ("water", "water")):
+    r = ferric.run_optimize(mol, "cc-pvdz", solvent=solvent)
+    r1, r2, ang = geometry(r.mol())
+    print(f"{label:7s}: converged={r.converged} steps={r.steps} E={r.energy:.8f} "
+          f"r(OH)={r1:.5f},{r2:.5f} Bohr angle={ang:.3f} deg")
+```
+
+```text
+...
+vacuum : converged=True steps=4 E=-76.02705351 r(OH)=1.78820,1.78820 Bohr angle=104.613 deg
+water  : converged=True steps=3 E=-76.03686401 r(OH)=1.79353,1.79353 Bohr angle=103.835 deg
+```
+
 ### The potential term
 
 $q^{\mathsf T}\partial v$ is the gradient of the interaction of fixed
