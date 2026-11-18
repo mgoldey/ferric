@@ -333,6 +333,47 @@ order is unaffected either way: each bracket of (@eq:two-formulations-1) and
 (@eq:two-formulations-2) uses one operator's integrals, so it starts at
 third order for any fit.
 
+## A run on water {#two-formulations-run}
+
+Water in cc-pVDZ, both formulations and both attenuators at their defaults,
+from the `18375bead` build. `run_rs_mp2_rpa` uses RI-JK for the reference by
+default; `scf_jk="exact"` gives the exact-J/K reference the anchors use. The
+`os.environ` line points at the repository's `terf-tables/`:
+
+```python
+import os
+
+os.environ.setdefault("FERRIC_TERF_TABLE_DIR", "terf-tables")  # the terf and terfc interpolation tables
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+for att in ("erf", "terf"):                    # erf at omega = 0.420 A^-1; terf at r0 = 1.6828 A
+    b, t = (ferric.run_rs_mp2_rpa(mol, bs, aux, attenuator=att, formulation=f, scf_jk="exact")
+            for f in ("delta-lr", "coupled-rings"))
+    print(f"{att:4s}  E_MP2[C] = {b.e_mp2_full:.8f}  E_MP2[lr] = {b.e_lr_mp2:.8f}  2E_OS[lr] = {b.e_dmp2_lr:.8f}")
+    print(f"      B: E_dRPA[lr] = {b.e_drpa_lr:.8f}  E_c = {b.e_corr:.8f}  naive A = {b.e_corr_naive:.8f}")
+    print(f"      T: dRPA[C] - 2E_OS[C] = {t.e_delta_drpa_full:.8f}  dRPA[sr] - 2E_OS[sr] = {t.e_delta_drpa_sr:.8f}  E_c = {t.e_corr:.8f}")
+```
+
+```text
+erf   E_MP2[C] = -0.20403346  E_MP2[lr] = -0.00014733  2E_OS[lr] = -0.00019046
+      B: E_dRPA[lr] = -0.00018798  E_c = -0.20403098  naive A = -0.19883623
+      T: dRPA[C] - 2E_OS[C] = 0.07365746  dRPA[sr] - 2E_OS[sr] = 0.07149869  E_c = -0.20187469
+terf  E_MP2[C] = -0.20403346  E_MP2[lr] = -0.00000244  2E_OS[lr] = -0.00000318
+      B: E_dRPA[lr] = -0.00000318  E_c = -0.20403345  naive A = -0.20407882
+      T: dRPA[C] - 2E_OS[C] = 0.07365746  dRPA[sr] - 2E_OS[sr] = 0.07373603  E_c = -0.20411203
+```
+
+With erf, B lies 2.48 µHa above MP2 and T 2.16 mEh above it; the naive
+sum A of (@eq:cross-term-6) lies 5.20 mEh above, the cross term and the
+long-range exchange it drops. With terf at the default $r_0 = 3.18$ Bohr
+the long-range MP2 energy is only 2.4 µHa, so B is within 0.01 µHa of MP2.
+T is 78.6 µHa below MP2 there: its short-range bracket is larger than its
+Coulomb one.
+
 ## Options {#two-formulations-options}
 
 | Option | Values | Default | Effect |
