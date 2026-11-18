@@ -47,6 +47,7 @@ fn two_call_ring_algebra_matches_three_call_form() {
     let lcfg = AmplitudeLmp2Config {
         eps: 1e-3,
         frozen_core: 4,
+        lambda_boys: 0.0, // the dRPA drivers' plain Boys
         ..Default::default()
     };
     let lb = assemble_basis(&mol, &obs, &dfbs, op, &rhf, &lcfg, &vvhv).unwrap();
@@ -174,6 +175,7 @@ fn ring_product_planned_matches_ring_product_oracle() {
     let lcfg = AmplitudeLmp2Config {
         eps: 1e-3,
         frozen_core: 4,
+        lambda_boys: 0.0, // the dRPA drivers' plain Boys
         ..Default::default()
     };
     let lb = assemble_basis(&mol, &obs, &dfbs, op, &rhf, &lcfg, &vvhv).unwrap();

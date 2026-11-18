@@ -165,6 +165,8 @@ pub fn amplitude_linlccd_with_virtuals(
         eps: cfg.eps,
         frozen_core: cfg.frozen_core,
         eri3_budget_bytes: cfg.eri3_budget_bytes,
+        // plain Boys: λ-Boys is the local-MP2 default only
+        lambda_boys: 0.0,
         ..Default::default()
     };
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;

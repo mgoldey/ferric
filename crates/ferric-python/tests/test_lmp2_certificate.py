@@ -104,8 +104,8 @@ def test_certificate_fields_round_trip_direct(water):
     assert loc["pair_fit"]["n_pair_groups"] > 0 and loc["pair_fit"]["n_trsm"] > 0
     assert loc["pair_fit"]["n_w_reused"] == 0  # no kappa screen, nothing to reuse
     assert "not validated" in loc["validation_grade"]
-    assert "99.671% at 1e-4" in loc["eps_trust"]
-    assert "slope ~1.2" in loc["eps_trust"] and "93.81% at 1e-3" in loc["eps_trust"]
+    assert "99.735% at 1e-4" in loc["eps_trust"]
+    assert "slope ~1.4" in loc["eps_trust"] and "94.00% at 1e-3" in loc["eps_trust"]
     assert loc["operator"] == "coulomb" and "CAVEAT" not in loc["eps_trust"]
     assert loc["solve_plan_bytes"] > 0 and loc["matvec_path"] == "planned"
     assert loc["cg_lanczos_kappa_lower"] >= 1.0

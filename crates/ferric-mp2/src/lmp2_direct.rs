@@ -60,7 +60,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
-    checked_vvhv_with, localized_spaces, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
+    checked_vvhv_with, localized_spaces_lambda, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
     AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
 use crate::ragged::{pair_blocks_screened, PairBlock, Ragged};
@@ -3363,7 +3363,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     vvhv: &VvHv,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     let t0 = Instant::now();
-    let spaces = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
+    let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
     let t_loc_s = t0.elapsed().as_secs_f64();
     let (no, nv) = (spaces.no, spaces.nv);
     let budget_bytes = crate::rimp2::eri3_budget_bytes(cfg.eri3_budget_bytes);
@@ -3450,6 +3450,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     r.n_pairs_gated = n_pairs_gated;
     r.aux_dom_mean = dstats.strip_rows_mean;
     r.aux_dom_max = dstats.strip_rows_max;
+    r.lambda_boys = spaces.lambda_boys;
     r.timings = StageTimings {
         t_spaces_s: 0.0,
         t_loc_s,
@@ -3463,6 +3464,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
 #[cfg(test)]
 mod stage_b_tests {
     use super::*;
+    use crate::lmp2_amplitude::localized_spaces;
     use crate::lmp2_amplitude::checked_vvhv;
     use ferric_core::parallel::ParallelContext;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -4189,6 +4191,7 @@ mod inverse_oracle {
 #[cfg(test)]
 mod stage_c_tests {
     use super::*;
+    use crate::lmp2_amplitude::localized_spaces;
     use crate::lmp2_amplitude::{checked_vvhv, solve_and_count};
     use ferric_core::parallel::ParallelContext;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -4829,7 +4832,10 @@ mod memory_gate_tests {
     /// The ungated assembly (the historical code path) and its ragged system.
     fn ungated(c: &Case, eps: f64) -> (Ragged, f64) {
         pinned(|| {
-            let spaces = localized_spaces(&c.mol, &c.obs, &c.rhf, c.nc, &c.vvhv).unwrap();
+            // the production localization (λ-Boys at the config's λ)
+            let lam = lcfg(c, eps, AMPLE).lambda_boys;
+            let spaces =
+                localized_spaces_lambda(&c.mol, &c.obs, &c.rhf, c.nc, &c.vvhv, lam).unwrap();
             let (rg, _, _) = assemble_ragged_direct_local(
                 &c.mol,
                 &c.obs,
