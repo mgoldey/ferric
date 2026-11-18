@@ -379,6 +379,7 @@ fn keys() -> Vec<Key> {
         key!("local", "virtual_tau_loose", "", |_| Off("only with virtual_space = \"local\"")),
         key!("local", "virtual_solve_radius", "", |_| Off("only with virtual_space = \"local\"")),
         key!("local", "virtual_boys_tau", "", |_| Off("only with virtual_space = \"local\"")),
+        key!("local", "lambda_boys", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2)")),
         // ---- [cc] / [eom]
         key!("cc", "ladder", "particle-particle ladder: auto | dense | ri", |_| s("auto")),
         key!("eom", "n_roots", "lowest singlet excitations", |_| n("5")),

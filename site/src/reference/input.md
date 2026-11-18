@@ -335,6 +335,7 @@ scheme, `eps` and kept fraction. See
 | `virtual_tau_loose` | float | `1e-6` | ≥ 0 | `virtual_space = "local"` only. Block threshold of the basis-choice steps (projected-minimal functions, valence projector, pivot Gram and Cholesky rows). `0` drops nothing. |
 | `virtual_solve_radius` | float | `30.0` | Bohr, > 0 | `virtual_space = "local"` only. Neighbourhood radius of the domain-local projected-minimal solves; a radius larger than the molecule is one global solve. |
 | `virtual_boys_tau` | float | `1e-8` | ≥ 0 | `virtual_space = "local"` only. Boys pair screen; `0` rotates every pair. |
+| `lambda_boys` | float | `10.0` | Bohr²/Ha², finite, ≥ 0 | `rimp2` / `att-rimp2` only (an error on `drpa` / `linlccd`, which localize with plain Boys). Weight λ of Σᵢ Fᵢᵢ² in the λ-Boys occupied localization, started from the converged Boys orbitals; `0` is plain Boys. The ε = 0 energy does not depend on it. The printout's `occupied localization` line and the run log's `local.lambda_boys*` fields record it. |
 
 ## `[rpa]`
 

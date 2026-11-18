@@ -1368,6 +1368,10 @@ pub struct LocalCfg {
     /// `virtual_space = "local"` only: Boys pair-screen threshold. Default
     /// 1e-8; 0 rotates every pair.
     pub virtual_boys_tau: Option<f64>,
+    /// `kind = "rimp2"` / `"att-rimp2"` only: λ (Bohr²/Ha²) of the λ-Boys
+    /// occupied localization (finite, >= 0). Default
+    /// [`ferric_mp2::boys::LAMBDA_BOYS_DEFAULT`]; 0 = plain Boys.
+    pub lambda_boys: Option<f64>,
 }
 
 /// The integral-direct locality knobs of a local MP2 run, with their
@@ -1415,6 +1419,9 @@ pub struct LocalModel {
     pub direct: Option<LocalDirectKnobs>,
     /// `[local] virtual_space` with its thresholds (default dense).
     pub virtual_space: ferric_mp2::vvhv_local::VirtualSpace,
+    /// `[local] lambda_boys`, default applied (local MP2 only; the dRPA and
+    /// LinLCCD paths refuse the key and localize with plain Boys).
+    pub lambda_boys: f64,
 }
 
 impl LocalCfg {
@@ -1508,6 +1515,7 @@ impl LocalCfg {
                 ("virtual_tau_loose", self.virtual_tau_loose.is_some()),
                 ("virtual_solve_radius", self.virtual_solve_radius.is_some()),
                 ("virtual_boys_tau", self.virtual_boys_tau.is_some()),
+                ("lambda_boys", self.lambda_boys.is_some()),
             ]
             .into_iter()
             .filter_map(|(k, set)| set.then_some(k))
@@ -1626,12 +1634,17 @@ impl LocalCfg {
             None
         };
         let virtual_space = self.virtual_space()?;
+        let lambda_boys = self
+            .lambda_boys
+            .unwrap_or(ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
             reference: self.reference.unwrap_or(false),
             direct,
             virtual_space,
+            lambda_boys,
         }))
     }
 }
@@ -4894,6 +4907,16 @@ impl Config {
                  always uses the dense build)"
             ));
         }
+        if self.local.as_ref().and_then(|l| l.lambda_boys).is_some()
+            && kind != "rimp2"
+            && kind != "att-rimp2"
+        {
+            return Err(format!(
+                "[local] lambda_boys sets the λ-Boys occupied localization of the local MP2 \
+                 and applies to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", \
+                 which localizes with plain Boys)"
+            ));
+        }
         if kind == "att-rimp2"
             && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
             && self.mp2.att_rimp2_op()? == AttRimp2Op::Terfc
@@ -6696,6 +6719,37 @@ mod compat_guard_tests {
             assert!(e.contains("omega"), "{value}: {e}");
         }
         assert!(cfg("drpa", "energy", "").mp2.set_keys().is_empty());
+    }
+
+    /// `[local] lambda_boys`: default 10 for local MP2, 0 accepted (plain
+    /// Boys), negative / non-finite refused, refused under scheme = "none"
+    /// and on the kinds that localize with plain Boys (drpa, linlccd).
+    #[test]
+    fn local_lambda_boys_is_strict_and_mp2_only() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let model = |kind: &str, extra: &str| {
+            cfg(kind, "energy", &format!("{at}{extra}")).local_model()
+        };
+        let lam = |m: Result<Option<LocalModel>, String>| m.unwrap().unwrap().lambda_boys;
+        assert_eq!(lam(model("rimp2", "")), ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        assert_eq!(lam(model("rimp2", "lambda_boys = 0.0\n")), 0.0);
+        assert_eq!(lam(model("rimp2", "lambda_boys = 3.5\n")), 3.5);
+        for bad in ["-1.0", "nan", "inf"] {
+            let e = model("rimp2", &format!("lambda_boys = {bad}\n")).unwrap_err();
+            assert!(e.contains("lambda_boys") && e.contains(">= 0"), "{bad}: {e}");
+        }
+        let e = cfg("rimp2", "energy", "[local]\nscheme = \"none\"\nlambda_boys = 10.0\n")
+            .local_model()
+            .unwrap_err();
+        assert!(e.contains("lambda_boys") && e.contains("scheme = \"none\""), "{e}");
+        let ok = |kind: &str| {
+            cfg(kind, "energy", &format!("{at}lambda_boys = 10.0\n")).validate_task_compat()
+        };
+        assert_eq!(ok("rimp2"), Ok(()));
+        for kind in ["drpa", "linlccd"] {
+            let e = ok(kind).expect_err(kind);
+            assert!(e.contains("lambda_boys") && e.contains("plain Boys"), "{e}");
+        }
     }
 
     #[test]

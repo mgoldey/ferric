@@ -471,7 +471,7 @@ pub(crate) fn local_correlation_operator(
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -511,6 +511,7 @@ pub(crate) fn run_rimp2(
     virtual_boys_tau: Option<f64>,
     with_gradient: bool,
     scf_eri: Option<&str>,
+    lambda_boys: Option<f64>,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
     let (mut rhf_config, jk) = mp2_exact_default_config(
@@ -544,6 +545,7 @@ pub(crate) fn run_rimp2(
             virtual_tau_loose,
             virtual_solve_radius,
             virtual_boys_tau,
+            lambda_boys,
         },
     )?;
     if with_gradient {
@@ -880,6 +882,7 @@ pub(crate) fn run_rimp2_local(
         fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
         compute_reference: model.reference,
         virtual_space: model.virtual_space.clone(),
+        lambda_boys: model.lambda_boys,
         ..Default::default()
     };
     let dcfg = model.direct.as_ref().map(|d| DirectConfig {
@@ -936,6 +939,10 @@ pub(crate) fn run_rimp2_local(
     for (k, v) in r.virtual_space.fields(&r.timings) {
         set_cert_item(py, &d, k, &v)?;
     }
+    d.set_item("lambda_boys", r.lambda_boys.lambda)?;
+    d.set_item("lambda_boys_sweeps", r.lambda_boys.sweeps)?;
+    d.set_item("lambda_boys_max_grad", r.lambda_boys.max_grad)?;
+    d.set_item("lambda_boys_t_s", r.lambda_boys.t_s)?;
     if let Some(st) = st {
         d.set_item("n_pairs_gated", r.n_pairs_gated)?;
         set_direct_stats(&d, &st)?;

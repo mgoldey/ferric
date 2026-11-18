@@ -2391,8 +2391,26 @@ fn lmp2_local_json_with_vs(
         for (k, v) in r.virtual_space.fields(&r.timings) {
             obj.insert(k.to_string(), cert_value_json(&v));
         }
+        let lb = &r.lambda_boys;
+        obj.insert("lambda_boys".to_string(), serde_json::json!(lb.lambda));
+        obj.insert("lambda_boys_sweeps".to_string(), serde_json::json!(lb.sweeps));
+        obj.insert("lambda_boys_max_grad".to_string(), serde_json::json!(lb.max_grad));
+        obj.insert("lambda_boys_t_s".to_string(), serde_json::json!(lb.t_s));
     }
     j
+}
+
+/// The printout's occupied-localization line: plain Boys at λ = 0, else λ,
+/// sweeps, final gradient and wall time of the λ-Boys stage.
+fn lambda_boys_line(lb: &ferric_mp2::boys::LambdaBoysReport) -> String {
+    if lb.lambda == 0.0 {
+        "Boys (lambda_boys = 0)".to_string()
+    } else {
+        format!(
+            "lambda-Boys, lambda_boys = {} ({} sweeps, max |grad| {:.1e}, {:.2} s)",
+            lb.lambda, lb.sweeps, lb.max_grad, lb.t_s
+        )
+    }
 }
 
 /// The model certificate of an LMP2 run, with the integral-direct stage-5
@@ -2637,6 +2655,7 @@ fn run_rimp2_local(
         pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
         fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
         virtual_space: model.virtual_space.clone(),
+        lambda_boys: model.lambda_boys,
         ..Default::default()
     };
     let dcfg = model.direct.as_ref().map(|d| DirectConfig {
@@ -2673,6 +2692,7 @@ fn run_rimp2_local(
     };
     println!("{}", model_label("MP2", Some(&local)));
     print_lmp2_certificate(&cert);
+    println!("  occupied localization = {}", lambda_boys_line(&r.lambda_boys));
     println!("  basis / aux           = {} / {aux_name}", bs.name);
     if cfg.method.kind == "att-rimp2" {
         // Name the correlation operator: a local number from the attenuated

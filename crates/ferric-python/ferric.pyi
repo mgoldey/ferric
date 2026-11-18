@@ -5135,6 +5135,7 @@ def run_rimp2(
     virtual_boys_tau: float | None = None,
     with_gradient: bool = False,
     scf_eri: Literal["auto", "direct", "incore"] | None = None,
+    lambda_boys: float | None = None,
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2. Exact by default.
     with_gradient=True adds the analytic gradient of total_energy
@@ -5183,6 +5184,13 @@ def run_rimp2(
     build, `["virtual_space_log"]` is the line the run prints, and
     `["virtual_space_local"]` holds the local build's thresholds and sparsity
     counters (None for the dense build).
+
+    Local runs only: `lambda_boys` (Bohr^2/Ha^2, finite and >= 0, default
+    10.0) is the weight of sum_i F_ii^2 in the lambda-Boys occupied
+    localization, started from the converged Boys orbitals; 0.0 is plain
+    Boys. It does not change the eps=0 energy. A ValueError on the exact
+    method. `result.local["lambda_boys"]`, `["lambda_boys_sweeps"]`,
+    `["lambda_boys_max_grad"]` and `["lambda_boys_t_s"]` record it.
 
     `scf_jk` sets how the reference SCF builds J/K: "exact" (default,
     four-centre), "rijk" (RI-J + RI-K) or "rijcosx" (RI-J + COSX K), fitted on
