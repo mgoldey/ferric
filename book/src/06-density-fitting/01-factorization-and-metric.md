@@ -24,6 +24,7 @@ The plan:
 1. Define the fit and derive the factorized integral (@sec:factorization-and-metric-factorization).
 2. Show that any factor of $V^{-1}$ gives the same energy (@sec:factorization-and-metric-any-factor-gives-same).
 3. Read the two factors the code uses and the rule that picks one (@sec:factorization-and-metric-factors).
+4. Fit a kernel that is not positive definite with a signed factor (@sec:factorization-and-metric-signed).
 
 | Index | Range | Code name |
 |---|---|---|
@@ -35,6 +36,7 @@ The plan:
 |---|---|
 | Metric | `ferric-integrals/src/threeindex.rs::coulomb_metric_2c` |
 | Factors | `ferric-mp2/src/rimp2.rs::{cholesky_inverse_sqrt,eigh_inverse_sqrt,metric_inverse_sqrt}` |
+| Signed factor | `ferric-mp2/src/rimp2.rs::{signed_pair_block,spin_components_from_signed_b_ov}`, `ferric-rpa/src/energy.rs::eval_signed_trace_log_summands` |
 | CLI, Python | the auxiliary basis: `[mp2] auxbasis`, `[rpa] auxbasis`; the `auxbasis` argument of the `run_*` functions |
 
 ## The factorization {#factorization-and-metric-factorization}
@@ -158,14 +160,20 @@ chapter 4, Eq. 4.5). The code uses two factors and picks one by operator.
 | Eigendecomposition | $U_{\mathrm{k}}\lambda_{\mathrm{k}}^{-1/2}U_{\mathrm{k}}^{\mathsf T}$ over eigenvalues $\lambda \ge 10^{-10}$ | $V^{+}$, the pseudo-inverse on the kept modes | one symmetric eigendecomposition | `eigh_inverse_sqrt` |
 
 `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt(v, op)` chooses between them by
-operator:
+operator, and refuses terf, whose metric neither factor can represent
+(section @sec:factorization-and-metric-signed):
 
 <!-- excerpt: ferric-mp2/src/rimp2.rs::metric_inverse_sqrt -->
 ```rust
-if matches!(op.kind, OperatorKind::ErfCoulomb | OperatorKind::Terf) {
-    eigh_inverse_sqrt(v)
-} else {
-    cholesky_inverse_sqrt(v)
+match op.kind {
+    OperatorKind::Terf => Err(FerricError::General(
+        "metric_inverse_sqrt: the terf kernel is not positive definite, so its RI \
+         metric is indefinite and has no inverse square root; form the terf \
+         interaction as Coulomb RI minus terfc RI (a signed factor) instead"
+            .into(),
+    )),
+    OperatorKind::ErfCoulomb => eigh_inverse_sqrt(v),
+    _ => cholesky_inverse_sqrt(v),
 }
 ```
 
@@ -204,10 +212,9 @@ for i in 0..n {
 The triangular solve is scalar and serial on purpose; only the factorization
 may use threaded BLAS.
 
-**The eigendecomposition is for erf and terf.** The erf kernel is positive
+**The eigendecomposition is for erf.** The erf kernel is positive
 definite but smooth, so tight auxiliary functions in a Coulomb-fitted basis
-give near-zero eigenvalues that round to either sign. The terf kernel is not
-positive definite at all. In both cases
+give near-zero eigenvalues that round to either sign.
 `ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt` diagonalizes
 $V = U\lambda U^{\mathsf T}$, drops every mode with $\lambda < 10^{-10}$
 (`LINDEP_THRESH`), whatever its sign, and scales the rest by
@@ -233,9 +240,11 @@ Ok(u_scaled.dot(&evecs.t()))                      // U_k lambda_k^{-1/2} U_k^T
 
 The result is symmetric. $M^{\mathsf T}M = U_{\mathrm{k}}\lambda_{\mathrm{k}}^{-1}U_{\mathrm{k}}^{\mathsf T}$
 is the pseudo-inverse $V^{+}$ restricted to the kept modes, not $V^{-1}$. The
-fit is exact on the span of the kept modes and blind to the dropped ones. A
-negative eigenvalue larger than $10^{-10}$ in magnitude is printed as a NOTE
-and dropped like the others.
+fit is exact on the span of the kept modes and blind to the dropped ones.
+For a positive definite kernel the dropped modes carry rounding only. A
+negative eigenvalue larger than $10^{-10}$ in magnitude cannot come from a
+positive definite kernel; it is printed as a NOTE (an integral defect is the
+usual cause) and dropped like the others.
 
 **Orientation.** $L^{-1}$ is lower triangular and not symmetric, so a factor
 used on the other side of a product has to be transposed. Where a code path
@@ -245,12 +254,111 @@ example (section @sec:pdep): with the symmetric factor the transpose is invisibl
 and with $L^{-1}$ it is the difference between a right and a wrong
 eigenpotential.
 
+## A kernel that is not positive definite {#factorization-and-metric-signed}
+
+The fit of section @sec:factorization-and-metric-factorization needs $V$ invertible, and the
+Cholesky factor needs more: $V$ positive definite. The terf kernel has
+neither guarantee. Its transform $\cos(kr_0)\,e^{-k^2/4\omega^2}$ is negative
+near $kr_0 = \pi$ (section @sec:erf-terf-properties-decide-integrals-used), so the metric
+$V_{\mathrm t} = (P|\operatorname{terf}|Q)$ has negative eigenvalues in any
+auxiliary basis that can describe a density modulated at that wavelength,
+and eigenvalues that cross zero between the two signs. The error functional
+$D_x(c)$ is then unbounded below, and $c_x = V^{-1}A_x$ is a saddle point of
+it, not a minimum.
+
+Neither factor of section @sec:factorization-and-metric-factors applies. Cholesky fails. The
+eigendecomposition factor drops the negative modes together with the
+near-null ones, and $M^{\mathsf T}M$ becomes the pseudo-inverse of the
+positive part $V_{\mathrm t,+}$. Take a density in the auxiliary span,
+$\rho_x = \sum_P d_{Px}\chi_P$. Then $A_x = V_{\mathrm t}d_x$, and the fitted
+interaction is $d_x^{\mathsf T}V_{\mathrm t,+}d_y$ where the exact one is
+$d_x^{\mathsf T}V_{\mathrm t}d_y$: it is the interaction under a different,
+positive definite kernel. A signed pseudo-inverse, which keeps the negative
+modes with their sign, is exact in that limit, but it inverts the modes that
+cross zero, and its value depends on where the threshold cuts them.
+
+ferric never fits terf in its own metric. It applies the split
+$\operatorname{terf} = 1 - \operatorname{terfc}$ of (@eq:erf-terf-2) to the fitted
+integrals:
+
+$$ (ia|\operatorname{terf}|jb) \approx \sum_P B^P_{\mathrm C,ia}B^P_{\mathrm C,jb} - \sum_P B^P_{\mathrm s,ia}B^P_{\mathrm s,jb} = \big(\mathbf B^{\mathsf T}\boldsymbol\Sigma\,\mathbf B\big)_{ia,jb}, \qquad \mathbf B = \begin{pmatrix}\mathbf B_{\mathrm C}\\ \mathbf B_{\mathrm s}\end{pmatrix}, \quad \boldsymbol\Sigma = \begin{pmatrix}\mathbf 1 & 0\\ 0 & -\mathbf 1\end{pmatrix} . \label{eq:factorization-and-metric-signed} $$
+
+$\mathbf B_{\mathrm C}$ and $\mathbf B_{\mathrm s}$ are the Cholesky-dressed Coulomb
+and terfc factors of (@eq:factorization-and-metric-1). Both metrics are positive definite, each
+fit is the stationary fit of its own kernel, and each error is second order
+in its own residual. For a density in the auxiliary span the right side is
+$d_x^{\mathsf T}(V_{\mathrm C} - V_{\mathrm s})d_y = d_x^{\mathsf T}V_{\mathrm t}d_y$,
+exact. $\mathbf B$ has $2N_{\mathrm{aux}}$ rows and $\boldsymbol\Sigma$ is its
+signature. No real factor with $\boldsymbol\Sigma = \mathbf 1$ can represent an
+indefinite matrix, so the sign is part of the factor.
+
+What does each energy need from it? MP2 needs only the integrals. The pair
+block of occupied orbital $i$ is
+$G_i = \mathbf B_{\mathrm C,i}^{\mathsf T}\mathbf B_{\mathrm C} - \mathbf B_{\mathrm s,i}^{\mathsf T}\mathbf B_{\mathrm s}$
+(`signed_pair_block`), two GEMMs where the one-factor kernel has one, and the
+pair loop that consumes $G_i$ is unchanged. The dRPA energy goes through
+Sylvester's identity, which holds with $\boldsymbol\Sigma$ inside. For a
+diagonal $G \ge 0$, move $G^{1/2}\mathbf B^{\mathsf T}$ from the left of the
+product to the right:
+
+$$ \det\big(\mathbf 1_{ov} + G^{1/2}\mathbf B^{\mathsf T}\boldsymbol\Sigma\,\mathbf B\,G^{1/2}\big) = \det\big(\mathbf 1_{2N_{\mathrm{aux}}} + \boldsymbol\Sigma\,\mathbf B G\mathbf B^{\mathsf T}\big), \qquad \operatorname{tr}\big(G\,\mathbf B^{\mathsf T}\boldsymbol\Sigma\,\mathbf B\big) = \operatorname{tr}\big(\boldsymbol\Sigma\,\mathbf B G\mathbf B^{\mathsf T}\big) . \label{eq:factorization-and-metric-signed-sylvester} $$
+
+With $G = \chi_0(i\omega)$ the left sides are the dRPA integrand in the
+excitation space, so the right sides give it in a space of $2N_{\mathrm{aux}}$
+dimensions. $\boldsymbol\Sigma\mathbf B G\mathbf B^{\mathsf T}$ is not symmetric, so
+`eval_signed_trace_log_summands` takes the log-determinant by LU, as the
+energy-only dielectric route of chapter @sec:rpa already does, and
+needs no eigenvalues. The frequency integral of $\ln\det - \operatorname{tr}$
+equals the plasmon formula for an indefinite kernel too, as long as the
+determinant stays positive; for one mode the integral is
+$\tfrac12\big(\sqrt{D(D + 4k)} - D - 2k\big)$ for every $k > -D/4$. The LU
+routine refuses a nonpositive determinant. The static-eigenbasis route of
+chapter @sec:rpa diagonalizes a symmetric $\epsilon(0)$ and keeps its
+modes by $|\lambda - 1|$; it has no meaning for a signed factor, and the code
+refuses truncation, the Laplace $\chi_0$ backend and the Boys-screened
+$\chi_0$ for it.
+
+> **Verified equation {#eq:df-signed-factor}** · the signed factor is the terf interaction
+>
+> $\mathbf B^{\mathsf T}\boldsymbol\Sigma\mathbf B = \mathbf B_{\mathrm C}^{\mathsf T}\mathbf B_{\mathrm C} - \mathbf B_{\mathrm s}^{\mathsf T}\mathbf B_{\mathrm s}$
+> reproduces $d^{\mathsf T}V_{\mathrm t}d$ exactly for densities in the
+> auxiliary span on s-Gaussian Gram matrices with an indefinite
+> $V_{\mathrm t}$, where the positive-subspace pseudo-inverse misses it; the
+> signed LU log-determinant integrated over frequency equals the plasmon
+> dRPA energy of the indefinite kernel, closed and open shell.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/rpa_terf_signed_fit_sympy.py`, checks `signed-factor`, `signed-is-exact`, `drop-misses`, `logdet-vs-plasmon`, `u-logdet-vs-plasmon` |
+> | Negative control | the runner gives the terfc block signature $+1$, keeps only positive modes in the signed pseudo-inverse, and halves the closed-shell $\chi_0$ prefactor; each turns its check red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2.rs::signed_pair_block`, `ferric-rpa/src/energy.rs::eval_signed_trace_log_summands` |
+> | Code test | `terf_lr_matches_independent_constructions_ne2` in `crates/ferric-rpa/tests/terf_signed_fit.rs` (needs the terf tables; skips without them) |
+>
+> <!-- verified: id=df.signed-factor; script=scripts/rpa_terf_signed_fit_sympy.py; claim=signed-is-exact; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::{signed_pair_block,spin_components_from_signed_b_ov}; rust_test=ferric-rpa/tests/terf_signed_fit.rs::terf_lr_matches_independent_constructions_ne2 -->
+
+The Rust test builds four fits of the terf interaction on Ne$_2$ from the raw
+integrals: Coulomb RI minus terfc RI, the signed pseudo-inverse of
+$V_{\mathrm t}$, Coulomb-fitted densities with $V_{\mathrm t}$ between them,
+and the positive-subspace fit. The first three agree on the counterpoise
+interaction to within their fitting differences, and the production code
+equals the first to rounding. The positive-subspace fit misses by more than
+the interaction itself. `scripts/gen_terf_signed_fit_refs.py` records the
+numbers in `testdata/reference/ne2_terf_signed_fit.json`.
+
+What does it cost? The terfc factor and the Coulomb factor are both built
+anyway by RS-MP2 + LR-RPA (chapter @sec:rs-mp2-rpa), so the terf three-index
+build disappears. The Coulomb factor stays resident across the scan of
+$\omega$ points, one more $N_{\mathrm{aux}}\times n_on_v$ plane, and the
+log-determinant is $2N_{\mathrm{aux}}$ wide, eight times the LU work of one
+fit.
+
 ## Algorithm {#factorization-and-metric-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
 | 1 | $V_{PQ} = (P\vert\hat w\vert Q)$ | $N_{\mathrm{aux}}^2$ integrals | `coulomb_metric_2c` |
-| 2 | $M$: Cholesky or eigendecomposition by operator | $N_{\mathrm{aux}}^3$ | `metric_inverse_sqrt` |
+| 2 | $M$: Cholesky or eigendecomposition by operator; terf refused | $N_{\mathrm{aux}}^3$ | `metric_inverse_sqrt` |
 | 3 | $B = M\,(Q\vert pq)$ for the orbital blocks a method needs | $N_{\mathrm{aux}}^2\,n_pn_q$ | per method (section @sec:closed-shell-ri-mp2 for $B_{ov}$) |
 
 Step 2 runs once per intermediates build, outside any parallel region. Both
@@ -261,7 +369,7 @@ factorizations may use threaded BLAS there.
 | Option | Effect |
 |---|---|
 | Auxiliary basis | the fitting space; the RI sets bundled with ferric are listed in `crates/ferric-core/src/basis/bundled` |
-| Operator | chooses the metric operator and, through it, the factor |
+| Operator | chooses the metric operator and, through it, the factor; a terf metric is an error |
 | `RiMp2Config::metric_op` (library) | a metric operator different from the integral operator; a measurement option that makes the fitting error first order (section @sec:robust-fit) |
 
 ## Numerical anchors {#factorization-and-metric-numerical-anchors}
@@ -282,4 +390,4 @@ eigendecomposition: $\le 5.8\times10^{-11}$ Ha (erf) and $3.5\times10^{-11}$ Ha
 
 **Known limits (2026-11-15).** No Rust test compares the two factors on one
 system; the script proves the equivalence, and the eigendecomposition path is
-covered only through the erf and terf anchors.
+covered only through the erf anchors.

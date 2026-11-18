@@ -638,6 +638,53 @@ pub fn scan_charge_unrestricted(
     }
 }
 
+/// The per-worker scratch of the signed log-det dRPA
+/// (`crate::energy::eval_signed_trace_log_summands`) at panel width `width`:
+/// a `2 naux × width` panel and the `(2 naux)²` dielectric.
+pub fn signed_quad_scratch_bytes(naux: usize, width: usize, n_workers: usize) -> usize {
+    let m = naux.saturating_mul(2);
+    m.saturating_mul(width)
+        .saturating_add(m.saturating_mul(m))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(n_workers.max(1))
+}
+
+/// A [`ScanCharge`] adjusted for the terf long-range fit (Coulomb RI minus
+/// terfc RI, `ferric_mp2::rimp2::SignedBOv`).
+///
+/// The Coulomb `b_ov` of each spin (`held_b_ov_bytes` in all) stays resident
+/// for the whole scan and joins the persistent planes, which shrinks the
+/// budget left for the AO tensor, so its tier is re-planned. The long-range
+/// dRPA runs the signed log-det, whose scratch (`signed_drpa_bytes`, from
+/// [`signed_quad_scratch_bytes`]) replaces the frequency scratch when larger.
+/// The terf three-index build itself is gone, so no phase is added.
+pub fn with_signed_lr(
+    base: ScanCharge,
+    (nao, naux): (usize, usize),
+    budget_bytes: usize,
+    held_b_ov_bytes: usize,
+    signed_drpa_bytes: usize,
+) -> ScanCharge {
+    let persistent = base.persistent.saturating_add(held_b_ov_bytes);
+    let ao_budget = budget_bytes
+        .saturating_sub(persistent)
+        .saturating_sub(base.stream_scratch);
+    let (ao_tier, ao_resident) =
+        ferric_integrals::three_index_source::planned_residency(nao, naux, ao_budget);
+    let drpa_soft = base.drpa_soft.max(signed_drpa_bytes);
+    let build = ao_resident.saturating_add(base.stream_scratch);
+    let drpa = base.drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: persistent.saturating_add(build.max(base.spin_scratch).max(drpa)),
+        persistent,
+        ao_budget,
+        ao_tier,
+        ao_resident,
+        drpa_soft,
+        ..base
+    }
+}
+
 /// Upper-bound estimate, in bytes, of the peak resident memory of a PDEP-RPA
 /// run with the given shape.
 ///

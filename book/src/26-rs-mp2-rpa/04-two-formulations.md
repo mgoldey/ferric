@@ -133,11 +133,20 @@ result always carries `e_mp2_full`, `e_sr_mp2`, `e_lr_mp2` and
 diagnostic `e_corr_naive` (@eq:cross-term-6); T adds `e_delta_drpa_full` and
 `e_delta_drpa_sr`. B makes one dRPA evaluation, T two.
 
-**RI.** Each operator is fitted in its own metric: Cholesky for Coulomb and
-erfc (and terfc), a symmetric $V^{-1/2}$ by eigendecomposition with modes
-below $10^{-10}$ dropped for erf and terf (`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`).
-The fitted $(ia|jb)_{\mathrm C}$ is therefore not exactly
-$(ia|jb)_{\mathrm{sr}} + (ia|jb)_{\mathrm{lr}}$. Second order is unaffected:
+**RI.** Coulomb, erfc and terfc are each fitted in their own metric by
+Cholesky; erf by a symmetric $V^{-1/2}$ from an eigendecomposition with
+modes below $10^{-10}$ dropped (`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`).
+For erf the fitted $(ia|jb)_{\mathrm C}$ is therefore not exactly
+$(ia|jb)_{\mathrm{sr}} + (ia|jb)_{\mathrm{lr}}$. terf is not fitted at all.
+Its kernel is not positive definite, so its metric is indefinite, and the
+long-range integrals are Coulomb RI minus terfc RI, the signed factor of
+(@eq:factorization-and-metric-signed). For terf the split is then exact on
+the fitted integrals, $(ia|jb)_{\mathrm{lr}} = (ia|jb)_{\mathrm C} - (ia|jb)_{\mathrm{sr}}$,
+and $E_{\mathrm{dRPA}}[\mathrm{lr}]$ is the signed log-determinant of
+(@eq:factorization-and-metric-signed-sylvester). B with terf therefore
+refuses PDEP truncation and the Laplace and Boys-screened $\chi_0$. T's
+energy uses only the Coulomb and terfc integrals and does not change; its
+reported long-range MP2 components do. Second order is unaffected:
 each bracket of (@eq:two-formulations-1) and (@eq:two-formulations-2) uses one operator's integrals, so it
 starts at third order for any fit. The decomposition (@eq:rsrpa-forms-orders)–(@eq:rsrpa-forms-one-mode), which
 compares operators, holds up to the fitting differences.
@@ -176,8 +185,11 @@ The terf split is checked by its limits only.
 
 - Energy only, no gradient. The closed-shell RHF path is the one the
   sections above derive; the open-shell path is below.
-- No benchmark selects $\omega$ or $r_0$; the terf arm has no reference
-  beyond its limits.
+- No benchmark selects $\omega$ or $r_0$. The terf arm is checked by its
+  limits and, for formulation B, by the Ne$_2$ anchor of section
+  @sec:factorization-and-metric-signed against independent fits of the
+  terf interaction. Numbers recorded for B with terf before that fix used
+  a fit that dropped the negative modes of the terf metric and do not hold.
 - The fusion test of section @sec:shared-intermediates covers `coupled-rings` only.
 
 ## Open shell

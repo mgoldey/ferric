@@ -254,33 +254,35 @@ through it. The erf
 kernel is long range too, but its switch is centred on $r = 0$ and its
 transform has no oscillating factor.
 
-A kernel that is not positive definite has no Cauchy–Schwarz bound and can
-give a fitting metric with negative eigenvalues. Two consequences follow in
-the code. Schwarz screening is refused for terf. The fitting metric of the erf
-and terf operators goes through the eigendecomposition branch of
-`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`, which drops small and negative <!-- pending: terf-fit fix -->
-eigenvalues instead of failing a Cholesky factorization (section @sec:factorization-and-metric). The
-erf metric is positive definite in exact arithmetic; it takes the same branch
-because it loses rank numerically in a Coulomb-fitted auxiliary basis. The
-table in this section is the one pinned by
+A kernel that is not positive definite has no Cauchy–Schwarz bound, and its
+fitting metric has negative eigenvalues that belong to the interaction, not
+to rounding. Two consequences follow in the code. Schwarz screening is
+refused for terf. And terf is never fitted in its own metric:
+`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` returns an error for it. A
+fit that dropped the negative modes would compute the interaction under the
+positive part of the kernel alone. The long-range terf interaction of
+RS-MP2 + LR-RPA is Coulomb RI minus terfc RI instead, a factor with a
+signature (section @sec:factorization-and-metric-signed). The table in this
+section is the one pinned by
 `crates/ferric-integrals/tests/operator_positivity_gate.rs`, whose test
 `terf_is_indefinite_and_terfc_is_not` asserts a negative terf diagonal and a
 non-negative terfc one on water / cc-pVDZ.
 
-The dispatch is one `match` on the operator kind:
+The dispatch is one `match` on the operator kind (message shortened):
 
 ```rust
-if matches!(op.kind, OperatorKind::ErfCoulomb | OperatorKind::Terf) {
-    eigh_inverse_sqrt(v)       // drop small/negative eigenvalues of V
-} else {
-    cholesky_inverse_sqrt(v)   // V = L L^T, M = L^{-1}
+match op.kind {
+    OperatorKind::Terf => Err(FerricError::General(..)), // indefinite: never fitted
+    OperatorKind::ErfCoulomb => eigh_inverse_sqrt(v),    // drop near-null modes of V
+    _ => cholesky_inverse_sqrt(v),                       // V = L L^T, M = L^{-1}
 }
 ```
 
-This is the body of `metric_inverse_sqrt` with only the comments added. <!-- pending: terf-fit fix -->
-terfc takes the Cholesky branch, as Coulomb and erfc do: its transform is
-positive, and a Cholesky failure on it would point at a real defect in the
-integrals.
+The erf metric is positive definite in exact arithmetic; it takes the
+eigendecomposition branch because it loses rank numerically in a
+Coulomb-fitted auxiliary basis (section @sec:factorization-and-metric). terfc takes the
+Cholesky branch, as Coulomb and erfc do: its transform is positive, and a
+Cholesky failure on it would point at a real defect in the integrals.
 
 ## Options and units {#erf-terf-options-units}
 

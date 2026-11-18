@@ -34,7 +34,11 @@ $\omega$ and is built once per run, not once per point.
 | per ω, short range | $\tilde{\mathbf B}[\mathrm{sr}]$ | spin components always; $E_{\mathrm{dRPA}}[\mathrm{sr}]$ only when `coupled-rings` is requested | once per ω |
 
 A run over $n_\omega$ points therefore performs $1 + 2n_\omega$ transforms,
-whether it asks for one formulation or both. Both formulations at one
+whether it asks for one formulation or both. With the terf attenuator it
+performs $1 + n_\omega$: the long range is $\tilde{\mathbf B}[\mathrm C]$ and
+$\tilde{\mathbf B}[\mathrm{sr}]$ with signature $(+,-)$
+(section @sec:factorization-and-metric-signed), so the Coulomb tensor stays
+resident for the whole run and no terf tensor is built. Both formulations at one
 $\omega$ share the per-ω tensors.
 
 Sharing changes no number: the MP2 components and the dRPA energy of an
@@ -53,7 +57,8 @@ are built from one $\tilde{\mathbf B}[v]$.
 
 Each tensor lives in its own block and is dropped before the next is
 built, so at most one $\tilde{\mathbf B}$ is resident at a time, for any
-number of $\omega$ points. Each operator's set runs three phases on top
+number of $\omega$ points (two with terf: the held Coulomb tensor and the
+current terfc one). Each operator's set runs three phases on top
 of the planes it keeps throughout, the metric buffers and one
 $\tilde{\mathbf B}$:
 
@@ -76,6 +81,13 @@ and a disk spill (two blocks resident) otherwise. The charge is the tier's
 resident bytes, so a run whose in-core tensor does not fit is admitted and
 spills. The tier is the same for every operator, every $\omega$ and both
 formulations, since they share one shape.
+
+With terf, `ferric-rpa/src/budget.rs::with_signed_lr` adds the held Coulomb tensor to $P$
+(and re-plans the AO tier at the smaller budget left), and charges the
+signed log-determinant's per-worker scratch, a $2N_{\mathrm{aux}}$-row panel
+and a $(2N_{\mathrm{aux}})^2$ matrix, in place of the frequency scratch
+when it is larger. `scan_peak_bytes` does not know the attenuator and
+leaves both out; `scan_charge_for` and the driver include them.
 
 | Test | What it pins |
 |---|---|

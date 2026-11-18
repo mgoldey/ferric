@@ -754,6 +754,100 @@ fn same_spin_energy_only(ch: SpinChannel, mixed_ok: bool) -> f64 {
     partials.into_iter().sum()
 }
 
+/// U-MP2 components of signed factors (see [`crate::rimp2::SignedBOv`]):
+/// `(ia|jb) = (B₊ᵀ B₊ − B₋ᵀ B₋)_{ia,jb}` per spin pair, with `pos_σ` the
+/// Coulomb and `neg_σ` the terfc intermediates of spin σ.
+///
+/// The same pair arithmetic as [`u_ri_mp2_from_parts`]
+/// (`same_spin_block_energy`, `opposite_spin_block_energy`) on blocks from
+/// [`crate::rimp2::signed_pair_block`]; CPU only, per-i partials summed in
+/// ascending i. The `+` factors of the two spins must share one aux basis, and
+/// so must the `−` factors.
+pub fn u_ri_mp2_signed_from_parts(
+    (pos_a, neg_a): (&RpaIntermediates, &RpaIntermediates),
+    (pos_b, neg_b): (&RpaIntermediates, &RpaIntermediates),
+    eps_a: &[f64],
+    eps_b: &[f64],
+) -> Result<URiMp2Components, FerricError> {
+    use crate::rimp2::{signed_pair_block, SignedBOv};
+    use rayon::prelude::*;
+    if pos_a.naux != pos_b.naux || neg_a.naux != neg_b.naux {
+        return Err(FerricError::General(format!(
+            "u_ri_mp2_signed_from_parts: the + factors ({} vs {}) or the - factors ({} vs {}) \
+             of the two spins have different aux dimensions",
+            pos_a.naux, pos_b.naux, neg_a.naux, neg_b.naux
+        )));
+    }
+    for (label, p, n, eps) in [("alpha", pos_a, neg_a, eps_a), ("beta", pos_b, neg_b, eps_b)] {
+        let same = (p.nocc, p.nvir, p.first_occ, p.nocc_total)
+            == (n.nocc, n.nvir, n.first_occ, n.nocc_total);
+        if !same
+            || p.b_ov.ncols() != p.nocc * p.nvir
+            || n.b_ov.ncols() != p.nocc * p.nvir
+            || eps.len() < p.nocc_total + p.nvir
+        {
+            return Err(FerricError::General(format!(
+                "u_ri_mp2_signed_from_parts: {label} + and - intermediates disagree on the \
+                 orbital space or the orbital energies are too short"
+            )));
+        }
+    }
+    let fa = SignedBOv {
+        pos: &pos_a.b_ov,
+        neg: &neg_a.b_ov,
+    };
+    let fb = SignedBOv {
+        pos: &pos_b.b_ov,
+        neg: &neg_b.b_ov,
+    };
+    fn channel<'a>(it: &'a RpaIntermediates, eps: &'a [f64]) -> SpinChannel<'a> {
+        SpinChannel {
+            b: &it.b_ov,
+            eps,
+            nocc: it.nocc,
+            nvir: it.nvir,
+            first_occ: it.first_occ,
+            nocc_total: it.nocc_total,
+        }
+    }
+    let (ch_a, ch_b) = (channel(pos_a, eps_a), channel(pos_b, eps_b));
+    let same = |f: SignedBOv, ch: SpinChannel| -> f64 {
+        if ch.nocc == 0 || ch.nvir == 0 {
+            return 0.0;
+        }
+        let nv = ch.nvir;
+        let partials: Vec<f64> = (0..ch.nocc)
+            .into_par_iter()
+            .map(|i| {
+                let g = signed_pair_block(f, i * nv..(i + 1) * nv, f, i * nv..);
+                same_spin_block_energy(&g.view(), i, ch)
+            })
+            .collect();
+        partials.into_iter().sum()
+    };
+    let e_aa = same(fa, ch_a);
+    let e_bb = same(fb, ch_b);
+    let e_ab = if ch_a.nocc * ch_a.nvir > 0 && ch_b.nocc * ch_b.nvir > 0 {
+        let nv = ch_a.nvir;
+        let partials: Vec<f64> = (0..ch_a.nocc)
+            .into_par_iter()
+            .map(|i| {
+                let g = signed_pair_block(fa, i * nv..(i + 1) * nv, fb, 0..);
+                opposite_spin_block_energy(&g.view(), i, ch_a, ch_b)
+            })
+            .collect();
+        partials.into_iter().sum()
+    } else {
+        0.0
+    };
+    Ok(URiMp2Components {
+        e_aa,
+        e_bb,
+        e_ab,
+        e_total: e_aa + e_bb + e_ab,
+    })
+}
+
 /// Same-spin (αα or ββ) pair kernel: builds the energy and, optionally, the
 /// antisymmetrized amplitude tensor `t[i,j,a,b] = [(ia|jb) − (ib|ja)] / D`.
 ///

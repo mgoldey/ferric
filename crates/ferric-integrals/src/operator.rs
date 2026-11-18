@@ -236,25 +236,39 @@ impl Operator {
     ///
     /// Limits (matching erf/erfc exactly): r0 -> inf (omega -> 0): terf -> 0.
     /// r0 -> 0 (omega -> inf): terf -> Coulomb.
+    ///
+    /// Not positive definite (see [`Operator::terf_with_omega`]).
     pub fn terf(r0: f64) -> Self {
         let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         Self::primitive(OperatorKind::Terf, omega, r0)
     }
 
-    /// terfc(r12; r0, omega)/r12 with INDEPENDENT sharpness — the curvature
-    /// constraint is NOT applied. Basis for decoupling: with the complement
-    /// computed by a LR method, Dutoi's constraint does not bind (measured,
-    /// scripts/ne2_seam_test.py); the table engine is already general in the
-    /// reduced variables (S, s) — omega enters only via
+    /// terfc(r12; r0, omega)/r12 with INDEPENDENT sharpness: the curvature
+    /// constraint r0 * omega = 1/sqrt(2) is not applied. The table engine is
+    /// general in the reduced variables (S, s): omega enters only via
     /// phi = (1/p+1/q+1/omega^2)^{-1/2}, s = (phi*r0)^2 <= (omega*r0)^2, and
     /// the shipped tables cover s <= 80 (r0*omega <= ~8.9). terf + terfc =
-    /// Coulomb holds exactly for EVERY (r0, omega) — anchor-tested.
+    /// Coulomb holds exactly for every (r0, omega) (anchor-tested).
+    ///
+    /// terfc is positive definite for every (r0, omega); its terf complement
+    /// is not (see [`Operator::terf_with_omega`]). The case for dropping the
+    /// curvature constraint when a long-range method computes the complement
+    /// rests on Ne2 curves (scripts/ne2_seam_test.py). Its erf arms stand. Its
+    /// terf arms were computed before terf was formed as Coulomb RI minus
+    /// terfc RI, with terf fitted in its own metric and the negative modes
+    /// dropped, which is not the terf interaction; they need rerunning.
     pub fn terfc_with_omega(r0: f64, omega: f64) -> Self {
         Self::primitive(OperatorKind::Terfc, omega, r0)
     }
 
     /// Long-range complement of [`Operator::terfc_with_omega`]; same free
     /// (r0, omega) parameterization, same tables.
+    ///
+    /// The terf kernel is NOT positive definite: its Fourier transform
+    /// cos(k r0) exp(-k^2/4 omega^2)/(2 pi^2 k^2) is negative near k r0 = pi.
+    /// Its RI metric is indefinite and has no Cauchy-Schwarz bound, so
+    /// Schwarz screening and `ferric_mp2::rimp2::metric_inverse_sqrt` refuse
+    /// it; fitted terf integrals are formed as Coulomb RI minus terfc RI.
     pub fn terf_with_omega(r0: f64, omega: f64) -> Self {
         Self::primitive(OperatorKind::Terf, omega, r0)
     }

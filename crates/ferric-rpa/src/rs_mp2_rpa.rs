@@ -5,7 +5,10 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::rimp2::{compute_rpa_intermediates, spin_components_from_b_ov, RiMp2Config};
+use ferric_mp2::rimp2::{
+    compute_rpa_intermediates, spin_components_from_b_ov, spin_components_from_signed_b_ov,
+    RiMp2Config, SignedBOv,
+};
 use ferric_scf::ScfResult;
 
 use crate::{run_pdep_rpa_from_intermediates, PdepRpaConfig};
@@ -73,8 +76,14 @@ pub enum Attenuator {
     Erf,
     /// Tempered (Dutoi/Goldey) split: LR = terf(r,r0)/r, SR = terfc(r,r0)/r,
     /// with terf + terfc = Coulomb exactly. Parameterized by r0 (Bohr); the
-    /// curvature ω = 1/(r0·√2) is derived, never set independently. Exact via
-    /// 2D interpolation tables (needs FERRIC_TERF_TABLE_DIR).
+    /// curvature ω = 1/(r0·√2) is derived unless `terf_omega` overrides it.
+    /// Exact via 2D interpolation tables (needs FERRIC_TERF_TABLE_DIR).
+    ///
+    /// The terf kernel is not positive definite, so it is never fitted in its
+    /// own metric: the long-range integrals are Coulomb RI minus terfc RI (the
+    /// signed factor `ferric_mp2::rimp2::SignedBOv`), the LR dRPA is the
+    /// signed log-det ([`crate::energy::signed_drpa_energy`]), and formulation
+    /// B refuses PDEP truncation, the Laplace χ₀ and the Boys-screened χ₀.
     Terf,
 }
 
@@ -101,12 +110,13 @@ pub struct RsMp2RpaConfig {
     /// erf arms are directly comparable at the default.
     pub r0: f64,
     /// Terf-only: OVERRIDE the curvature-linked sharpness with an independent
-    /// ω (Bohr⁻¹). `None` (default) keeps the Dutoi link ω = 1/(r0·√2).
-    /// Basis for decoupling: with the complement computed by LR-RPA the
-    /// curvature constraint does not bind (Ne2 measured, ne2_seam_test.py /
-    /// curvature-constraint-relaxed memory); the split identity terf + terfc
-    /// = Coulomb holds for every (r0, ω) (anchor-tested). Tables cover
-    /// s = (ωr0)² ≤ 80. Ignored for `Erf`.
+    /// ω (Bohr⁻¹). `None` (default) keeps the Dutoi link ω = 1/(r0·√2). The
+    /// split identity terf + terfc = Coulomb holds for every (r0, ω)
+    /// (anchor-tested), and the tables cover s = (ωr0)² ≤ 80. Whether the
+    /// curvature constraint binds once LR-RPA computes the complement is open
+    /// for terf: the Ne2 terf curves behind the decoupling were computed with
+    /// the terf metric's negative modes dropped (see
+    /// `Operator::terfc_with_omega`). Ignored for `Erf`.
     pub terf_omega: Option<f64>,
     /// Number of frozen core orbitals for every MP2 and dRPA call (default 0).
     pub frozen_core: usize,
@@ -267,6 +277,10 @@ fn scan_shape(
 /// [`crate::budget::scan_charge`] with the panel width the frequency loop
 /// will allocate under `cfg`'s budget and the unbudgeted stream chunk that
 /// `compute_rpa_intermediates` uses.
+///
+/// With `cfg.attenuator == Terf` the charge is
+/// [`crate::budget::with_signed_lr`]: the Coulomb `b_ov` stays resident and
+/// the long-range dRPA is the signed log-det.
 fn charge_of(
     shape: crate::budget::PeakEstimateShape,
     cfg: &RsMp2RpaConfig,
@@ -280,7 +294,78 @@ fn charge_of(
         cfg.drpa.memory_budget_bytes,
     );
     let stream = ferric_mp2::rimp2::mo_stream_scratch_bytes(shape.naux, nov);
-    crate::budget::scan_charge(shape, budget_bytes, panel_width, stream)
+    let base = crate::budget::scan_charge(shape, budget_bytes, panel_width, stream);
+    if cfg.attenuator != Attenuator::Terf {
+        return base;
+    }
+    crate::budget::with_signed_lr(
+        base,
+        (shape.nao, shape.naux),
+        budget_bytes,
+        held_b_ov_bytes(&[shape]),
+        signed_drpa_bytes(&[shape], cfg),
+    )
+}
+
+/// The Coulomb `b_ov` planes a terf scan keeps resident, one per shape.
+fn held_b_ov_bytes(shapes: &[crate::budget::PeakEstimateShape]) -> usize {
+    shapes
+        .iter()
+        .map(|s| s.naux.saturating_mul(s.nocc).saturating_mul(s.nvir))
+        .fold(0usize, |a, b| a.saturating_add(b))
+        .saturating_mul(8)
+}
+
+/// The signed log-det scratch at the panel width the loop will take.
+fn signed_drpa_bytes(shapes: &[crate::budget::PeakEstimateShape], cfg: &RsMp2RpaConfig) -> usize {
+    let Some(first) = shapes.first() else {
+        return 0;
+    };
+    let nov = shapes
+        .iter()
+        .map(|s| s.nocc.saturating_mul(s.nvir))
+        .max()
+        .unwrap_or(0);
+    let width = crate::energy::quad_panel_width(
+        2 * first.naux,
+        nov,
+        first.n_workers,
+        cfg.drpa.memory_budget_bytes,
+    );
+    crate::budget::signed_quad_scratch_bytes(first.naux, width, first.n_workers)
+}
+
+/// The terf long-range dRPA is the signed log-det
+/// ([`crate::energy::signed_drpa_energy`]): it forms no eigenvalues and no
+/// static eigenbasis, so the dRPA options that need one have no meaning for it
+/// and are refused rather than ignored.
+fn refuse_unsupported_signed_drpa(cfg: &RsMp2RpaConfig, mol: &Molecule) -> Result<(), FerricError> {
+    let why = if cfg.drpa.trunc_thresh > 0.0 {
+        Some(format!("trunc_thresh = {} (PDEP truncation)", cfg.drpa.trunc_thresh))
+    } else if !matches!(cfg.drpa.chi0_backend, crate::config::Chi0Backend::Dense) {
+        Some(format!("chi0_backend = {:?}", cfg.drpa.chi0_backend))
+    } else if let crate::Chi0Sparsity::BoysScreened { .. } =
+        cfg.drpa.chi0_sparsity.resolve(mol.atoms.len())
+    {
+        Some(format!(
+            "chi0_sparsity = {:?} (the Boys-screened chi0 for this {}-atom molecule)",
+            cfg.drpa.chi0_sparsity,
+            mol.atoms.len()
+        ))
+    } else if cfg.drpa.need_inv_dielectric_freq {
+        Some("need_inv_dielectric_freq = true".to_string())
+    } else {
+        None
+    };
+    match why {
+        None => Ok(()),
+        Some(w) => Err(FerricError::General(format!(
+            "rs-mp2-rpa terf, formulation B: the long-range dRPA is the signed log-det of \
+             Coulomb RI minus terfc RI (the terf kernel is not positive definite), which forms \
+             no static eigenbasis; {w} is not supported for it. Use trunc_thresh = 0, \
+             chi0_backend = dense and chi0_sparsity = dense"
+        ))),
+    }
 }
 
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
@@ -344,6 +429,11 @@ fn operators_from_cfg(cfg: &RsMp2RpaConfig) -> (Operator, Operator) {
 /// memory does not grow with `omegas.len()` (see [`scan_peak_bytes`]). The
 /// reference SCF is the caller's, so it is also done once.
 ///
+/// With `Terf` the Coulomb intermediates stay resident for the whole scan and
+/// only the terfc set is built per ω: the long range is Coulomb RI minus terfc
+/// RI ([`Attenuator::Terf`]). [`scan_peak_bytes`] does not include that
+/// held plane; [`scan_charge_for`] does.
+///
 /// # Errors
 /// Empty `omegas` or `formulations`, a non-finite or non-positive ω, or a
 /// repeated formulation are [`FerricError::General`].
@@ -406,6 +496,10 @@ fn scan_impl(
     }
     let want_b = formulations.contains(&RsMp2RpaFormulation::DeltaLr);
     let want_t = formulations.contains(&RsMp2RpaFormulation::CoupledRings);
+    let signed = signed_lr(ops, cfg)?;
+    if signed && want_b {
+        refuse_unsupported_signed_drpa(cfg, mol)?;
+    }
 
     // Resolved ONCE: the preflight budget check and the stage-seam RSS
     // checks compare against the same configured ceiling.
@@ -438,9 +532,10 @@ fn scan_impl(
         shape.n_workers,
         ops.len()
     );
+    let held = if signed { held_b_ov_bytes(&[shape]) } else { 0 };
     let _persistent = ferric_core::memory::pool::reserve_global(
         &format!("{label} [metric + b_ov]"),
-        crate::budget::scan_persistent_bytes(shape),
+        crate::budget::scan_persistent_bytes(shape).saturating_add(held),
     )?;
     let charge = charge_of(shape, cfg, resolved_budget_bytes);
     // Decides admissibility on the unbudgeted path too, where the pool is
@@ -499,9 +594,51 @@ fn scan_impl(
             Ok(run_pdep_rpa_from_intermediates(it, mol, obs, dfbs, op, rhf, &drpa_cfg)?.e_rpa)
         };
 
+    // The terf long range: the signed factor [B_C; B_terfc] with signature
+    // (+, -) (`SignedBOv`); terf is never fitted in its own indefinite metric.
+    let signed_sc_of = |pos: &ferric_mp2::rimp2::RpaIntermediates,
+                        neg: &ferric_mp2::rimp2::RpaIntermediates| {
+        let _spin = ferric_core::memory::pool::try_reserve_global(
+            &format!("{label} [spin g_i]"),
+            charge.spin_scratch,
+        );
+        spin_components_from_signed_b_ov(
+            SignedBOv {
+                pos: &pos.b_ov,
+                neg: &neg.b_ov,
+            },
+            eps,
+            pos.nocc,
+            pos.nvir,
+            pos.first_occ,
+            pos.nocc_total,
+        )
+    };
+    let signed_drpa_of = |pos: &ferric_mp2::rimp2::RpaIntermediates,
+                          neg: &ferric_mp2::rimp2::RpaIntermediates|
+     -> Result<f64, FerricError> {
+        let _soft = ferric_core::memory::pool::try_reserve_global(
+            &format!("{label} [signed dRPA freq scratch]"),
+            charge.drpa_soft,
+        );
+        let channel = crate::energy::SignedChannel {
+            pos: &pos.b_ov,
+            neg: &neg.b_ov,
+            eps_occ: &eps[pos.first_occ..pos.first_occ + pos.nocc],
+            eps_vir: &eps[pos.nocc_total..pos.nocc_total + pos.nvir],
+            prefactor: 4.0,
+        };
+        crate::energy::signed_drpa_energy(
+            &[channel],
+            &cfg.drpa.quadrature,
+            cfg.drpa.memory_budget_bytes,
+        )
+    };
+
     // ω-independent stage: Coulomb spin components, and for T the Coulomb dRPA.
-    // `it_full` is dropped at the end of this block.
-    let (sc_full, drpa_coul_e) = {
+    // `it_full` is dropped at the end of this block, unless the terf long
+    // range needs it for every point.
+    let (sc_full, drpa_coul_e, held_full) = {
         let it_full = inter_of(Operator::coulomb())?;
         let sc_full = sc_of(&it_full);
         let drpa_coul_e = if want_t {
@@ -509,11 +646,40 @@ fn scan_impl(
         } else {
             None
         };
-        (sc_full, drpa_coul_e)
+        (sc_full, drpa_coul_e, signed.then_some(it_full))
     };
 
     let mut out = Vec::with_capacity(ops.len() * formulations.len());
     for &(op_lr, op_sr) in ops {
+        if let Some(full) = held_full.as_ref() {
+            // terf: one terfc build per point feeds the LR (signed, with the
+            // held Coulomb factor) and the SR numbers.
+            let it_sr = inter_of(op_sr)?;
+            let sc_lr = signed_sc_of(full, &it_sr);
+            let drpa_lr_e = if want_b {
+                Some(signed_drpa_of(full, &it_sr)?)
+            } else {
+                None
+            };
+            let sc_sr = sc_of(&it_sr);
+            let drpa_sr_e = if want_t {
+                Some(drpa_of(&it_sr, op_sr)?)
+            } else {
+                None
+            };
+            let rings = Rings {
+                full: closed_shell_parts(&sc_full),
+                lr: closed_shell_parts(&sc_lr),
+                sr: closed_shell_parts(&sc_sr),
+                drpa_lr: drpa_lr_e,
+                drpa_coulomb: drpa_coul_e,
+                drpa_sr: drpa_sr_e,
+            };
+            for &formulation in formulations {
+                out.push(rings.assemble(formulation, rhf.energy));
+            }
+            continue;
+        }
         // LR: spin components always (e_dmp2_lr); the LR dRPA only for B.
         // op_lr is erf(ω) for Erf, terf(r0) for Terf, and the LR dRPA must use
         // that same operator.
@@ -538,16 +704,10 @@ fn scan_impl(
             };
             (sc_sr, e)
         };
-        // Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
-        // part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
-        let parts = |sc: &ferric_mp2::rimp2::SpinComponents| OpParts {
-            e_total: sc.e_total,
-            dmp2: 2.0 * sc.e_os,
-        };
         let rings = Rings {
-            full: parts(&sc_full),
-            lr: parts(&sc_lr),
-            sr: parts(&sc_sr),
+            full: closed_shell_parts(&sc_full),
+            lr: closed_shell_parts(&sc_lr),
+            sr: closed_shell_parts(&sc_sr),
             drpa_lr: drpa_lr_e,
             drpa_coulomb: drpa_coul_e,
             drpa_sr: drpa_sr_e,
@@ -557,6 +717,36 @@ fn scan_impl(
         }
     }
     Ok(out)
+}
+
+/// Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
+/// part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
+fn closed_shell_parts(sc: &ferric_mp2::rimp2::SpinComponents) -> OpParts {
+    OpParts {
+        e_total: sc.e_total,
+        dmp2: 2.0 * sc.e_os,
+    }
+}
+
+/// Whether the long-range operators of `ops` are terf, which the scan forms as
+/// Coulomb RI minus terfc RI. All points share one attenuator.
+fn signed_lr(ops: &[(Operator, Operator)], cfg: &RsMp2RpaConfig) -> Result<bool, FerricError> {
+    use ferric_integrals::operator::OperatorKind;
+    let terf = |op: &Operator| matches!(op.kind, OperatorKind::Terf);
+    let n = ops.iter().filter(|(lr, _)| terf(lr)).count();
+    if n != 0 && n != ops.len() {
+        return Err(FerricError::General(
+            "rs-mp2-rpa: a scan mixes terf and non-terf long-range operators".into(),
+        ));
+    }
+    let signed = n != 0;
+    if signed != (cfg.attenuator == Attenuator::Terf) {
+        return Err(FerricError::General(format!(
+            "rs-mp2-rpa: the operators do not match the {:?} attenuator",
+            cfg.attenuator
+        )));
+    }
+    Ok(signed)
 }
 
 /// One operator's MP2 numbers as the assembly reads them: the MP2
@@ -657,6 +847,51 @@ fn open_shell_parts(
     })
 }
 
+/// [`open_shell_parts`] of the signed factors `(pos_σ, neg_σ)` (Coulomb RI
+/// minus terfc RI per spin): `E_MP2` from
+/// `ferric_mp2::u_rimp2::u_ri_mp2_signed_from_parts` and `D_σσ` from the
+/// signed closed-shell kernel on spin σ.
+fn open_shell_signed_parts(
+    (pa, na): (
+        &ferric_mp2::rimp2::RpaIntermediates,
+        &ferric_mp2::rimp2::RpaIntermediates,
+    ),
+    (pb, nb): (
+        &ferric_mp2::rimp2::RpaIntermediates,
+        &ferric_mp2::rimp2::RpaIntermediates,
+    ),
+    eps_a: &[f64],
+    eps_b: &[f64],
+) -> Result<OpParts, FerricError> {
+    let direct_same_spin = |p: &ferric_mp2::rimp2::RpaIntermediates,
+                            n: &ferric_mp2::rimp2::RpaIntermediates,
+                            eps: &[f64]|
+     -> f64 {
+        if p.nocc == 0 || p.nvir == 0 {
+            return 0.0;
+        }
+        spin_components_from_signed_b_ov(
+            SignedBOv {
+                pos: &p.b_ov,
+                neg: &n.b_ov,
+            },
+            eps,
+            p.nocc,
+            p.nvir,
+            p.first_occ,
+            p.nocc_total,
+        )
+        .e_os
+    };
+    let c = ferric_mp2::u_rimp2::u_ri_mp2_signed_from_parts((pa, na), (pb, nb), eps_a, eps_b)?;
+    let d_aa = direct_same_spin(pa, na, eps_a);
+    let d_bb = direct_same_spin(pb, nb, eps_b);
+    Ok(OpParts {
+        e_total: c.e_total,
+        dmp2: c.e_ab + 0.5 * (d_aa + d_bb),
+    })
+}
+
 /// The open-shell preflight shapes `(alpha, beta)`: the occupation counts
 /// `compute_rpa_intermediates_spin` uses (`nocc_σ = (N ± 2S)/2`).
 fn scan_shapes_unrestricted(
@@ -711,11 +946,21 @@ fn charge_of_unrestricted(
     let stream = |s: crate::budget::PeakEstimateShape| {
         ferric_mp2::rimp2::mo_stream_scratch_bytes(s.naux, s.nocc.saturating_mul(s.nvir))
     };
-    crate::budget::scan_charge_unrestricted(
+    let base = crate::budget::scan_charge_unrestricted(
         (a, b),
         budget_bytes,
         (panel(a), panel(b)),
         stream(a).max(stream(b)),
+    );
+    if cfg.attenuator != Attenuator::Terf {
+        return base;
+    }
+    crate::budget::with_signed_lr(
+        base,
+        (a.nao.max(b.nao), a.naux),
+        budget_bytes,
+        held_b_ov_bytes(&[a, b]),
+        signed_drpa_bytes(&[a, b], cfg),
     )
 }
 
@@ -744,6 +989,10 @@ fn scan_impl_unrestricted(
     use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RpaIntermediates};
     let want_b = formulations.contains(&RsMp2RpaFormulation::DeltaLr);
     let want_t = formulations.contains(&RsMp2RpaFormulation::CoupledRings);
+    let signed = signed_lr(ops, cfg)?;
+    if signed && want_b {
+        refuse_unsupported_signed_drpa(cfg, mol)?;
+    }
     // The screened chi0 is closed-shell only (run_u_pdep_rpa refuses it too).
     if let crate::Chi0Sparsity::BoysScreened { .. } =
         cfg.drpa.chi0_sparsity.resolve(mol.atoms.len())
@@ -820,14 +1069,74 @@ fn scan_impl_unrestricted(
         Ok(crate::u_pdep_rpa_from_intermediates(a, b, uhf, &drpa_cfg)?.e_rpa)
     };
 
-    let (full, drpa_coulomb) = {
+    // terf long range: signed factors [B_C,σ; B_terfc,σ], signature (+, -).
+    let signed_parts_of = |(pa, pb): &(RpaIntermediates, RpaIntermediates),
+                           (na, nb): &(RpaIntermediates, RpaIntermediates)|
+     -> Result<OpParts, FerricError> {
+        let _spin = ferric_core::memory::pool::try_reserve_global(
+            &format!("{label} [spin g_i]"),
+            charge.spin_scratch,
+        );
+        open_shell_signed_parts((pa, na), (pb, nb), eps_a, eps_b)
+    };
+    let signed_drpa_of = |(pa, pb): &(RpaIntermediates, RpaIntermediates),
+                          (na, nb): &(RpaIntermediates, RpaIntermediates)|
+     -> Result<f64, FerricError> {
+        let _soft = ferric_core::memory::pool::try_reserve_global(
+            &format!("{label} [signed dRPA freq scratch]"),
+            charge.drpa_soft,
+        );
+        fn channel<'a>(
+            p: &'a RpaIntermediates,
+            n: &'a RpaIntermediates,
+            eps: &'a [f64],
+        ) -> crate::energy::SignedChannel<'a> {
+            crate::energy::SignedChannel {
+                pos: &p.b_ov,
+                neg: &n.b_ov,
+                eps_occ: &eps[p.first_occ..p.first_occ + p.nocc],
+                eps_vir: &eps[p.nocc_total..p.nocc_total + p.nvir],
+                prefactor: 2.0,
+            }
+        }
+        crate::energy::signed_drpa_energy(
+            &[channel(pa, na, eps_a), channel(pb, nb, eps_b)],
+            &cfg.drpa.quadrature,
+            cfg.drpa.memory_budget_bytes,
+        )
+    };
+
+    let (full, drpa_coulomb, held_full) = {
         let p = pair_of(Operator::coulomb())?;
         let full = parts_of(&p)?;
         let e = if want_t { Some(drpa_of(&p)?) } else { None };
-        (full, e)
+        (full, e, signed.then_some(p))
     };
     let mut out = Vec::with_capacity(ops.len() * formulations.len());
     for &(op_lr, op_sr) in ops {
+        if let Some(fp) = held_full.as_ref() {
+            let p = pair_of(op_sr)?;
+            let lr = signed_parts_of(fp, &p)?;
+            let drpa_lr = if want_b {
+                Some(signed_drpa_of(fp, &p)?)
+            } else {
+                None
+            };
+            let sr = parts_of(&p)?;
+            let drpa_sr = if want_t { Some(drpa_of(&p)?) } else { None };
+            let rings = Rings {
+                full,
+                lr,
+                sr,
+                drpa_lr,
+                drpa_coulomb,
+                drpa_sr,
+            };
+            for &formulation in formulations {
+                out.push(rings.assemble(formulation, rhf.energy));
+            }
+            continue;
+        }
         let (lr, drpa_lr) = {
             let p = pair_of(op_lr)?;
             let lr = parts_of(&p)?;
