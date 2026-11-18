@@ -556,8 +556,8 @@ coupling. Element $(a,b)$ is kept when Eq 8 keeps it, or when
 $\lvert\tilde g_{ab}\rvert > κ\varepsilon$ or $\lvert\tilde g_{ba}\rvert > κ\varepsilon$.
 The kept values are still $g$.
 
-This is the computation of `fock_dressed_gate` after the diagonal of $F'$
-has been removed, copied unchanged:
+The core of `fock_dressed_gate`, after the diagonal of $F'$ has been
+removed, copied unchanged:
 
 <!-- excerpt: ferric-mp2/src/ragged.rs::fock_dressed_gate -->
 ```rust
@@ -796,7 +796,7 @@ on top, so the bound survives inexact solves.
 >
 > <!-- verified: id=lmp2.combined.truncation-error; script=scripts/lmp2_combined_sympy.py; claim=P1: upper bound; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/ragged.rs::pair_blocks_screened; registry=local-mp2 -->
 
-### P2. The screen is one Jacobi step (PROVEN) {#amplitude-lmp2-combined-p2}
+### P2. The screen's estimate is one Jacobi step (PROVEN) {#amplitude-lmp2-combined-p2}
 
 With $t^0 = -J/\Delta$, the occupied-extended dressed integral is
 
@@ -807,20 +807,43 @@ Apply $t^* = t^0 - \Delta^{-1}\mathcal A' t^*$ twice. Exactly,
 $$ t^* + \Delta^{-1}\tilde g = (\Delta^{-1}\mathcal A')^2\,t^*, \qquad
 \big|t^*_e + \tilde g_e/\Delta_e\big| \le \rho^2\,\lVert t^*\rVert, \quad \rho = \lVert\Delta^{-1}\mathcal A'\rVert_2 \le \frac{\lVert\mathcal A'\rVert_2}{\Delta_{\min}} . \label{eq:lmp2-combined-jacobi-remainder} $$
 
-So $-\tilde g/\Delta$ is exact through first order in the Fock coupling.
-What it misses is second order:
+So the estimate $-\tilde g/\Delta$ is exact through first order in the Fock
+coupling, and the estimator error $t^* + \Delta^{-1}\tilde g$ is second
+order. It has two sources:
 
 - (i) Paths of length two: a dropped element reached from the integrals
   only through another element with $J = 0$. A three-element chain has
-  $\tilde g_3 = 0$ and $t^*_3 = O(\rho^2)$.
+  $\tilde g_3 = 0$ and $t^*_3 = O(\rho^2)$, so the estimate is zero there.
 - (ii) The deviation of the kept solution from $t^0$,
   $t_K - t^0_K = -\mathcal A_{KK}^{-1}\mathcal A'_{KK}t^0_K$, which enters
-  $R_D$ only through $\mathcal A'_{DK}$.
+  $R_D$ only through $\mathcal A'_{DK}$ and which $\tilde g_D$, built on
+  $t^0$, does not contain.
 
 The committed virtual-only screen drops the occupied terms, which are first
-order in $\lVert f'_{oo}\rVert$: its remainder is $O(\rho)$, not
-$O(\rho^2)$ (measured on the model: halving the coupling divides the full
-remainder by 4.0 and the virtual-only one by 2.0).
+order in $\lVert f'_{oo}\rVert$. The error of its estimate is therefore
+$O(\rho)$, not $O(\rho^2)$. On the model, halving the coupling divides the
+error of the occupied-extended estimate by 4.0 and that of the
+virtual-only estimate by 2.0.
+
+**The estimate is second order; the mask's miss is not.** Everything above
+is about the estimator. A mask at a fixed threshold drops every element
+whose estimate falls below $\kappa\varepsilon$, and those elements carry
+exact amplitudes of $O(\mu)$ in the coupling strength $\mu$. Unless the mask covers the
+whole support of the occupied coupling term $f'_{oo}\,t$, the norm of the
+dropped exact amplitudes therefore stays first order, for both screens.
+Measured 2026-11-17 on octane / 6-31G at $\varepsilon = 10^{-6}$, with all
+off-diagonal Fock coupling scaled by $\mu$:
+
+| quantity | occupied-extended | virtual-only |
+|---|---|---|
+| estimator error $\lVert t_{\mathrm{est}} - t^*\rVert$, no threshold | $\approx 0.038\,\mu^2$, slope 1.98 | $\approx 0.049\,\mu$, slope 1.00–1.07 |
+| norm of the dropped exact amplitudes, $\kappa$ = 1, 0.1, 0.01 | slope $\approx 1$ | slope $\approx 1$ |
+| miss coefficient, occupied-extended relative to virtual-only | 3% lower ($\kappa$ = 1), 12% lower ($\kappa$ = 0.1), 21% lower ($\kappa$ = 0.01) | |
+| kept amplitudes at production $\kappa = 1$ | 0.05% more | |
+
+Both estimator errors are exactly 0 at $\mu = 0$. The occupied extension
+makes the estimate second order, but at a fixed threshold it lowers the
+dropped-amplitude norm only by the coefficients in the table.
 
 Since $\Sigma = \Delta_D + O(\rho\,\Delta)$, the leading-order error
 estimate is the Kapuy energy of the dressed integrals over the dropped set,
@@ -830,7 +853,7 @@ $$ \delta E_{\mathrm{est}} = \sum_{e\in D}\frac{\tilde g_e\,(\mathcal W\tilde g)
 with relative error $O(\rho)$ of either sign. It is an estimate, not a
 bound, and it sees only the candidate squares the assembly evaluates.
 
-> **Verified equation @eq:lmp2-combined-jacobi-remainder** · the occupied-extended estimate is one Jacobi step with a second-order error
+> **Verified equation @eq:lmp2-combined-jacobi-remainder** · the occupied-extended estimate is one Jacobi step with a second-order estimator error
 >
 > $t^* + \Delta^{-1}\tilde g = (\Delta^{-1}\mathcal A')^2t^*$ in symbols on a
 > generic 3×3 model and numerically on the block model, with the elementwise
@@ -990,7 +1013,8 @@ embedding approximates them by $\tau_D$. After a screen the embedding has
 less left to recover, consistent with the probe's further factor 1.5–5
 instead of 2–5. The occupied extension and λ-Boys overlap too: both reduce
 the $\mathcal C$-driven error, one by keeping those amplitudes and the
-other by shrinking $\mathcal C$.
+other by shrinking $\mathcal C$. At a fixed threshold the occupied
+extension lowers the dropped-amplitude norm only modestly (P2).
 
 The combination is an upper bound when every piece ends in a Galerkin
 solve over a subspace of the universe (plain, screened or

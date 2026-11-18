@@ -23,8 +23,10 @@ P2 (the screen is one Jacobi step). The occupied-extended dressed integral
     g~ = g + F'_vv t0 + t0 F'_vv - sum_{k!=i} f_ik t0^{kj} - sum_{k!=j} t0^{ik} f_kj
 equals J + A' t0 with t0 = -J/Delta, and exactly
     t* - (-g~/Delta) = (Delta^-1 A')^2 t*,
-so |t*_e + g~_e/Delta_e| <= |Delta^-1 A'|^2 |t*| (second order). The
-virtual-only screen misses the first-order occupied term. Leading-order
+so |t*_e + g~_e/Delta_e| <= |Delta^-1 A'|^2 |t*|: the ESTIMATE is second
+order. The virtual-only estimate misses the first-order occupied term. (This
+is about the estimator; a mask at a fixed threshold still drops exact
+amplitudes of first order, so its miss norm is first order for both forms.) Leading-order
 error estimator: dE ~ g~_D^T W_D Delta_D^-1 g~_D, relative error O(|A'|/Delta).
 
 P3 (WLLH25 embedding). B = A with f_oo off-diagonals removed (block diagonal
@@ -410,7 +412,7 @@ print(
     f"{len(SEEDS)} seeds x {len(EPS)} eps: identity to cancellation, bounds hold, screen nested & no worse"
 )
 
-section("P2 (numeric): one-step remainder, second order, estimator -> exact")
+section("P2 (numeric): one-step estimator error, second order, estimator -> exact")
 for seed in SEEDS:
     md = make(seed)
     Ap = md.A - np.diag(md.Dg)
@@ -439,7 +441,8 @@ for seed in SEEDS:
 print(
     "t* + g~/Delta == (Delta^-1 A')^2 t*; |.|_max <= |Delta^-1 A'|^2 |t*|; tensor form == operator"
 )
-# order in the coupling: full screen 2nd order, virtual-only 1st order in f'_oo
+# order in the coupling of the ESTIMATOR error: occupied-extended 2nd order,
+# virtual-only 1st order in f'_oo
 base = make(11)
 r_full, r_virt, ratio_est = [], [], []
 for s in (0.2, 0.1, 0.05):
@@ -460,7 +463,7 @@ assert (
     ratio_est[2] < ratio_est[1] < ratio_est[0] and ratio_est[0] / ratio_est[1] > 1.6
 ), f"P2: estimator must converge linearly {ratio_est}"
 print(
-    f"halving coupling: full-screen remainder /{q_full:.2f}, virtual-only /{q_virt:.2f}"
+    f"halving coupling: occupied-extended estimator error /{q_full:.2f}, virtual-only /{q_virt:.2f}"
 )
 print(f"|dE_est/dE - 1| at s=0.2,0.1,0.05: {', '.join(f'{x:.2e}' for x in ratio_est)}")
 
