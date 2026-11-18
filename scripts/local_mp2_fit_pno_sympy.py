@@ -2,7 +2,7 @@
 """Identities behind ferric's local MP2 paths: the domain-local fit and the
 PNO pair energy.
 
-Derivation: crates/ferric-mp2/theory.md sections 12.4 and 12.5 (book
+Derivation: `book/src/13-local-mp2/02-integral-direct.md#integral-direct`, `book/src/13-local-mp2/03-pno-dlpno.md#pno-dlpno` (book
 13.2 and 13.3). Code: crates/ferric-mp2/src/lmp2_direct.rs
 (fit_domain_group, whiten, gather_vdd) and crates/ferric-mp2/src/dlpno_mp2.rs
 (pair_energy_in_pno_basis), crates/ferric-mp2/src/local_pno.rs (pno_for_pair).

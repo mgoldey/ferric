@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Atomic charges: Mulliken, Lowdin, Becke, Hirshfeld, CHELPG and RESP.
 
-Derivation: crates/ferric-scf/theory.md, "Atomic charges". Code:
+Derivation: `book/src/21-polarizabilities/02-atomic-partitions.md#atomic-partitions-partition-must-do`. Code:
 crates/ferric-scf/src/properties.rs (mulliken_charges, lowdin_charges,
 becke_charges_chunked, solve_chelpg_normal_equations, solve_resp_restrained)
 and crates/ferric-scf/src/properties/hirshfeld_grid.rs (hirshfeld_charges).

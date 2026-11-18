@@ -215,7 +215,7 @@ impl<'a> DirectJK<'a> {
     /// precision. In f64 it differs from a from-scratch `build(&D_new, ..)` only
     /// by the reassociation floor of summing many small increments vs one full
     /// contraction — kept small by a periodic full rebuild in the SCF loop (see
-    /// `solve_rhf`'s `incremental_full_rebuild_every` guard). The screen inside
+    /// `crate::driver::INCREMENTAL_FULL_REBUILD_EVERY`). The screen inside
     /// `build_d_max_shell` is driven by `delta_d`, so as SCF converges (ΔD → 0)
     /// almost every quartet is Häser-Ahlrichs-screened out and late iterations
     /// become nearly free (the PySCF `pyscf/scf/hf.py` / Psi4 `CompositeJK.cc`

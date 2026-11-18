@@ -1,20 +1,27 @@
-<!-- section: 11.0; status: ready; registry: ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
+<!-- status: ready; registry: ri-mp2 -->
 
-# 11. RI-MP2 algorithms and memory
+# RI-MP2 algorithms and memory {#rimp2-algorithms}
 
 *Notation follows `book/notation.md`. Code references are to commit
-`95ce704ce`.*
+`4eca3fd47`.*
 
-Chapter 10 gives the RI-MP2 energy and its variants. This chapter is about how
-the code computes it: the order of the steps, where each intermediate lives,
-how the run stays inside a memory budget, and how the work is split across
-threads, a GPU and MPI ranks. The equations change little. What this chapter
-adds is the rules that make the result reproducible and the memory use
-predictable.
+Chapter @sec:mp2 gives the RI-MP2 energy and its variants. This chapter is about
+how the code computes it. The equations change little. What changes is the
+order of the steps, where each intermediate lives, how many bytes are
+resident at the peak, and how the work is split across threads, a GPU and
+MPI ranks.
+
+Two numbers drive every choice in the chapter. The energy needs
+$\tfrac12 n_o(n_o+1)\,n_v^2 N_{\mathrm{aux}}$ multiply-adds in its last
+step, the one step that grows as $N^5$. The largest tensor, the raw AO
+integrals $(P|\mu\nu)$, holds $N_{\mathrm{aux}}N^2$ doubles. The algorithm
+puts the $N^5$ step into large matrix products, keeps the smaller MO tensor
+$B$ in memory, and lets only the raw tensor go to disk. It also fixes the
+order of every floating-point sum, so that a run repeated at the same memory
+budget gives the same bits.
 
 The algorithm started as the shared-memory Q-Chem implementation in the
-dissertation (chapter 4). Section 11.1 sets the two side by side.
+dissertation (chapter 4). Section @sec:four-step-algorithm sets the two side by side.
 
 | Symbol | Meaning | Code name | Dissertation |
 |---|---|---|---|
@@ -27,7 +34,9 @@ dissertation (chapter 4). Section 11.1 sets the two side by side.
 | $P, Q$ | auxiliary indices | `0..naux` | $P, Q$ |
 
 The dissertation uses $n$ for the number of threads; this chapter writes
-$n_t$.
+$n_t$. Costs are counted in multiply-adds unless a table says flops; one
+multiply-add is two flops. Sizes are in doubles unless a table says bytes;
+one double is 8 bytes.
 
 | Section | Topic |
 |---|---|

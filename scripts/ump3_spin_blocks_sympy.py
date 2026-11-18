@@ -4,7 +4,7 @@ spin-orbital MP3, block by block and with its prefactors.
 
 The code under test is crates/ferric-mp2/src/u_mp3.rs (c^(1), energies) and
 crates/ferric-mp2/src/u_mp3_residual.rs (the c^(2) residual). The equations
-are in crates/ferric-mp2/theory.md section 6.1. Lower case = alpha, upper
+are in `book/src/10-mp2/09-mp3.md#mp3-spin-blocked-unrestricted-mp3`. Lower case = alpha, upper
 case = beta, (pq|rs) chemist, t = c^(1), D = e_i + e_j - e_a - e_b:
 
   c1_aa = [(ia|jb) - (ib|ja)] / D,  c1_ab[iJaB] = (ia|JB) / D

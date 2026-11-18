@@ -44,4 +44,26 @@ pub enum FerricError {
     /// occupancy breakdown, so `Display` adds no prefix.
     #[error("{0}")]
     MemoryExhausted(String),
+    /// A valid request for a combination of options the method does not
+    /// implement, refused before any work is done. Typed so a caller (and a
+    /// test) can tell "this combination has no meaning here" from a failed
+    /// computation without matching on message text. `feature` names what was
+    /// asked for, `reason` says why it has no meaning and what to use instead.
+    #[error("{feature} is not supported: {reason}")]
+    Unsupported {
+        /// The refused option or combination, as the user spelled it.
+        feature: String,
+        /// Why the combination is refused, and the supported alternative.
+        reason: String,
+    },
+}
+
+impl FerricError {
+    /// Build a [`FerricError::Unsupported`].
+    pub fn unsupported(feature: impl Into<String>, reason: impl Into<String>) -> Self {
+        FerricError::Unsupported {
+            feature: feature.into(),
+            reason: reason.into(),
+        }
+    }
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Symbolic checks for ferric-mm's non-periodic reaction-field cutoff
-(`crates/ferric-mm/src/cutoff.rs`, theory.md section 8). Exits nonzero on any
+(`crates/ferric-mm/src/cutoff.rs`, `book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff`). Exits nonzero on any
 mismatch; each claim has a negative control that must fail.
 
 Claims:

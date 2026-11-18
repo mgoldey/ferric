@@ -4,7 +4,7 @@
 The energy is E = sum_P -C6_P(CN_i, CN_j) G_P(r_P) with
 G = s6/(r^6+f^6) + 3 q s8/(r^8+f^8) and CN_a = sum_b c_ab(r_ab). This script
 checks the Hessian ferric implements in crates/ferric-d3/src/hessian.rs
-(theory: crates/ferric-d3/theory.md, "Hessian"):
+(theory: `book/src/25-dispersion/01-d3bj.md#d3bj-hessian`):
 
   1. counting function   c'' = -(2/r) c' + a (1-2c) c',  a = -k rc/r^2   (counting)
   2. Gaussian weights    d2W/dCN2 = (alpha^2 - 2 wf) W, alpha = -2 wf (CN - CNref)

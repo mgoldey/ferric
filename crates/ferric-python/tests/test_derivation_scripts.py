@@ -75,6 +75,36 @@ CASES = [
         ],
     ),
     (
+        "rpa_terf_signed_fit_sympy.py",
+        15,
+        [
+            ("SIGMA_SR = -1.0", "SIGMA_SR = 1.0", "FAIL [signed-factor]"),
+            (
+                "keep = np.abs(w) > 1e-10 if signed else w > 1e-10",
+                "keep = w > 1e-10 if signed else w > 1e-10",
+                "FAIL [signed-is-exact]",
+            ),
+            ("SCALE_CS = 4.0", "SCALE_CS = 2.0", "FAIL [logdet-vs-plasmon]"),
+        ],
+    ),
+    (
+        "terf_kernel_sign_sympy.py",
+        30,
+        [
+            (
+                "FIRST_ARG_SIGN = -1",
+                "FIRST_ARG_SIGN = 1",
+                "FAIL [two-charge]",
+            ),
+            (
+                "return mp.cos(k * r0)  # PHASE",
+                "return mp.mpf(1)  # PHASE",
+                "FAIL [two-charge-fourier]",
+            ),
+            ("BRACKET_DIV = 4", "BRACKET_DIV = 2", "FAIL [one-mode-sign]"),
+        ],
+    ),
+    (
         "u_attenuated_sympy.py",
         15,
         [
@@ -1006,6 +1036,27 @@ CASES = [
         ],
     ),
     (
+        "lmp2_direct_maps_sympy.py",
+        10,
+        [
+            (
+                "schur = A[nk:, nk:] - A[nk:, :nk] * A[:nk, :nk].inv() * A[:nk, nk:]",
+                "schur = A[nk:, nk:] + A[nk:, :nk] * A[:nk, :nk].inv() * A[:nk, nk:]",
+                "claim 1: Schur",
+            ),
+            (
+                "rhs = 2 * (t3.T * dJ)[0, 0] - (dJ.T * A3.inv() * dJ)[0, 0]",
+                "rhs = 2 * (t3.T * dJ)[0, 0]",
+                "claim 2: expansion",
+            ),
+            (
+                "+ 2 * (tk.T * dJk)[0, 0]",
+                "+ 2 * (t_star[:nk, 0].T * dJk)[0, 0]",
+                "claim 3: kept-block",
+            ),
+        ],
+    ),
+    (
         "lmp2_hylleraas_vs_wshg23_sympy.py",
         10,
         [
@@ -1018,6 +1069,89 @@ CASES = [
                 "(2 * J_num + A_num * t_m)",
                 "(J_num + A_num * t_m)",
                 "closed mask must have no first-order term",
+            ),
+        ],
+    ),
+    (
+        "lmp2_fock_screen_sympy.py",
+        10,
+        [
+            (
+                "schur = A_DD - A_DK * A_KK.inv() * A_KD",
+                "schur = A_DD + A_DK * A_KK.inv() * A_KD",
+                "claim 1: Schur",
+            ),
+            (
+                "t_est = -Delta.inv() * (Jm + lam * Ap * t0)",
+                "t_est = -Delta.inv() * Jm",
+                "claim 2: first order",
+            ),
+            (
+                "return g + Fo * t + t * Fo",
+                "return g + Fo * t + t",
+                "claim 3: transpose",
+            ),
+        ],
+    ),
+    (
+        "lmp2_lambda_boys_sympy.py",
+        10,
+        [
+            (
+                "pair_grad = sum(4 * w * (X[p, p] - X[q, q]) * X[p, q]",
+                "pair_grad = sum(w * (X[p, p] - X[q, q]) * X[p, q]",
+                "S1: gradient",
+            ),
+            (
+                "    return np.arctan2(b, a) / 4",
+                "    return np.arctan2(-b, -a) / 4",
+                "S2: maximum",
+            ),
+            (
+                "for X, w in list(zip(Xm, (1.0, 1.0, 1.0))) + [(Fm, lam_v)]:",
+                "for X, w in list(zip(Xm, (1.0, 1.0, 1.0))) + [(Fm, 0.0)]:",
+                "S3: stationarity",
+            ),
+            (
+                "    return sp.atan2(-Bb_, Ab_) / 4",
+                "    return sp.atan2(Bb_, Ab_) / 4",
+                "S4: Boys",
+            ),
+        ],
+    ),
+    (
+        "lmp2_combined_sympy.py",
+        20,
+        [
+            (
+                "schur_a = A_DD - A[np.ix_(D, K)]",
+                "schur_a = A_DD + 0 * A[np.ix_(D, K)]",
+                "P1: residual identity",
+            ),
+            (
+                "g -= sum(fo[i, k] * T(k, j, a, b_) for k in range(no_s) if k != i)",
+                "g -= 0",
+                "P2: Jacobi",
+            ),
+            (
+                "rhs = self.J[K] + self.B[np.ix_(K, D)] @ tau[D]",
+                "rhs = self.J[K] - self.B[np.ix_(K, D)] @ tau[D]",
+                "P3: exact when f_oo diagonal",
+            ),
+            (
+                "                for X, w in [(X, 1.0) for X in R] + [(F, lam)]:",
+                "                for X, w in [(X, 1.0) for X in R] + [(F, 0.0)]:",
+                "P4: stationarity",
+            ),
+            (
+                "4 * X3[p, q] * (X3[q, q] - X3[p, p])",
+                "X3[p, q] * (X3[q, q] - X3[p, p])",
+                "P4: gradient",
+            ),
+            (
+                "md.J4, Uo, Uo, Uv, Uv",
+                "md.J4, Uo, np.eye(md.no), Uv, Uv",
+                "P6: rotational invariance",
             ),
         ],
     ),
@@ -1146,6 +1280,18 @@ CASES = [
                 "0.5j * (cauchy(x1) + cauchy(1 / x1))",
                 "[FAIL] product rule",
             ),
+        ],
+    ),
+    (
+        "gw_hybrid_vmf_sympy.py",
+        15,
+        [
+            (
+                "- 0.5 * c_x * k_of(eri, D)",
+                "- c_x * k_of(eri, D)",
+                "FAIL [H1]",
+            ),
+            ("shift = Sx - v_mf", "shift = Sx - vsl", "FAIL [H2]"),
         ],
     ),
     (

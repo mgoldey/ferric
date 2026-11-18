@@ -60,11 +60,22 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
-    checked_vvhv_with, localized_spaces, pair_gate_keep, solve_and_count, AmplitudeLmp2Config,
-    AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
+    checked_vvhv_with, localized_spaces_lambda, pair_gate_keep, solve_and_count,
+    AmplitudeLmp2Config, AmplitudeLmp2Result, LocalizedSpaces, StageTimings, VvHv,
 };
-use crate::ragged::{pair_block_from_g_cand, PairBlock, Ragged};
+use crate::ragged::{pair_blocks_screened, PairBlock, Ragged};
 use crate::rimp2::{ri_mp2, RiMp2Config};
+
+/// κ of the Fock-propagated screen ([`AmplitudeLmp2Config::fock_screen`]) that
+/// the user-facing integral-direct entry points (CLI `[local] integral_direct
+/// = true`, Python `run_rimp2(..., integral_direct=True)`) switch on by
+/// default; `[local] fock_screen = false` / `fock_screen=False` turns it off.
+/// The library default (`AmplitudeLmp2Config::default`) stays `None`, the
+/// plain Eq-8 mask bitwise. The decision measurement (2026-11-18, n-alkanes
+/// C12–C32, naphthalene, adamantane, ACONF20, 6-31G / cc-pVDZ-RI,
+/// all-electron, production maps) is in book chapter 13,
+/// §amplitude-lmp2-fock-screen-default.
+pub const DIRECT_FOCK_SCREEN_KAPPA: f64 = 1.0;
 
 /// Locality knobs of the integral-direct path. Every knob has a trivial
 /// limit in which it is a no-op (the exactness-anchor configuration).
@@ -290,6 +301,183 @@ pub struct DirectStats {
     /// wall seconds; set by the driver (0 when the assembly is called
     /// directly).
     pub t_loc_s: f64,
+    /// The integral-free memory pre-flight of this assembly (see
+    /// [`DirectMemoryEstimate`]).
+    pub memory: DirectMemoryEstimate,
+    /// Stage-5 domain groups run at once: the worker count, or fewer when
+    /// the budget cannot hold that many groups' scratch beside the resident
+    /// set (0 before stage 5).
+    pub group_concurrency: usize,
+    /// The largest per-group scratch bound the concurrency is sized with
+    /// (`group_scratch_bound`; ≥ the measured `group_scratch_bytes_max`).
+    pub group_scratch_bound_bytes: usize,
+}
+
+/// Byte accounting of the direct LMP2 path, computed from the locality maps
+/// BEFORE any integral is evaluated.
+///
+/// With `n_ij = |V_i ∪ V_j|` the candidate width of surviving pair `(i,j)`
+/// (each `i ≠ j` pair stores two blocks, `(i,j)` and `(j,i)`), `nv` the
+/// virtual count and `S` the strips:
+///
+/// ```text
+/// R  = Σ_blocks [ 8·(4 n²) + n² + 8·(2n + 2nv) + sizeof(PairBlock) ]   pair blocks
+/// V  = Σ_blocks [ 8·n² + sizeof(Array2) ]                              one PCG vector
+/// S  = Σ_i [ 8·rows_i·cols_i + 8·(rows_i + naux + cols_i + nv) ]       strips
+/// assembly peak = max(S + scratch, S + metric + R)
+/// solve peak    = R + PCG_RESIDENT_VECTORS · V                           (gather plan: only
+///                                                                        what the budget has left)
+/// ```
+///
+/// At ε = 0 the Eq-8 mask keeps every candidate, so `n_ij` is each block's
+/// exact width and the estimate is exact (`exact = true`). At ε > 0 the mask
+/// drops rows and columns, so it is an upper bound; the assembly then charges
+/// each block's exact bytes as it is built instead of refusing on the bound.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirectMemoryEstimate {
+    /// Per-occupied unwhitened strips, `S`.
+    pub strips_bytes: usize,
+    /// Domain-restricted 2-center metric blocks.
+    pub metric_bytes: usize,
+    /// Stage-3 integral-slab scratch cap actually used (the configured
+    /// `scratch_budget_bytes`, lowered to what the budget leaves beside `S`).
+    pub stage3_scratch_bytes: usize,
+    /// The ragged pair system, `R`.
+    pub pair_block_bytes: usize,
+    /// ONE amplitude-shaped PCG vector, `V`.
+    pub pcg_vector_bytes: usize,
+    /// Whether `R` and `V` are exact (ε = 0) rather than candidate bounds.
+    pub exact: bool,
+}
+
+impl DirectMemoryEstimate {
+    /// Stage 3 (strips + slab scratch) or stage 5 (strips + metric + pair
+    /// blocks), whichever is larger.
+    pub fn assembly_peak(&self) -> usize {
+        (self.strips_bytes + self.stage3_scratch_bytes)
+            .max(self.strips_bytes + self.metric_bytes + self.pair_block_bytes)
+    }
+
+    /// The ragged system plus the PCG iteration vectors.
+    pub fn solve_peak(&self) -> usize {
+        self.pair_block_bytes + crate::ragged::PCG_RESIDENT_VECTORS * self.pcg_vector_bytes
+    }
+
+    /// The larger of the assembly and solve peaks.
+    pub fn peak(&self) -> usize {
+        self.assembly_peak().max(self.solve_peak())
+    }
+
+    /// The peak without the stage-3 slab scratch (which the budget blocks):
+    /// strips + metric + pair blocks during the fits, or the solve. This is
+    /// what the gate compares with the budget.
+    pub fn resident_peak(&self) -> usize {
+        (self.strips_bytes + self.metric_bytes + self.pair_block_bytes).max(self.solve_peak())
+    }
+}
+
+/// Bytes one [`PairBlock`] of shape `na × nb` over `nv` virtuals holds: its
+/// [`PairBlock::heap_bytes`] at exact capacities plus its slot in
+/// `Ragged::pairs`.
+fn block_bytes(na: usize, nb: usize, nv: usize) -> usize {
+    let (us, f) = (std::mem::size_of::<usize>(), std::mem::size_of::<f64>());
+    std::mem::size_of::<PairBlock>()
+        + us * (na + nb + 2 * nv)
+        + na * nb
+        + f * (na * na + nb * nb + 2 * na * nb)
+}
+
+/// Bytes of one amplitude-shaped block (as [`crate::ragged::amplitude_vector_bytes`]).
+fn amp_block_bytes(na: usize, nb: usize) -> usize {
+    std::mem::size_of::<Array2<f64>>() + std::mem::size_of::<f64>() * na * nb
+}
+
+/// The memory budget the assembly is gated against: the LMP2 solve that
+/// consumes it must fit, so the pre-flight refuses an exact over-budget
+/// estimate up front and stage 5 charges every built block.
+#[derive(Debug, Clone, Copy)]
+struct SolveGate {
+    budget_bytes: usize,
+}
+
+/// The stage-3 slab scratch under a budget: the configured cap, lowered to
+/// what the budget leaves beside the strips (at least one byte, which slabs
+/// one aux shell at a time).
+fn stage3_scratch(configured: usize, budget: usize, strips: usize) -> usize {
+    configured.min(budget.saturating_sub(strips).max(1))
+}
+
+/// The typed refusal: names the estimate, the budget and the knobs.
+fn memory_refusal(est: &DirectMemoryEstimate, budget: usize, lead: &str) -> FerricError {
+    let gb = |b: usize| b as f64 / 1e9;
+    FerricError::MemoryExhausted(format!(
+        "lmp2_direct: {lead}: resident peak {:.2} GB (pair blocks {:.2} GB + {} PCG amplitude vectors \
+         {:.2} GB; strips {:.2} GB, metric {:.2} GB) is over the memory budget of {:.2} GB. \
+         The pair blocks and PCG vectors stay resident for the whole solve and are not \
+         blocked. Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or shrink the pair blocks: \
+         a larger [local] eps, a smaller virt_radius, or the pair gate (gate_cal)",
+        gb(est.resident_peak()),
+        gb(est.pair_block_bytes),
+        crate::ragged::PCG_RESIDENT_VECTORS,
+        gb(crate::ragged::PCG_RESIDENT_VECTORS * est.pcg_vector_bytes),
+        gb(est.strips_bytes),
+        gb(est.metric_bytes),
+        gb(budget),
+    ))
+}
+
+/// The integral-free pre-flight (see [`DirectMemoryEstimate`]); the stage-3
+/// scratch is left at 0 for the caller to fill.
+fn preflight_memory(
+    maps: &LocalityMaps,
+    need: &[(usize, usize)],
+    dfbs: &PreparedBasis,
+    no: usize,
+    nv: usize,
+    eps: f64,
+) -> DirectMemoryEstimate {
+    let us = std::mem::size_of::<usize>();
+    let dims_df = dfbs.shell_dims();
+    let naux = dfbs.nbasis();
+    let strips_bytes = (0..no)
+        .map(|i| {
+            let rows: usize = maps.aux_ext[i].iter().map(|&sh| dims_df[sh]).sum();
+            let cols = maps.virt_ext[i].len();
+            std::mem::size_of::<Strip>() + 8 * rows * cols + us * (rows + naux + cols + nv)
+        })
+        .sum();
+    let metric_bytes = need
+        .iter()
+        .map(|&(sp, sq)| 8 * dims_df[sp] * dims_df[sq])
+        .sum::<usize>()
+        + 4 * dfbs.nshells() * dfbs.nshells();
+    let (mut pair_block_bytes, mut pcg_vector_bytes) = (0usize, 0usize);
+    for i in 0..no {
+        for j in i..no {
+            if !maps.keep[i * no + j] {
+                continue;
+            }
+            let n = sorted_union([
+                maps.virt_dom[i].iter().copied(),
+                maps.virt_dom[j].iter().copied(),
+            ])
+            .len();
+            if n == 0 {
+                continue;
+            }
+            let blocks = if i == j { 1 } else { 2 };
+            pair_block_bytes += blocks * block_bytes(n, n, nv);
+            pcg_vector_bytes += blocks * amp_block_bytes(n, n);
+        }
+    }
+    DirectMemoryEstimate {
+        strips_bytes,
+        metric_bytes,
+        stage3_scratch_bytes: 0,
+        pair_block_bytes,
+        pcg_vector_bytes,
+        exact: eps == 0.0,
+    }
 }
 
 /// One batch worker's stage-3 timers (thread-seconds).
@@ -329,6 +517,24 @@ fn sorted_union(lists: impl IntoIterator<Item = impl IntoIterator<Item = usize>>
     set.into_iter().collect()
 }
 
+/// `FERRIC_MEM_TRACE` line at a stage boundary: current and peak RSS beside
+/// the byte counts this module accounts for there. Informational only.
+fn mem_trace(stage: &str, fields: &[(&str, usize)]) {
+    if !ferric_core::memory::trace_enabled() {
+        return;
+    }
+    let gb = |b: Option<usize>| b.map_or("n/a".to_string(), |b| format!("{:.3}", b as f64 / 1e9));
+    let mut line = format!(
+        "[ferric-mem] lmp2-direct {stage} rss={} GB peak={} GB",
+        gb(ferric_core::memory::read_own_rss_bytes()),
+        gb(ferric_core::memory::sys::own_peak_rss_bytes())
+    );
+    for (k, v) in fields {
+        line.push_str(&format!(" {k}={:.3}", *v as f64 / 1e9));
+    }
+    eprintln!("{line}");
+}
+
 fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
 }
@@ -357,6 +563,11 @@ struct MetricBlocks {
 }
 
 impl MetricBlocks {
+    /// Heap bytes of the evaluated blocks and the shell-pair index.
+    fn bytes(&self) -> usize {
+        8 * self.blocks.iter().map(Array2::len).sum::<usize>() + 4 * self.id.len()
+    }
+
     /// Block `(sp, sq)` with `sp ≥ sq`; `None` when it was never evaluated.
     fn get(&self, sp: usize, sq: usize) -> Option<&Array2<f64>> {
         let k = self.id[sp * self.nsh + sq];
@@ -657,6 +868,9 @@ fn trim_own_w(
 /// Per-slot output of one domain group's pair fits.
 type SlotOut = Vec<(usize, Vec<PairBlock>)>;
 
+/// One domain group's pair fits and counters, or its failure.
+type GroupResult = Result<(SlotOut, GroupCounts), FerricError>;
+
 /// One domain group's work counters (summed into [`DirectStats`]).
 #[derive(Debug, Clone, Copy, Default)]
 struct GroupCounts {
@@ -684,6 +898,8 @@ struct PairFitCtx<'a> {
     fv: &'a [f64],
     eps: f64,
     scale: f64,
+    /// The optional Fock-propagated gate (`AmplitudeLmp2Config::fock_screen`).
+    fock_screen: Option<f64>,
     nv: usize,
     aux_radius_bohr: f64,
     dfbs: &'a PreparedBasis,
@@ -733,21 +949,18 @@ fn mask_pair(
     if ctx.scale != 1.0 {
         g.mapv_inplace(|x| ctx.scale * x);
     }
-    let mut out = Vec::with_capacity(2);
-    if let Some(pb) =
-        pair_block_from_g_cand(i, j, &g, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
-    {
-        out.push(pb);
-    }
-    if i != j {
-        let gt = g.t().to_owned();
-        if let Some(pb) =
-            pair_block_from_g_cand(j, i, &gt, cij, ctx.nv, ctx.f_vv, ctx.fo, ctx.fv, ctx.eps)
-        {
-            out.push(pb);
-        }
-    }
-    out
+    pair_blocks_screened(
+        i,
+        j,
+        &g,
+        cij,
+        ctx.nv,
+        ctx.f_vv,
+        ctx.fo,
+        ctx.fv,
+        ctx.eps,
+        ctx.fock_screen,
+    )
 }
 
 /// Whitened strips `W_k = L⁻¹ A_k[D, C_k]` for every distinct occupied `k`
@@ -1888,6 +2101,71 @@ pub fn assemble_ragged_direct_local(
     pair_gate_cal: Option<f64>,
     dcfg: &DirectConfig,
 ) -> Result<(Ragged, usize, DirectStats), FerricError> {
+    assemble_gated(
+        mol,
+        obs,
+        dfbs,
+        op,
+        spaces,
+        eps,
+        scale,
+        pair_gate_cal,
+        dcfg,
+        None,
+        None,
+    )
+}
+
+/// [`assemble_ragged_direct_local`] with the optional Fock-propagated gate
+/// on every pair's candidate square (`AmplitudeLmp2Config::fock_screen`,
+/// [`crate::ragged::fock_dressed_gate`]). `None` is
+/// [`assemble_ragged_direct_local`] exactly. Ungated against the memory
+/// budget, like [`assemble_ragged_direct_local`].
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_ragged_direct_local_screened(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    pair_gate_cal: Option<f64>,
+    dcfg: &DirectConfig,
+    fock_screen: Option<f64>,
+) -> Result<(Ragged, usize, DirectStats), FerricError> {
+    assemble_gated(
+        mol,
+        obs,
+        dfbs,
+        op,
+        spaces,
+        eps,
+        scale,
+        pair_gate_cal,
+        dcfg,
+        None,
+        fock_screen,
+    )
+}
+
+/// [`assemble_ragged_direct_local_screened`] gated against the memory
+/// budget of the LMP2 solve it feeds (`gate = None`: ungated, the
+/// historical behaviour; `fock_screen = None`: the plain Eq-8 mask).
+#[allow(clippy::too_many_arguments)]
+fn assemble_gated(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    spaces: &LocalizedSpaces,
+    eps: f64,
+    scale: f64,
+    pair_gate_cal: Option<f64>,
+    dcfg: &DirectConfig,
+    gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
+) -> Result<(Ragged, usize, DirectStats), FerricError> {
     let mut stats = DirectStats::default();
     let pre = strips_and_metric(
         mol,
@@ -1898,6 +2176,7 @@ pub fn assemble_ragged_direct_local(
         eps,
         pair_gate_cal,
         dcfg,
+        gate,
         &mut stats,
     )?;
     let ragged = fit_pairs(
@@ -1908,6 +2187,8 @@ pub fn assemble_ragged_direct_local(
         scale,
         dcfg,
         FitPath::Cholesky,
+        gate,
+        fock_screen,
         &mut stats,
     )?;
     Ok((ragged, pre.n_gated, stats))
@@ -1938,11 +2219,51 @@ fn strips_and_metric(
     eps: f64,
     pair_gate_cal: Option<f64>,
     dcfg: &DirectConfig,
+    gate: Option<SolveGate>,
     stats: &mut DirectStats,
 ) -> Result<StripsAndMetric, FerricError> {
     use rayon::prelude::*;
     let no = spaces.no;
     let t0 = Instant::now();
+    let maps = build_locality_maps(mol, obs, dfbs, spaces, eps, pair_gate_cal, dcfg);
+    let need = metric_need_pairs(&maps.aux_ext, dfbs.nshells());
+    let mut est = preflight_memory(&maps, &need, dfbs, no, spaces.nv, eps);
+    let mut scratch_budget_bytes = dcfg.scratch_budget_bytes;
+    if let Some(g) = gate {
+        // Stage 3 holds the strips beside the slab scratch: the scratch gets
+        // what the budget leaves. Strips are bitwise independent of the slab
+        // partition (each aux row is transformed on its own), so this only
+        // changes how many slabs run.
+        scratch_budget_bytes =
+            stage3_scratch(scratch_budget_bytes, g.budget_bytes, est.strips_bytes);
+    }
+    est.stage3_scratch_bytes = scratch_budget_bytes;
+    stats.memory = est;
+    mem_trace(
+        "preflight",
+        &[
+            ("strips", est.strips_bytes),
+            ("metric", est.metric_bytes),
+            ("pair_blocks", est.pair_block_bytes),
+            ("pcg_vector", est.pcg_vector_bytes),
+            ("resident_peak", est.resident_peak()),
+        ],
+    );
+    if let Some(g) = gate {
+        if est.strips_bytes + est.metric_bytes > g.budget_bytes
+            || (est.exact && est.resident_peak() > g.budget_bytes)
+        {
+            return Err(memory_refusal(
+                &est,
+                g.budget_bytes,
+                "refused before any integral",
+            ));
+        }
+    }
+    let dcfg = &DirectConfig {
+        scratch_budget_bytes,
+        ..dcfg.clone()
+    };
     let LocalityMaps {
         keep,
         n_gated,
@@ -1953,7 +2274,7 @@ fn strips_and_metric(
         aux_ext,
         virt_ext,
         batches,
-    } = build_locality_maps(mol, obs, dfbs, spaces, eps, pair_gate_cal, dcfg);
+    } = maps;
     stats.t_maps_s = t0.elapsed().as_secs_f64();
 
     let t0 = Instant::now();
@@ -1995,10 +2316,16 @@ fn strips_and_metric(
     stats.t_eri3_s = t0.elapsed().as_secs_f64();
 
     let t0 = Instant::now();
-    let need = metric_need_pairs(&aux_ext, dfbs.nshells());
     stats.n_metric_shell_pairs = need.len();
     let metric_blocks = eval_metric_blocks(op, dfbs, &need)?;
     stats.t_metric_s = t0.elapsed().as_secs_f64();
+    mem_trace(
+        "strips+metric",
+        &[
+            ("strips", stats.strip_bytes_total),
+            ("metric", metric_blocks.bytes()),
+        ],
+    );
     Ok(StripsAndMetric {
         keep,
         n_gated,
@@ -2173,6 +2500,113 @@ fn pair_candidates(
         .collect()
 }
 
+/// Upper bound on one domain group's scratch in [`fit_domain_group`]:
+/// `V_DD` and its Cholesky factor (`2d²`), one whitened `W_k` per distinct
+/// occupied over its candidate union (`Σ_k d·|C_k|`), and the widest pair's
+/// two column selections, `J_ij` and its transpose (`2·d·n + 2·n²`).
+/// With the Fock-propagated screen on (`screen_on`), the widest pair's
+/// gate scratch in [`crate::ragged::pair_blocks_screened`] is added:
+/// `F'`, `t⁰`, `F't⁰`, the `t⁰F'` temporary, the gate and its transpose,
+/// [`FOCK_SCREEN_SCRATCH_MATRICES`]` · n²` (all six counted, although at
+/// most four are live at once). Off, the bound is unchanged.
+fn group_scratch_bound(
+    dfbs: &PreparedBasis,
+    dsh: &[usize],
+    pxs: &[usize],
+    unique: &[(usize, usize)],
+    pair_cands: &[Vec<usize>],
+    screen_on: bool,
+) -> usize {
+    let dims = dfbs.shell_dims();
+    let d: usize = dsh.iter().map(|&sh| dims[sh]).sum();
+    let n_max = pxs
+        .iter()
+        .map(|&px| pair_cands[px].len())
+        .max()
+        .unwrap_or(0);
+    let mut want: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    for &px in pxs {
+        let (i, j) = unique[px];
+        for k in [i, j] {
+            want.entry(k)
+                .or_default()
+                .extend(pair_cands[px].iter().copied());
+        }
+    }
+    let w: usize = want.values().map(|c| d * c.len()).sum();
+    let screen = if screen_on {
+        FOCK_SCREEN_SCRATCH_MATRICES * n_max * n_max
+    } else {
+        0
+    };
+    8 * (2 * d * d + w + 2 * d * n_max + 2 * n_max * n_max + screen)
+}
+
+/// Candidate-square matrices the Fock-propagated gate holds per pair
+/// (see [`group_scratch_bound`]).
+const FOCK_SCREEN_SCRATCH_MATRICES: usize = 6;
+
+/// Stage-5 charge-as-built gate: every group's blocks are charged at their
+/// EXACT bytes (pair block + PCG vectors) the moment they exist, so at ε > 0,
+/// where the pre-flight is only a bound, the assembly stops at the first
+/// group that takes the stage-5 resident set (strips + metric + own-domain
+/// `W` + blocks so far) or the solve's (blocks + PCG vectors) over the
+/// budget. Groups not yet started are skipped once it trips.
+struct BlockCharge {
+    budget_bytes: usize,
+    base_bytes: usize,
+    est: DirectMemoryEstimate,
+    ragged: AtomicUsize,
+    vectors: AtomicUsize,
+    tripped: Mutex<Option<String>>,
+}
+
+impl BlockCharge {
+    fn is_tripped(&self) -> bool {
+        match self.tripped.lock() {
+            Ok(t) => t.is_some(),
+            Err(_) => true,
+        }
+    }
+
+    fn charge(&self, out: &SlotOut) {
+        let (mut r, mut v) = (0usize, 0usize);
+        for pb in out.iter().flat_map(|(_, blocks)| blocks) {
+            r += std::mem::size_of::<PairBlock>() + pb.heap_bytes();
+            v += amp_block_bytes(pb.da.len(), pb.db.len());
+        }
+        let r_tot = self.ragged.fetch_add(r, Ordering::Relaxed) + r;
+        let v_tot = self.vectors.fetch_add(v, Ordering::Relaxed) + v;
+        let solve = r_tot + crate::ragged::PCG_RESIDENT_VECTORS * v_tot;
+        let held = (self.base_bytes + r_tot).max(solve);
+        if held <= self.budget_bytes {
+            return;
+        }
+        let gb = |b: usize| b as f64 / 1e9;
+        if let Ok(mut t) = self.tripped.lock() {
+            t.get_or_insert_with(|| {
+                format!(
+                    "lmp2_direct: refused during the pair fits: the blocks built so far already \
+                     need {:.2} GB (pair blocks {:.2} GB + {} PCG amplitude vectors {:.2} GB; \
+                     strips + metric {:.2} GB), over the memory budget of {:.2} GB; the whole \
+                     system needs at most {:.2} GB (candidate-domain bound). The pair blocks \
+                     and PCG vectors stay resident for the whole solve and are not blocked. \
+                     Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or shrink the pair \
+                     blocks: a larger [local] eps, a smaller virt_radius, or the pair gate \
+                     (gate_cal)",
+                    gb(held),
+                    gb(r_tot),
+                    crate::ragged::PCG_RESIDENT_VECTORS,
+                    gb(crate::ragged::PCG_RESIDENT_VECTORS * v_tot),
+                    gb(self.base_bytes),
+                    gb(self.budget_bytes),
+                    gb(self.est.resident_peak()),
+                )
+            });
+        }
+    }
+}
+
 /// Stage 5 of [`assemble_ragged_direct_local`]: per-pair domain fits + the
 /// Eq-8 mask, GROUPED BY PAIR DOMAIN. The C20–C48 maps put 6–9× more
 /// surviving pairs than distinct pair domains
@@ -2190,6 +2624,8 @@ fn fit_pairs(
     scale: f64,
     dcfg: &DirectConfig,
     path: FitPath,
+    gate: Option<SolveGate>,
+    fock_screen: Option<f64>,
     stats: &mut DirectStats,
 ) -> Result<Ragged, FerricError> {
     use rayon::prelude::*;
@@ -2264,6 +2700,7 @@ fn fit_pairs(
         fv: &fv,
         eps,
         scale,
+        fock_screen,
         nv,
         aux_radius_bohr: dcfg.aux_radius_bohr,
         dfbs,
@@ -2275,9 +2712,41 @@ fn fit_pairs(
             _ => None,
         },
     };
-    let group_out: Vec<Result<(SlotOut, GroupCounts), FerricError>> = group_list
-        .par_iter()
-        .map(|(dsh, pxs)| match path {
+    let base_bytes = stats.memory.strips_bytes + stats.memory.metric_bytes + stats.own_w_bytes_held;
+    // The screen is inert at ε = 0 (`pair_blocks_screened` skips it there).
+    let screen_on = fock_screen.is_some() && eps > 0.0;
+    let workers = rayon::current_num_threads().max(1);
+    let g_max = group_list
+        .iter()
+        .map(|(dsh, pxs)| group_scratch_bound(dfbs, dsh, pxs, &unique, &pair_cands, screen_on))
+        .max()
+        .unwrap_or(0);
+    // Groups in flight at once: each holds one group's scratch, so a budget
+    // that cannot hold `workers` of them beside the resident set runs fewer.
+    // Groups are independent, so this changes the schedule, never a block.
+    let concurrent = match gate {
+        None => workers,
+        Some(g) => (g
+            .budget_bytes
+            .saturating_sub(base_bytes + stats.memory.pair_block_bytes)
+            / g_max.max(1))
+        .clamp(1, workers),
+    };
+    stats.group_concurrency = concurrent;
+    stats.group_scratch_bound_bytes = g_max;
+    let charge = gate.map(|g| BlockCharge {
+        budget_bytes: g.budget_bytes,
+        base_bytes: base_bytes + concurrent * g_max,
+        est: stats.memory,
+        ragged: AtomicUsize::new(0),
+        vectors: AtomicUsize::new(0),
+        tripped: Mutex::new(None),
+    });
+    let run_group = |(dsh, pxs): &(Vec<usize>, Vec<usize>)| -> GroupResult {
+        if charge.as_ref().is_some_and(BlockCharge::is_tripped) {
+            return Ok((Vec::new(), GroupCounts::default()));
+        }
+        let out = match path {
             FitPath::Cholesky => fit_domain_group(&ctx, dsh, pxs),
             #[cfg(test)]
             FitPath::MutantW(..) => fit_domain_group(&ctx, dsh, pxs),
@@ -2286,10 +2755,34 @@ fn fit_pairs(
                 inverse_oracle::fit_domain_group_inverse_oracle(&ctx, dsh, pxs)
                     .map(|s| (s, GroupCounts::default()))
             }
-        })
-        .collect();
+        }?;
+        if let Some(c) = &charge {
+            c.charge(&out.0);
+        }
+        Ok(out)
+    };
+    let group_out: Vec<GroupResult> = if concurrent >= workers {
+        group_list.par_iter().map(&run_group).collect()
+    } else {
+        let mut out = Vec::with_capacity(group_list.len());
+        for chunk in group_list.chunks(concurrent) {
+            out.extend(chunk.par_iter().map(&run_group).collect::<Vec<_>>());
+        }
+        out
+    };
+    if let Some(msg) = charge.and_then(|c| c.tripped.into_inner().ok().flatten()) {
+        return Err(FerricError::MemoryExhausted(msg));
+    }
     let ragged = ragged_from_groups(unique.len(), group_out, stats)?;
     stats.t_pairs_s = t0.elapsed().as_secs_f64();
+    mem_trace(
+        "pairs",
+        &[
+            ("ragged", ragged.heap_bytes()),
+            ("group_scratch_max", stats.group_scratch_bytes_max),
+            ("own_w_held", stats.own_w_bytes_held),
+        ],
+    );
     Ok(ragged)
 }
 
@@ -2870,10 +3363,11 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     vvhv: &VvHv,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     let t0 = Instant::now();
-    let spaces = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
+    let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
     let t_loc_s = t0.elapsed().as_secs_f64();
     let (no, nv) = (spaces.no, spaces.nv);
-    let (rg, n_pairs_gated, mut dstats) = assemble_ragged_direct_local(
+    let budget_bytes = crate::rimp2::eri3_budget_bytes(cfg.eri3_budget_bytes);
+    let (rg, n_pairs_gated, mut dstats) = assemble_gated(
         mol,
         obs,
         dfbs,
@@ -2883,7 +3377,25 @@ pub fn amplitude_lmp2_direct_with_virtuals(
         1.0,
         cfg.pair_gate_cal,
         dcfg,
+        Some(SolveGate { budget_bytes }),
+        cfg.fock_screen,
     )?;
+    // The exact solve footprint, now that the blocks exist (the charge gate
+    // already bounded it; this is the authority the solve runs under).
+    let resident = crate::ragged::solve_resident_bytes(&rg, cfg.cg_max_iter);
+    if resident > budget_bytes {
+        let est = DirectMemoryEstimate {
+            pair_block_bytes: rg.heap_bytes(),
+            pcg_vector_bytes: crate::ragged::amplitude_vector_bytes(&rg),
+            exact: true,
+            ..dstats.memory
+        };
+        return Err(memory_refusal(
+            &est,
+            budget_bytes,
+            "refused before the solve",
+        ));
+    }
     let t_assembly_s = t0.elapsed().as_secs_f64();
     dstats.t_loc_s = t_loc_s;
 
@@ -2911,6 +3423,16 @@ pub fn amplitude_lmp2_direct_with_virtuals(
         0.0
     };
 
+    mem_trace(
+        "pre-solve",
+        &[
+            ("ragged", rg.heap_bytes()),
+            (
+                "pcg_vectors",
+                crate::ragged::PCG_RESIDENT_VECTORS * crate::ragged::amplitude_vector_bytes(&rg),
+            ),
+        ],
+    );
     let t0 = Instant::now();
     let mut r = solve_and_count(
         &rg,
@@ -2923,10 +3445,12 @@ pub fn amplitude_lmp2_direct_with_virtuals(
         nv,
         "lmp2_direct",
     )?;
+    mem_trace("solved", &[]);
     r.e_corr_canonical_ri = e_ref;
     r.n_pairs_gated = n_pairs_gated;
     r.aux_dom_mean = dstats.strip_rows_mean;
     r.aux_dom_max = dstats.strip_rows_max;
+    r.lambda_boys = spaces.lambda_boys;
     r.timings = StageTimings {
         t_spaces_s: 0.0,
         t_loc_s,
@@ -2941,6 +3465,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
 mod stage_b_tests {
     use super::*;
     use crate::lmp2_amplitude::checked_vvhv;
+    use crate::lmp2_amplitude::localized_spaces;
     use ferric_core::parallel::ParallelContext;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
@@ -3104,6 +3629,7 @@ mod stage_b_tests {
             1e-4,
             Some(cal),
             dcfg,
+            None,
             &mut st,
         )
         .unwrap();
@@ -3233,6 +3759,7 @@ mod stage_b_tests {
             1e-4,
             Some(0.7),
             &production(Eri3Pass::AuxMajor, 2),
+            None,
             &mut st,
         );
         assert!(r.is_err());
@@ -3502,6 +4029,7 @@ mod stage_b_tests {
 #[cfg(test)]
 mod inverse_oracle {
     use super::*;
+    use crate::ragged::pair_block_from_g_cand;
 
     /// Frozen `schwarz_virtual_q` (pre-Stage-C).
     #[allow(clippy::too_many_arguments)]
@@ -3663,6 +4191,7 @@ mod inverse_oracle {
 #[cfg(test)]
 mod stage_c_tests {
     use super::*;
+    use crate::lmp2_amplitude::localized_spaces;
     use crate::lmp2_amplitude::{checked_vvhv, solve_and_count};
     use ferric_core::parallel::ParallelContext;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -3740,6 +4269,7 @@ mod stage_c_tests {
             eps,
             Some(cal),
             &production_maps(None),
+            None,
             &mut st,
         )
         .unwrap()
@@ -3753,7 +4283,10 @@ mod stage_c_tests {
         path: FitPath,
     ) -> (Ragged, DirectStats) {
         let mut st = DirectStats::default();
-        let r = fit_pairs(pre, &su.dfbs, &su.spaces, eps, 1.0, dcfg, path, &mut st).unwrap();
+        let r = fit_pairs(
+            pre, &su.dfbs, &su.spaces, eps, 1.0, dcfg, path, None, None, &mut st,
+        )
+        .unwrap();
         (r, st)
     }
 
@@ -4186,5 +4719,269 @@ mod stage_c_tests {
         );
         assert!(reused > 0);
         assert!((e_new - e_old).abs() <= 1e-10, "dE {:.3e}", e_new - e_old);
+    }
+}
+
+/// The memory gate of the direct LMP2 path: the pre-flight is exact at ε = 0,
+/// an over-budget run refuses with a typed error (up front at ε = 0, during the
+/// pair fits at ε > 0), an ample budget is bit-identical to the ungated
+/// assembly, and the stage-3 slab blocking the budget drives leaves the energy
+/// unchanged. Every test runs on a pinned 2-worker pool.
+#[cfg(test)]
+mod memory_gate_tests {
+    use super::*;
+    use crate::lmp2_amplitude::{checked_vvhv, solve_and_count};
+    use crate::ragged::amplitude_vector_bytes;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    struct Case {
+        mol: Molecule,
+        obs: PreparedBasis,
+        dfbs: PreparedBasis,
+        rhf: ScfResult,
+        vvhv: VvHv,
+        nc: usize,
+    }
+
+    fn case(nc: usize) -> Case {
+        let mol = Molecule::load_xyz(&format!(
+            "{}/../../testdata/molecules/alkane_{nc}.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let obs_bs = ferric_core::basis::bundled("6-31g").unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+        let rcfg = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            Operator::coulomb(),
+            &bounds,
+            &rcfg,
+        )
+        .unwrap();
+        let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
+        Case {
+            mol,
+            obs,
+            dfbs,
+            rhf,
+            vvhv,
+            nc,
+        }
+    }
+
+    /// Production-like maps with a virtual radius short enough that the
+    /// candidate sets differ between pairs (so the ε > 0 bound is loose).
+    fn maps() -> DirectConfig {
+        DirectConfig {
+            aux_radius_bohr: 10.0,
+            virt_radius_bohr: Some(8.0),
+            ao_tail: 1e-3,
+            schwarz_skip: 1e-5,
+            ..Default::default()
+        }
+    }
+
+    fn lcfg(c: &Case, eps: f64, budget: usize) -> AmplitudeLmp2Config {
+        AmplitudeLmp2Config {
+            eps,
+            frozen_core: c.nc,
+            eri3_budget_bytes: Some(budget),
+            ..Default::default()
+        }
+    }
+
+    fn pinned<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap()
+            .install(f)
+    }
+
+    fn run(
+        c: &Case,
+        eps: f64,
+        budget: usize,
+        dcfg: &DirectConfig,
+    ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
+        pinned(|| {
+            amplitude_lmp2_direct_with_virtuals(
+                &c.mol,
+                &c.obs,
+                &c.dfbs,
+                Operator::coulomb(),
+                &c.rhf,
+                &lcfg(c, eps, budget),
+                dcfg,
+                &c.vvhv,
+            )
+        })
+    }
+
+    /// The ungated assembly (the historical code path) and its ragged system.
+    fn ungated(c: &Case, eps: f64) -> (Ragged, f64) {
+        pinned(|| {
+            // the production localization (λ-Boys at the config's λ)
+            let lam = lcfg(c, eps, AMPLE).lambda_boys;
+            let spaces =
+                localized_spaces_lambda(&c.mol, &c.obs, &c.rhf, c.nc, &c.vvhv, lam).unwrap();
+            let (rg, _, _) = assemble_ragged_direct_local(
+                &c.mol,
+                &c.obs,
+                &c.dfbs,
+                Operator::coulomb(),
+                &spaces,
+                eps,
+                1.0,
+                None,
+                &maps(),
+            )
+            .unwrap();
+            let r = solve_and_count(
+                &rg,
+                &spaces.f_oo,
+                &spaces.f_vv,
+                c.rhf.energy,
+                &lcfg(c, eps, AMPLE),
+                &c.vvhv,
+                spaces.no,
+                spaces.nv,
+                "test",
+            )
+            .unwrap();
+            (rg, r.e_corr)
+        })
+    }
+
+    const AMPLE: usize = 1 << 40;
+
+    fn exhausted(r: Result<(AmplitudeLmp2Result, DirectStats), FerricError>) -> String {
+        match r {
+            Err(FerricError::MemoryExhausted(m)) => m,
+            Err(e) => panic!("expected MemoryExhausted, got {e}"),
+            Ok((r, _)) => panic!("expected MemoryExhausted, ran to E = {}", r.e_corr),
+        }
+    }
+
+    /// ε = 0: the pre-flight's PCG vector is the solve's to the byte and its
+    /// pair-block bytes are the ragged system's to within the index maps and
+    /// Vec capacity slack; an ample budget is bit-identical to the ungated
+    /// assembly.
+    #[test]
+    fn eps_zero_estimate_is_exact_and_ample_budget_is_inert() {
+        let c = case(6);
+        let (rg, e_ungated) = ungated(&c, 0.0);
+        let (r, st) = run(&c, 0.0, AMPLE, &maps()).unwrap();
+        let est = st.memory;
+        assert!(est.exact);
+        assert_eq!(est.pcg_vector_bytes, amplitude_vector_bytes(&rg));
+        let heap = rg.heap_bytes();
+        let rel = (heap as f64 - est.pair_block_bytes as f64).abs() / heap as f64;
+        eprintln!(
+            "C6 eps=0: est pair blocks {} vs heap {heap} (rel {rel:.2e}), vector {}, peak {}",
+            est.pair_block_bytes,
+            est.pcg_vector_bytes,
+            est.resident_peak()
+        );
+        assert!(rel < 0.02, "pair-block estimate off by {rel:.3e}");
+        assert_eq!(r.e_corr.to_bits(), e_ungated.to_bits());
+    }
+
+    /// ε > 0 under an ample budget: bit-identical to the ungated assembly.
+    #[test]
+    fn finite_eps_ample_budget_is_bit_identical_to_ungated() {
+        let c = case(6);
+        let (_, e_ungated) = ungated(&c, 1e-3);
+        let (r, _) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        assert_eq!(r.e_corr.to_bits(), e_ungated.to_bits());
+    }
+
+    /// ε = 0 one byte under the exact estimate refuses before any integral;
+    /// 2% over it (the estimate's slack against the heap count) still runs.
+    #[test]
+    fn eps_zero_over_budget_refuses_up_front() {
+        let c = case(6);
+        let (r0, st) = run(&c, 0.0, AMPLE, &maps()).unwrap();
+        let peak = st.memory.resident_peak();
+        let msg = exhausted(run(&c, 0.0, peak - 1, &maps()));
+        assert!(msg.contains("before any integral"), "{msg}");
+        assert!(msg.contains("budget_gb") && msg.contains("eps"), "{msg}");
+        let (r1, _) = run(&c, 0.0, peak + peak / 50, &maps()).unwrap();
+        assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
+    }
+
+    /// ε > 0: the candidate bound is loose, so the pre-flight must NOT refuse
+    /// on it (a budget at the true footprint runs) and the charge-as-built
+    /// gate must stop a budget under the true footprint.
+    #[test]
+    fn finite_eps_charge_gate_refuses_only_the_true_overshoot() {
+        let c = case(6);
+        let (r0, st) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        let est = st.memory;
+        assert!(!est.exact);
+        let base = est.strips_bytes + est.metric_bytes + st.own_w_bytes_held;
+        // Everything the gate charges, at its true size: an upper bound on
+        // both the stage-5 resident set and the solve's.
+        let truth = base + st.group_scratch_bound_bytes + r0.solve_resident_bytes;
+        assert!(
+            est.resident_peak() > truth,
+            "the bound {} must be loose against the true footprint {truth} for this test \
+             to reach the charge gate",
+            est.resident_peak()
+        );
+        let (r1, s1) = run(&c, 1e-3, truth, &maps()).unwrap();
+        assert_eq!(r1.e_corr.to_bits(), r0.e_corr.to_bits());
+        // The bound left no room for two groups' scratch: stage 5 ran them
+        // one at a time, with the same blocks.
+        assert_eq!(st.group_concurrency, 2);
+        assert_eq!(s1.group_concurrency, 1, "group blocking never engaged");
+        let solve_only = r0.solve_resident_bytes;
+        let tight = base.max(solve_only / 2);
+        let msg = exhausted(run(&c, 1e-3, tight, &maps()));
+        assert!(msg.contains("during the pair fits"), "{msg}");
+    }
+
+    /// The stage-3 slab blocking: a one-byte scratch cap (one aux shell per
+    /// slab) gives the energy of the default cap, through more slabs.
+    #[test]
+    fn stage3_slab_blocking_matches_unblocked() {
+        let c = case(6);
+        let (r0, s0) = run(&c, 1e-3, AMPLE, &maps()).unwrap();
+        let tiny = DirectConfig {
+            scratch_budget_bytes: 1,
+            ..maps()
+        };
+        let (r1, s1) = run(&c, 1e-3, AMPLE, &tiny).unwrap();
+        eprintln!(
+            "slabs: default {} vs tiny {}",
+            s0.n_eri3_slabs, s1.n_eri3_slabs
+        );
+        assert!(s1.n_eri3_slabs > s0.n_eri3_slabs, "blocking never engaged");
+        assert!(
+            (r1.e_corr - r0.e_corr).abs() <= 1e-10,
+            "blocked {:.15} vs unblocked {:.15}",
+            r1.e_corr,
+            r0.e_corr
+        );
+    }
+
+    /// The budget lowers the stage-3 scratch to what it leaves beside the
+    /// strips, and never raises it.
+    #[test]
+    fn stage3_scratch_follows_the_budget() {
+        assert_eq!(stage3_scratch(2 << 30, AMPLE, 1000), 2 << 30);
+        assert_eq!(stage3_scratch(2 << 30, 5000, 1000), 4000);
+        assert_eq!(stage3_scratch(2 << 30, 500, 1000), 1);
     }
 }

@@ -5,7 +5,8 @@ ferric runs 3-D periodic Gaussian-basis calculations through the
 repulsion with a neutralising background, the dropped-G = 0 Coulomb
 convention, and the Madelung exchange correction (`exxdiv = "ewald"`).
 Energies are Hartree per cell. The equations, with code and test
-cross-references, are in `crates/ferric-pbc/theory.md`; the identities are
+cross-references, are in the periodic chapter of the ferric book,
+`book/src/24-periodic/`; the identities are
 checked by `scripts/pbc_ewald_pairft_stress_sympy.py`.
 
 ## What runs
@@ -93,6 +94,6 @@ print(res.energy, res.stress())
   commutator above 1e-5 Ha (k-point), a stored Fock that differs from the
   rebuilt one by more than 1e-8 Ha, or SCF k-points that are not the mesh's.
   Converge the SCF tighter (`density_conv` 1e-10 is FD-grade). Derivation and
-  the full list of tolerances: `crates/ferric-pbc/theory.md` section 6.
+  the full list of tolerances: `book/src/24-periodic/07-forces.md#forces-refusal-gates`.
 - Gamma-point local MP2 is library-only and its default pair gate keeps
   every pair below a volume onset.

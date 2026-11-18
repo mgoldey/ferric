@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """RDM energy, direct-sigma split and the CASSCF orbital gradient, by brute force.
 
-Theory: crates/ferric-ci/theory.md, sections "Direct sigma", "Reduced density
-matrices" and "Two-step CASSCF". Every check asserts; the script exits nonzero
+Theory: `book/src/17-multireference/03-direct-sigma-davidson.md#direct-sigma-davidson-split`, `book/src/17-multireference/04-rdms.md#rdms-1-2-rdm`, `book/src/17-multireference/05-casscf.md#casscf`. Every check asserts; the script exits nonzero
 on any failure and prints "FAIL [label]".
 
 Model. Six orthonormal molecular orbitals (one core, three active, two
@@ -16,7 +15,8 @@ stationarity is assumed.
 Checks (labels in brackets are printed and cited by the book):
   [rdm-energy]      E_core + sum h_pq gamma_pq + 1/2 sum (pq|rs) Gamma_pqrs
                     equals <C|H|C> + E_core, with gamma and Gamma defined as
-                    the spin-summed expectation values of theory.md (PySCF
+                    the spin-summed expectation values of the book's
+                    `book/src/17-multireference/04-rdms.md#rdms-1-2-rdm` (PySCF
                     make_rdm12 order), for the (2,2) and (2,1) sectors.
   [rdm-identities]  Gamma_pqrs = <E_pq E_rs> - delta_qr gamma_ps,
                     tr gamma = N, sum Gamma_pprr = N(N-1),

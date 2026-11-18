@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs of the unrestricted RI-MP2 nuclear-gradient identities ferric-mp2 codes.
 
-Theory: crates/ferric-mp2/theory.md, "15. Unrestricted RI-MP2 nuclear gradient".
+Theory: `book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights`.
 Code: crates/ferric-mp2/src/u_rimp2_gradient.rs (u_energy_weights,
 unrelaxed_density_mo, solve_u_zvector, u_rimp2_gradient_timed).
 

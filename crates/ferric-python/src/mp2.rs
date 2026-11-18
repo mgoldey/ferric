@@ -418,9 +418,10 @@ pub(crate) fn local_correlation_operator(
 /// `result.local["e_corr_canonical_ri"]`. `integral_direct=True` selects the
 /// integral-direct local MP2, which never forms the global 3-index tensor;
 /// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
-/// (Bohr, 12.0), `ao_tail` (1e-3), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
-/// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
-/// `[local]` keys. The rules are the CLI's: every local kwarg is a
+/// (Bohr, 20.0), `ao_tail` (1e-4), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
+/// `virt_schwarz_kappa` (off), plus `fock_screen` (default true: the
+/// Fock-propagated mask screen, κ = 1; false keeps the plain integral mask),
+/// the same names and defaults as the CLI's `[local]` keys. The rules are the CLI's: every local kwarg is a
 /// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
 /// local one (it reads only `frozen_core` and `auxbasis`).
 ///
@@ -470,7 +471,7 @@ pub(crate) fn local_correlation_operator(
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -492,6 +493,7 @@ pub(crate) fn run_rimp2(
     batch_merge: Option<usize>,
     gate_cal: Option<f64>,
     virt_schwarz_kappa: Option<f64>,
+    fock_screen: Option<bool>,
     att_operator: Option<String>,
     omega: Option<f64>,
     att_r0: Option<f64>,
@@ -509,6 +511,7 @@ pub(crate) fn run_rimp2(
     virtual_boys_tau: Option<f64>,
     with_gradient: bool,
     scf_eri: Option<&str>,
+    lambda_boys: Option<f64>,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
     let (mut rhf_config, jk) = mp2_exact_default_config(
@@ -536,11 +539,13 @@ pub(crate) fn run_rimp2(
             batch_merge,
             gate_cal,
             virt_schwarz_kappa,
+            fock_screen,
             virtual_space,
             virtual_tau,
             virtual_tau_loose,
             virtual_solve_radius,
             virtual_boys_tau,
+            lambda_boys,
         },
     )?;
     if with_gradient {
@@ -874,8 +879,10 @@ pub(crate) fn run_rimp2_local(
         frozen_core: frozen_core.unwrap_or(0),
         eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
+        fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
         compute_reference: model.reference,
         virtual_space: model.virtual_space.clone(),
+        lambda_boys: model.lambda_boys,
         ..Default::default()
     };
     let dcfg = model.direct.as_ref().map(|d| DirectConfig {
@@ -932,6 +939,10 @@ pub(crate) fn run_rimp2_local(
     for (k, v) in r.virtual_space.fields(&r.timings) {
         set_cert_item(py, &d, k, &v)?;
     }
+    d.set_item("lambda_boys", r.lambda_boys.lambda)?;
+    d.set_item("lambda_boys_sweeps", r.lambda_boys.sweeps)?;
+    d.set_item("lambda_boys_max_grad", r.lambda_boys.max_grad)?;
+    d.set_item("lambda_boys_t_s", r.lambda_boys.t_s)?;
     if let Some(st) = st {
         d.set_item("n_pairs_gated", r.n_pairs_gated)?;
         set_direct_stats(&d, &st)?;

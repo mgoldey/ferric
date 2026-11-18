@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Identities behind ferric-cc's spin-blocked UCCSD and UCCSD(T).
 
-Theory and notation: crates/ferric-cc/theory.md, section "Unrestricted CCSD
-and CCSD(T)". Every claim asserts; the script exits nonzero on any mismatch.
+Theory and notation: `book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations`. Every claim asserts; the script exits nonzero on any mismatch.
 Negative controls (deliberately wrong variants that must NOT pass) guard
 against a vacuous pass.
 

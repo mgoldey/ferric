@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Step formulas of ferric's geometry searches: BFGS, P-RFO, Bofill, IRC.
 
-Derivation: crates/ferric-scf/theory.md, "Geometry searches";
+Derivation: `book/src/14-derivatives/08-geometry-search.md#geometry-search`;
 book/src/14-derivatives/08-geometry-search.md. Code:
 crates/ferric-scf/src/optimize.rs (the inverse-Hessian update of
 optimize_coordinates and run_bfgs_internal, the internal

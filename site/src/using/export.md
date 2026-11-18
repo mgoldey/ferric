@@ -4,7 +4,7 @@ ferric writes volumetric data as Gaussian cube files, orbitals as Molden
 files, active-space Hamiltonians as FCIDUMP files and per-molecule property bundles as compressed NumPy `.npz` archives. The Python functions
 evaluate basis functions, the density and orbitals at arbitrary points; the
 CLI `[rpa]` section writes the NPZ bundle and PDEP eigenpotential cubes. The
-array schema is in `crates/ferric-export/theory.md`.
+array schema is in `book/src/27-ml/01-npz-bundle.md#npz-bundle-keys`.
 
 ## Units
 

@@ -24,7 +24,7 @@ use crate::lmp2_amplitude::{
 use crate::lmp2_direct::{DirectConfig, DirectStats};
 
 /// Largest ε whose MEASURED recovery is comparable to ORCA DLPNO-MP2
-/// NormalPNO (C4/cc-pVDZ: 99.980% at 1e-5 vs NormalPNO's 99.96-99.98%).
+/// NormalPNO (C4/cc-pVDZ: 99.992% at 1e-5 vs NormalPNO's 99.96-99.98%).
 /// One system, one basis, no independent finite-ε reference: a comparison
 /// point, NOT a validated range (the name is kept for API stability).
 pub const VALIDATED_EPS_MAX: f64 = 1e-5;
@@ -41,19 +41,22 @@ pub const ONE_D_RATIO_MAX: f64 = 0.5;
 pub const DIFFUSE_EXPONENT_MIN: f64 = 0.08;
 
 /// The measured C4/cc-pVDZ recovery of the canonical DF-MP2 correlation
-/// energy, as (ε, percent as recorded).
+/// energy (all electrons, in core, λ-Boys λ = 10, the default), as (ε,
+/// percent as recorded). Plain Boys (λ = 0) recorded 99.980 / 99.671 /
+/// 94.99 on the same system.
 pub const MEASURED_RECOVERY_C4: [(f64, &str); 3] =
-    [(1e-5, "99.980"), (1e-4, "99.671"), (1e-3, "94.99")];
+    [(1e-5, "99.992"), (1e-4, "99.735"), (1e-3, "95.20")];
 
 /// The measured C8 recovery at ε = 1e-3 (the size trend: it LOSES more
-/// than C4 at the same ε), as (ε, percent as recorded).
-pub const MEASURED_RECOVERY_C8: (f64, &str) = (1e-3, "93.81");
+/// than C4 at the same ε), as (ε, percent as recorded). λ = 10; plain
+/// Boys recorded 93.81.
+pub const MEASURED_RECOVERY_C8: (f64, &str) = (1e-3, "94.00");
 
 /// Log-log slope of the C4 lost fraction per decade of ε, from
-/// [`MEASURED_RECOVERY_C4`]: 0.020% -> 0.329% -> 5.01% lost gives 1.22 and
-/// 1.18, i.e. ~1.2 (superlinear). The 1.2-1.8 range sometimes quoted is the
+/// [`MEASURED_RECOVERY_C4`]: 0.008% -> 0.265% -> 4.80% lost gives 1.52 and
+/// 1.26, i.e. ~1.4 (superlinear; plain Boys gave 1.22 and 1.18). The 1.2-1.8 range sometimes quoted is the
 /// octane local-dRPA record, not MP2.
-pub const MEASURED_SLOPE_C4: &str = "~1.2 (1.22, 1.18)";
+pub const MEASURED_SLOPE_C4: &str = "~1.4 (1.52, 1.26)";
 
 /// Short label of the two-electron operator, for the certificate.
 pub fn operator_label(op: &Operator) -> String {
@@ -218,6 +221,8 @@ pub struct Lmp2Certificate {
     pub n_pairs_gated: usize,
     /// [`AmplitudeLmp2Config::pair_gate_cal`]; `None` when the gate is off.
     pub gate_cal: Option<f64>,
+    /// [`AmplitudeLmp2Config::fock_screen`] (κ); `None` when the screen is off.
+    pub fock_screen: Option<f64>,
     /// Whether the run used the integral-direct assembly.
     pub integral_direct: bool,
     /// `None` on the in-core (global-B) path.
@@ -299,6 +304,7 @@ impl Lmp2Certificate {
             pair_fraction: r.pair_fraction,
             n_pairs_gated: r.n_pairs_gated,
             gate_cal: cfg.pair_gate_cal,
+            fock_screen: cfg.fock_screen,
             integral_direct: direct.is_some(),
             maps: direct.map(DirectMaps::from),
             pair_fit: None,
@@ -368,6 +374,7 @@ impl Lmp2Certificate {
             ("pair_fraction", V::F64(self.pair_fraction)),
             ("n_pairs_gated", V::Usize(self.n_pairs_gated)),
             ("gate_cal", self.gate_cal.into()),
+            ("fock_screen", self.fock_screen.into()),
             ("integral_direct", V::Bool(self.integral_direct)),
             ("maps", maps),
             ("pair_fit", pair_fit),
@@ -484,7 +491,7 @@ fn warnings(eps: f64, gate_cal: Option<f64>, shape: &SystemShape, coulomb: bool)
     if eps > VALIDATED_EPS_MAX {
         w.push(format!(
             "eps = {eps:.1e} > {VALIDATED_EPS_MAX:.0e}: looser than the DLPNO-NormalPNO-comparable \
-             range (C4/cc-pVDZ loses 0.33% of the correlation energy at 1e-4, 5.0% at 1e-3)"
+             range (C4/cc-pVDZ loses 0.27% of the correlation energy at 1e-4, 4.8% at 1e-3)"
         ));
     }
     if !coulomb && eps > 0.0 {
@@ -610,9 +617,9 @@ mod tests {
         assert!(validation_grade(1e-6).contains("not validated"));
         assert!(eps_trust(0.0, true).contains("exact"));
         let t = eps_trust(1e-4, true);
-        assert!(t.contains("99.671% at 1e-4") && t.contains("inside"), "{t}");
+        assert!(t.contains("99.735% at 1e-4") && t.contains("inside"), "{t}");
         assert!(
-            t.contains("slope ~1.2") && t.contains("93.81% at 1e-3"),
+            t.contains("slope ~1.4") && t.contains("94.00% at 1e-3"),
             "{t}"
         );
         assert!(!t.contains("1.8") && !t.contains("CAVEAT"), "{t}");
@@ -632,10 +639,10 @@ mod tests {
         let s1 = (lost[1] / lost[0]).log10();
         let s2 = (lost[2] / lost[1]).log10();
         assert!(
-            (s1 - 1.22).abs() < 0.01 && (s2 - 1.18).abs() < 0.01,
+            (s1 - 1.52).abs() < 0.01 && (s2 - 1.26).abs() < 0.01,
             "{s1} {s2}"
         );
-        assert!(MEASURED_SLOPE_C4.contains("1.22") && MEASURED_SLOPE_C4.contains("1.18"));
+        assert!(MEASURED_SLOPE_C4.contains("1.52") && MEASURED_SLOPE_C4.contains("1.26"));
     }
 
     fn cert(eps: f64) -> Lmp2Certificate {
@@ -646,6 +653,7 @@ mod tests {
             pair_fraction: 0.75,
             n_pairs_gated: 0,
             gate_cal: None,
+            fock_screen: None,
             integral_direct: false,
             maps: None,
             pair_fit: None,

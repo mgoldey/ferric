@@ -16,7 +16,7 @@
 //! so `Tr W^SS = E^(n)_αα + E^(n)_ββ` and `Tr W^OS = E^(n)_αβ`. The models
 //! resum each matrix pair with [`pade_trace`](crate::opmp3::pade_trace),
 //! spin block by spin block (equations and proofs:
-//! `crates/ferric-mp2/theory.md` §6.2,
+//! `book/src/10-mp2/11-opmp3.md#opmp3`,
 //! `scripts/opmp3_identities_sympy.py`).
 
 use crate::u_mp3::{SpinBlockedDoubles, UMp3Result};

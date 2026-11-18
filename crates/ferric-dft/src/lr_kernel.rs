@@ -48,7 +48,8 @@
 //! of pair `jb` makes δV_α = ∫(f_αα + f_αβ) δρ, the singlet combination, and
 //! `K[:, jb] = C_occᵀ δV_α C_vir`. The triplet block feeds δD_β = −δD_α and
 //! keeps δV_α = ∫(f_αα − f_αβ) δρ, with the same normalization
-//! (`crates/ferric-tddft/theory.md` §9). The factor is not asserted from theory — it
+//! (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`). The factor is not asserted from
+//! theory — it
 //! is pinned against PySCF `tddft.TDA` by `ferric-gw/tests/tda_dft_vs_pyscf.rs`
 //! (LDA/PBE/B3LYP water, 1.0e-3 eV) and against PySCF `TDA`/`TDDFT` by
 //! `ferric-tddft/tests/validation_tddft.rs`.
@@ -603,7 +604,7 @@ impl SingletOvFxc {
 
     /// [`Self::new`] for either spin: the product of [`fxc_ov_block`]'s
     /// `spin` block. The triplet regrouping of the point kernel is
-    /// `crate::fxc::spin_coefficients` (`crates/ferric-tddft/theory.md` §9).
+    /// `crate::fxc::spin_coefficients` (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`).
     ///
     /// # Errors
     ///

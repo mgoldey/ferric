@@ -2,9 +2,8 @@
 """Proofs for the double hybrids ferric codes: B2PLYP, DSD-PBEP86 (with the
 D3(BJ) sets and an unrestricted reference) and wB97X-L-V.
 
-Theory: crates/ferric-mp2/theory.md, "16. Double hybrids" (B2PLYP,
-DSD-PBEP86, D3(BJ) sets, UKS reference) and crates/ferric-cc/theory.md,
-"ωB97X-L-V correlation".
+Theory: `book/src/10-mp2/10-double-hybrids.md#double-hybrids-energy` (B2PLYP,
+DSD-PBEP86, D3(BJ) sets, UKS reference) and `book/src/16-coupled-cluster/06-wb97x-l-v.md#wb97x-l-v-goes`.
 Code: crates/ferric-mp2/src/double_hybrid.rs (mp2_double_hybrid,
 u_mp2_double_hybrid, DoubleHybridKind::mp2_config), crates/ferric-dft/src/
 libxc.rs (b2plyp_def, dsd_pbep86_def, dsd_pbep86_d3bj_def, wb97x_l_v_def,

@@ -214,7 +214,29 @@ fn rimp2_and_linlccd_state_their_model() {
         assert!(c["e_corr_canonical_ri"].is_null(), "{c}");
         assert_eq!(c["local"]["eps"], 1e-3, "{c}");
         assert_eq!(c["local"]["integral_direct"], !direct.is_empty(), "{c}");
+        // the Fock-propagated screen: on by default integral-direct (κ = 1,
+        // reaching the solver config the certificate is built from), off in core
+        if direct.is_empty() {
+            assert!(c["local"]["fock_screen"].is_null(), "{c}");
+        } else {
+            assert_eq!(c["local"]["fock_screen"], 1.0, "{c}");
+            assert!(lo.stdout.contains("fock_screen kappa 1"), "{}", lo.stdout);
+        }
     }
+    // `fock_screen = false` turns it off on the integral-direct path
+    let off = ok_run(
+        "rimp2_direct_screen_off",
+        "rimp2",
+        &local(
+            "eps = 1e-3
+integral_direct = true
+fock_screen = false
+",
+        ),
+    );
+    let c = &off.results[0]["components"];
+    assert!(c["local"]["fock_screen"].is_null(), "{c}");
+    assert!(off.stdout.contains("fock_screen off"), "{}", off.stdout);
 
     let lex = ok_run("linlccd_exact", "linlccd", MP2);
     assert!(lex.stdout.contains("LinLCCD(hh) (exact)"), "{}", lex.stdout);
@@ -287,8 +309,19 @@ const DIRECT_KEYS: &[&str] = &[
     "own_w_bytes",
     "own_w_bytes_held",
     "group_scratch_bytes_max",
+    "group_scratch_bound_bytes",
+    "group_concurrency",
+    "memory_exact",
+    "memory_metric_bytes",
+    "memory_pair_block_bytes",
+    "memory_pcg_vector_bytes",
+    "memory_resident_peak_bytes",
+    "memory_stage3_scratch_bytes",
+    "memory_strips_bytes",
     "t_loc_s",
 ];
+/// Keys whose value is a JSON boolean rather than a number.
+const BOOL_KEYS: &[&str] = &["memory_exact"];
 /// The eval/scatter split of the eri3 fill is only measured with
 /// `DirectConfig::split_eri3_timers`, which the CLI leaves off: NaN in the
 /// library, `null` in the log.
@@ -304,6 +337,10 @@ fn assert_timing_keys(obj: &serde_json::Value, keys: &[&str], extra: &[&str]) {
     for k in keys {
         let v = o.get(*k).unwrap_or_else(|| panic!("missing {k}: {obj}"));
         if SPLIT_ONLY.contains(k) && v.is_null() {
+            continue;
+        }
+        if BOOL_KEYS.contains(k) {
+            assert!(v.is_boolean(), "{k} is not a bool: {obj}");
             continue;
         }
         let x = v

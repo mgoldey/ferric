@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Robust (Dunlap) density fitting with a fitting kernel different from the physical one.
 
-Derivation: crates/ferric-integrals/theory.md, "Density fitting: the fit and
-its error" and "Robust fitting with a mismatched metric". Code:
+Derivation: `book/src/06-density-fitting/03-robust-fit.md#robust-fit-fit-error` and "Robust fitting with a mismatched metric". Code:
 crates/ferric-mp2/src/rimp2.rs (ri_mp2_robust_attenuated_metric,
 ri_mp2_robust_attenuated_metric_with, robust_fit_coulomb_parts,
 solve_metric_system, spin_components_from_g).

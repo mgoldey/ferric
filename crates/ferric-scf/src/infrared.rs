@@ -15,8 +15,9 @@
 //! divided back through by `sqrt(m)`, so `sum_i m_i x_k[i]^2 = 1` with `m` in
 //! electron masses and no further mass factor is applied here. In atomic units
 //! `d mu / d Q` is in `e / sqrt(m_e)`, and [`AU_TO_KM_PER_MOL`](crate::infrared::AU_TO_KM_PER_MOL) converts
-//! `|d mu / d Q|^2` to km/mol. Derivation: `crates/ferric-scf/theory.md`,
-//! "Infrared intensities"; proof: `scripts/ir_intensity_sympy.py`.
+//! `|d mu / d Q|^2` to km/mol. Derivation:
+//! `book/src/14-derivatives/06-frequencies.md#frequencies-thermochemistry-ir-intensities`; proof:
+//! `scripts/ir_intensity_sympy.py`.
 //!
 //! # Two routes to the dipole derivative
 //!

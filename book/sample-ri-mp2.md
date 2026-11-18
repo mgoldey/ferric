@@ -1,7 +1,7 @@
 # 10.1 Closed-shell RI-MP2 energy
 
 <!-- section: 10.1; status: ready; registry: ri-mp2;
-     theory: crates/ferric-mp2/theory.md#"1. Density fitting", "2. Closed-shell RI-MP2" -->
+     theory: `book/src/10-mp2/01-closed-shell-ri-mp2.md#closed-shell-ri-mp2-density-fitting-making-affordable`, `book/src/10-mp2/01-closed-shell-ri-mp2.md#closed-shell-ri-mp2-energy-splits` -->
 
 *Sample section, drafted to the proposed house style. Notation follows
 `book/notation.md`. Code references are to commit `81486b984`.*
@@ -72,8 +72,6 @@ need: SCS-MP2 is $c_{\mathrm{OS}}E_{\mathrm{OS}} + c_{\mathrm{SS}}E_{\mathrm{SS}
 **The sign in the code.** The code divides by the negative quantity
 `denom = e_i + e_j - e_a - e_b` $= -\Delta_{ij}^{ab}$ and has no leading minus
 sign. Each summand is `g_ab * g_ab / denom`, which is the summand of (10.2).
-`crates/ferric-mp2/theory.md` calls the negative quantity $D_{ij}^{ab}$; the
-book does not use that symbol (notation, section 4).
 
 ## 10.1.2 Density fitting
 
@@ -295,7 +293,7 @@ core.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-mp2/theory.md`, "Conventions", "1. Density fitting", "2. Closed-shell RI-MP2" | equations 10.2 to 10.4, function names |
+| `book/src/01-second-quantization/03-spin-adaptation.md#spin-adaptation`, `book/src/10-mp2/01-closed-shell-ri-mp2.md#closed-shell-ri-mp2-density-fitting-making-affordable`, `book/src/10-mp2/01-closed-shell-ri-mp2.md#closed-shell-ri-mp2-energy-splits` | equations 10.2 to 10.4, function names |
 | Dissertation, chapter 4, sections 4.1 and 4.2 (Eqs. 4.3 to 4.5, Table 4.1, Functions 1 to 4) | the four-step algorithm, the choice of batch index, the scaling statement |
 | `scripts/mp2_variant_identities.py`, claim 1 | verified equations 10.2 and 10.6 |
 | `crates/ferric-mp2/src/rimp2.rs` | the pair kernel, the reproducibility and memory rules |

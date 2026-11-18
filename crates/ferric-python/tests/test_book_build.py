@@ -17,21 +17,20 @@ spec = importlib.util.spec_from_file_location("book_build", SCRIPT)
 bb = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bb)
 
-SECTION = """# 10.1 Toy section
+SECTION = """# Toy section {#toy}
 
-<!-- section: 10.1; status: ready; registry: toy;
-     theory: crates/ferric-toy/theory.md#"1. Toy theory" -->
+<!-- status: ready; registry: toy -->
 
 Entry point `ferric-toy/src/lib.rs::pair_energy`, also
 `ferric-toy/src/lib.rs::{pair_energy, other_fn}` and `scripts/toy_sympy.py`.
 
-<!-- include: crates/ferric-toy/theory.md#"1. Toy theory" -->
+<!-- include: crates/ferric-toy/notes.md#"1. Toy theory" -->
 
-> **Verified equation 10.1** . toy identity
+> **Verified equation {#eq:toy-a}** . toy identity
 >
 > <!-- verified: id=toy.a; script=scripts/toy_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-toy/src/lib.rs::pair_energy; rust_test=ferric-toy/src/lib.rs::toy_test -->
 
-> **Unverified equation 10.2** . toy
+> **Unverified equation {#eq:toy-b}** . toy
 >
 > <!-- unverified: id=toy.b; todo=add a claim -->
 
@@ -39,6 +38,10 @@ Entry point `ferric-toy/src/lib.rs::pair_energy`, also
 ```rust
 let e = a * b;
 ```
+
+$$ E = a b . \\label{eq:toy-energy} $$
+
+The energy (@eq:toy-energy) is box @eq:toy-a of chapter @sec:toy-chapter.
 
 Inline math $E_{ij} = |a|^2$ and a link [theory](../../crates/ferric-toy/theory.md).
 """
@@ -70,14 +73,14 @@ FILES = {
     ),
     "scripts/toy_sympy.py": '"""Claims:\n  1  toy identity\n"""\n',
     "crates/ferric-python/tests/test_derivation_scripts.py": 'CASES = ["toy_sympy.py"]\n',
-    "crates/ferric-toy/theory.md": "# Toy\n\n## 1. Toy theory\n\nBody $x_1$.\n\n## 2. Next\n\nOther.\n",
+    "crates/ferric-toy/notes.md": "# Toy\n\n## 1. Toy theory\n\nBody $x_1$.\n\n## 2. Next\n\nOther.\n",
     "crates/ferric-toy/src/lib.rs": (
         "pub fn pair_energy(a: f64, b: f64) -> f64 {\n    let e = a * b;\n    e\n}\n"
         "fn other_fn() {}\n#[test]\nfn toy_test() {}\n"
     ),
     "crates/ferric-toy/src/sub/deep.rs": "pub fn in_submodule() {}\n",
-    "book/src/00-notation.md": "# Notation\n\nText.\n",
-    "book/src/10-mp2/index.md": "# 10. Toy chapter\n\nText.\n",
+    "book/src/00-notation.md": "# Notation {#notation}\n\nText.\n",
+    "book/src/10-mp2/index.md": "# Toy chapter {#toy-chapter}\n\nText.\n",
     "book/src/10-mp2/01-toy.md": SECTION,
     "book/unverified-ceiling.txt": "1\n",
 }
@@ -96,17 +99,20 @@ def tree(tmp_path):
     write(tmp_path, FILES)
     (tmp_path / "crates/ferric-toy/src/sub.rs").write_text("")
     bb.write_appendices(tmp_path)
+    (tmp_path / "crates/ferric-toy/theory.md").write_text("stub\n")
+    bb.write_theory_index(tmp_path)
     (tmp_path / "book/src/SUMMARY.md").write_text(bb.build_summary(tmp_path))
     return tmp_path
 
 
 def check(root, regen=True, **kw):
-    """Run the checker. The generated appendices are rewritten first so a mutation
-    is judged by the check it targets and not by the appendices going stale; the
-    appendix tests pass regen=False."""
+    """Run the checker. The generated appendices and theory indexes are rewritten
+    first so a mutation is judged by the check it targets and not by them going
+    stale; the appendix and index tests pass regen=False."""
     bb._src_cache.clear()
     if regen:
         bb.write_appendices(root)
+        bb.write_theory_index(root)
     return bb.run_check(root, **kw)[0]
 
 
@@ -133,8 +139,8 @@ def test_unseen_chapter_is_accepted_and_listed(tree):
     write(
         tree,
         {
-            "book/src/42-new/index.md": "# 42. New\n",
-            "book/src/42-new/03-thing.md": "# 42.3 Thing\n\n<!-- section: 42.3; status: edit; registry: toy2 -->\n",
+            "book/src/42-new/index.md": "# New {#new}\n",
+            "book/src/42-new/03-thing.md": "# Thing {#thing}\n\n<!-- status: edit; registry: toy2 -->\n",
         },
     )
     (tree / "book/src/SUMMARY.md").write_text(bb.build_summary(tree))
@@ -208,29 +214,29 @@ MUTATIONS = {
     ),
     "duplicate box id": (SEC, "id=toy.b", "id=toy.a"),
     "unverified without todo": (SEC, "; todo=add a claim", ""),
-    "header registry unknown": (SEC, "registry: toy;", "registry: nonesuch;"),
-    "ready covers gap": (SEC, "registry: toy;", "registry: holey;"),
+    "header registry unknown": (SEC, "registry: toy -->", "registry: nonesuch -->"),
+    "ready covers gap": (SEC, "registry: toy -->", "registry: holey -->"),
     "bad status": (SEC, "status: ready", "status: done"),
-    "section number mismatch": (SEC, "section: 10.1", "section: 10.2"),
-    "missing header": (
+    "header keeps a section field": (
         SEC,
-        '<!-- section: 10.1; status: ready; registry: toy;\n     theory: crates/ferric-toy/theory.md#"1. Toy theory" -->',
-        "",
+        "<!-- status: ready;",
+        "<!-- section: 10.1; status: ready;",
     ),
-    "theory heading missing": (
+    "missing header": (SEC, "<!-- status: ready; registry: toy -->", ""),
+    "header keeps a theory field": (
         SEC,
-        'theory.md#"1. Toy theory" -->\n\nEntry',
-        'theory.md#"9. Nonexistent" -->\n\nEntry',
+        "registry: toy -->",
+        'registry: toy; theory: crates/ferric-toy/notes.md#"1. Toy theory" -->',
     ),
     "include heading missing": (
         SEC,
-        '<!-- include: crates/ferric-toy/theory.md#"1. Toy theory" -->',
-        '<!-- include: crates/ferric-toy/theory.md#"No such heading" -->',
+        '<!-- include: crates/ferric-toy/notes.md#"1. Toy theory" -->',
+        '<!-- include: crates/ferric-toy/notes.md#"No such heading" -->',
     ),
-    "theory file missing": (
+    "include file missing": (
         SEC,
-        'crates/ferric-toy/theory.md#"1. Toy theory" -->\n\nEntry',
-        'crates/ferric-gone/theory.md#"1. Toy theory" -->\n\nEntry',
+        '<!-- include: crates/ferric-toy/notes.md#"1. Toy theory" -->',
+        '<!-- include: crates/ferric-gone/notes.md#"1. Toy theory" -->',
     ),
     "excerpt differs": (SEC, "let e = a * b;", "let e = a + b;"),
     "path does not exist": (SEC, "`scripts/toy_sympy.py`", "`scripts/nope_sympy.py`"),
@@ -239,16 +245,32 @@ MUTATIONS = {
         "../../crates/ferric-toy/theory.md",
         "../../wiki/notes.md",
     ),
-    "section title carries another number": (
-        SEC,
-        "# 10.1 Toy section",
-        "# 11.1 Toy section",
-    ),
-    "section title has no number": (SEC, "# 10.1 Toy section", "# Toy section"),
-    "chapter title has no number": (
+    "numbered heading": (SEC, "# Toy section {#toy}", "# 1.1 Toy section {#toy}"),
+    "numbered subheading": (SEC, "Inline math", "## 1.1.1 Part\n\nInline math"),
+    "section title has no label": (SEC, "# Toy section {#toy}", "# Toy section"),
+    "chapter title has no label": (
         "book/src/10-mp2/index.md",
-        "# 10. Toy chapter",
+        "# Toy chapter {#toy-chapter}",
         "# Toy chapter",
+    ),
+    "duplicate equation label": (SEC, "\\label{eq:toy-energy}", "\\label{eq:toy-a}"),
+    "duplicate box label": (SEC, "{#eq:toy-b}", "{#eq:toy-a}"),
+    "duplicate heading label": (
+        "book/src/10-mp2/index.md",
+        "{#toy-chapter}",
+        "{#toy}",
+    ),
+    "undefined equation reference": (SEC, "(@eq:toy-energy)", "(@eq:nonesuch)"),
+    "undefined section reference": (SEC, "@sec:toy-chapter", "@sec:nonesuch"),
+    "reference of the wrong kind": (SEC, "@sec:toy-chapter", "@eq:toy-chapter"),
+    "hard-coded tag": (SEC, "\\label{eq:toy-energy}", "\\tag{1.3}"),
+    "hard-coded equation reference": (SEC, "(@eq:toy-energy)", "(1.3)"),
+    "hard-coded section reference": (SEC, "chapter @sec:toy-chapter", "chapter 1"),
+    "hard-coded box reference": (SEC, "box @eq:toy-a", "box 1.1"),
+    "label outside display math": (
+        SEC,
+        "Inline math",
+        "Prose \\label{eq:stray}. Inline math",
     ),
     "stale summary": ("book/src/SUMMARY.md", "Toy section", "Renamed section"),
     "control character from a lost backslash": (
@@ -276,8 +298,8 @@ MUTATIONS = {
         "Inline math",
         "Use `foo` with $x (`a_b`)$. Inline math",
     ),
-    "control character in an included theory section": (
-        "crates/ferric-toy/theory.md",
+    "control character in an included section": (
+        "crates/ferric-toy/notes.md",
         "Body $x_1$.",
         "Body\x08eta $x_1$.",
     ),
@@ -291,8 +313,8 @@ MUTATIONS = {
         "Inline math",
         "$$ f = \\frac{a}{b} \\quad (`build_k_r`) $$\n\nInline math",
     ),
-    "code span inside math from an included theory section": (
-        "crates/ferric-toy/theory.md",
+    "code span inside math from an included section": (
+        "crates/ferric-toy/notes.md",
         "Body $x_1$.",
         "Body $x_1 (`a_b`)$.",
     ),
@@ -323,9 +345,7 @@ def test_mutation_fails(tree, name):
 def test_mutation_stale_summary_new_file(tree):
     write(
         tree,
-        {
-            "book/src/11-x/01-y.md": "# 11.1 Y\n\n<!-- section: 11.1; status: edit; registry: - -->\n"
-        },
+        {"book/src/11-x/01-y.md": "# Y {#y}\n\n<!-- status: edit; registry: - -->\n"},
     )
     assert any("SUMMARY" in e for e in check(tree).errors)
 
@@ -334,7 +354,7 @@ def test_release_ceiling_and_coverage(tree):
     rep = check(tree, release=True)
     assert any("covered by no section" in e for e in rep.errors)  # toy2 uncovered
     assert not any("covered by no section" in w for w in check(tree).errors)
-    sub(tree, SEC, "registry: toy;", "registry: toy, toy2;")
+    sub(tree, SEC, "registry: toy -->", "registry: toy, toy2 -->")
     assert check(tree, release=True).errors == []
     (tree / "book/unverified-ceiling.txt").write_text("0\n")
     assert any("ceiling" in e for e in check(tree, release=True).errors)
@@ -349,7 +369,7 @@ def test_release_refuses_pending_merge_runner(tree):
         "runner=crates/ferric-python/tests/test_derivation_scripts.py",
         "runner=crates/ferric-python/tests/test_unmerged.py",
     )
-    sub(tree, SEC, "registry: toy;", "registry: toy, toy2;")
+    sub(tree, SEC, "registry: toy -->", "registry: toy, toy2 -->")
     assert check(tree).errors == []
     assert any("pending-merge" in e for e in check(tree, release=True).errors)
 
@@ -490,9 +510,9 @@ def test_item_body_skips_semicolons_inside_brackets():
 # ---------------------------------------------------------------- appendices
 APP = {n: f"book/src/{f}" for n, f in bb.GENERATED.items()}
 
-APPENDIX_D = """# Appendix D: Toy interface
+APPENDIX_D = """# Appendix D: Toy interface {#appendix-d}
 
-<!-- section: D; status: gap; registry: none; theory: none -->
+<!-- status: gap; registry: none -->
 
 Entry `ferric-toy/src/lib.rs::other_fn`.
 """
@@ -539,13 +559,14 @@ def test_book_change_makes_the_appendices_stale(tree):
 
 
 def test_appendix_a_lists_boxes_scripts_registry_and_todos(tree):
+    # The toy tree has one chapter, so its section is 1.1 whatever its directory.
     text = (tree / APP["A"]).read_text()
-    assert "| `toy.a` | 10.1 | `scripts/toy_sympy.py` | 1 | - |" in text
-    assert "| `scripts/toy_sympy.py` | 1 | 10.1 |" in text
-    assert "| toy | 10.1 |" in text and "| toy2 | - |" in text
+    assert "| `toy.a` | 1.1 | `scripts/toy_sympy.py` | 1 | - |" in text
+    assert "| `scripts/toy_sympy.py` | 1 | 1.1 |" in text
+    assert "| toy | 1.1 |" in text and "| toy2 | - |" in text
     assert "| holey | no proof |" in text
-    a4 = text.split("## A.4")[1]
-    assert "| `toy.b` | 10.1 | add a claim |" in a4 and "toy.a" not in a4
+    a4 = text.split("{#appendix-a-unverified}")[1]
+    assert "| `toy.b` | 1.1 | add a claim |" in a4 and "toy.a" not in a4
     assert "1 verified equations and 1 unverified" in text
 
 
@@ -553,9 +574,9 @@ def test_appendix_b_lists_each_function_once_with_its_sections(tree):
     write(
         tree,
         {
-            "book/src/11-x/index.md": "# 11. X\n",
+            "book/src/11-x/index.md": "# X {#x}\n",
             "book/src/11-x/01-y.md": (
-                "# 11.1 Y\n\n<!-- section: 11.1; status: edit; registry: toy2 -->\n\n"
+                "# Y {#y}\n\n<!-- status: edit; registry: toy2 -->\n\n"
                 "Uses `ferric-toy/src/lib.rs::pair_energy` and "
                 "`ferric-toy/src/sub/deep.rs::in_submodule`.\n"
             ),
@@ -565,10 +586,10 @@ def test_appendix_b_lists_each_function_once_with_its_sections(tree):
     assert check(tree).errors == []
     text = (tree / APP["B"]).read_text()
     assert "## B.ferric-toy" in text
-    assert "| `ferric-toy/src/lib.rs::pair_energy` | 10.1, 11.1 |" in text
+    assert "| `ferric-toy/src/lib.rs::pair_energy` | 1.1, 2.1 |" in text
     assert text.count("`ferric-toy/src/lib.rs::pair_energy`") == 1
-    assert "| `ferric-toy/src/lib.rs::other_fn` | 10.1 |" in text
-    assert "ferric-toy/src/lib.rs::toy_test` | 10.1 |" in text  # a rust_test field
+    assert "| `ferric-toy/src/lib.rs::other_fn` | 1.1 |" in text
+    assert "ferric-toy/src/lib.rs::toy_test` | 1.1 |" in text  # a rust_test field
     # the generated appendices do not index themselves
     assert "App. " not in text
 
@@ -607,7 +628,7 @@ def test_handwritten_appendix_is_checked_indexed_and_listed_last(tree):
     resummarize(tree)
     assert check(tree).errors == []
     assert (
-        "| `ferric-toy/src/lib.rs::other_fn` | 10.1, App. D |"
+        "| `ferric-toy/src/lib.rs::other_fn` | 1.1, App. D |"
         in (tree / APP["B"]).read_text()
     )
     lines = (tree / "book/src/SUMMARY.md").read_text().splitlines()
@@ -621,9 +642,14 @@ def test_handwritten_appendix_is_checked_indexed_and_listed_last(tree):
             "[Appendix A: Verified equations and proof scripts](appendix-a-equations.md)"
         )
     )
-    sub(tree, "book/src/appendix-d-toy.md", "section: D", "section: E")
-    assert any("does not match" in e for e in check(tree).errors)
-    sub(tree, "book/src/appendix-d-toy.md", "section: E", "section: D")
+    sub(tree, "book/src/appendix-d-toy.md", " {#appendix-d}", "")
+    assert any("has no label" in e for e in check(tree).errors)
+    sub(
+        tree,
+        "book/src/appendix-d-toy.md",
+        "Toy interface",
+        "Toy interface {#appendix-d}",
+    )
     sub(tree, "book/src/appendix-d-toy.md", "other_fn", "no_such_fn")
     assert any("not declared" in e for e in check(tree).errors)
 
@@ -635,18 +661,18 @@ PLAN = """# Plan
 
 ### Part X. Toy part
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| 10.1 | Toy section | none | none | ready |
-| 10.2 | Not written yet | none | none | gap |
+| `toy` | Toy section | none | none | ready |
+| `not-written` | Not written yet | none | none | gap |
 
 ### Appendices
 
-| § | Section | Sources | Code | Status |
+| Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| A | Equations | none | none | ready |
-| B | Functions | none | none | gap |
-| C | Grades | none | none | ready |
+| `appendix-a` | Equations | none | none | ready |
+| `appendix-b` | Functions | none | none | gap |
+| `appendix-c` | Grades | none | none | ready |
 
 ## 4. Coverage
 
@@ -672,17 +698,28 @@ def test_plan_status_drift_is_reported_with_the_section(tree):
     )
     errs = check(tree, regen=False).errors
     assert any(
-        "10.1 (PLAN edit, section ready)" in e and "--write-plan" in e for e in errs
+        "toy (PLAN edit, section ready)" in e and "--write-plan" in e for e in errs
     )
 
 
 def test_plan_update_fixes_statuses_and_recounts(tree):
-    write(tree, {"book/PLAN.md": PLAN.replace("| ready |\n| 10.2", "| edit |\n| 10.2")})
+    write(
+        tree,
+        {
+            "book/PLAN.md": PLAN.replace(
+                "| ready |\n| `not-written`", "| edit |\n| `not-written`"
+            )
+        },
+    )
     new = bb.plan_updated(tree)
-    assert "| 10.1 | Toy section | none | none | ready |" in new
-    assert "| 10.2 | Not written yet | none | none | gap |" in new  # unwritten: kept
+    assert "| `toy` | Toy section | none | none | ready |" in new
+    assert (
+        "| `not-written` | Not written yet | none | none | gap |" in new
+    )  # unwritten: kept
     assert "| X. Toy part | 1 | 0 | 1 | 0 | 2 |" in new
-    assert "| B | Functions | none | none | ready |" in new  # follows the header
+    assert (
+        "| `appendix-b` | Functions | none | none | ready |" in new
+    )  # follows the header
     assert "| Appendices | 3 | 0 | 0 | 0 | 3 |" in new
     assert "| **Total** | **4** | **0** | **1** | **0** | **5** |" in new
     assert "5 sections: 80% `ready`" in new
@@ -697,11 +734,13 @@ def test_section_without_a_plan_row_is_an_error(tree):
     write(
         tree,
         {
-            "book/src/12-z/01-w.md": "# 12.1 W\n\n<!-- section: 12.1; status: edit; registry: - -->\n"
+            "book/src/12-z/index.md": "# Z {#z}\n",
+            "book/src/12-z/01-w.md": "# W {#w}\n\n<!-- status: edit; registry: - -->\n",
         },
     )
+    resummarize(tree)
     errs = check(tree).errors
-    assert any("section 12.1 has a file but no row" in e for e in errs)
+    assert any("section w has a file but no row" in e for e in errs)
 
 
 def test_no_plan_file_means_no_plan_check(tree):
@@ -762,9 +801,139 @@ def test_pdf_job_has_what_the_figures_and_a_dry_run_need():
 
 
 def test_pdf_job_does_not_number_sections_twice():
-    # Titles carry their own numbers ("3.2 Two-, three- and four-center
-    # integrals"); pandoc's --number-sections printed "11 3.2 ..." in rc12's PDF.
+    # --concat writes the numbers into the titles ("3.2 Two-, three- and
+    # four-center integrals"); pandoc's --number-sections printed "11 3.2 ..."
+    # in rc12's PDF.
     wf = (SCRIPT.parents[1] / ".github/workflows/book.yml").read_text(encoding="utf-8")
     pandoc = wf[wf.index('pandoc "$RUNNER_TEMP/ferric-book.md"') :]
     pandoc = pandoc[: pandoc.index('-o "ferric-book-')]
     assert "--number-sections" not in pandoc
+
+
+# ---------------------------------------------------------------- numbering
+def numbered(tree, page=SEC, link=True):
+    bb._src_cache.clear()
+    rel = Path(page).relative_to("book/src")
+    return bb.number_page((tree / page).read_text(), rel, bb.numbering(tree), link=link)
+
+
+def test_numbers_come_from_position_and_references_become_links(tree):
+    out = numbered(tree)
+    assert out.startswith("# 1.1 Toy section {#toy}")
+    # Boxes and display equations share one per-chapter series, in page order.
+    assert '**Verified equation <span id="eq:toy-a"></span>1.1**' in out
+    assert '**Unverified equation <span id="eq:toy-b"></span>1.2**' in out
+    assert '<span id="eq:toy-energy"></span>$$ E = a b . \\tag{1.3} $$' in out
+    assert (
+        "The energy ([1.3](#eq:toy-energy)) is box [1.1](#eq:toy-a) of chapter "
+        "[1](index.md#toy-chapter)." in out
+    )
+    chapter = numbered(tree, "book/src/10-mp2/index.md")
+    assert chapter.startswith("# 1. Toy chapter {#toy-chapter}")
+
+
+def test_inserting_an_equation_renumbers_the_ones_after_it(tree):
+    sub(
+        tree, SEC, "> **Unverified", "$$ x = 1 \\label{eq:toy-new} $$\n\n> **Unverified"
+    )
+    out = numbered(tree)
+    assert "\\tag{1.2}" in out and "\\tag{1.4}" in out
+    assert "([1.4](#eq:toy-energy))" in out
+    assert check(tree).errors == []
+
+
+def test_concat_references_are_plain_numbers(tree):
+    out = numbered(tree, link=False)
+    assert "The energy (1.3) is box 1.1 of chapter 1." in out
+    assert "](#eq:" not in out
+
+
+def test_unlabelled_subheading_is_not_numbered(tree):
+    sub(tree, SEC, "Inline math", "## Aside\n\n## Part {#toy-part}\n\nInline math")
+    out = numbered(tree)
+    assert "## Aside\n" in out and "## 1.1.1 Part {#toy-part}" in out
+    assert check(tree).errors == []
+
+
+def test_brace_form_reference_before_a_letter(tree):
+    sub(tree, SEC, "(@eq:toy-energy)", "({@eq:toy-energy}b)")
+    assert "([1.3](#eq:toy-energy)b)" in numbered(tree)
+    assert check(tree).errors == []
+
+
+def test_a_number_that_names_its_source_is_not_a_reference(tree):
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        "The dissertation's section 4.4 and Eq. 3.19 of the paper.\n\nInline math",
+    )
+    assert check(tree).errors == []
+
+
+def test_allowlist_admits_a_listed_number_on_its_page_only(tree):
+    sub(tree, SEC, "Inline math", "Read section 4.4 first.\n\nInline math")
+    assert any("section 4.4" in e for e in check(tree).errors)
+    (tree / "book/number-allowlist.txt").write_text(
+        "# comment\nbook/src/10-mp2/index.md\tsection 4.4\n"
+    )
+    assert any("section 4.4" in e for e in check(tree).errors)
+    (tree / "book/number-allowlist.txt").write_text(f"{SEC}\tsection 4.4\n")
+    assert check(tree).errors == []
+
+
+# ------------------------------------------------------------ theory indexes
+THEORY = "crates/ferric-toy/theory.md"
+
+
+def test_theory_index_lists_the_citing_page_with_scripts_and_boxes(tree):
+    text = (tree / THEORY).read_text()
+    assert bb.THEORY_NOTE in text
+    row = (
+        "| Toy section | `toy` | [`book/src/10-mp2/01-toy.md`](../../book/src/10-mp2/01-toy.md)"
+        " | `scripts/toy_sympy.py` | `toy.a` |"
+    )
+    assert row in text
+    assert check(tree, regen=False).errors == []
+
+
+def test_hand_edited_theory_index_is_stale(tree):
+    """Mutation: a hand edit of a generated theory.md must fail --check."""
+    p = tree / THEORY
+    p.write_text(p.read_text() + "\n## A hand-written derivation\n\n$E = 0$\n")
+    errs = check(tree, regen=False).errors
+    assert any(THEORY in e and "stale" in e for e in errs)
+    bb.write_theory_index(tree)
+    assert check(tree, regen=False).errors == []
+
+
+def test_book_change_makes_the_theory_index_stale(tree):
+    """Renaming the citing section must show up in the crate's index."""
+    sub(tree, SEC, "# Toy section {#toy}", "# Toy section renamed {#toy}")
+    resummarize(tree)
+    bb.write_appendices(tree)
+    errs = check(tree, regen=False).errors
+    assert any(THEORY in e and "stale" in e for e in errs)
+
+
+def test_crate_cited_by_no_page_is_an_error(tree):
+    write(tree, {"crates/ferric-lonely/theory.md": "stub\n"})
+    errs = check(tree).errors
+    assert any("ferric-lonely/theory.md" in e and "no book section" in e for e in errs)
+
+
+# ------------------------------------------------------- links into the book
+def test_link_into_the_book_resolves(tree):
+    write(tree, {"scripts/toy_doc.py": '"""See book/src/10-mp2/01-toy.md#toy."""\n'})
+    assert check(tree).errors == []
+
+
+@pytest.mark.parametrize(
+    "link",
+    ["book/src/10-mp2/01-toy.md#nonesuch", "book/src/10-mp2/09-gone.md#toy"],
+)
+def test_dangling_link_into_the_book_is_an_error(tree, link):
+    """Mutation: a relinked reference whose label or page no longer exists."""
+    write(tree, {"crates/ferric-toy/src/doc.rs": f"//! See `{link}`.\n"})
+    errs = check(tree).errors
+    assert any("ferric-toy/src/doc.rs:1" in e for e in errs)

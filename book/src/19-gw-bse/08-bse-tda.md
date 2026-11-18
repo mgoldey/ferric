@@ -1,15 +1,17 @@
-# 19.8 The Bethe–Salpeter equation in the Tamm–Dancoff approximation
+# The Bethe–Salpeter equation in the Tamm–Dancoff approximation {#bse-tda}
 
-<!-- section: 19.8; status: ready; registry: bse-tda;
-     theory: crates/ferric-gw/theory.md#"11. BSE-TDA" -->
+<!-- status: ready; registry: bse-tda -->
 
-An excitation is a correlated electron–hole pair. The Bethe–Salpeter equation
-treats the pair with two interactions: the electron and the hole attract each
-other through the screened interaction $W$, and they exchange through the
-bare interaction $v$. On top of GW quasiparticle energies, with a static $W$
-and without the de-excitation block (Tamm–Dancoff), it is a symmetric
-eigenproblem in the space of single excitations, the same shape as CIS or
-TDA-TDDFT (section 20.1) with a different kernel.
+A quasiparticle gap $\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i$ is the cost of
+removing an electron from $i$ and, separately, adding one to $a$. An optical
+excitation does both at once: the excited electron stays in the molecule,
+next to the hole it left. The two attract each other, and that attraction is
+screened by the other electrons, so it is $W$. The Bethe–Salpeter equation
+adds this electron–hole interaction, plus a bare exchange term, to the
+quasiparticle gaps. With a static $W$ and without the de-excitation block
+(Tamm–Dancoff), it is a symmetric eigenproblem in the space of single
+excitations, the same shape as CIS or TDA-TDDFT (section @sec:response) with a
+different kernel.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -26,13 +28,102 @@ TDA-TDDFT (section 20.1) with a different kernel.
 | CLI | `method.kind = "bse-tda"`, `[rpa]` and `[gw] frozen_core`; example `examples/water-bse-tda.toml` |
 | Python | `run_bse_tda` |
 
-## 19.8.1 The matrix
+## The matrix {#bse-tda-matrix}
 
-<!-- include: crates/ferric-gw/theory.md#"11. BSE-TDA" -->
+**In spin orbitals.** The Bethe–Salpeter kernel for a particle–hole pair has
+two terms. In the Hartree-type term the pair annihilates into the bare
+interaction $v$ and is recreated as another pair. In the direct term the
+particle and the hole exchange a screened interaction $W$. Take a static
+$W(0)$, quasiparticle energies on the diagonal, and the Tamm–Dancoff
+approximation (no de-excitation block). The matrix over single excitations
+$i_\sigma\to a_\sigma$ is
 
-The assembly is a plain double loop over $(ia, jb)$ with the two integral
-closures; each row is written once, so the loop parallelizes over rows
-without a reduction (serial below eight rows).
+$$ A_{i_\sigma a_\sigma,\,j_\tau b_\tau} = (\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i)\,\delta_{ij}\delta_{ab}\delta_{\sigma\tau} + (ia|jb) - \delta_{\sigma\tau}\,(ab|W(0)|ij) . $$
+
+The Hartree term connects every spin pair: the transition density
+$\phi_i\phi_a$ has no spin dependence beyond $\sigma$, and $v$ does not see
+spin. The screened term connects equal spins only, because the electron and
+hole it acts on must keep their spins.
+
+**Spin-adapt.** The matrix has the block form
+$\begin{pmatrix}A_{\alpha\alpha}&A_{\alpha\beta}\\A_{\alpha\beta}&A_{\alpha\alpha}\end{pmatrix}$,
+with $A_{\alpha\alpha} = \Delta + (ia|jb) - (ab|W|ij)$ and
+$A_{\alpha\beta} = (ia|jb)$. Rotate the spin index with
+$U = \tfrac1{\sqrt2}\begin{pmatrix}1&1\\1&-1\end{pmatrix}$. The rotation
+block-diagonalizes it into a singlet block, $A_{\alpha\alpha}+A_{\alpha\beta}$,
+and a triplet block, $A_{\alpha\alpha}-A_{\alpha\beta}$. The singlet block is
+the code's matrix, with $(ia|jb)$ counted twice:
+
+$$ \mathbf A_{ia,jb} = (\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i)\,\delta_{ij}\delta_{ab} + 2(ia|jb) - (ab|W(0)|ij), $$
+
+$$ (pq|W(0)|rs) = (pq|rs) + \sum_\xi w_\xi B^\xi_{pq}B^\xi_{rs}, \qquad w_\xi = \frac1{\lambda_\xi(0)} - 1 . $$
+
+The triplet block is $\Delta - (ab|W|ij)$, with no Hartree term.
+
+**Check the limits.** Drop the kernel and the eigenvalues are the
+quasiparticle gaps $\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i$. Replace $W$ by
+$v$ and the quasiparticle energies by Hartree–Fock ones, and the matrix is
+CIS (`ferric-gw/src/bse.rs::run_cis_tda`). On the diagonal the direct term
+$-(aa|W|ii)$ is the electron–hole attraction. CIS uses the bare
+$-(aa|ii)$; BSE uses the interaction screened by the other electrons.
+
+**The screened kernel.** The bare part of $(pq|W(0)|rs)$ comes from $B$, and
+the dynamic part from the PDEP modes. For a complete basis the kernel equals
+$\sum_\xi \lambda_\xi(0)^{-1} B^\xi B^\xi$ (section @sec:screened-interaction-pdep-basis), and the split form
+stays correct when modes are truncated. The Hartree term uses bare $v$; the
+direct term uses the static full $W$. This is static-screening BSE-TDA as
+defined here: ferric does not add a dynamical correction to $W$.
+
+**How the matrix is checked.** On a random model with a complete auxiliary
+basis, claim B1 compares the code's singlet matrix with the singlet block of
+the spin-orbital matrix built with $W = B^{\mathsf T}\tilde\varepsilon^{-1}B$,
+a matrix inverse, not the PDEP eigenbasis. The triplet block is
+$\Delta - W(ab|ij)$, the singlet–triplet blocks vanish, and the spin-orbital
+spectrum is the union of the two. Claim B2 sets $W\to v$ with a diagonal Fock
+matrix and checks that the same matrix equals
+$\langle\Phi_i^a|H - E_0|\Phi_j^b\rangle$ over Jordan–Wigner determinants of
+an 8-spin-orbital Fock space, and that the Brillouin condition holds.
+
+> **Verified equation {#eq:bse-tda-box}** · the singlet BSE-TDA matrix is the spin adaptation of the spin-orbital one
+>
+> On a random closed-shell model with a complete auxiliary basis, the code's
+> matrix equals the singlet block of the spin-orbital matrix
+> $\delta\Delta + (ia|jb) - \delta_{\sigma\tau}(ab|W|ij)$ built with
+> $W = B^{\mathsf T}\tilde\varepsilon^{-1}B$, a matrix inverse that shares
+> nothing with the PDEP eigenbasis; the triplet block is
+> $\Delta - W(ab|ij)$, the singlet–triplet blocks vanish and the spin-orbital
+> spectrum is the union of the two. With $W\to v$ the same matrix equals a
+> brute-force Jordan–Wigner CIS over determinants.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/gw_bse_rpax_sympy.py`, claims S1, B1, B2 |
+> | Negative control | the singlet and triplet blocks must differ (the $2(ia|jb)$ Hartree term is live); the brute-force triplet block must not equal the singlet matrix; the runner sets the Hartree prefactor 2 to 1 |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-gw/src/bse.rs::run_bse_tda` |
+> | Code test | `cis_tda_anchor_vs_numpy_and_pyscf_tda` in `crates/ferric-gw/tests/validation_bse.rs` |
+>
+> <!-- verified: id=bse.tda.matrix; script=scripts/gw_bse_rpax_sympy.py; claim=B1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::run_bse_tda; rust_test=ferric-gw/tests/validation_bse.rs::cis_tda_anchor_vs_numpy_and_pyscf_tda; registry=bse-tda -->
+
+> **Verified equation {#eq:bse-tda-kernel}** · the screened kernel from the complete PDEP basis
+>
+> For a complete orthonormal basis, $v + \sum_\xi w_\xi B^\xi B^\xi = \sum_\xi\lambda_\xi(0)^{-1}B^\xi B^\xi$.
+> The code uses the left side, which stays correct when modes are dropped.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/gw_self_energy_sympy.py`, claim 8 (and claim B1 above for the matrix-inverse route) |
+> | Negative control | a truncated basis must miss $(pq|rs)$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-gw/src/bse.rs::run_bse_tda` |
+>
+> <!-- verified: id=bse.tda.kernel; script=scripts/gw_self_energy_sympy.py; claim=8; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::run_bse_tda; registry=bse-tda -->
+
+**The assembly.** `ferric-gw/src/bse.rs::run_bse_tda` fills the matrix with a
+double loop over $(ia, jb)$ and two integral closures, `bare` and
+`screened`, inside the row closure `fill_row`. Each row is written once, so
+the loop parallelizes over rows without a reduction (serial below eight
+rows):
 
 <!-- excerpt: ferric-gw/src/bse.rs::run_bse_tda -->
 ```rust
@@ -63,51 +154,55 @@ without a reduction (serial below eight rows).
 | $(ab|W(0)|ij)$ | `scr` |
 | $\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i$ | `eps_a - eps_i` |
 
-> **Verified equation 19.13** · the singlet BSE-TDA matrix is the spin adaptation of the spin-orbital one
->
-> On a random closed-shell model with a complete auxiliary basis, the code's
-> matrix equals the singlet block of the spin-orbital matrix
-> $\delta\Delta + (ia|jb) - \delta_{\sigma\tau}(ab|W|ij)$ built with
-> $W = B^{\mathsf T}\tilde\varepsilon^{-1}B$, a matrix inverse that shares
-> nothing with the PDEP eigenbasis; the triplet block is
-> $\Delta - W(ab|ij)$, the singlet–triplet blocks vanish and the spin-orbital
-> spectrum is the union of the two. With $W\to v$ the same matrix equals a
-> brute-force Jordan–Wigner CIS over determinants.
->
-> | | |
-> |---|---|
-> | Proof | `scripts/gw_bse_rpax_sympy.py`, claims S1, B1, B2 |
-> | Negative control | the singlet and triplet blocks must differ (the $2(ia|jb)$ Hartree term is live); the brute-force triplet block must not equal the singlet matrix; the runner sets the Hartree prefactor 2 to 1 |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-gw/src/bse.rs::run_bse_tda` |
-> | Code test | `cis_tda_anchor_vs_numpy_and_pyscf_tda` in `crates/ferric-gw/tests/validation_bse.rs` |
->
-> <!-- verified: id=bse.tda.matrix; script=scripts/gw_bse_rpax_sympy.py; claim=B1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::run_bse_tda; rust_test=ferric-gw/tests/validation_bse.rs::cis_tda_anchor_vs_numpy_and_pyscf_tda; registry=bse-tda -->
+Each closure call contracts over $N_{\rm aux}$ (and $N_{\rm pdep}$ for
+`screened`) on the fly. The matrix is then diagonalized densely; LAPACK
+returns the eigenvalues ascending with matching eigenvector columns.
 
-> **Verified equation 19.14** · the screened kernel from the complete PDEP basis
->
-> For a complete orthonormal basis, $v + \sum_\xi w_\xi B^\xi B^\xi = \sum_\xi\lambda_\xi(0)^{-1}B^\xi B^\xi$.
-> The code uses the left side, which stays correct when modes are dropped.
->
-> | | |
-> |---|---|
-> | Proof | `scripts/gw_self_energy_sympy.py`, claim 8 (and claim B1 above for the matrix-inverse route) |
-> | Negative control | a truncated basis must miss $(pq|rs)$ |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-gw/src/bse.rs::run_bse_tda` |
->
-> <!-- verified: id=bse.tda.kernel; script=scripts/gw_self_energy_sympy.py; claim=8; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::run_bse_tda; registry=bse-tda -->
+## Oscillator strengths {#bse-tda-oscillator-strengths}
 
-## 19.8.2 Oscillator strengths
+**The transition moment.** A singlet root with amplitudes $X$ is the
+spin-adapted combination of the $\alpha$ and $\beta$ excitations:
 
-The singlet state is a spin-adapted combination of the $\alpha$ and $\beta$
-excitations, so its transition dipole to the ground state is $\sqrt2$ times
-the amplitude-weighted occupied–virtual dipole:
-$f_n = \tfrac23\Omega_n\,\lvert\sqrt2\sum_{ia}X_{n,ia}\langle i|\mathbf r|a\rangle\rvert^2$.
-The occupied–virtual dipole blocks do not depend on the origin, by
-orbital orthogonality.
+$$ |\Psi_n\rangle = \sum_{ia}X_{ia}\,\tfrac1{\sqrt2}\,\big(a^\dagger_{a\alpha}a_{i\alpha} + a^\dagger_{a\beta}a_{i\beta}\big)|\Phi_0\rangle . $$
 
-> **Verified equation 19.15** · the transition moment and the sum rule
+The dipole operator is a one-electron operator summed over both spins. Each
+spin term gives $\tfrac1{\sqrt2}\sum_{ia}X_{ia}\langle i|\mathbf r|a\rangle$,
+and the two add:
+
+$$ \langle 0|\mathbf r|n\rangle = \sqrt2\sum_{ia}X_{ia}\langle i|\mathbf r|a\rangle, \qquad f_n = \tfrac23\,\Omega_n\,|\langle 0|\mathbf r|n\rangle|^2 . $$
+
+The occupied–virtual dipole blocks do not depend on the origin, because the
+occupied and virtual orbitals are orthogonal. The code takes the AO dipole
+about the origin. The loop over states in
+`ferric-gw/src/bse.rs::tda_oscillator_strengths`:
+
+<!-- excerpt: ferric-gw/src/bse.rs::tda_oscillator_strengths -->
+```rust
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    acc += x[i * nvir + a] * dip[(i, a)];
+                }
+            }
+            mu[d] = std::f64::consts::SQRT_2 * acc;
+        }
+        let mu2 = mu[0] * mu[0] + mu[1] * mu[1] + mu[2] * mu[2];
+        f.push((2.0 / 3.0) * evals[state] * mu2);
+```
+
+| Code | Equation |
+|---|---|
+| `x[i * nvir + a]` | $X_{n,ia}$ |
+| `dip[(i, a)]` | $\langle i|r_d|a\rangle$ |
+| `SQRT_2 * acc` | $\langle 0|r_d|n\rangle$ |
+| `(2.0 / 3.0) * evals[state] * mu2` | $f_n$ |
+
+**How the factors are checked.** Claim B3 evaluates
+$\langle\Phi_0|\mathbf r|\Psi_n\rangle$ over the Jordan–Wigner determinants.
+Claim B4 checks the sum rule
+$\sum_n f_n = \tfrac43\sum_x \mathbf r_x^{\mathsf T}\mathbf A\,\mathbf r_x$ over
+all roots, which fixes both the $\sqrt2$ and the factor $\Omega$.
+
+> **Verified equation {#eq:bse-tda-osc}** · the transition moment and the sum rule
 >
 > $\langle\Phi_0|\mathbf r|\Psi_n\rangle$ over Jordan–Wigner determinants,
 > with $\Psi_n$ the spin-adapted singlet of the CIS roots, equals
@@ -125,13 +220,46 @@ orbital orthogonality.
 >
 > <!-- verified: id=bse.tda.osc; script=scripts/gw_bse_rpax_sympy.py; claim=B3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::tda_oscillator_strengths; rust_test=ferric-gw/tests/bse_oscillator_strength.rs::cis_tda_oscillator_strengths_match_pyscf_df_kernel; registry=bse-tda -->
 
-## 19.8.3 The algorithm
+The lowest five singlets of water / cc-pVDZ, from the `589b50832` build, with
+their oscillator strengths. Every root lies below the G0W0@HF gap of the
+first line: the screened electron–hole attraction of the direct term pulls
+them down. The second root is dark ($f = 0$ to five places).
+
+```python
+# Water / cc-pVDZ: lowest five BSE-TDA singlets, their oscillator strengths, and the G0W0 gap they sit below.
+import ferric
+
+HA_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_bse_tda(mol, bs, aux, n_quad=100, trunc_thresh=0.0)
+homo = r.nocc - 1  # active indices; frozen_core = 0 here
+gap = r.eps_qp[homo + 1] - r.eps_qp[homo]
+print(f"G0W0@HF gap: {gap*HA_EV:.4f} eV")
+for n in range(5):
+    print(f"Omega_{n}: {r.omega[n]*HA_EV:9.4f} eV   f = {r.oscillator_strength[n]:.5f}")
+print("certificate warnings:", r.certificate.get("warnings"))
+```
+
+```text
+G0W0@HF gap: 16.8635 eV
+Omega_0:    8.4576 eV   f = 0.02685
+Omega_1:   10.5022 eV   f = 0.00000
+Omega_2:   11.1690 eV   f = 0.10004
+Omega_3:   13.2132 eV   f = 0.07737
+Omega_4:   14.9967 eV   f = 0.29619
+certificate warnings: []
+```
+
+## The algorithm {#bse-tda-algorithm}
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | G0W0@HF for **all** active MOs (`qp_mos = 0..nmo`) | section 19.3 for every state | `run_gw` |
+| 1 | G0W0@HF for **all** active MOs (`qp_mos = 0..nmo`) | section @sec:correlation-self-energy for every state | `run_gw` |
 | 2 | flag the states whose QP solve is poorly determined, among those on the diagonal | $O(n_{\rm act})$ | `flag_suspect_qp` |
-| 3 | $B$, redressed PDEP modes, $B^\xi$ | section 19.2 | `build_full_b`, `redress_with_check`, `project_b_into_pdep` |
+| 3 | $B$, redressed PDEP modes, $B^\xi$ | section @sec:screened-interaction | `build_full_b`, `redress_with_check`, `project_b_into_pdep` |
 | 4 | the dense matrix $\mathbf A$, $n = n_on_v$ | $n^2$ entries, each a contraction over $N_{\rm aux}$ and $N_{\rm pdep}$ | `run_bse_tda` |
 | 5 | dense `eigh` | $n^3$ | `run_bse_tda` |
 | 6 | $f_n$ from the dipole blocks | $O(n^2)$ | `tda_oscillator_strengths` |
@@ -153,7 +281,7 @@ in `BseResult::qp_suspect_mos`, with a warning, instead of replacing them.
 refuses a system whose $(n_on_v)^2$ does not fit. There is no iterative
 solver to fall back to.
 
-## 19.8.4 Options and limits
+## Options and limits {#bse-tda-options-limits}
 
 | Option | Effect |
 |---|---|
@@ -171,7 +299,7 @@ are coarser. The grade is Smoke: the lowest five singlets match an
 independent numpy BSE-TDA given the same QP energies, and the physics is not
 benchmarked against experiment here.
 
-## 19.8.5 Numerical anchors
+## Numerical anchors {#bse-tda-numerical-anchors}
 
 From `site/src/reference/validation.md` (BSE-TDA row of the anchors table):
 
@@ -182,10 +310,12 @@ From `site/src/reference/validation.md` (BSE-TDA row of the anchors table):
 | $\Omega$ with each side's own QP energies | same | $\le 2.2\times10^{-7}$ Ha | same |
 | CIS limit against numpy DF-CIS | same | $\le 1.6\times10^{-9}$ Ha | `cis_tda_anchor_vs_numpy_and_pyscf_tda` |
 
-## 19.8.6 Sources
+Further tests: `crates/ferric-gw/tests/bse_oscillator_strength.rs` and
+`crates/ferric-gw/tests/h2o_bse_tda.rs`.
+
+## Sources {#bse-tda-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-gw/theory.md`, "BSE-TDA" | the definition, the singlet reduction, the oscillator strength |
 | `scripts/gw_bse_rpax_sympy.py`, claims S1, S2, B1 to B4 | the proofs |
 | Blase, Duchemin and Jacquemin, *Chem. Soc. Rev.* **47**, 1022 (2018) | BSE for molecules |

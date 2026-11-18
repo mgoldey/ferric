@@ -31,10 +31,12 @@ use ferric_integrals::operator::Operator;
 /// leading (monopole) term decays as `1/R`. The distance factor must therefore
 /// scale as `1/R_eff` with an ext_**SUM** numerator — NOT the `ext_ij * ext_kl / R`
 /// product-over-center-to-center form used here previously, which under-states
-/// the cloud charges and collapses far too fast. The numerator being `ext_sum`
-/// makes the factor continuous and equal to 1 at contact (`R = ext_sum`), so it
-/// reduces smoothly to plain Schwarz for overlapping/penetrating clouds where
-/// the multipole expansion is not valid at all.
+/// the cloud charges and collapses far too fast. The factor is clamped to 1 for
+/// overlapping/penetrating clouds (`R <= ext_sum`, where the multipole
+/// expansion is not valid at all) and, because `SAFETY * ext_sum / R_eff`
+/// exceeds 1 until `R_eff = SAFETY * ext_sum`, it stays at 1 out to
+/// `R = (1 + SAFETY) * ext_sum = 2.10 * ext_sum`, then decays continuously as
+/// `1/R_eff`. Inside that radius the bound is plain Schwarz.
 ///
 /// This mirrors [`ferric_integrals::qqr3::QqrBounds3`], the validated 3-index
 /// sibling, whose module docs record the same correction for `(P|mn)`.
@@ -378,7 +380,9 @@ impl Bound for QqrBounds {
         let ext_sum = self.pair_extents[idx_bra] + self.pair_extents[idx_ket];
         // Edge-to-edge separation: while the clouds overlap (r <= ext_sum) the
         // integral is dominated by the penetration region, where the 1/R decay
-        // has not set in, so the factor stays 1 and the bound is plain Schwarz.
+        // has not set in, so the factor is 1 and the bound is plain Schwarz.
+        // The min(1) clamp keeps it at 1 out to r = 2.10 * ext_sum
+        // (r_eff = SAFETY_FACTOR * ext_sum); it decays only beyond that.
         let r_eff = (r - ext_sum).max(0.0);
         let decay = if r_eff > 0.0 {
             (SAFETY_FACTOR * ext_sum / r_eff).min(1.0)
@@ -535,8 +539,8 @@ mod tests {
     #[test]
     fn test_estimate_is_valid_upper_bound_benzene_coulomb() {
         // Benzene is the smallest system here where pair clouds actually
-        // separate (~69% of pairs have R > ext_sum), so the distance envelope
-        // is genuinely exercised rather than clamped to 1 by overlap.
+        // separate (~69% of pairs have R > ext_sum), so some quartets reach
+        // R > 2.10 * ext_sum, where the distance envelope drops below 1.
         assert_estimate_bounds_true_integral(
             "../../testdata/molecules/benzene.xyz",
             "cc-pvdz",
@@ -576,9 +580,10 @@ mod tests {
         // The envelope must actually ENGAGE somewhere, or the "fix" would be a
         // bound that is merely Schwarz under another name.
         //
-        // This uses BENZENE, not water. Under the corrected edge-to-edge form
-        // the factor is 1 unless R > ext_ij + ext_kl, and water is too small for
-        // that to ever happen: at cc-pVDZ its extents are ~0.65-2.0 Bohr so
+        // This uses BENZENE, not water. Under the edge-to-edge form the factor
+        // is 1 unless R > 2.10 * (ext_ij + ext_kl) (R > ext_sum is needed even
+        // to leave the overlap branch), and water is too small for that to ever
+        // happen: at cc-pVDZ its extents are ~0.65-2.0 Bohr so
         // ext_sum is ~1.8, while its largest pair-center separation is 2.86 Bohr
         // — MEASURED 0/2211 quartets separated. Its clouds always penetrate, so
         // falling back to Schwarz there is correct behaviour, not a regression.

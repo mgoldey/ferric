@@ -40,7 +40,8 @@
 //!    `|δ(Hx)| <= 4 (2 (δG_c + δG_a) + 2 n_a δG_c + 12 n_a² δQ_a ‖x‖₁
 //!    + 4 n_a³ δQ_a xs)` as in `tests/casscf_direct.rs`.
 //!
-//! Measured numbers and mutations: `crates/ferric-ci/theory.md`.
+//! Measured numbers and mutations:
+//! `book/src/17-multireference/05-casscf.md#casscf-proven-optimizers`.
 
 mod casscf_common;
 

@@ -1,15 +1,21 @@
-# 27.3 Polarizabilities, PDEP modes and $C_6$
+# Polarizabilities, PDEP modes and $C_6$ {#polarizability-pdep-c6}
 
-<!-- section: 27.3; status: ready; registry: rpa-polarizability-c6, pdep-rpa;
-     theory: crates/ferric-rpa/theory.md#"Dispersion: Casimir-Polder C6" -->
+<!-- status: ready; registry: rpa-polarizability-c6, pdep-rpa -->
 
-The response arrays are the part of the bundle a cheaper model cannot
-reproduce from the density alone: the molecular polarizability, its split
-into atoms plus a charge-transfer remainder, the same split along the
-imaginary frequency axis, and the Casimir–Polder $C_6$ coefficients built on
-it. This section gives each definition as the code computes it and marks
-which identities a proof script checks. Section 21.1 derives the dielectric
-machinery; here the interest is what the arrays mean.
+A polarizability says how far the density moves when a field is switched on.
+That cannot be read off the ground-state density, so a model that predicts it
+needs a response calculation as its label. The bundle carries four kinds of
+response array: the molecular polarizability, its split into atoms plus a
+charge-transfer remainder, the same split along the imaginary frequency axis,
+and the Casimir–Polder $C_6$ coefficients built on it.
+
+Section @sec:polarizabilities-from-dielectric-modes derives the dielectric response and section @sec:atomic-partitions-partition-unity-buys-polarizability the per-atom
+split; section @sec:casimir-polder-c6 derives the $C_6$ quadrature. This section restates each
+result only as far as a consumer needs it: what the array is, which
+convention it depends on, and which identity a proof script checks. The plan
+follows the arrays: molecular α (@sec:polarizability-pdep-c6-molecular-polarizability), per-atom α and the remainder
+(@sec:polarizability-pdep-c6-per-atom-split-charge), the three dynamic sources (@sec:polarizability-pdep-c6-dynamic-polarizabilities-three-sources), $C_6$ (@sec:polarizability-pdep-c6-casimir-polder), the PDEP
+eigenvectors (@sec:polarizability-pdep-c6-pdep-eigenvectors) and the checks (@sec:polarizability-pdep-c6-well-these-checked).
 
 | Index | Range | Code name |
 |---|---|---|
@@ -29,32 +35,51 @@ machinery; here the interest is what the arrays mean.
 | CT remainder | `ferric-rpa/src/properties/per_atom.rs::{charge_transfer_remainder,charge_transfer_remainder_dynamic}` |
 | $C_6$ | `ferric-rpa/src/dispersion.rs::{casimir_polder_c6,ts_dynamic_polarizability,pdep_dynamic_polarizability}` |
 
-## 27.3.1 The molecular polarizability
+## The molecular polarizability {#polarizability-pdep-c6-molecular-polarizability}
 
-Let $\mu^j_{ia} = \langle\phi_i\lvert r_j\rvert\phi_a\rangle$, let
+Section @sec:polarizabilities-from-dielectric-modes-dielectric-form builds the polarizability from the dielectric matrix; here is
+the result in the form the code evaluates. Let
+$\mu^j_{ia} = \langle\phi_i\lvert r_j\rvert\phi_a\rangle$, let
 $\Delta_{ia} = \varepsilon_a - \varepsilon_i > 0$, and let $\tilde B_{P,ia}$
-be the density-fitted three-index factor of the auxiliary basis. With
+be the density-fitted three-index factor of the auxiliary basis. The
+frequency enters only through
 $g_{ia}(u) = \Delta_{ia}/(u^2 + \Delta_{ia}^2)$, which is $1/\Delta_{ia}$ at
-$u = 0$, the code evaluates
+$u = 0$ and falls off as $1/u^2$ at large $u$:
 
-$$ \alpha_{cj}(iu) = 4\,\mu^{c\,\mathsf T}(g\circ\mu^j) - 16\,\big(\tilde B(g\circ\mu^c)\big)^{\mathsf T}\,\tilde\varepsilon(u)^{-1}\,\big(\tilde B(g\circ\mu^j)\big), \qquad \tilde\varepsilon(u) = I + 4\,\tilde B\,\mathrm{diag}(g)\,\tilde B^{\mathsf T} . \tag{27.8} $$
+$$ \alpha_{cj}(iu) = 4\,\mu^{c\,\mathsf T}(g\circ\mu^j) - 16\,\big(\tilde B(g\circ\mu^c)\big)^{\mathsf T}\,\tilde\varepsilon(u)^{-1}\,\big(\tilde B(g\circ\mu^j)\big), \qquad \tilde\varepsilon(u) = I + 4\,\tilde B\,\mathrm{diag}(g)\,\tilde B^{\mathsf T} . \label{eq:polarizability-pdep-c6-1} $$
 
-The first term is the uncoupled sum over orbital pairs. The second screens it
-with the direct-RPA dielectric matrix in the auxiliary basis. It has the
-density-fitted Coulomb kernel only, no exchange kernel, so it is not a
-coupled-perturbed Hartree–Fock or Kohn–Sham polarizability. The solve uses
-every auxiliary function: it is not truncated to the PDEP modes. The result
-is symmetrized. Shifting the origin by $\mathbf t$ adds
-$\mathbf t\langle i\vert a\rangle = 0$ to every $\mu_{ia}$, so (27.8) does
-not depend on the origin.
+Read it in two parts. The first term is the uncoupled sum over orbital pairs:
+each excitation $i \to a$ responds to the field on its own. The second term
+screens it with the direct-RPA dielectric matrix in the auxiliary basis: the
+induced density makes a Coulomb potential that opposes the applied field. Set
+$\tilde B = 0$ and only the first term is left, the uncoupled limit.
 
-## 27.3.2 The per-atom split and the charge-transfer remainder
+For a label, three facts follow from the form of (@eq:polarizability-pdep-c6-1).
 
-The per-atom intrinsic polarizability of Krishtal, Senet and Van Alsenoy
-(J. Chem. Phys. 125, 034312 (2006)) replaces the molecular dipole on one side
-of (27.8) by an atom-centred, partition-weighted dipole:
+- **The kernel is Coulomb only.** It has the density-fitted Coulomb kernel
+  and no exchange kernel, so it is not a coupled-perturbed Hartree–Fock or
+  Kohn–Sham polarizability. Mixing it with CPHF values from another code
+  mixes definitions (section @sec:training-labels-response-properties).
+- **No mode truncation.** The solve uses every auxiliary function. It is not
+  truncated to the PDEP modes, so `trunc_thresh` does not change α.
+- **No origin.** Shifting the origin by $\mathbf t$ adds
+  $\mathbf t\langle i\vert a\rangle = 0$ to every $\mu_{ia}$, so (@eq:polarizability-pdep-c6-1) does
+  not depend on the origin.
 
-$$ m^{A,d}_{ia} = \sum_{g\in A} w_g\,(\mathbf r_g-\mathbf R_A)_d\,\phi_i(\mathbf r_g)\phi_a(\mathbf r_g), \qquad \alpha^A_{dj}(iu) = 4\,m^{A,d\,\mathsf T}(g\circ\mu^j) - 16\,\big(\tilde B(g\circ m^{A,d})\big)^{\mathsf T}\tilde\varepsilon^{-1}\big(\tilde B(g\circ\mu^j)\big) . \tag{27.9} $$
+The result is symmetrized.
+
+## The per-atom split and the charge-transfer remainder {#polarizability-pdep-c6-per-atom-split-charge}
+
+A per-atom polarizability is what a transferable model wants: one tensor per
+atom that it can predict from the atom's neighbourhood. The field still acts
+on the whole molecule, so the field side of (@eq:polarizability-pdep-c6-1) keeps the molecular
+dipole. What belongs to atom $A$ is the induced dipole inside $A$'s share of
+space, measured from $A$'s nucleus. The per-atom intrinsic polarizability of
+Krishtal, Senet and Van Alsenoy (J. Chem. Phys. 125, 034312 (2006))
+therefore replaces the molecular dipole on the other side of (@eq:polarizability-pdep-c6-1) by an
+atom-centred, partition-weighted dipole (section @sec:atomic-partitions-partition-unity-buys-polarizability derives it):
+
+$$ m^{A,d}_{ia} = \sum_{g\in A} w_g\,(\mathbf r_g-\mathbf R_A)_d\,\phi_i(\mathbf r_g)\phi_a(\mathbf r_g), \qquad \alpha^A_{dj}(iu) = 4\,m^{A,d\,\mathsf T}(g\circ\mu^j) - 16\,\big(\tilde B(g\circ m^{A,d})\big)^{\mathsf T}\tilde\varepsilon^{-1}\big(\tilde B(g\circ\mu^j)\big) . \label{eq:ml-alpha-per-atom-kernel} $$
 
 For the Becke partition, the sum runs over the points of the flat 75 × 110
 Becke–Lebedev grid whose home atom is $A$, with the Becke weight folded into
@@ -63,19 +88,21 @@ lattice of 0.20 Bohr spacing and 6 Bohr margin
 (`FERRIC_HIRSHFELD_SPACING`, `FERRIC_HIRSHFELD_MARGIN`). Each $\alpha^A$ is
 symmetrized.
 
-Because the partition weights sum to one at every point, the atom-centred
-dipoles miss exactly the part of the response that moves charge between
-atoms. The code keeps that part as a separate array:
+Why is there anything left over? Sum $m^A$ over atoms. The weights sum to one
+at every point, so $\sum_A m^A = \mu - \sum_A \mathbf R_A w_A$. The
+$\mu$ part rebuilds the molecular α. The $\sum_A\mathbf R_A w_A$ part is
+the dipole of charge that has moved from one atom's cell to another's, which
+no atom-centred dipole sees. The code keeps that part as a separate array:
 
-$$ \alpha_{\mathrm{CT}} = \alpha - \sum_A \alpha^A . \tag{27.10} $$
+$$ \alpha_{\mathrm{CT}} = \alpha - \sum_A \alpha^A . \label{eq:ml-alpha-ct-sum-rule} $$
 
-> **Verified equation 27.9** · the per-atom kernel equals a sum over excitations
+> **Verified equation @eq:ml-alpha-per-atom-kernel** · the per-atom kernel equals a sum over excitations
 >
-> The coded per-atom kernel (27.9), static or at any $u$, equals the
+> The coded per-atom kernel (@eq:ml-alpha-per-atom-kernel), static or at any $u$, equals the
 > independent sum over closed-shell direct-RPA (Casida) excitations
 > $\sum_n f_n/(\Omega_n^2 + u^2)$ with $\Omega_n^2$ the eigenvalues of
 > $\Delta^{1/2}(\Delta + 4K)\Delta^{1/2}$, and its static form equals the
-> $u \to 0$ limit. With $m^A$ replaced by $\mu$ it is (27.8).
+> $u \to 0$ limit. With $m^A$ replaced by $\mu$ it is (@eq:polarizability-pdep-c6-1).
 >
 > | | |
 > |---|---|
@@ -87,7 +114,7 @@ $$ \alpha_{\mathrm{CT}} = \alpha - \sum_A \alpha^A . \tag{27.10} $$
 >
 > <!-- verified: id=ml.alpha.per-atom-kernel; script=scripts/rpa_c6_polarizability_sympy.py; claim=3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties/per_atom.rs::closed_per_atom_alpha; rust_test=ferric-rpa/tests/validation_pdep_c6.rs::pdep_c6_per_atom_becke_h2o_aug_cc_pvdz_vs_numpy; registry=rpa-polarizability-c6 -->
 
-> **Verified equation 27.10** · the charge-transfer sum rule
+> **Verified equation @eq:ml-alpha-ct-sum-rule** · the charge-transfer sum rule
 >
 > For partition weights that sum to one, so that
 > $\sum_A\langle i\lvert w_A\rvert a\rangle = 0$, the remainder
@@ -105,12 +132,12 @@ $$ \alpha_{\mathrm{CT}} = \alpha - \sum_A \alpha^A . \tag{27.10} $$
 >
 > <!-- verified: id=ml.alpha.ct-sum-rule; script=scripts/rpa_c6_polarizability_sympy.py; claim=5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties/per_atom.rs::charge_transfer_remainder; rust_test=ferric-rpa/tests/property_bundle.rs::alpha_ct_is_the_exact_remainder; registry=rpa-polarizability-c6 -->
 
-The remainder is not small. On the validation set the isotropic
+How large is the remainder? On the validation set the isotropic
 $\alpha_{\mathrm{CT}}(0)$ is 27.0% of $\alpha_{\mathrm{iso}}$ for H2O and
 22.7% for N2 at aug-cc-pVDZ (`site/src/reference/validation.md`, row "Dynamic
 α(iω) and Casimir–Polder C6"). A model that predicts per-atom α and sums them
-will therefore miss about a quarter of the molecular polarizability unless it
-also predicts $\alpha_{\mathrm{CT}}$, or predicts $\alpha$ directly. Figure
+therefore misses about a quarter of the molecular polarizability, unless it
+also predicts $\alpha_{\mathrm{CT}}$ or predicts $\alpha$ directly. Figure
 27.1(b) shows the split for water/cc-pVDZ.
 
 **Frame behaviour.** $\alpha$ is a rank-2 tensor and origin-independent. Each
@@ -118,34 +145,44 @@ $\alpha^A$ is centred on its own nucleus, so it is translation-invariant; the
 NPZ validation holds both to 3.4e-13 relative under translation. Under
 rotation they are tensors up to the integration error of a grid whose
 Lebedev spheres (Becke) or lattice axes (Hirshfeld) are fixed in the lab
-frame. The Hirshfeld lattice is an axis-aligned box around the molecule: it
+frame. The Hirshfeld lattice is an axis-aligned box around the molecule. It
 moves with the molecule under translation, but its axes, and its number of
 points, change under rotation.
 
-## 27.3.3 Dynamic polarizabilities: three sources
+## Dynamic polarizabilities: three sources {#polarizability-pdep-c6-dynamic-polarizabilities-three-sources}
 
-`c6_source` selects where $\alpha^A(iu_k)$ comes from:
+A $C_6$ needs the polarizability along the whole imaginary frequency axis,
+from $u = 0$ outward. ferric has three ways to get $\alpha^A(iu_k)$, which
+differ in cost and in what they assume, and `c6_source` selects one. Section @sec:casimir-polder-c6-three-sources
+compares them as dispersion models; for a dataset, the point is that the
+three give different arrays under the same key names, so `c6_source` must
+travel with the data.
 
 | `c6_source` | $\alpha^A(iu)$ | Molecular $\alpha(iu)$ | Default partition |
 |---|---|---|---|
 | `ts` (default) | Tkatchenko–Scheffler single pole, shaped by the static $\alpha^A$ | sum of the atoms | `becke` |
-| `pdep` | (27.9) at each node | (27.8) at each node | `hirshfeld` |
+| `pdep` | (@eq:ml-alpha-per-atom-kernel) at each node | (@eq:polarizability-pdep-c6-1) at each node | `hirshfeld` |
 | `mbd` | the MBD screened model | the MBD model | `becke` |
 
 The `ts` model, for atom $A$ with free-atom values $\alpha^{\mathrm{free}}$ and
 $C_6^{\mathrm{free}}$ and Hirshfeld volume ratio $v = V_A/V_A^{\mathrm{free}}$,
 is
 
-$$ \bar\alpha_A = v\,\alpha^{\mathrm{free}},\quad C_{6,A} = v^2 C_6^{\mathrm{free}},\quad \omega_A = \frac{4}{3}\frac{C_{6,A}}{\bar\alpha_A^2},\qquad \alpha^A_{ij}(iu) = \frac{\bar\alpha_A}{1+(u/\omega_A)^2}\,\frac{\alpha^{A,\mathrm{static}}_{ij}}{\tfrac13\mathrm{tr}\,\alpha^{A,\mathrm{static}}} . \tag{27.11} $$
+$$ \bar\alpha_A = v\,\alpha^{\mathrm{free}},\quad C_{6,A} = v^2 C_6^{\mathrm{free}},\quad \omega_A = \frac{4}{3}\frac{C_{6,A}}{\bar\alpha_A^2},\qquad \alpha^A_{ij}(iu) = \frac{\bar\alpha_A}{1+(u/\omega_A)^2}\,\frac{\alpha^{A,\mathrm{static}}_{ij}}{\tfrac13\mathrm{tr}\,\alpha^{A,\mathrm{static}}} . \label{eq:ml-c6-ts-pole} $$
 
-Only the shape of the static per-atom tensor enters. The volume ratios always
-come from Hirshfeld volumes, whatever `c6_partition` says; the free-atom
-volume comes from a live free-atom SCF, and if that SCF fails the C6 block is
-skipped with a warning. Elements beyond Z = 54 have no TS reference and are
-an error. TS has no charge transfer, so `alpha_ct_dynamic` is written only for
-`pdep`.
+The magnitude $\bar\alpha_A$ and the pole $\omega_A$ come from the free atom
+scaled by the volume ratio; the computed static per-atom tensor contributes
+only its shape, normalized to unit trace over three. At $u = 0$ the trace
+over three of $\alpha^A$ is therefore $\bar\alpha_A$, not the computed
+static value.
 
-> **Verified equation 27.11** · the single-pole frequency
+Four rules govern the inputs. The volume ratios always come from Hirshfeld
+volumes, whatever `c6_partition` says. The free-atom volume comes from a live
+free-atom SCF, and if that SCF fails the C6 block is skipped with a warning.
+Elements beyond Z = 54 have no TS reference and are an error. TS has no
+charge transfer, so `alpha_ct_dynamic` is written only for `pdep`.
+
+> **Verified equation @eq:ml-c6-ts-pole** · the single-pole frequency
 >
 > With $\alpha(iu) = \bar\alpha/(1+(u/\omega)^2)$ the Casimir–Polder integral
 > gives the London formula $\tfrac32\bar\alpha_A\bar\alpha_B\omega_A\omega_B/(\omega_A+\omega_B)$,
@@ -161,17 +198,20 @@ an error. TS has no charge transfer, so `alpha_ct_dynamic` is written only for
 >
 > <!-- verified: id=ml.c6.ts-pole; script=scripts/rpa_c6_polarizability_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/dispersion/mbd.rs::ts_atom_params; registry=rpa-polarizability-c6 -->
 
-## 27.3.4 Casimir–Polder $C_6$
+## Casimir–Polder $C_6$ {#polarizability-pdep-c6-casimir-polder}
 
-The nodes $u_k$ and weights $w_k$ are the run's RPA frequency quadrature, by
-default 20-point Gauss–Legendre with $u_0 = 0.5$; changing `[rpa] n_quad`
-changes `c6_freqs`. The pair and molecular coefficients are
+Section @sec:casimir-polder-c6-casimir-polder-integral derives the Casimir–Polder integral; the code replaces it by a
+sum over the run's RPA frequency quadrature. The nodes $u_k$ and weights
+$w_k$ are by default 20-point Gauss–Legendre with $u_0 = 0.5$, so changing
+`[rpa] n_quad` changes `c6_freqs`, and two datasets with different `n_quad`
+have arrays of different length under the same key. The pair and molecular
+coefficients are
 
-$$ C_6^{AB} = \frac{3}{\pi}\sum_k w_k\,\bar\alpha^A(iu_k)\,\bar\alpha^B(iu_k),\qquad C_{6,\mathrm{mol}} = \frac{3}{\pi}\sum_k w_k\,\bar\alpha(iu_k)^2, \tag{27.12} $$
+$$ C_6^{AB} = \frac{3}{\pi}\sum_k w_k\,\bar\alpha^A(iu_k)\,\bar\alpha^B(iu_k),\qquad C_{6,\mathrm{mol}} = \frac{3}{\pi}\sum_k w_k\,\bar\alpha(iu_k)^2, \label{eq:ml-c6-cp-quadrature} $$
 
 with $\bar\alpha = \tfrac13\mathrm{tr}\,\alpha$.
 
-> **Verified equation 27.12** · the Casimir–Polder quadrature
+> **Verified equation @eq:ml-c6-cp-quadrature** · the Casimir–Polder quadrature
 >
 > The coded sum over the default 20-point, $u_0 = 0.5$ grid reproduces the
 > London value of the single-pole integral, and converges below $10^{-10}$ at
@@ -190,8 +230,11 @@ with $\bar\alpha = \tfrac13\mathrm{tr}\,\alpha$.
 
 Three things about these arrays matter to a consumer.
 
-1. **`c6_iso.sum()` is not the molecular $C_6$.** The square of a sum is not
-   the sum over pairs once $\alpha_{\mathrm{CT}} \ne 0$. Use
+1. **`c6_iso.sum()` is not the molecular $C_6$.** Sum (@eq:ml-c6-cp-quadrature) over all
+   $N^2$ entries and pull the sums inside:
+   $\sum_{AB}C_6^{AB} = \tfrac3\pi\sum_k w_k\big(\sum_A\bar\alpha^A(iu_k)\big)^2$.
+   That is the $C_6$ of $\sum_A\alpha^A$, which equals the molecular value
+   only when $\bar\alpha_{\mathrm{CT}}(iu_k) = 0$ at every node. Use
    `c6_molecular_iso`. A committed test bounds how far the pair sum strays
    from the molecular value for water
    (`ferric-rpa/tests/s9_per_atom_c6_consistency.rs::bounded_divergence_pair_sum_vs_molecular_c6_water`).
@@ -202,7 +245,13 @@ Three things about these arrays matter to a consumer.
 3. **Pair $C_6$ depends on the partition.** Becke and Hirshfeld give
    different `c6_iso`; record `c6_partition` and `c6_source` with the data.
 
-## 27.3.5 PDEP eigenvectors
+## PDEP eigenvectors {#polarizability-pdep-c6-pdep-eigenvectors}
+
+The PDEP modes are the eigenvectors of the static dielectric matrix, ordered
+by eigenvalue, which measures how strongly each mode is screened (section
+@sec:polarizabilities-from-dielectric-modes-mode-form). The file keeps only the leading modes, which makes them a compact
+feature. They also carry the gauge freedom of any eigenvector, and a
+consumer has to remove it.
 
 `pdep_eigenvectors` holds $M$ columns $c_\xi$ over the auxiliary basis. Each
 is the coefficient vector of a mode charge density
@@ -215,12 +264,14 @@ $$ c^{\mathsf T}Vc = I, \qquad c^{\mathsf T}(V+\Pi)\,c \ \text{diagonal}. $$
 The eigenvalues are on the Python result, not in the file. $M$ is set by the
 `[rpa] trunc_thresh` cut on the spectrum, so it varies with the molecule and
 the setting. Each column's sign is arbitrary, and so is the basis inside a
-degenerate eigenspace. This is why the validation compares the projector
-$cc^{\mathsf T}$ with PySCF's (2.6e-7) and the metric condition (4.3e-12),
-not the columns. A model should consume the projector, or a sign- and
-rotation-invariant function of the columns, never the raw columns.
+degenerate eigenspace: $c \to cU$ with $U$ orthogonal inside such a space
+leaves both conditions above unchanged. The projector $cc^{\mathsf T}$ does
+not change under $c \to cU$, which is why the validation compares the
+projector with PySCF's (2.6e-7) and checks the metric condition (4.3e-12),
+and does not compare columns. A model should consume the projector, or a
+sign- and rotation-invariant function of the columns, never the raw columns.
 
-## 27.3.6 How well these are checked
+## How well these are checked {#polarizability-pdep-c6-well-these-checked}
 
 | Quantity | Agreement (same orbitals; own SCF) | Test |
 |---|---|---|
@@ -231,8 +282,10 @@ rotation-invariant function of the columns, never the raw columns.
 
 The references are numpy sums over Casida excitations on PySCF integrals in
 the same auxiliary basis (`site/src/reference/validation.md`, "Anchors").
-These check that ferric computes (27.8) and (27.9). They do not say how close
-a direct-RPA polarizability is to experiment.
+That is an independent route: it diagonalizes the response instead of
+solving the dielectric system. These checks say that ferric computes (@eq:polarizability-pdep-c6-1)
+and (@eq:ml-alpha-per-atom-kernel). They do not say how close a direct-RPA polarizability is to
+experiment.
 
 ## Known limits (2026-11-15)
 
@@ -241,18 +294,20 @@ a direct-RPA polarizability is to experiment.
   lattice to an atom-centred grid; the per-atom α has not.
 - On an open-shell reference, `pdep_dynamic_polarizability` falls back from
   the Hirshfeld to the Becke partition while the label still says
-  `hirshfeld` (section 27.1).
+  `hirshfeld` (section @sec:npz-bundle).
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-rpa/theory.md`, "Dispersion: Casimir-Polder C6" | the notation of (27.8)–(27.12) |
-| `scripts/rpa_c6_polarizability_sympy.py`, claims 1, 2, 3, 5 | verified equations 27.9–27.12 |
+| section @sec:polarizabilities-from-dielectric-modes-dielectric-form | the notation of (@eq:polarizability-pdep-c6-1)–(@eq:ml-c6-cp-quadrature) |
+| `scripts/rpa_c6_polarizability_sympy.py`, claims 1, 2, 3, 5 | verified equations @eq:ml-alpha-per-atom-kernel–@eq:ml-c6-cp-quadrature |
 | `crates/ferric-rpa/src/properties/per_atom.rs`, `crates/ferric-rpa/src/dispersion.rs`, `crates/ferric-rpa/src/property_bundle.rs` | grids, defaults, fallbacks, the quadrature source |
 | `crates/ferric-cli/tests/validation_npz.rs` | the PDEP eigenvector conditions |
-| `site/src/reference/validation.md` | the figures in 27.3.2 and 27.3.6 |
+| `site/src/reference/validation.md` | the figures in @sec:polarizability-pdep-c6-per-atom-split-charge and @sec:polarizability-pdep-c6-well-these-checked |
 
 Changes from the sources: the theory text writes the imaginary frequency as
 $\omega$ and the PDEP mode index as $\alpha$; this section uses $u$ and $\xi$
-(notation).
+(notation). The pair-sum identity in @sec:polarizability-pdep-c6-casimir-polder and the invariance of the
+projector in @sec:polarizability-pdep-c6-pdep-eigenvectors are new here; the first was checked with numpy on random
+inputs, the second follows from $UU^{\mathsf T} = I$.

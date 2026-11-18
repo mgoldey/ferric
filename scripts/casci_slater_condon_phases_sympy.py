@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exact checks of the fermionic sign conventions in ferric-ci's Slater-Condon code.
 
-Theory and notation: crates/ferric-ci/theory.md. Every claim asserts; the
+Theory and notation: book/src/17-multireference/02-slater-condon.md. Every claim asserts; the
 script exits nonzero on any mismatch. Negative controls (deliberately wrong
 variants that must NOT pass) guard against a vacuous pass.
 
@@ -51,14 +51,15 @@ Claims
           spectrum. That is checked numerically below, which shows claim 3
           is convention-specific (strictly stronger than an energy test).
 
-  5  The spatial second-quantized Hamiltonian (book eq. 1.1, spin sums written
+  5  The spatial second-quantized Hamiltonian (book `eq:hamiltonian-1`, spin sums written
      out) equals the spin-orbital one with antisymmetrized integrals (book
-     eqs. 1.2 and 1.3), as 64 x 64 Jordan-Wigner matrices on 3 spatial
+     `eq:so-operator-forms` and `eq:hamiltonian-3`), as 64 x 64 Jordan-Wigner matrices on 3 spatial
      orbitals with random symmetric h, a random 8-fold-symmetric (pq|rs) and a
      random E_nn. Negative controls: the 1/4 replaced by 1/2, and the exchange
      term of <pq||rs> with the wrong sign, must differ. Book: verified
-     equation 1.2.
-  6  H = E_ref + F_N + V_N as Jordan-Wigner matrices (book eqs. 1.4 to 1.6),
+     equation `eq:so-operator-forms`.
+  6  H = E_ref + F_N + V_N as Jordan-Wigner matrices (book `eq:so-ref-energy`
+     to `eq:so-normal-order-split`),
      with E_ref = E_nn + sum_i h_ii + 1/2 sum_ij <ij||ij>, f_pq = h_pq + sum_k
      <pk||qk>, and the normal-ordered products {..} formed from the
      quasi-particle operators of the reference (occupied a+ is a quasi-particle
@@ -67,7 +68,7 @@ Claims
      algebra, so it is independent of Wick's theorem. Closed-shell and
      open-shell references. Negative controls: F_N and V_N without normal
      ordering, and f without the sum over k, must differ. Book: verified
-     equation 1.6.
+     equation `eq:so-normal-order-split`.
 
 Independent route: claim 3 is a brute-force comparison with the explicit
 Jordan-Wigner Hamiltonian in the full Fock space of 8-10 spin orbitals.
@@ -404,7 +405,7 @@ def random_model(n, seed):
 
 
 def spin_orbital_tensors(h, g, n, exchange_sign=-1.0):
-    """h_PQ and <PQ||RS> of book (1.3); mode P = p + n * sigma (alpha first)."""
+    """h_PQ and <PQ||RS> of book `eq:hamiltonian-3`; mode P = p + n * sigma (alpha first)."""
     nso = 2 * n
     sig = lambda P: P // n  # noqa: E731
     sp_ = lambda P: P % n  # noqa: E731
@@ -455,7 +456,7 @@ def hamiltonians_claim5(n, seed, exchange_sign=-1.0, quarter=0.25):
     ann, cre = jw_float(nso)
     dim = 1 << nso
     eye = np.eye(dim)
-    # form (1.1): spin sums written out, operator order a+_{p s} a+_{r t} a_{s t} a_{q s}
+    # form eq:hamiltonian-1: spin sums written out, operator order a+_{p s} a+_{r t} a_{s t} a_{q s}
     c11 = np.zeros((nso,) * 4)  # indexed [P, Q, R, S] = (p s1, q s1, r s2, s s2)
     for s1, s2 in itertools.product((0, 1), repeat=2):
         for p, q, r, s_ in itertools.product(range(n), repeat=4):
@@ -465,7 +466,7 @@ def hamiltonians_claim5(n, seed, exchange_sign=-1.0, quarter=0.25):
         for p, q in itertools.product(range(n), repeat=2):
             h1 = h1 + h[p, q] * cre[p + n * s1] @ ann[q + n * s1]
     h1 = h1 + four_op_sum(c11, [cre, cre, ann, ann], "PRSQ")
-    # form (1.2): antisymmetrized spin-orbital integrals
+    # form eq:so-operator-forms: antisymmetrized spin-orbital integrals
     hso, asym = spin_orbital_tensors(h, g, n, exchange_sign)
     h2 = enn * eye
     for P, Q in itertools.product(range(nso), repeat=2):

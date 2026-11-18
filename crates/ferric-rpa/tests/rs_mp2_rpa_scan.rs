@@ -6,7 +6,8 @@
 //! `rs_mp2_lr_rpa` call BIT FOR BIT on every field of `RsMp2RpaResult`.
 //! The scan changes no equation: the Coulomb spin components and the Coulomb
 //! dRPA do not depend on ω, and each ω's erf/erfc intermediates are built
-//! fresh (see the rs-mp2-rpa section of `crates/ferric-rpa/theory.md`).
+//! fresh (see
+//! `book/src/26-rs-mp2-rpa/06-shared-intermediates.md#shared-intermediates-transform-per-operator-omega`).
 //!
 //! # Bar
 //!

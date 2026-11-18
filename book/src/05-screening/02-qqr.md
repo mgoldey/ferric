@@ -1,21 +1,81 @@
-# 5.2 Distance-dependent bounds (QQR)
+# Distance-dependent bounds (QQR) {#qqr}
 
-<!-- section: 5.2; status: edit; registry: none;
-     theory: crates/ferric-integrals/theory.md#"Distance-dependent bounds (QQR)" -->
+<!-- status: edit; registry: none -->
 
-Schwarz cannot tell two distant pairs from two touching ones. QQR multiplies
-it by an envelope that falls as $1/R$ with the distance between the pair
-centres, which is the leading behaviour of the Coulomb interaction between two
-compact charge clouds.
+Two charge clouds far apart repel like two point charges: the product of
+their charges over the distance between them. A Coulomb integral between
+well-separated pairs therefore falls as $1/R$. The Schwarz bound of section
+@sec:schwarz cannot see this. Its factors are self-interactions, so it gives the same
+number for two distant pairs as for two touching ones. QQR multiplies Schwarz
+by an envelope that falls as $1/R$ with the distance between the pair
+centres, the leading behaviour of the Coulomb interaction between two compact
+charge clouds.
+
+The plan: define the envelope, prove it for primitive $s$ pairs, read the
+code, and then see where the envelope changes which quartets are kept.
 
 | Entry point | Location |
 |---|---|
 | four-index | `ferric-scf/src/qqr.rs::QqrBounds` (implements `ferric-scf/src/screening.rs::Bound`) |
 | three-index | `ferric-integrals/src/qqr3.rs::QqrBounds3` (`estimate3`) |
 
-<!-- include: crates/ferric-integrals/theory.md#"Distance-dependent bounds (QQR)" -->
+### The envelope
 
-> **Verified equation 5.4** · the envelope bounds primitive $s$ pairs
+The bound is
+
+$$ |(ij|kl)| \le Q_{ij}Q_{kl}\,\min\Big(1, \frac{1.10\,(\epsilon_{ij} + \epsilon_{kl})}{R_{\mathrm{eff}}}\Big), \qquad R_{\mathrm{eff}} = \max(0, R - \epsilon_{ij} - \epsilon_{kl}), $$
+
+where $R$ is the distance between the two pair centres. Each shell pair gets
+a centre and an extent from the most diffuse exponent $\alpha$ of each of its
+two shells:
+
+$$ \mathbf R_{ij} = \frac{\alpha_i\mathbf R_i + \alpha_j\mathbf R_j}{\alpha_i + \alpha_j}, \qquad \epsilon_{ij} = (\alpha_i + \alpha_j)^{-1/2} . $$
+
+The centre is the centre of the Gaussian product (section @sec:two-electron-engine-computes-engine-serves), and the
+extent is the width of that product Gaussian. $R_{\mathrm{eff}}$ is the
+edge-to-edge gap between the two clouds. Check the limits. While the clouds
+overlap, $R \le \epsilon_{ij} + \epsilon_{kl}$, so $R_{\mathrm{eff}} = 0$, the
+envelope is $1$ and the bound is Schwarz. The envelope stays at $1$ until
+$R_{\mathrm{eff}} = 1.10(\epsilon_{ij} + \epsilon_{kl})$, that is until
+$R = 2.10(\epsilon_{ij} + \epsilon_{kl})$. At large $R$ it falls as $1/R$, the
+decay of the true Coulomb integral.
+
+The three-index version replaces one pair by an auxiliary shell with its own
+centre (its atom) and extent, $(2\alpha_{\min}(P))^{-1/2}$
+(`ferric-integrals/src/qqr3.rs::QqrBounds3::estimate3`).
+
+### The proof for primitive $s$ pairs
+
+Take two primitive $s$ pair densities with exponents $P_1$, $P_2$ and charges
+$q_1$, $q_2$, at distance $R$. Their Coulomb integral and their Schwarz
+factors are closed forms (section @sec:schwarz-bound-admitted-kernels):
+
+$$ (12|12) = q_1q_2\,\frac{\operatorname{erf}(\theta R)}{R}, \qquad Q_n^2 = q_n^2\,\frac{2\theta_n}{\sqrt\pi},\quad \theta_n^2 = \frac{P_n}{2} . $$
+
+Since $\operatorname{erf} \le 1$, the integral is at most the point-charge
+value $q_1q_2/R$. Multiply the two factors:
+
+$$ Q_1Q_2 = q_1q_2\sqrt{\frac 2\pi}\,(P_1P_2)^{1/4} . $$
+
+Divide, and write the extents as $\epsilon = P^{-1/2}$, so that
+$(P_1P_2)^{-1/4} = \sqrt{\epsilon_1\epsilon_2}$. The charges cancel:
+
+$$ \frac{|(12|12)|}{Q_1Q_2} \le \sqrt{\frac{\pi}{2}}\, \frac{\sqrt{\epsilon_1\epsilon_2}}{R} . $$
+
+The geometric mean is at most the arithmetic mean,
+$\sqrt{\epsilon_1\epsilon_2} \le (\epsilon_1 + \epsilon_2)/2$, because
+$\big((\epsilon_1 + \epsilon_2)/2\big)^2 - \epsilon_1\epsilon_2 = (\epsilon_1 - \epsilon_2)^2/4 \ge 0$.
+That turns the product of extents into the sum the code uses. Finally
+$\sqrt{\pi/8} = 0.627 < 1.10$ and $R_{\mathrm{eff}} < R$:
+
+$$ \frac{|(12|12)|}{Q_1Q_2} \le \sqrt{\frac{\pi}{2}}\, \frac{\sqrt{\epsilon_1\epsilon_2}}{R} \le \sqrt{\frac{\pi}{8}}\, \frac{\epsilon_1 + \epsilon_2}{R} \le \frac{1.10\,(\epsilon_1 + \epsilon_2)}{R_{\mathrm{eff}}} . $$
+
+Schwarz alone bounds the ratio by $1$, so the minimum with $1$ is also a
+bound. For these pairs the envelope is a proven bound. For contracted and
+higher-$l$ pairs the argument does not cover the dipole and quadrupole terms
+the monopole picture neglects, and the factor $1.10$ is a measured margin.
+
+> **Verified equation {#eq:screening-qqr-s-pairs}** · the envelope bounds primitive $s$ pairs
 >
 > For primitive $s$ pairs, $|(ab|cd)|/(Q_{ab}Q_{cd}) \le \sqrt{\pi/8}\,(\epsilon_{ab} + \epsilon_{cd})/R$,
 > so the coded envelope with factor $1.10$ holds; the same envelope over erfc
@@ -31,19 +91,76 @@ compact charge clouds.
 >
 > <!-- verified: id=screening.qqr-s-pairs; script=scripts/screening_bounds_sympy.py; claim=qqr-s; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/qqr.rs::QqrBounds; rust_test=ferric-scf/tests/qqr_diagonal_noop.rs::qqr_equals_schwarz_on_every_diagonal_quartet -->
 
-## 5.2.1 Where QQR is used
+### No operator factor
+
+The envelope is the Coulomb one for every kernel. Attenuation enters only
+through the erfc Schwarz factors, so QQR shares the blindness of section
+@sec:schwarz-bound-admitted-kernels. The erfc case of the verification script is a sweep over
+$\omega \in \{0.2, 1, 5\}$, a measured bound, not a proof.
+
+Why not multiply in a Gaussian factor for erfc? Its Schwarz factors already
+carry what attenuation they have (@sec:schwarz-bound-admitted-kernels), and the Coulomb envelope over them
+is close to tight on the sampled quartets. An extra factor smaller than $1$
+would count the attenuation a second time and push the estimate below real
+long-range integrals.
+
+### The code
+
+The four-index estimate is `ferric-scf/src/qqr.rs::QqrBounds`'s `estimate`,
+with the centre lookup elided and the comments replaced:
+
+```rust
+let schwarz_est = self.schwarz.estimate(sh1, sh2, sh3, sh4); // Q_ij Q_kl
+// ... look up c_bra, c_ket = pair centres R_ij, R_kl ...
+let r = (dx * dx + dy * dy + dz * dz).sqrt();                 // R
+if r < 1e-14 {
+    return schwarz_est;                                       // concentric pairs: Schwarz
+}
+let ext_sum = self.pair_extents[idx_bra] + self.pair_extents[idx_ket]; // eps_ij + eps_kl
+let r_eff = (r - ext_sum).max(0.0);                           // edge-to-edge gap
+let decay = if r_eff > 0.0 {
+    (SAFETY_FACTOR * ext_sum / r_eff).min(1.0)                // min(1, 1.10 eps_sum / R_eff)
+} else {
+    1.0                                                       // overlapping clouds
+};
+schwarz_est * decay
+```
+
+Three points about it:
+
+- **The centres and extents are tables.** `QqrBounds::try_new` builds them
+  once over all ordered shell pairs, dense $n_{\mathrm{sh}}^2$, from the
+  smallest exponent of each shell. It checks the 32 bytes per pair (a centre
+  and an extent) against the memory budget before allocating.
+- **The operator is stored and not read.** `QqrBounds` keeps `op`, but
+  `estimate` never uses it, and never reads $\omega$.
+- **The safety factor is a constant.** `SAFETY_FACTOR` is $1.10$ in both
+  `qqr.rs` and `qqr3.rs`. The three-index code seeds its Schwarz factors at
+  engine precision $10^{-30}$ (`QQR3_SEED_PREC`), for the reason section @sec:schwarz-building-table-never-undershoots
+  builds its table at precision $0$: a diffuse pair's self-integral must not
+  be rounded to zero.
+
+## Where QQR is used {#qqr-qqr-used}
 
 | Consumer | Effect |
 |---|---|
 | LinK pair lists | none: the lists use diagonal estimates, where QQR equals Schwarz |
 | per-quartet screens built on `Bound` | the envelope removes distant quartets |
-| three-index builds (`build_band_screened`) | QQR-3 removes distant $(P\vert\mu\nu)$ triples; the screen is fixed for the life of a source (section 6.2) |
+| three-index builds (`build_band_screened`) | QQR-3 removes distant $(P\vert\mu\nu)$ triples; the screen is fixed for the life of a source (section @sec:three-index-sources) |
+
+Why does QQR equal Schwarz on the pair lists? A pair list asks about the
+diagonal quartet $(ij|ij)$, where bra and ket are the same pair, so $R = 0$
+and the code returns the Schwarz product. Section @sec:pair-lists shows that LinK's
+density lists already restrict the ket loop to pairs the density couples, so
+the per-quartet envelope inside LinK finds few distant quartets left to
+remove. The documentation of `QqrBounds` records the quartet counts that show
+this.
 
 The RHF driver does not build `QqrBounds` itself; a caller passes it in as the
 `Bound`. The envelope never reads $\omega$, so for erfc the attenuation enters
-only through the Schwarz factors (section 5.1), and the gain is geometric.
+only through the Schwarz factors (section @sec:schwarz), and the gain is geometric.
 
-## 5.2.2 Numerical anchors
+## Numerical anchors {#qqr-numerical-anchors}
 
 | What | Test | Bar |
 |---|---|---|
@@ -51,6 +168,9 @@ only through the Schwarz factors (section 5.1), and the gain is geometric.
 | QQR equals Schwarz on every diagonal quartet | `crates/ferric-scf/tests/qqr_diagonal_noop.rs` | exact |
 | LinK K at a threshold sweep with QQR against the dense K | `crates/ferric-scf/tests/screening_exactness.rs` (`link_k_thresh_sweep_alkane_8_qqr`) | per test |
 | QQR-3 on terfc three-index tensors | `crates/ferric-integrals/tests/qqr3_terfc_screening.rs` | per test |
+
+The proof covers primitive $s$ pairs and the Coulomb kernel. Contracted and
+higher-$l$ pairs, and the erfc kernel, rest on the measured anchors above.
 
 ## Sources
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Radial Gaussian overlap and unit self-overlap of a contracted shell.
 
-Theory: book/src/02-molecules-and-numerics/02-basis-sets.md, "Normalization"
-(equation 2.5); code: crates/ferric-core/src/basis.rs (parse_bse_json
+Theory: book/src/02-molecules-and-numerics/02-basis-sets.md, equation
+`eq:basis-unit-self-overlap`; code: crates/ferric-core/src/basis.rs (parse_bse_json
 renormalizes each contraction to unit self-overlap; the Rust test
 every_bundled_contraction_has_unit_self_overlap checks every bundled shell).
 

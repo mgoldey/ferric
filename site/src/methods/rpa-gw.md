@@ -184,7 +184,8 @@ range. **No speedup over PDEP is claimed for local dRPA.**
 
 The equations and conventions of this section, the BSE-TDA and the RPAx
 polarizability, with the code paths and tests behind each, are in
-[`crates/ferric-gw/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-gw/theory.md);
+the GW chapter of the ferric book,
+[`book/src/19-gw-bse/`](https://github.com/mgoldey/ferric/tree/main/book/src/19-gw-bse);
 the identities it relies on are checked by
 [`scripts/gw_self_energy_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/gw_self_energy_sympy.py).
 
@@ -295,7 +296,7 @@ fractions \\(c_{sr}\\) and \\(c_{lr}\\) and the range-separation parameter
 \\(c_{sr}(pq|rs) + (c_{lr}-c_{sr})(pq|rs)_\omega\\), where the second term uses a second
 set of RI tensors for \\(\mathrm{erf}(\omega r)/r\\). Those tensors are fitted in the erf
 metric, so the fit error is second order in the erf-norm residual of the
-quantity being fitted (`crates/ferric-tddft/theory.md` §8). The printout and
+quantity being fitted (`book/src/20-tddft/04-rsh.md#rsh-split`). The printout and
 `TddftResult` report `c_sr` (as `c_hf`), `c_lr` and `omega`. A `[tddft] c_hf`
 override on a range-separated functional is refused.
 
@@ -309,7 +310,7 @@ functional) or UKS reference (`examples/nh2-tddft-uks.toml`; Python
 `run_tddft` picks it with `reference="auto"`). The response space is the
 α and β occupied→virtual pairs; A and B couple them through the Coulomb
 term and the α-β block of the spin-resolved f<sub>xc</sub> kernel, and
-exact exchange acts within each spin (`crates/ferric-tddft/theory.md` §10).
+exact exchange acts within each spin (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`).
 Every functional class the closed-shell route takes works here, including
 range-separated hybrids, τ-only meta-GGAs and hybrid meta-GGAs (TPSSh,
 M06-2X). The roots are spin-conserving and not spin-adapted, so there is no

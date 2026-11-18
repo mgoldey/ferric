@@ -292,7 +292,9 @@ fn torsion_gradient_vs_fd_near_phi_0_pi_and_near_linear_angle() {
 
 /// Exactly linear VALENCE angle (theta = pi and theta = 0): the angle
 /// gradient ~ 1/sin(theta) is singular, so the code returns a zero gradient
-/// for that term (theory.md 2), matching the degenerate-torsion convention.
+/// for that term
+/// (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-bonds-angles-torsions`),
+/// matching the degenerate-torsion convention.
 /// Energy is the exact harmonic value; gradient is finite and exactly zero.
 #[test]
 fn exactly_linear_valence_angle_gradient_is_finite_and_zero() {

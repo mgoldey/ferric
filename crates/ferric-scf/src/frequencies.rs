@@ -200,8 +200,8 @@ const AU_FREQ_TO_CM: f64 = 219_474.631_363_2;
 /// harmonic approximation of the numerical derivative itself.
 pub const DEFAULT_DELTA: f64 = 5.0e-3;
 
-/// Threshold (in Bohr) on the smallest moment of inertia below which a
-/// molecule is treated as linear.
+/// Dimensionless threshold on the ratio of the smallest to the largest
+/// principal moment of inertia below which a molecule is treated as linear.
 const LINEARITY_THRESH: f64 = 1.0e-6;
 
 /// Which SCF reference to differentiate.

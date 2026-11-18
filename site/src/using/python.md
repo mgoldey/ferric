@@ -685,7 +685,7 @@ the constant `λN`, so the hooked gradient equals the plain one.
 hooked surface; because the geometry moves, both callables there receive the
 step's `Molecule` as their last argument (`hook(D, mol)`, `grad(D, mol)`),
 and each step's SCF starts from the default guess. The derivation is in
-`crates/ferric-scf/theory.md` ("Fock hooks and their nuclear gradient"); the
+`book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`; the
 checks (finite differences of the hooked energy for RHF, UHF, ROHF and LDA,
 and a point charge entered as a hook against `point_charges`) are in
 `crates/ferric-python/tests/test_fock_hook_gradient.py` and
@@ -873,8 +873,10 @@ the same rules, raised as `ValueError` before any SCF:
   removes any cost saving.
 - `run_rimp2(integral_direct=True, ...)` selects the integral-direct local
   MP2, with its locality maps `aux_radius`, `virt_radius` (Bohr), `ao_tail`,
-  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa` (the CLI
-  names and defaults). They are errors without `integral_direct=True`.
+  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa`, and
+  `fock_screen` (default `True`, the Fock-propagated mask screen; `False` keeps
+  the plain integral mask), with the CLI names and defaults. They are errors
+  without `integral_direct=True`.
   `kappa` is an error on the local MP2.
 
 Every result says which model it is: `RiMp2Result.local` and the dicts'

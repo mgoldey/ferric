@@ -1,5 +1,5 @@
 //! Open-shell attenuated and spin-component-scaled RI-MP2
-//! (`ri_mp2_spin_components_any`; theory.md section 5.1).
+//! (`ri_mp2_spin_components_any`; `book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2`).
 //!
 //! * Singlet anchor: a closed-shell water RHF written as a UHF (α ≡ β) runs
 //!   the unrestricted path of every driver, and each must equal the

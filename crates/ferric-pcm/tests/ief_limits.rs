@@ -1,5 +1,7 @@
-//! Analytic limits of the IEF-PCM operators (`crates/ferric-pcm/theory.md`
-//! §5-§6; continuum identities proven in `scripts/pcm_ief_sympy.py`).
+//! Analytic limits of the IEF-PCM operators
+//! (`book/src/22-implicit-solvation/02-ief-operators.md#ief-operators-sphere-limits`,
+//! `book/src/22-implicit-solvation/05-conductor-limit-and-cosmo.md#conductor-limit-and-cosmo-limit-ief-pcm`;
+//! continuum identities proven in `scripts/pcm_ief_sympy.py`).
 //!
 //! * A point charge inside a single sphere: the discrete
 //!   `build_s_d` → `build_k_r` → `solve_pcm_charges` chain against the

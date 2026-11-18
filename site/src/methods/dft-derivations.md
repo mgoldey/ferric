@@ -4,7 +4,8 @@ The exchange-correlation pieces of the Kohn–Sham solver, each stated in the
 code's conventions and proved by a sympy script that exits nonzero on a
 mismatch. The full equations, function locations and test cross-references
 are in
-[`crates/ferric-dft/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-dft/theory.md).
+the Kohn-Sham chapter of the ferric book,
+[`book/src/09-kohn-sham/`](https://github.com/mgoldey/ferric/tree/main/book/src/09-kohn-sham).
 Each script also checks mutated formulas (a dropped factor of 2,
 a wrong libxc packing slot) and requires them to fail.
 
@@ -34,7 +35,7 @@ not twice it. Meta-GGAs are \\( \tau \\)-only (no density Laplacian).
 | XC nuclear gradient | \\( \partial\tau/\partial R_{A,\alpha} = -\sum_b\sum_{\mu\in A}\partial^2_{\alpha b}\chi_\mu (D\partial_b\chi)_\mu \\): the \\( \tfrac12 \\) in \\( \tau \\) cancels against the \\( \mu\leftrightarrow\nu \\) doubling; grid-response terms \\( \partial_\alpha\nabla\rho \\), \\( \partial_\alpha\tau \\) | `scripts/dft_mgga_tau_gradient_sympy.py` |
 
 The numerical checks of the same identities (finite differences of the
-energy, PySCF references) are listed per section in `theory.md`.
+energy, PySCF references) are listed per section in the same chapter.
 
 ## Known open issue
 

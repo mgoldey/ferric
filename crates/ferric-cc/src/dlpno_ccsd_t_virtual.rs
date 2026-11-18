@@ -23,10 +23,12 @@
 //!    orthogonal projectors, and take the range. This is the technique
 //!    `ferric_rpa::dlpno_rpa` already uses for its per-orbital unions and it
 //!    is chosen for a numerical reason, not a stylistic one: a sum of orthogonal
-//!    projectors has every nonzero eigenvalue `≥ 1` and every out-of-span
-//!    eigenvalue exactly `0`, so the rank test sits in an **O(1) gap** rather
-//!    than resolving the fuzzy singular-value tail a QR of the wide
-//!    concatenation `[P^{ij} | P^{ik} | P^{jk}]` would leave.
+//!    projectors is symmetric positive semidefinite with every out-of-span
+//!    eigenvalue exactly `0` (rounding noise), so a single small eigenvalue
+//!    cut gives an orthonormal basis of the span. Its nonzero eigenvalues are
+//!    NOT bounded below by 1: two nearly parallel subspaces at angle θ give
+//!    `1 ± cos θ` (≈ 5e-5 at θ = 0.01), so the cut also decides when a
+//!    direction is too nearly dependent to keep (see `UNION_RANK_TOL`).
 //! 2. **Orthogonalize.** Automatic — the eigenvectors of a symmetric `M` are
 //!    orthonormal by construction.
 //! 3. **Semicanonicalize.** See below. NOT optional.
@@ -150,10 +152,14 @@ use crate::dlpno_ccsd_t::TripleDomains;
 /// the span of a triple's three PNO subspaces.
 ///
 /// `M^{ijk} = Σ P^{pq} (P^{pq})ᵀ` is a sum of orthogonal projectors: a direction
-/// in at least one subspace has eigenvalue `≥ 1`, one orthogonal to all of them
-/// has eigenvalue exactly `0`. The gap is O(1), not O(ε) — this threshold sits
-/// deep inside it and is **not** a tunable knob. Identical reasoning (and value)
-/// to `ferric_rpa::dlpno_rpa`'s `UNION_RANK_TOL`.
+/// orthogonal to every subspace has eigenvalue exactly `0` (rounding noise in
+/// practice). The span's eigenvalues are not bounded below by 1: two nearly
+/// parallel subspace directions at angle θ give `1 ± cos θ`, so `1 − cos θ ≈
+/// θ²/2` (≈ 5e-5 at θ = 0.01). The tolerance therefore does two things: it
+/// drops rounding-noise directions outside the span, and it drops directions
+/// so nearly dependent (θ ≲ 1.4e-4, where `1 − cos θ < 1e-8`) that keeping
+/// them would put an ill-conditioned vector in the basis. Same value as
+/// `ferric_rpa::dlpno_rpa`'s `UNION_RANK_TOL`.
 const UNION_RANK_TOL: f64 = 1e-8;
 
 /// The semicanonical TNO virtual basis of a single occupied triple `(i,j,k)`.

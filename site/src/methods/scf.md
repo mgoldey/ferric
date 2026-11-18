@@ -407,8 +407,7 @@ frequencies with MBD@rsSCS run through the CLI or `run_frequencies`.
 E(KS) + E(disp), on an RKS, UKS or ROKS reference.
 
 D3(BJ) depends on the geometry only. Its Hessian is analytic
-(`ferric_d3::d3bj_hessian`, derivation in `crates/ferric-d3/theory.md`,
-"Hessian"). The run takes the Hessian route it would take without
+(`ferric_d3::d3bj_hessian`, derivation in `book/src/25-dispersion/01-d3bj.md#d3bj-hessian`). The run takes the Hessian route it would take without
 dispersion and adds the D3(BJ) Hessian: under `hessian = "auto"`, the analytic
 moving-grid KS Hessian (RKS or UKS; LDA, GGA, pure or global hybrid; ECPs
 allowed) plus the D3(BJ) Hessian, with no gradient evaluations. Where no
@@ -510,7 +509,7 @@ when unset.
 Neither has cavitation, dispersion or repulsion terms. IEF-PCM has an
 analytic nuclear gradient (`ferric_pcm::pcm_gradient`: the tessera-charge
 potential term plus the S/D/area response term, switching-function
-derivatives included; equations in `crates/ferric-pcm/theory.md` §8), added
+derivatives included; equations in `book/src/22-implicit-solvation/04-gradient.md#gradient-derivative`), added
 to the RHF, UHF, ROHF and KS gradients whenever `RhfConfig.pcm` is set. It
 matches PySCF IEF-PCM `nuc_grad_method()` to 7e-11 Ha/Bohr on PySCF's
 302-point cavity and finite differences of the solvated SCF energy to
@@ -539,7 +538,7 @@ the same SCF and MP2 routes (`reference=`, `xc=`, `dispersion=`, `solvent=`,
 `method="rimp2"`, `"scs-mp2"` (with `c_os=` / `c_ss=`) or `"oo-rimp2"`)
 through the same library drivers. The SCS-MP2 gradient is the relaxed RI-MP2
 gradient with the pair weight `(c_os + c_ss) t − c_ss t̄` in place of
-`2t − t̄` (derivation in `crates/ferric-mp2/theory.md` §9.2), checked against
+`2t − t̄` (derivation in `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-mp2`), checked against
 finite differences of the SCS-MP2 energy.
 
 **Harmonic frequencies.** `method.task = "frequencies"` for `rhf`, `uhf`,

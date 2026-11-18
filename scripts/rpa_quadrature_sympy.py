@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Imaginary-frequency quadratures of the RPA: the maps, their Jacobians, exactness.
 
-Derivation: crates/ferric-rpa/theory.md, "Imaginary-frequency quadratures".
+Derivation: `book/src/18-rpa/02-quadratures.md#quadratures-rule`.
 Code: crates/ferric-rpa/src/quadrature.rs (build_quadrature,
 gauss_legendre_nodes, gl_nodes_weights, legendre_and_deriv, optimized_u0,
 chebyshev_tan_nodes). The functions below transcribe those loops.

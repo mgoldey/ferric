@@ -322,7 +322,7 @@ pub(crate) fn run_rs_mp2_rpa(
         let bohr: Vec<f64> = axis.iter().map(|w| w * to_bohr).collect();
         let rs =
             ferric_rpa::rs_mp2_lr_rpa_scan(&mol.inner, &prep, &dfbs, &rhf, &cfg, &bohr, &forms)
-                .map_err(make_err)?;
+                .map_err(make_ferric_err)?;
         for (k, r) in rs.into_iter().enumerate() {
             let mut c = cfg.clone();
             c.formulation = forms[k % forms.len()];
@@ -334,8 +334,8 @@ pub(crate) fn run_rs_mp2_rpa(
             points.push((c, r));
         }
     } else {
-        let r =
-            ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+        let r = ferric_rpa::rs_mp2_lr_rpa(&mol.inner, &prep, &dfbs, &rhf, &cfg)
+            .map_err(make_ferric_err)?;
         points.push((cfg.clone(), r));
     }
     let base_cert = reference_certificate(&mol.inner, &rhf, &cfg_rhf, &basis_set.inner);

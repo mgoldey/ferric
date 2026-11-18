@@ -1,8 +1,8 @@
 """testdata/derivations/registry.json covers every method under the derivations rule.
 
 CONTRIBUTING.md, "Every method has a derivation and a sympy proof": each method
-ships a LaTeX derivation in its crate's ``theory.md`` and a sympy proof in
-``scripts/*_sympy.py`` that a test under this directory runs.
+has a derivation in a committed book section (``book/src``) and a sympy proof
+in ``scripts/*_sympy.py`` that a test under this directory runs.
 
 The method list is DERIVED from the code, never hand-listed:
 
@@ -17,8 +17,8 @@ The method list is DERIVED from the code, never hand-listed:
   ``hessian``).
 
 Every derived route must appear under ``routes``, mapping to one or more method
-ids. Each method id is either in ``methods`` (both pieces present: the theory
-anchor exists and each script exists and is run by a test here) or in ``gaps``
+ids. Each method id is either in ``methods`` (both pieces present: the book
+section exists and each script exists and is run by a test here) or in ``gaps``
 (with a reason). A gap may record the pieces it already has; the test fails if
 a gap holds both, so the gap list only shrinks.
 
@@ -65,33 +65,23 @@ def _registry():
     return json.loads(REGISTRY.read_text())
 
 
-def _slug(heading):
-    s = heading.strip().lower()
-    s = re.sub(r"[^\w\- ]", "", s)
-    return s.replace(" ", "-")
-
-
-def _anchors(md_path):
-    text = md_path.read_text()
-    anchors = set()
-    counts = {}
-    for h in re.findall(r"^#{1,6} (.+)$", text, re.M):
-        base = _slug(h)
-        n = counts.get(base, 0)
-        anchors.add(base if n == 0 else f"{base}-{n}")
-        counts[base] = n + 1
-    anchors |= set(re.findall(r'<a id="([^"]+)"', text))
-    return anchors
-
-
 def _runner_sources():
     return {p.name: p.read_text() for p in TESTS.glob("test_*.py")}
 
 
-def _theory_ok(ref):
-    path, _, anchor = ref.partition("#")
+def _book_ok(ref):
+    """``book/src/<page>.md#<label>``: the page exists and has a heading ``{#label}``."""
+    path, _, label = ref.partition("#")
     md = ROOT / path
-    return md.is_file() and anchor in _anchors(md)
+    return (
+        path.startswith("book/src/")
+        and md.is_file()
+        and bool(label)
+        and re.search(
+            rf"^#{{1,6}} .*\{{#{re.escape(label)}\}}\s*$", md.read_text(), re.M
+        )
+        is not None
+    )
 
 
 def _script_ok(script, runners):
@@ -131,9 +121,9 @@ def test_every_method_id_is_either_covered_or_a_gap():
 def test_covered_methods_have_both_pieces():
     runners = _runner_sources()
     for mid, entry in _registry()["methods"].items():
-        assert entry["theory"], mid
-        for ref in entry["theory"]:
-            assert _theory_ok(ref), f"{mid}: theory anchor {ref} does not exist"
+        assert entry["book"], mid
+        for ref in entry["book"]:
+            assert _book_ok(ref), f"{mid}: book section {ref} does not exist"
         assert entry["scripts"], mid
         for script in entry["scripts"]:
             assert _script_ok(script, runners), (
@@ -146,11 +136,11 @@ def test_gaps_only_shrink():
     runners = _runner_sources()
     for mid, gap in _registry()["gaps"].items():
         assert gap["reason"].strip(), mid
-        theory = [r for r in gap.get("theory", []) if _theory_ok(r)]
+        book = [r for r in gap.get("book", []) if _book_ok(r)]
         scripts = [s for s in gap.get("scripts", []) if _script_ok(s, runners)]
-        assert len(theory) == len(gap.get("theory", [])), f"{mid}: stale theory ref"
-        assert not (theory and scripts), (
-            f"gap {mid} has a theory section and a run script: move it to methods"
+        assert len(book) == len(gap.get("book", [])), f"{mid}: stale book ref"
+        assert not (book and scripts), (
+            f"gap {mid} has a book section and a run script: move it to methods"
         )
 
 
@@ -172,3 +162,14 @@ def test_runners_are_collected_without_the_extension():
             "test_derivation_registry.py"
         }
         assert hosts & exempt, f"{script} is run only by {sorted(hosts)}"
+
+
+def test_book_ref_check_rejects_a_dangling_label():
+    """Mutation: a label that is not a heading of the page, or a non-book path."""
+    good = next(iter(_registry()["methods"].values()))["book"][0]
+    assert _book_ok(good)
+    page = good.partition("#")[0]
+    assert not _book_ok(page + "#no-such-label")
+    assert not _book_ok(
+        "crates/ferric-scf/theory.md#hartree-fock-energy-functionals-rhf-uhf-rohf"
+    )

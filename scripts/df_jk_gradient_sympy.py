@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Nuclear gradient of density-fitted J and K at fixed density.
 
-Derivation: crates/ferric-scf/theory.md, "Density-fitted J/K nuclear
-gradient"; book/src/14-derivatives/02-df-jk-gradient.md. Code:
+Derivation: `book/src/14-derivatives/02-df-jk-gradient.md#df-jk-gradient-energies-differentiated`; book/src/14-derivatives/02-df-jk-gradient.md. Code:
 crates/ferric-scf/src/df_gradient.rs (df_jk_gradient_core,
 truncated_inverse_divided_difference) and df_gradient/deriv3c.rs.
 
@@ -11,7 +10,7 @@ V0 + x V1 depend on one parameter x, at a fixed density D = X X^T.
   E_J = 1/2 d^T V^-1 d,  d_P = sum D_mn A_P,mn
   E_K = alpha sum_ij L_ij^T V+ L_ij,  L_P,ij = sum X_mi A_P,mn X_nj
 with V+ the metric inverse (the truncated spectral inverse for K).
-Formula under test (the two weights of the book's equation 14.5):
+Formula under test (the two weights of the book's equation `eq:df-grad-jk`):
   dE = sum G_P,mn A1_P,mn + sum H_PQ V1_PQ,
   G_P,mn = c_P D_mn + 2 alpha (X Gamma_P X^T)_mn,   c = V^-1 d,  Gamma = V+ L,
   H = -1/2 c c^T + U (F o U^T Y U) U^T,   Y = alpha sum_ij L_ij L_ij^T.

@@ -23,7 +23,9 @@
 //!
 //! Rotation is applied via the Cayley unitary U = (I − κ/2)^{−1}(I + κ/2) per
 //! spin, which exactly preserves orthonormality. Sign convention matches
-//! `rohf_newton.rs` (κ = −g/(gap+μ); C ← C·U).
+//! `rohf_newton.rs`: κ solves H·κ = −g (PCG, started from the diagonal guess
+//! κ⁰ = −g/(gap+μ); the level shift μ enters only that guess and the
+//! preconditioner); C ← C·U.
 
 use crate::engine_pool::EnginePool;
 use crate::rhf::build_jk_with_pool_homogeneous;

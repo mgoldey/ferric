@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """QM/MM boundary: link atoms, Z1/RC/RCD charges and the full-structure gradient.
 
-Derivation: crates/ferric-scf/theory.md, "QM/MM boundary and the full gradient".
+Derivation: `book/src/23-embedding/02-qmmm-boundaries.md#qmmm-boundaries-cutting-covalent-bond`.
 Code: crates/ferric-scf/src/qmmm.rs (QmmmSystem::with_link_atoms,
 QmmmSystem::with_boundary_charges, active_charges, mm_forces, full_gradient).
 

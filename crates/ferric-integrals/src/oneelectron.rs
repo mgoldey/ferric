@@ -18,8 +18,9 @@ use ndarray::Array2;
 /// free-atom rule: single-atom SCF must not pay a parallel-setup tax).
 const PAR_SHELL_PAIR_THRESHOLD: usize = 64;
 
-/// Build a symmetric one-electron matrix by iterating over upper-triangle shell
-/// pairs. `make_eng` constructs a fresh, fully-configured [`Engine`] (overlap /
+/// Build a symmetric one-electron matrix by iterating over the shell pairs
+/// `s2 ≤ s1` (the lower triangle in shell order) and mirroring each block.
+/// `make_eng` constructs a fresh, fully-configured [`Engine`] (overlap /
 /// kinetic / nuclear-with-point-charges) — called once for the serial path and
 /// once per rayon worker via `for_each_init`, never per shell pair (engine
 /// construction runs under a global ctor mutex; per-item construction would

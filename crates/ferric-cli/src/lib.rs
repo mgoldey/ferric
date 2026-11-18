@@ -2391,8 +2391,32 @@ fn lmp2_local_json_with_vs(
         for (k, v) in r.virtual_space.fields(&r.timings) {
             obj.insert(k.to_string(), cert_value_json(&v));
         }
+        let lb = &r.lambda_boys;
+        obj.insert("lambda_boys".to_string(), serde_json::json!(lb.lambda));
+        obj.insert(
+            "lambda_boys_sweeps".to_string(),
+            serde_json::json!(lb.sweeps),
+        );
+        obj.insert(
+            "lambda_boys_max_grad".to_string(),
+            serde_json::json!(lb.max_grad),
+        );
+        obj.insert("lambda_boys_t_s".to_string(), serde_json::json!(lb.t_s));
     }
     j
+}
+
+/// The printout's occupied-localization line: plain Boys at λ = 0, else λ,
+/// sweeps, final gradient and wall time of the λ-Boys stage.
+fn lambda_boys_line(lb: &ferric_mp2::boys::LambdaBoysReport) -> String {
+    if lb.lambda == 0.0 {
+        "Boys (lambda_boys = 0)".to_string()
+    } else {
+        format!(
+            "lambda-Boys, lambda_boys = {} ({} sweeps, max |grad| {:.1e}, {:.2} s)",
+            lb.lambda, lb.sweeps, lb.max_grad, lb.t_s
+        )
+    }
 }
 
 /// The model certificate of an LMP2 run, with the integral-direct stage-5
@@ -2474,8 +2498,11 @@ fn lmp2_timings_json(
             own_w_bytes_held,
             group_scratch_bytes_max,
             t_loc_s,
+            memory,
+            group_concurrency,
+            group_scratch_bound_bytes,
         } = d;
-        serde_json::json!({
+        let mut out = serde_json::json!({
             "strip_rows_mean": strip_rows_mean,
             "strip_rows_max": strip_rows_max,
             "strip_cols_mean": strip_cols_mean,
@@ -2515,7 +2542,24 @@ fn lmp2_timings_json(
             "own_w_bytes_held": own_w_bytes_held,
             "group_scratch_bytes_max": group_scratch_bytes_max,
             "t_loc_s": t_loc_s,
-        })
+        });
+        // A second object: one json! literal this long hits the macro
+        // recursion limit.
+        let gate = serde_json::json!({
+            "group_concurrency": group_concurrency,
+            "group_scratch_bound_bytes": group_scratch_bound_bytes,
+            "memory_strips_bytes": memory.strips_bytes,
+            "memory_metric_bytes": memory.metric_bytes,
+            "memory_stage3_scratch_bytes": memory.stage3_scratch_bytes,
+            "memory_pair_block_bytes": memory.pair_block_bytes,
+            "memory_pcg_vector_bytes": memory.pcg_vector_bytes,
+            "memory_exact": memory.exact,
+            "memory_resident_peak_bytes": memory.resident_peak(),
+        });
+        if let (Some(o), serde_json::Value::Object(g)) = (out.as_object_mut(), gate) {
+            o.extend(g);
+        }
+        out
     });
     serde_json::json!({
         "t_spaces_s": t_spaces_s,
@@ -2615,7 +2659,9 @@ fn run_rimp2_local(
         eri3_budget_bytes: budget_bytes,
         compute_reference: want_ref,
         pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
+        fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
         virtual_space: model.virtual_space.clone(),
+        lambda_boys: model.lambda_boys,
         ..Default::default()
     };
     let dcfg = model.direct.as_ref().map(|d| DirectConfig {
@@ -2652,6 +2698,10 @@ fn run_rimp2_local(
     };
     println!("{}", model_label("MP2", Some(&local)));
     print_lmp2_certificate(&cert);
+    println!(
+        "  occupied localization = {}",
+        lambda_boys_line(&r.lambda_boys)
+    );
     println!("  basis / aux           = {} / {aux_name}", bs.name);
     if cfg.method.kind == "att-rimp2" {
         // Name the correlation operator: a local number from the attenuated
@@ -2669,7 +2719,8 @@ fn run_rimp2_local(
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
-             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}, \
+             fock_screen {}",
             d.aux_radius,
             d.virt_radius,
             d.ao_tail,
@@ -2678,6 +2729,8 @@ fn run_rimp2_local(
             d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
             d.virt_schwarz_kappa
                 .map_or("off".to_string(), |k| format!("{k}")),
+            d.fock_screen
+                .map_or("off".to_string(), |k| format!("kappa {k}")),
         );
     }
     println!("  RHF energy            = {:.10} Ha", result.energy);
@@ -9018,6 +9071,16 @@ mod local_printout_tests {
             own_w_bytes_held: 37,
             group_scratch_bytes_max: 38,
             t_loc_s: 31.5,
+            memory: ferric_mp2::lmp2_direct::DirectMemoryEstimate {
+                strips_bytes: 50,
+                metric_bytes: 51,
+                stage3_scratch_bytes: 52,
+                pair_block_bytes: 53,
+                pcg_vector_bytes: 54,
+                exact: true,
+            },
+            group_concurrency: 55,
+            group_scratch_bound_bytes: 56,
         };
         let stage: &[(&str, f64)] = &[
             ("t_spaces_s", 1.5),
@@ -9065,6 +9128,15 @@ mod local_printout_tests {
             ("own_w_bytes_held", 37.0),
             ("group_scratch_bytes_max", 38.0),
             ("t_loc_s", 31.5),
+            ("group_concurrency", 55.0),
+            ("group_scratch_bound_bytes", 56.0),
+            ("memory_strips_bytes", 50.0),
+            ("memory_metric_bytes", 51.0),
+            ("memory_stage3_scratch_bytes", 52.0),
+            ("memory_pair_block_bytes", 53.0),
+            ("memory_pcg_vector_bytes", 54.0),
+            // max(50 + 51 + 53, 53 + 5·54)
+            ("memory_resident_peak_bytes", 323.0),
         ];
         // round trip through text, as a log reader sees it
         let j: serde_json::Value =
@@ -9075,7 +9147,8 @@ mod local_printout_tests {
             assert_eq!(j[*k].as_f64(), Some(*v), "{k}: {j}");
         }
         let dj = j["direct"].as_object().unwrap();
-        assert_eq!(dj.len(), direct.len() + 1, "{j}");
+        assert_eq!(dj.len(), direct.len() + 2, "{j}");
+        assert_eq!(dj["memory_exact"], true, "{j}");
         for (k, v) in direct {
             assert_eq!(j["direct"][*k].as_f64(), Some(*v), "{k}: {j}");
         }
@@ -9104,6 +9177,7 @@ mod local_printout_tests {
             pair_fraction: 0.75,
             n_pairs_gated: 7,
             gate_cal: Some(0.7),
+            fock_screen: Some(1.0),
             integral_direct: true,
             maps: Some(DirectMaps {
                 aux_radius: 10.0,
@@ -9162,11 +9236,12 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 28);
+        assert_eq!(fields.len(), 29);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }
         assert!(back["maps"]["virt_schwarz_kappa"].is_null());
+        assert_eq!(back["fock_screen"], 1.0);
         assert_eq!(back["maps"]["batch_merge"], 4);
         assert_eq!(back["pair_fit"]["n_trsm"], 93);
         assert_eq!(back["build_commit"], ferric_build_info::COMMIT);

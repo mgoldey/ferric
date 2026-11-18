@@ -1,11 +1,17 @@
-# 20.4 Range-separated hybrids
+# Range-separated hybrids {#rsh}
 
-<!-- section: 20.4; status: ready; registry: tddft;
-     theory: crates/ferric-tddft/theory.md#"8. Range-separated hybrids" -->
+<!-- status: ready; registry: tddft -->
 
-A range-separated hybrid puts exact-exchange fraction $c_{\rm sr}$ on
+Consider an excitation that moves an electron from a donor at one end of a
+molecule to an acceptor at the other. The transition density
+$\phi_i\phi_a$ is close to zero everywhere, so the Coulomb term and the
+local kernel of $A_{ia,ia}$ both vanish. What remains is the orbital gap and
+the exchange term $-c\,(ii|aa)$, the attraction between the electron and
+the hole it left. At long range that attraction is weighted by whatever
+exact-exchange fraction the functional uses there. A range-separated hybrid
+chooses that fraction separately: $c_{\rm sr}$ on
 $\mathrm{erfc}(\omega r)/r$ and $c_{\rm lr}$ on $\mathrm{erf}(\omega r)/r$
-(section 9.4). The response inherits that split. ferric writes it as a
+(section @sec:hybrids). The response inherits the split. ferric writes it as a
 full-Coulomb term plus a long-range correction, so only one extra set of
 fitted integrals is needed.
 
@@ -20,19 +26,44 @@ fitted integrals is needed.
 | Rust | `ferric-tddft/src/tddft.rs::{build_a_matrix,build_b_matrix,build_lr_tensors,ExchangeMix}`; the SCF-side analogue is `ferric-scf/src/rsh_response.rs::exchange_response` |
 | CLI | `[tddft] xc = "cam-b3lyp"` (or any CAM functional) |
 
-## 20.4.1 The split
+## The split {#rsh-split}
 
-<!-- include: crates/ferric-tddft/theory.md#"8. Range-separated hybrids" -->
+Split the Coulomb operator at $\omega$,
+$1/r = \mathrm{erfc}(\omega r)/r + \mathrm{erf}(\omega r)/r$, and put exact
+exchange fraction $c_{\rm sr}$ on the short-range part and $c_{\rm lr}$ on
+the long-range part. In libxc these are `cam_alpha + cam_beta` and
+`cam_alpha` (`ferric-dft/src/libxc.rs::CamCoeffs`). The exact-exchange
+energy is
 
-With $\mathrm{erfc} = 1 - \mathrm{erf}$,
+$$ E_x^{\rm HF} = -\tfrac12\sum_{\sigma}\sum_{ij\in\sigma}
+\left[c_{\rm sr}(ij|{\rm erfc}|ji) + c_{\rm lr}(ij|{\rm erf}|ji)\right] . $$
+
+The energy is a weighted sum of two exchange energies, one per operator,
+so its second derivative is the same weighted sum of exchange terms: the
+exchange of equation @eq:td-matrices-spin-adaptation with $c_{\rm HF}(pq|rs)$ replaced by
+$c_{\rm sr}(pq|{\rm erfc}|rs) + c_{\rm lr}(pq|{\rm erf}|rs)$. Substitute
+$\mathrm{erfc} = 1 - \mathrm{erf}$ and collect the erf terms:
 
 $$ c_{\rm sr}(pq|\mathrm{erfc}|rs) + c_{\rm lr}(pq|\mathrm{erf}|rs)
-= c_{\rm sr}(pq|rs) + \Delta c\,(pq|rs)_\omega , \tag{20.8} $$
+= c_{\rm sr}(pq|rs) + \Delta c\,(pq|rs)_\omega , \label{eq:td-rsh-split} $$
 
-so the exchange terms of equation 20.1 become
-$c_{\rm sr}(ij|ab) + \Delta c\,(ij|ab)_\omega$ in $\mathbf A$ and
-$c_{\rm sr}(ib|ja) + \Delta c\,(ib|ja)_\omega$ in $\mathbf B$. The Coulomb
-and kernel terms do not change.
+with $(pq|rs)_\omega$ the erf-attenuated integral. So, for both spins,
+
+$$ A_{ia,jb} \mathrel{-}= c_{\rm sr}(ij|ab) + \Delta c\,(ij|ab)_\omega,\qquad
+B_{ia,jb} \mathrel{-}= c_{\rm sr}(ib|ja) + \Delta c\,(ib|ja)_\omega . $$
+
+The Coulomb term $2(ia|jb)$ and the kernel do not change. The kernel is
+libxc's for the same functional, whose semilocal exchange is already the
+short-range-attenuated one.
+
+Check the limits. With $c_{\rm sr} = c_{\rm lr}$, $\Delta c = 0$ and the
+exchange is the global hybrid's. With $\omega \to 0$, $\mathrm{erf}(0) = 0$
+and the long-range term vanishes, leaving the global hybrid with
+$c_{\rm HF} = c_{\rm sr}$. For the charge-transfer case above, the long-range
+electron–hole attraction is weighted by $c_{\rm sr} + \Delta c = c_{\rm lr}$.
+
+`ferric-tddft/src/tddft.rs::build_a_matrix` applies the two exchange terms
+in turn:
 
 <!-- excerpt: ferric-tddft/src/tddft.rs::build_a_matrix -->
 ```rust
@@ -44,22 +75,81 @@ if let (Some(lr), Some(dc)) = (ri.lr.as_deref(), mix.long_range()) {
 }
 ```
 
-The full-Coulomb exchange reuses the Coulomb-metric tensors. The
-long-range term is fitted in the erf metric,
-$B^{\omega,P}_{pq} = \sum_Q[\mathbf M_\omega]_{PQ}(Q|\mathrm{erf}|pq)$ with
-$\mathbf M_\omega^{\mathsf T}\mathbf M_\omega = \mathbf V_\omega^+$, because
-that is the variational fit for the erf operator and keeps the fitted block a
-Gram matrix. $\mathbf V_\omega$ is close to singular for a Coulomb-fitted
-auxiliary basis, so the pseudo-inverse drops eigenvalues below $10^{-10}$
-rather than using a Cholesky factor.
+The first call contracts the Coulomb-metric tensors with $c_{\rm sr}$, the
+second the erf-metric tensors `lr` with $\Delta c$.
+`ExchangeMix::long_range` returns $\Delta c$ only when $\omega \ne 0$, so a
+global hybrid never enters the second branch.
+`ferric-tddft/src/tddft.rs::build_b_matrix` does the same with
+`subtract_exchange_b`, reading $(ib|ja)_\omega$ from
+$B^{\omega\mathsf T}_{ov}B^\omega_{ov}$.
 
-Two limits are exact. At $\omega = 0$ no erf tensors are built and the run is
-bitwise the global hybrid with $c_{\rm HF} = c_{\rm sr}$. At
-$c_{\rm sr} = c_{\rm lr}$ the erf tensors are built but contracted with
-$\Delta c = 0$, so the result is bitwise the global hybrid unless the long
-range is weighted wrongly.
+### Which integrals are fitted, and in which metric
 
-> **Verified equation 20.8** · the range-separated exchange split
+The full-Coulomb exchange reuses the Coulomb-metric tensors
+$B_{ov}, B_{oo}, B_{vv}$ of section @sec:response-matrices, which the Coulomb term needs
+anyway. The long-range term takes a second set over the same auxiliary
+basis,
+
+$$ B^{\omega,P}_{pq} = \sum_Q[\mathbf M_\omega]_{PQ}(Q|\mathrm{erf}|pq),\qquad
+\mathbf M_\omega^{\mathsf T}\mathbf M_\omega = \mathbf V_\omega^+,\qquad
+[\mathbf V_\omega]_{PQ} = (P|\mathrm{erf}|Q), $$
+
+with $\mathbf V_\omega^+$ the pseudo-inverse that drops eigenvalues below
+$10^{-10}$ (`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`, by
+eigendecomposition for the erf operator). Only the blocks the matrices use
+are built: $oo$ and $vv$ for the exchange of $\mathbf A$, and $ov$ for the
+exchange of $\mathbf B$ (Casida only).
+
+Why the erf metric?
+
+- It is the variational (Dunlap) fit for the erf operator. The error of
+  $(pq|\mathrm{erf}|rs) \approx \sum_P B^{\omega,P}_{pq}B^{\omega,P}_{rs}$ is
+  second order in the fitting residual, measured in the erf norm. The fitted
+  block is a Gram matrix, so it stays symmetric positive semidefinite, as
+  the exact one is.
+- A Coulomb-metric fit of erf integrals has no symmetric $B^{\mathsf T}B$
+  form. It needs
+  $(pq|\mathrm{erf}|P)\,\mathbf V^{-1}(\ldots)\mathbf V^{-1}(Q|\mathrm{erf}|rs)$
+  with the erf two-centre matrix in between, and neither the dense nor the
+  matrix-free contraction is built for that.
+- PySCF's `with_range_coulomb` density fitting and ferric's long-range SCF
+  fitter (`build_rsh_dfk_pair`) use the same metric.
+
+Why a pseudo-inverse in place of a Cholesky factor? $\mathbf V_\omega$ is
+nearly singular for a Coulomb-fitted auxiliary basis. The erf kernel is
+smooth, so tight auxiliary functions are nearly redundant under it.
+
+The SCF and the response split the exchange differently. The SCF fits
+$c_{\rm sr}K[\mathrm{erfc}] + c_{\rm lr}K[\mathrm{erf}]$ in the JK auxiliary
+basis; the response fits $c_{\rm sr}K[1/r] + \Delta c\,K[\mathrm{erf}]$ in
+the response auxiliary basis. For exact integrals the two are equal. They
+differ by fitting error, of the same kind as the difference that already
+exists between the JK-fitted SCF and the RI-fitted response of a global
+hybrid.
+
+### Limits that are exact in the code
+
+- **$\omega = 0$.** The long-range term is identically zero. The driver
+  builds no erf tensors, and the run is bitwise the global hybrid with
+  $c_{\rm HF} = c_{\rm sr}$.
+- **$c_{\rm sr} = c_{\rm lr} = c$ at any $\omega$.** Here $\Delta c = 0$.
+  The erf tensors are still built and contracted with the coefficient 0, so
+  the result is bitwise the global hybrid with $c_{\rm HF} = c$, unless the
+  long-range term is weighted wrongly (by $c_{\rm lr}$ in place of
+  $\Delta c$, for example). This limit is a test of the weighting.
+
+### Matrix-free products and memory
+
+Write $K^\omega_A(x)_{ia} = \sum_{jb}(ij|ab)_\omega x_{jb}$ and $K^\omega_B$
+likewise. The products of `matvec.rs` gain $-\Delta c\,K^\omega_A$ in
+$\mathbf Ax$, $-\Delta c\,(K^\omega_A + K^\omega_B)$ in
+$(\mathbf A+\mathbf B)x$ and $-\Delta c\,(K^\omega_A - K^\omega_B)$ in
+$(\mathbf A-\mathbf B)x$, contracted exactly as the Coulomb-metric exchange.
+The second tensor set adds $N_{\rm aux}(n_o^2+n_v^2)$ resident doubles, and
+$N_{\rm aux}n_on_v$ more for Casida; the memory plan declares them before
+the erf tensors are built.
+
+> **Verified equation @eq:td-rsh-split** · the range-separated exchange split
 >
 > $c_{\rm sr}\,\mathrm{erfc} + c_{\rm lr}\,\mathrm{erf} = c_{\rm sr} + (c_{\rm lr} - c_{\rm sr})\,\mathrm{erf}$,
 > symbolically; numerically, the code's singlet and triplet blocks with RI
@@ -76,7 +166,31 @@ range is weighted wrongly.
 >
 > <!-- verified: id=td.rsh.split; script=scripts/tddft_response_sympy.py; claim=A4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::build_b_matrix; registry=tddft -->
 
-## 20.4.2 Numerical anchors
+B3LYP against CAM-B3LYP for water / 6-31G (TDA), from the `589b50832`
+build. The long-range exchange of CAM-B3LYP ($c_{\rm lr} = 0.65$ against
+0.2) raises each of the five roots, by 0.03 to 0.15 eV.
+
+```python
+import ferric
+
+HA_TO_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+for xc in ("B3LYP", "HYB_GGA_XC_CAM_B3LYP"):
+    r = ferric.run_tddft(mol, bs, aux, functional=xc, n_roots=5, method="tda")
+    print(xc, "c_sr", r.c_hf, "c_lr", r.c_lr, "omega", r.omega)
+    print("  roots (eV):", [round(e * HA_TO_EV, 5) for e in r.excitation_energies])
+```
+
+```text
+B3LYP c_sr 0.2 c_lr 0.2 omega 0.0
+  roots (eV): [7.8261, 9.95555, 10.01225, 12.45036, 14.80836]
+HYB_GGA_XC_CAM_B3LYP c_sr 0.19 c_lr 0.65 omega 0.33
+  roots (eV): [7.9152, 10.08533, 10.10049, 12.59825, 14.83606]
+```
+
+## Numerical anchors {#rsh-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Range-separated hybrid and triplet
 TDA and Casida excitation energies".
@@ -87,9 +201,11 @@ TDA and Casida excitation energies".
 | CAM-B3LYP, worst molecule | $2.9\times10^{-7}$ eV | the same |
 | ωB97X, worst molecule | $6.7\times10^{-8}$ eV | the same |
 
-## 20.4.3 Sources
+The negative control in the box puts these numbers in scale: dropping the
+long-range term moves the roots by 2.9 to 6.0 eV.
+
+## Sources {#rsh-sources}
 
 | Source | What it gives |
 |---|---|
-| `crates/ferric-tddft/theory.md`, section 8 | the split, the erf-metric fit, the exact limits and the matrix-free products |
-| `crates/ferric-dft/theory.md`, "Exact exchange in hybrid and range-separated hybrid functionals" | the SCF exchange (section 9.4) |
+| section @sec:hybrids-exact-exchange | the SCF exchange (section @sec:hybrids) |

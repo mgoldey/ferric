@@ -124,6 +124,24 @@ def test_rimp2_is_exact_by_default_and_local_eps_zero_matches(water_631g):
     assert abs(lo.total_energy - (lo.rhf_energy + lo.mp2_corr)) < 1e-12
 
 
+def test_rimp2_local_lambda_boys_kwarg(water_631g):
+    """lambda_boys: default 10 recorded in result.local, 0 = plain Boys, the
+    eps=0 energy does not depend on it, and bad values / the exact method raise."""
+    mol, obs, aux = water_631g
+    kw = dict(frozen_core=1, local="amplitude-threshold", eps=0.0)
+    d = ferric.run_rimp2(mol, obs, aux, **kw)
+    z = ferric.run_rimp2(mol, obs, aux, lambda_boys=0.0, **kw)
+    assert d.local["lambda_boys"] == 10.0 and d.local["lambda_boys_sweeps"] >= 1
+    assert z.local["lambda_boys"] == 0.0 and z.local["lambda_boys_sweeps"] == 0
+    # both PCG solves stop at the adaptive default (bound 1e-10 Ha each)
+    assert abs(d.mp2_corr - z.mp2_corr) < 2e-10
+    for bad in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="lambda_boys"):
+            ferric.run_rimp2(mol, obs, aux, lambda_boys=bad, **kw)
+    with pytest.raises(ValueError, match="lambda_boys"):
+        ferric.run_rimp2(mol, obs, aux, frozen_core=1, lambda_boys=10.0)
+
+
 def test_rimp2_local_threshold_error_is_one_sided(water_631g):
     mol, obs, aux = water_631g
     lo = ferric.run_rimp2(

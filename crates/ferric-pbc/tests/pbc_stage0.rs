@@ -329,7 +329,7 @@ fn madelung_matches_pyscf() {
 /// `M = 1.747564594633182` (nearest-neighbour convention, `r₀ = a/2`). The cell is
 /// neutral, so the background term is zero and the anchor isolates the
 /// SR/LR/self terms; ω-independence is checked across a 4× range of ω.
-/// Derivation: crates/ferric-pbc/theory.md §1,
+/// Derivation: `book/src/24-periodic/01-ewald.md#ewald-ewald-sum-independence`,
 /// scripts/pbc_ewald_pairft_stress_sympy.py S1 (same anchor in pure Python).
 #[test]
 fn ewald_rock_salt_madelung_is_textbook_and_omega_independent() {

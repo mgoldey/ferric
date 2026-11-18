@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/numpy checks of the SR-MP2 + LR-RPA combinations of rs_mp2_rpa.rs.
 
-Theory and notation: crates/ferric-rpa/theory.md, section "Range-separated
-MP2 + RPA". Every check prints "FAIL [<name>]" when it fails, and the script
+Theory and notation: `book/src/26-rs-mp2-rpa/01-cross-term.md#cross-term-split-energy`. Every check prints "FAIL [<name>]" when it fails, and the script
 exits nonzero if any did.
 
 Code (crates/ferric-rpa/src/rs_mp2_rpa.rs rs_mp2_lr_rpa,

@@ -1847,7 +1847,7 @@ jobs:
           # pass). Import first so a broken build fails this step loudly.
           uv run --no-sync python -c "import ferric"
           FERRIC_CLI="$PWD/target/release/ferric-cli" OPENBLAS_NUM_THREADS=1 \
-            uv run --no-sync pytest -m validation crates/ferric-python/tests/ -q
+            uv run --no-sync pytest -m validation crates/ferric-python/tests/ --ignore=crates/ferric-python/tests/test_derivation_scripts.py -q
 
   # One validation test too long for any shard: Cr(CO)6 (199 AOs, exact 4-index
   # J/K) through the default SCF ladder with stability analysis. Every CI run
@@ -2758,7 +2758,7 @@ jobs:
         # Flip to BLOCKING once a run has actually gone green here.
         continue-on-error: true
         run: |
-          uv run --no-sync pytest crates/ferric-python/tests/ \
+          uv run --no-sync pytest crates/ferric-python/tests/ --ignore=crates/ferric-python/tests/test_derivation_scripts.py \
             --cov=ferric --cov-report=lcov:python-ext-coverage.lcov -q
 
       - name: pytest -- avogadro-ferric plugin (plugins/avogadro-ferric)

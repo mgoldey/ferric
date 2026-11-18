@@ -7,7 +7,9 @@
 //!
 //! No other code has a terfc-attenuated MP2 gradient, so the anchors are the
 //! derivative of the energy and the `r0 → 0` limit at fixed `ω`, where
-//! `terfc(r; 0, ω) = erfc(ωr)` exactly (theory.md §9.5) and the gradient is the
+//! `terfc(r; 0, ω) = erfc(ωr)` exactly
+//! (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2`)
+//! and the gradient is the
 //! erfc gradient (itself FD-validated in `att_rimp2_gradient_fd.rs`).
 //!
 //! Systems (r0 = 1.05 Å, `ω r0 = 1/√2` unless stated, cc-pvdz-ri):

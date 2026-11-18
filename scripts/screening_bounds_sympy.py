@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Schwarz, QQR and CSB screening bounds, and why Schwarz cannot see attenuation.
 
-Derivation: crates/ferric-integrals/theory.md, "Kernels in Fourier space",
-"The Schwarz bound", "The combined Schwarz bound (CSB)", "Distance-dependent
-bounds (QQR)". Code: crates/ferric-integrals/src/schwarz.rs (schwarz,
+Derivation: `book/src/04-operators/02-terf-table-engine.md#terf-table-engine-kernels-fourier-space`, `book/src/05-screening/01-schwarz.md#schwarz-bound-admitted-kernels`, `book/src/05-screening/01-schwarz.md#schwarz-combined-schwarz-bound`, `book/src/05-screening/02-qqr.md#qqr`. Code: crates/ferric-integrals/src/schwarz.rs (schwarz,
 check_operator_supported, bound_inflation), crates/ferric-integrals/src/csb.rs,
 crates/ferric-scf/src/qqr.rs (QqrBounds estimate),
 crates/ferric-integrals/src/qqr3.rs (QqrBounds3::estimate3).

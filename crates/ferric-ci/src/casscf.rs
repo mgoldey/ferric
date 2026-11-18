@@ -3,7 +3,7 @@
 //! Single root, spin-summed RDMs, real orbitals, chemist notation. The start
 //! is a closed-shell RHF reference; the active space is the `n_active`
 //! orbitals above the `n_core` doubly occupied ones. Equations and the
-//! validation record: `crates/ferric-ci/theory.md` ("Two-step CASSCF").
+//! validation record: `book/src/17-multireference/05-casscf.md#casscf`.
 //!
 //! One macro iteration at orbitals `C = [C_c | C_a | C_v]`:
 //!
@@ -530,8 +530,9 @@ impl<'a> CasScfProblem<'a> {
         };
         let ci = run_cas_ci_on_integrals_timed(ints, &cfg, acc)?;
         // The CI flag is the residual criterion ‖Hc − Ec‖ < ci_conv_thresh
-        // (Davidson relaxes it to 10x when its correction vector vanishes;
-        // the dense fallback sets it from the residual alone). The
+        // (when Davidson's correction vector vanishes it stops and reports
+        // unconverged; the dense fallback sets the flag from the residual
+        // alone). The
         // gradient error is first order in the residual, so the returned
         // root must itself meet ci_conv_thresh.
         if !ci_root_accepted(ci.converged, ci.residual_norm, self.ci_config.conv_thresh) {

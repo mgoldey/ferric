@@ -454,7 +454,7 @@ fn ar3() -> (Vec<u8>, Vec<[f64; 3]>) {
 /// 1e-7 bar of `analytic_gradient_matches_finite_difference` cannot see it;
 /// the pure three-body case is held to 1e-7 RELATIVE to its largest
 /// component instead (measured: <= 4e-8 relative). The mutation record for
-/// this bar is in `theory.md`.
+/// this bar is in `book/src/25-dispersion/01-d3bj.md#d3bj-proven`.
 #[test]
 fn atm_gradient_matches_finite_difference() {
     let pure = D3Params {

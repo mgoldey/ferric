@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hartree-Fock nuclear Hessian as ferric assembles it (RHF, UHF, ROHF).
 
-Derivation: crates/ferric-scf/theory.md, "Hartree-Fock nuclear Hessian".
+Derivation: `book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations`.
 Code: crates/ferric-scf/src/hessian.rs (rhf_hessian, uhf_hessian; skeleton
 terms 1-4, cphf_rhs, finish_cphf, assemble_response, MoFrame) and
 crates/ferric-scf/src/hessian/rohf.rs (rohf_hessian: Response::apply, rhs,

@@ -1,4 +1,5 @@
-//! Opt-in nonbonded cutoff (`ferric_mm::cutoff`, theory.md section 8).
+//! Opt-in nonbonded cutoff (`ferric_mm::cutoff`,
+//! `book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff`).
 //!
 //! - exactness anchors: `NoCutoff` is the all-pairs sum bit for bit; a cutoff
 //!   beyond the system diameter with `eps_rf = 1` reproduces the all-pairs LJ

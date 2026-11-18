@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Figure 4.1: the erf, erfc, terf and terfc kernels in r and in k.
 
-Analytic expressions only (crates/ferric-integrals/theory.md, "The terf and
-terfc kernels" and "Kernels in Fourier space"). Writes kernels_rk.svg next to
+Analytic expressions only (section @sec:erf-terf-pairs and "Kernels in Fourier space"). Writes kernels_rk.svg next to
 this script. Deterministic: fixed svg.hashsalt and no date in the metadata.
 
     python book/src/figures/04-operators/kernels_rk.py

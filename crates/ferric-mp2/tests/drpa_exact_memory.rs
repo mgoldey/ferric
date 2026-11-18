@@ -94,6 +94,7 @@ fn ragged_at(
     let lcfg = AmplitudeLmp2Config {
         eps,
         frozen_core,
+        lambda_boys: 0.0, // the dRPA drivers' plain Boys
         ..Default::default()
     };
     let lb = assemble_basis(

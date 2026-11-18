@@ -53,8 +53,7 @@
 //!
 //! # Measured (2026-11-11) and mutations
 //!
-//! Tables and the mutation record are in `crates/ferric-ci/theory.md`
-//! ("Two-step CASSCF").
+//! Tables and the mutation record are in `book/src/17-multireference/05-casscf.md#casscf-proven`.
 
 use ferric_ci::casscf::{optimize, CasScfConfig, CasScfProblem, RotationClass};
 use ferric_ci::rdm::rdm_energy;

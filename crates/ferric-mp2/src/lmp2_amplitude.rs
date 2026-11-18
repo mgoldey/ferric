@@ -67,9 +67,9 @@ use ferric_integrals::oneelectron::{dipole, overlap, r2_moment};
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 
-use crate::boys::boys_localize;
+use crate::boys::boys_localize_checked;
 use crate::ragged::{
-    check_swap_closed, lanczos_kappa, matvec_indexed, matvec_planned, pair_block_from_g_cand,
+    check_swap_closed, lanczos_kappa, matvec_indexed, matvec_planned, pair_blocks_screened,
     solve_ragged_budgeted_steered, BudgetedSolve, MatvecPath, PairBlock, Ragged, SolvePlan,
 };
 use crate::rimp2::{
@@ -153,6 +153,25 @@ pub struct AmplitudeLmp2Config {
     /// ([`crate::vvhv_local::VirtualSpace`]): the dense default, or the
     /// opt-in local build. Ignored by the `*_with_virtuals` entry points.
     pub virtual_space: crate::vvhv_local::VirtualSpace,
+    /// Fock-propagated widening of the Eq-8 mask
+    /// ([`crate::ragged::fock_dressed_gate`], theory.md §12.6): `Some(κ)`
+    /// also keeps element (a,b) of pair (i,j) when its one-step
+    /// virtual-Fock-dressed integral `|g̃_ab|` (or `|g̃_ba|`) exceeds κ·ε —
+    /// the amplitudes the integral-size mask misses because they are driven
+    /// through the off-diagonal VV-HV Fock coupling, not by their own
+    /// integral. `None` (the library default) is the plain WSHG23 mask,
+    /// bitwise. Inert at ε = 0. The CLI and Python integral-direct paths set
+    /// it to [`crate::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA`] unless the user
+    /// turns it off.
+    pub fock_screen: Option<f64>,
+    /// λ of the λ-Boys occupied localization (Bohr²/Ha²,
+    /// [`crate::boys::lambda_boys_localize_checked`]): Boys plus
+    /// `λ Σ_i F_ii²`, started from the converged Boys orbitals. `0.0` is
+    /// plain Boys, bit for bit. Default [`crate::boys::LAMBDA_BOYS_DEFAULT`]
+    /// for local MP2; the dRPA / LinLCCD / rCCD drivers that build this
+    /// struct set `0.0`. Invisible at ε = 0 (the energy is invariant under
+    /// occupied rotations); at finite ε it changes the mask.
+    pub lambda_boys: f64,
 }
 
 impl Default for AmplitudeLmp2Config {
@@ -169,6 +188,8 @@ impl Default for AmplitudeLmp2Config {
             fit_radius_bohr: None,
             fvv_sparse_rho: 0.0,
             virtual_space: crate::vvhv_local::VirtualSpace::Dense,
+            fock_screen: None,
+            lambda_boys: crate::boys::LAMBDA_BOYS_DEFAULT,
         }
     }
 }
@@ -264,6 +285,8 @@ pub struct AmplitudeLmp2Result {
     pub timings: StageTimings,
     /// Which VV-HV build produced the virtual space, with its counters.
     pub virtual_space: crate::vvhv_local::VirtualSpaceReport,
+    /// The occupied localization: λ, sweeps, final gradient, wall time.
+    pub lambda_boys: crate::boys::LambdaBoysReport,
 }
 
 /// Where a solve's PCG tolerance came from.
@@ -769,7 +792,9 @@ fn build_vvhv_traced(
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
     let c_l = if n_l > 0 {
         let cl = canonical_orth(&tv, &s, n_l)?;
-        boys_localize(&cl, &dip, 200).c_loc
+        boys_localize_checked(&cl, &dip, LMP2_BOYS_MAX_SWEEPS)
+            .map_err(|e| boys_error("valence virtuals", e))?
+            .c_loc
     } else {
         Array2::<f64>::zeros((nao, 0))
     };
@@ -1212,6 +1237,8 @@ pub struct LocalizedBasis {
     pub v2c: Array2<f64>,
     /// Wall seconds of `localized_spaces` inside [`assemble_basis`].
     pub t_loc_s: f64,
+    /// The occupied localization that produced `c_locc`.
+    pub lambda_boys: crate::boys::LambdaBoysReport,
 }
 
 /// Everything the correlation stage needs about the LOCALIZED spaces, with
@@ -1238,10 +1265,13 @@ pub struct LocalizedSpaces {
     pub no: usize,
     /// Number of localized virtual orbitals.
     pub nv: usize,
+    /// The occupied localization that produced `c_locc`.
+    pub lambda_boys: crate::boys::LambdaBoysReport,
 }
 
 /// Localized-space stage shared by all assembly paths: Boys occupieds,
 /// centroids/spreads, Fock blocks, virtual centroids. No RI work here.
+/// Plain Boys (λ = 0); [`localized_spaces_lambda`] takes λ.
 pub fn localized_spaces(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1249,12 +1279,69 @@ pub fn localized_spaces(
     frozen_core: usize,
     vvhv: &VvHv,
 ) -> Result<LocalizedSpaces, FerricError> {
+    localized_spaces_capped(mol, obs, rhf, frozen_core, vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0)
+}
+
+/// [`localized_spaces`] with λ-Boys occupieds
+/// ([`crate::boys::lambda_boys_localize_checked`]); `lambda_boys = 0.0` is
+/// [`localized_spaces`] bit for bit.
+pub fn localized_spaces_lambda(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    rhf: &ScfResult,
+    frozen_core: usize,
+    vvhv: &VvHv,
+    lambda_boys: f64,
+) -> Result<LocalizedSpaces, FerricError> {
+    localized_spaces_capped(
+        mol,
+        obs,
+        rhf,
+        frozen_core,
+        vvhv,
+        LMP2_BOYS_MAX_SWEEPS,
+        lambda_boys,
+    )
+}
+
+/// Jacobi-sweep cap of the Boys localizations behind the amplitude LMP2
+/// family (occupieds and valence virtuals).
+pub(crate) const LMP2_BOYS_MAX_SWEEPS: usize = 200;
+
+/// An unconverged Boys localization is refused (solver honesty): the
+/// orbitals still span the right space, so the ε = 0 energy would be
+/// unchanged, but every locality map (pair gate, aux/virtual domains, AO
+/// supports, integral batches) is built from their centroids and supports,
+/// so a localization stopped short silently changes the truncation.
+fn boys_error(what: &str, e: FerricError) -> FerricError {
+    FerricError::Convergence(format!("amplitude LMP2 ({what}): {e}"))
+}
+
+/// [`localized_spaces_lambda`] with an explicit Boys sweep cap (the test
+/// hook for the non-convergence error).
+pub(crate) fn localized_spaces_capped(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    rhf: &ScfResult,
+    frozen_core: usize,
+    vvhv: &VvHv,
+    boys_max_sweeps: usize,
+    lambda_boys: f64,
+) -> Result<LocalizedSpaces, FerricError> {
     let nocc_total = (mol.nelec() as usize) / 2;
     let no = active_occ(nocc_total, frozen_core)?;
     let first_occ = frozen_core;
     let c_occ_can = rhf.mos_r().slice(s![.., first_occ..nocc_total]).to_owned();
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
-    let boys = boys_localize(&c_occ_can, &dip, 200);
+    let (boys, lambda_report) = crate::boys::lambda_boys_localize_checked(
+        &c_occ_can,
+        &dip,
+        rhf.fock_r(),
+        lambda_boys,
+        boys_max_sweeps,
+        crate::boys::LAMBDA_BOYS_MAX_SWEEPS,
+    )
+    .map_err(|e| boys_error("occupieds", e))?;
     let c_locc = boys.c_loc;
     let occ_centers = boys.centers;
     // ⟨i|r²|i⟩ and the virtual dipole centroids: one GEMM per operator
@@ -1288,6 +1375,7 @@ pub fn localized_spaces(
         virt_centers,
         no,
         nv,
+        lambda_boys: lambda_report,
     })
 }
 
@@ -1302,7 +1390,7 @@ pub fn assemble_basis(
     vvhv: &VvHv,
 ) -> Result<LocalizedBasis, FerricError> {
     let t_loc0 = std::time::Instant::now();
-    let sp = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
+    let sp = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
     let t_loc_s = t_loc0.elapsed().as_secs_f64();
     let LocalizedSpaces {
         c_locc,
@@ -1312,6 +1400,7 @@ pub fn assemble_basis(
         occ_spreads,
         no,
         nv,
+        lambda_boys,
         ..
     } = sp;
     let c_vloc = &vvhv.c_vloc;
@@ -1333,6 +1422,7 @@ pub fn assemble_basis(
         b_flat,
         v2c,
         t_loc_s,
+        lambda_boys,
     })
 }
 
@@ -1908,12 +1998,14 @@ pub fn assemble_ragged_direct(
         pair_gate_cal,
         fit_radius_bohr,
         None,
+        None,
     )
     .map(|(rg, g, _, _)| (rg, g))
 }
 
 /// [`assemble_ragged_direct`] with the ε-linked per-pair AUX truncation
-/// (see `AmplitudeLmp2Config::aux_tail_frac`). Returns
+/// (see `AmplitudeLmp2Config::aux_tail_frac`) and the optional
+/// Fock-propagated gate (`AmplitudeLmp2Config::fock_screen`). Returns
 /// `(ragged, gated_pairs, aux_dom_mean, aux_dom_max)` — the last two are
 /// (naux, naux) when truncation is off.
 #[allow(clippy::too_many_arguments)]
@@ -1927,6 +2019,7 @@ pub fn assemble_ragged_direct_aux(
     pair_gate_cal: Option<f64>,
     fit_radius_bohr: Option<f64>,
     aux_tail_frac: Option<f64>,
+    fock_screen: Option<f64>,
 ) -> Result<(Ragged, usize, f64, usize), FerricError> {
     let (no, nv) = (lb.no, lb.nv);
     let (f_oo, f_vv) = (&lb.f_oo, &lb.f_vv);
@@ -2092,19 +2185,8 @@ pub fn assemble_ragged_direct_aux(
             } else {
                 cand.clone()
             };
-            let mut out = Vec::with_capacity(2);
-            if let Some(pb) = pair_block_from_g_cand(i, j, &g, &cand_used, nv, f_vv, &fo, &fv, eps)
-            {
-                out.push(pb);
-            }
-            if i != j {
-                let gt = g.t().to_owned();
-                if let Some(pb) =
-                    pair_block_from_g_cand(j, i, &gt, &cand_used, nv, f_vv, &fo, &fv, eps)
-                {
-                    out.push(pb);
-                }
-            }
+            let out =
+                pair_blocks_screened(i, j, &g, &cand_used, nv, f_vv, &fo, &fv, eps, fock_screen);
             Ok((out, aux_used))
         })
         .collect();
@@ -2171,6 +2253,7 @@ pub fn amplitude_lmp2_with_virtuals(
         cfg.pair_gate_cal,
         cfg.fit_radius_bohr,
         cfg.aux_tail_frac,
+        cfg.fock_screen,
     )?;
     let t_assembly_s = t0.elapsed().as_secs_f64();
 
@@ -2217,6 +2300,7 @@ pub fn amplitude_lmp2_with_virtuals(
     r.n_pairs_gated = n_pairs_gated;
     r.aux_dom_mean = aux_dom_mean;
     r.aux_dom_max = aux_dom_max;
+    r.lambda_boys = lb.lambda_boys;
     r.timings = StageTimings {
         t_spaces_s: 0.0,
         t_loc_s: lb.t_loc_s,
@@ -2313,6 +2397,7 @@ pub(crate) fn solve_and_count(
         matvec_path: plan.path,
         timings: StageTimings::default(),
         virtual_space: crate::vvhv_local::VirtualSpaceReport::CallerSupplied,
+        lambda_boys: crate::boys::LambdaBoysReport::default(),
     })
 }
 
@@ -2487,6 +2572,115 @@ mod tests {
 
     fn c4_631g() -> (Molecule, PreparedBasis, BasisSet, ScfResult) {
         rhf_631g("alkane_4.xyz")
+    }
+
+    /// Solver honesty: an occupied Boys localization that hits its sweep cap
+    /// is an error, not a silently used half-localized basis. C4/6-31G with a
+    /// one-sweep cap must refuse (the occupieds need many sweeps from the
+    /// canonical start); the production cap must succeed on the same system,
+    /// so the refusal is the cap and not something else.
+    #[test]
+    fn unconverged_occupied_boys_is_an_error() {
+        let (mol, obs, bs, rhf) = c4_631g();
+        let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
+        let err = localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, 1, 0.0)
+            .expect_err("a one-sweep Boys localization must be refused");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("occupieds") && msg.contains("Boys localization did not converge"),
+            "{msg}"
+        );
+        assert!(
+            localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0).is_ok()
+        );
+    }
+
+    /// λ-Boys exactness anchors on C4/6-31G (frozen core 4, cc-pvdz-ri):
+    ///
+    /// * `lambda_boys = 0` is the plain-Boys localized space bit for bit;
+    /// * λ = 10 really rotates (sweeps ≥ 1, G rises, F_oo more diagonal);
+    /// * at ε = 0 the energy is invariant: λ = 10 and λ = 0 agree with each
+    ///   other and with canonical RI-MP2 to 1e-12 Ha. Both solves run at the
+    ///   strict PCG tolerance (relres 1e-11), where the Hylleraas solver
+    ///   error, second order in the residual, is ~1e-22·‖J‖²/λ_min; what is
+    ///   left is summation-order rounding on a ~0.4 Ha sum, ~1e-14.
+    ///
+    /// Measured (2026-11-18): λ10 − λ0 = 2.9e-14 Ha, λ10 − canonical 8.8e-15
+    /// Ha; λ-Boys ran 7 sweeps. Mutations seen to fail here (2026-11-18): the
+    /// angle built with −λ, or with the F term dropped (the optimiser output
+    /// stops being the λ-Boys optimum); the coefficients left unrotated
+    /// (F_oo not more diagonal); U accumulated with the wrong sign in one
+    /// column (non-orthogonal C: the ε = 0 energy assertion fails).
+    #[test]
+    fn lambda_boys_is_inert_at_eps_zero_and_plain_boys_at_lambda_zero() {
+        let (mol, obs, bs, rhf) = c4_631g();
+        let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
+        let plain = localized_spaces(&mol, &obs, &rhf, 4, &vvhv).unwrap();
+        let l0 = localized_spaces_lambda(&mol, &obs, &rhf, 4, &vvhv, 0.0).unwrap();
+        assert_eq!(l0.c_locc, plain.c_locc);
+        assert_eq!(l0.f_oo, plain.f_oo);
+        assert_eq!(l0.occ_centers, plain.occ_centers);
+        assert_eq!(l0.lambda_boys.sweeps, 0);
+        // ε = 0 invariance
+        let aux = ferric_core::basis::bundled("cc-pvdz-ri").unwrap();
+        let dfbs = PreparedBasis::new(&mol, &aux).unwrap();
+        let run = |lam: f64, reference: bool| {
+            let cfg = AmplitudeLmp2Config {
+                eps: 0.0,
+                frozen_core: 4,
+                cg_rtol: Some(LMP2_CG_RTOL_STRICT),
+                compute_reference: reference,
+                lambda_boys: lam,
+                ..Default::default()
+            };
+            amplitude_lmp2_with_virtuals(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg, &vvhv)
+                .unwrap()
+        };
+        let r0 = run(0.0, true);
+        let r10 = run(10.0, false);
+        eprintln!(
+            "C4/6-31G eps=0: lambda10-lambda0 {:.3e}, lambda10-canonical {:.3e}, lambda0-canonical {:.3e}; {:?}",
+            r10.e_corr - r0.e_corr,
+            r10.e_corr - r0.e_corr_canonical_ri,
+            r0.e_corr - r0.e_corr_canonical_ri,
+            r10.lambda_boys
+        );
+        assert_eq!(r10.lambda_boys.lambda, 10.0);
+        assert!(
+            (r10.e_corr - r0.e_corr).abs() < 1e-12,
+            "λ changed the ε = 0 energy: {} vs {}",
+            r10.e_corr,
+            r0.e_corr
+        );
+        assert!(
+            (r10.e_corr - r0.e_corr_canonical_ri).abs() < 1e-12,
+            "λ = 10 at ε = 0 vs canonical: {} vs {}",
+            r10.e_corr,
+            r0.e_corr_canonical_ri
+        );
+        let l10 = localized_spaces_lambda(&mol, &obs, &rhf, 4, &vvhv, 10.0).unwrap();
+        let rep = l10.lambda_boys;
+        assert!(
+            rep.sweeps >= 1 && rep.objective_end > rep.objective_start,
+            "{rep:?}"
+        );
+        let off = |f: &Array2<f64>| {
+            let mut s = 0.0;
+            for i in 0..f.nrows() {
+                for j in 0..f.ncols() {
+                    if i != j {
+                        s += f[(i, j)] * f[(i, j)];
+                    }
+                }
+            }
+            s
+        };
+        assert!(
+            off(&l10.f_oo) < off(&plain.f_oo),
+            "{} vs {}",
+            off(&l10.f_oo),
+            off(&plain.f_oo)
+        );
     }
 
     /// B1 anchor: the one-Cholesky multi-RHS `solve_spd` reproduces the
@@ -2888,6 +3082,7 @@ mod tests {
             virt_centers,
             no,
             nv,
+            lambda_boys: crate::boys::LambdaBoysReport::default(),
         }
     }
 
@@ -2959,7 +3154,7 @@ mod tests {
         let occ = rhf.mos_r().slice(s![.., ..nocc]).to_owned();
         let virt = rhf.mos_r().slice(s![.., nocc..nocc + 24]).to_owned();
         for c in [occ, virt] {
-            let a = boys_localize(&c, &dip, 200);
+            let a = crate::boys::boys_localize(&c, &dip, 200);
             let b = boys_column_oracle(&c, &dip, 200);
             assert!(a.iterations > 1, "no rotation happened: vacuous");
             assert_eq!(a.iterations, b.iterations);
@@ -3005,6 +3200,8 @@ mod tests {
             eps: 1e-3,
             frozen_core: 8,
             pair_gate_cal: Some(0.7),
+            // the frozen oracle localizes with plain Boys
+            lambda_boys: 0.0,
             ..Default::default()
         };
         let dcfg = DirectConfig {

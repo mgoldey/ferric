@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The terf / terfc kernel and the auxiliary function the table engine evaluates.
 
-Derivation: crates/ferric-integrals/theory.md, "The terf and terfc kernels" and
+Derivation: `book/src/04-operators/01-erf-terf.md#erf-terf-pairs` and
 "Two-center integrals over the terf kernel". Code:
 crates/ferric-integrals/src/operator.rs (Operator::terf, Operator::terfc,
 Operator::terfc_with_omega) and the table engine in

@@ -294,7 +294,7 @@ impl Frame {
     /// `U n_σ + n_σ Uᵀ` of a generator `U` (`nmo × nmo`): in the AO basis it
     /// is `X_σ C_σ,oᵀ + C_σ,o X_σᵀ` with `C_σ,o = C[:, ..n_σ]` and
     /// `X_σ = (C U)[:, ..n_σ]`, the form the factored RI-K takes
-    /// (`crates/ferric-scf/theory.md`, "Factored RI-K in the open-shell CPHF").
+    /// (`book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k`).
     fn spin_factors(&self, u: &Array2<f64>) -> [Array2<f64>; 2] {
         let cu = self.c.dot(u);
         self.noccs()

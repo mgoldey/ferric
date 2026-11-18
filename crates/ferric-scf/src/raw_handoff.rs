@@ -12,8 +12,9 @@
 //! that screened tensor as the SCF energy did: a dropped pair contributes
 //! zero to `d_P = Σ (P|μν) D_μν` and to the three-centre derivative pass, so
 //! the result is the gradient of the screened energy, not bitwise the
-//! recomputed unscreened one (`crates/ferric-scf/theory.md`, "RI-J gradient
-//! on a pair-screened tensor"). Building the tensor unscreened instead made
+//! recomputed unscreened one
+//! (`book/src/14-derivatives/02-df-jk-gradient.md#df-jk-gradient-pair-screened-ri-j`). Building the
+//! tensor unscreened instead made
 //! the SCF slower by what the gradient saved (MEASURED, 3 paired reps: wall
 //! time unchanged within noise, peak RSS 3.4 -> 6.0 GB), so the screen is
 //! left alone. The gradient

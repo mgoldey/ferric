@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs of the MP2-family gradient identities ferric-mp2 codes.
 
-Theory: crates/ferric-mp2/theory.md sections 9, 9.2, 9.3 and 14. Each part is
+Theory: `book/src/15-correlated-gradients/01-lagrangian-zvector.md#lagrangian-zvector-z-vector-equation-ferric`, `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-mp2`, 9.3 and 14. Each part is
 checked on a tiny model against an independent exact route: a full re-solve of
 HF (and of OO-MP2) at displaced parameters, differentiated by Richardson
 central differences. The script runs every part and exits 1 if any failed.

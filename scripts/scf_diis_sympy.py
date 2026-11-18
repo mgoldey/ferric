@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """The DIIS error vector F D S - S D F, its stationarity, and the DIIS system.
 
-Derivation: crates/ferric-scf/theory.md, "DIIS: the error vector and the
-extrapolation". Code: crates/ferric-scf/src/diis.rs (Diis), called from the
+Derivation: `book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation`. Code: crates/ferric-scf/src/diis.rs (Diis), called from the
 SCF loops of rhf.rs, uhf.rs and rohf.rs.
 
 Conventions: closed shell D = 2 C_o C_o^T, F = h + J[D] - K[D]/2,

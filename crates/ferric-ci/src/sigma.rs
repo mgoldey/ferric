@@ -21,7 +21,8 @@
 //! where `H_σ` is the one-spin part of the first two lines. All three are built
 //! from per-string single-excitation lists `E_pq|S⟩ = ε|T⟩`, with
 //! `ε = pb(S, q) · pb(S∖q, p)` (`pb` = [`crate::strings::phase_below`]): the
-//! same single-channel phase as `general_element`'s `ε₁` (see `theory.md`). A
+//! same single-channel phase as `general_element`'s `ε₁` (see
+//! `book/src/17-multireference/02-slater-condon.md#slater-condon-rules`). A
 //! β operator's extra `(−1)^{N_α}` in the α-before-β order appears in pairs
 //! and cancels, exactly as in the Slater–Condon rules, so `⟨Iα,Iβ|E^α E^β|Jα,Jβ⟩`
 //! factorizes into the two single-channel phases.

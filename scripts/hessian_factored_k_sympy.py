@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Factored RI-K of the open-shell CPHF response densities (UHF, UKS, ROHF).
 
-Derivation: crates/ferric-scf/theory.md, "Factored RI-K in the open-shell
-CPHF". Code: crates/ferric-scf/src/hessian.rs (TwoElectronBuilder::
+Derivation: `book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k`. Code: crates/ferric-scf/src/hessian.rs (TwoElectronBuilder::
 uhf_fitted_exchanges, spin_factors, solve_ucphf_blocks_of),
 crates/ferric-scf/src/hessian/rohf.rs (Frame::spin_factors, Response::g_of)
 and crates/ferric-scf/src/df_k/response.rs (DfK::build_factored_many).

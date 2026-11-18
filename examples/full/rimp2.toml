@@ -132,11 +132,13 @@ scheme = "none"  # none | amplitude-threshold
 # batch_merge: not read here: only with integral_direct = true
 # gate_cal: not read here: only with integral_direct = true
 # virt_schwarz_kappa: not read here: only with integral_direct = true
+# fock_screen: not read here: only with integral_direct = true
 # virtual_space: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2)
 # virtual_tau: not read here: only with virtual_space = "local"
 # virtual_tau_loose: not read here: only with virtual_space = "local"
 # virtual_solve_radius: not read here: only with virtual_space = "local"
 # virtual_boys_tau: not read here: only with virtual_space = "local"
+# lambda_boys: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2)
 
 [memory]
 # budget_gb: memory budget, GB; unset by default: FERRIC_MEM_BUDGET_GB, else 0.8 x available RAM; machine-dependent, so not written

@@ -624,7 +624,7 @@ pub(crate) fn mo_stream_chunk_for(width: usize, budget_bytes: usize) -> usize {
 ///
 /// Streams raw AO aux-blocks from `src` (which may itself be budget-bounded /
 /// disk-spilled), MO-transforms each in chunks of at most `MO_STREAM_CHUNK`
-/// aux rows (BLAS3: `half = (B^Q_AO)·c_right`, then `c_left^T·half`, rayon-
+/// aux rows (BLAS3: `half = c_left^T·(B^Q_AO)`, then `half·c_right`, rayon-
 /// parallel across chunk rows above `PAR_MO_TRANSFORM_WORK_THRESHOLD`), and
 /// dresses each chunk into the output with `V^{-1/2}` on the fly (in place,
 /// `beta=1` — no second full-size copy). Exactness: the same contraction as
@@ -1047,8 +1047,8 @@ pub fn ri_mp2_spin_components(
     // factorization and byte-identical to the pre-spike path. A Cholesky failure
     // under an attenuated metric is a REAL "this ω_m is unusable" signal (the
     // metric has lost rank in a Coulomb-optimized aux basis) and must stay loud —
-    // metric_inverse_sqrt only routes provably-indefinite kernels (erf/terf) to
-    // regularized eigh, so an erfc/Yukawa failure propagates as an error rather
+    // metric_inverse_sqrt routes only erf to regularized eigh and refuses
+    // terf, so an erfc/terfc/Yukawa failure propagates as an error rather
     // than being silently regularized into a quietly-wrong number.
     let met_op = config.metric_op.unwrap_or(op);
     let tok = acc.begin("metric V^-1/2");
@@ -1375,10 +1375,11 @@ pub fn spin_components_from_b_ov_kappa_cpu(
     nocc_total: usize,
     kappa: Option<f64>,
 ) -> SpinComponents {
-    // (ia|jb) comes from i-blocked wide GEMMs G_i = B_i^T·B (nvir x nocc*nvir)
-    // instead of per-element strided dots over P: same FLOPs at BLAS3
-    // throughput. G_i is computed ONCE per i (against the FULL b_ov, so it
-    // already carries every j), and reused across all j>=i for that i.
+    // (ia|jb) comes from i-blocked wide GEMMs instead of per-element strided
+    // dots over P: same FLOPs at BLAS3 throughput. For each i,
+    // G_i = B_i^T · B_{j>=i} is (nvir, (nocc-i)*nvir): it is formed against the
+    // j >= i tail of b_ov only, because the pair loop consumes nothing else,
+    // and is reused across every j >= i for that i.
     //
     // MP2 SYMMETRY: both spin-component sums are invariant under i<->j. For OS,
     //   sum_ab (ia|jb)^2/D_ij^ab -> sum_ab (jb|ia)^2/D_ji^ba
@@ -1390,43 +1391,16 @@ pub fn spin_components_from_b_ov_kappa_cpu(
     // off-diagonal j>i pairs by 2 (they stand in for their j<i mirror) and the
     // diagonal j==i by 1 — exactly PySCF's fac=2/fac=1 MP2_contract_d convention.
     // This halves the accumulation work (nocc*(nocc+1)/2 pairs vs nocc^2).
-    //
-    // Parallelism is over the FLATTENED list of unique (i,j) pairs rather than
-    // the coarse 0..nocc outer loop: at nocc=15 that is 120 fine-grained tasks
-    // vs 15 coarse ones, so rayon load-balances across cores without the old
-    // tail latency where the last few i-tasks left cores idle. Each i's wide
-    // GEMM G_i is still done once (memoized below) and shared read-only across
-    // that i's pairs. BLAS stays serial inside each closure via
-    // OPENBLAS_NUM_THREADS=1 — nested BLAS threads under rayon is the documented
-    // dgetrf-crash footgun.
-    use rayon::prelude::*;
 
-    // Parallelism is over i, with each i's wide GEMM done INSIDE its own task.
-    // Two things follow from that, and both were previously wrong:
-    //
-    //   1. The GEMM half used to be a serial `(0..nocc).map(...).collect()`
-    //      running ahead of the parallel pair loop. Measured on
-    //      benzene/aug-cc-pVTZ (naux=912, nocc=15, nvir=393) it was 1.400 s of
-    //      the 1.425 s stage — 98% — and identical at 1 and 12 threads, so the
-    //      pair loop's parallelism was very nearly decorative. The GEMMs are
-    //      mutually independent, so they belong in the parallel region.
-    //
-    //   2. G_i only ever needs its j >= i columns. The old full-width
-    //      `b_i.t().dot(b_ov)` also produced every j < i block, which no pair
-    //      consumes — the strictly-lower triangle, i.e. (nocc-1)/(2*nocc) of the
-    //      GEMM flops (47% at nocc=15). Slicing b_ov to the j >= i tail removes
-    //      that work outright rather than computing and discarding it.
-    //
-    // Memory drops with it: the old `g_all` held all nocc matrices live at once
-    // (nocc*nvir*nocc*nvir*8 bytes = 0.28 GB here, but it grows as nocc^2*nvir^2
-    // — 4.6 GB at nocc=30/nvir=800). Now at most one (nvir, (nocc-i)*nvir) block
-    // is live per worker.
+    // Parallelism is over i (one rayon task per occupied orbital), with each
+    // i's wide GEMM done INSIDE its own task, so the GEMMs run in the parallel
+    // region (on benzene/aug-cc-pVTZ, naux=912, nocc=15, nvir=393, they are
+    // ~98% of this stage). At most one (nvir, (nocc-i)*nvir) block is live per
+    // worker, rather than all nocc blocks (nocc^2*nvir^2*8 bytes, 4.6 GB at
+    // nocc=30/nvir=800).
     //
     // BLAS stays serial inside each closure via OPENBLAS_NUM_THREADS=1 — nested
-    // BLAS threads under rayon is the documented dgetrf-crash footgun.
-    //
-    // MP2 SYMMETRY (unchanged): visit only unique pairs j >= i, weighting the
-    // strictly off-diagonal ones by 2 — PySCF's fac=2/fac=1 convention.
+    // BLAS threads under rayon oversubscribe the cores.
     //
     // Per-i (e_os, e_ss) partials are collected into an i-ordered Vec and summed
     // SEQUENTIALLY. A rayon `reduce` combines partials in a tree whose shape
@@ -1435,13 +1409,38 @@ pub fn spin_components_from_b_ov_kappa_cpu(
     // keeps the parallel compute but fixes the accumulation order to be
     // thread-independent. Within an i, the j/a/b loop order is unchanged, so
     // this is bit-identical to the previous implementation.
-    let partials: Vec<(f64, f64)> = (0..nocc)
-        .into_par_iter()
-        .map(|i| {
+    spin_components_from_blocks(
+        |i| {
             // G_i over the j >= i tail only: g_i[a, (j-i)*nvir + b] = (ia|jb).
             let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);
             let b_tail = b_ov.slice(ndarray::s![.., i * nvir..]);
-            let g_i = b_i.t().dot(&b_tail);
+            b_i.t().dot(&b_tail)
+        },
+        eps,
+        (nocc, nvir, first_occ, nocc_total),
+        kappa,
+    )
+}
+
+/// The pair loop of [`spin_components_from_b_ov_kappa_cpu`], given the
+/// block `g_i[a, (j-i)·nvir + b] = (ia|jb)` (`j >= i`) of each occupied `i`
+/// from `pair_block(i)`. One factor (`Bᵢᵀ B`) and the signed factor
+/// ([`signed_pair_block`]) differ only in that block; the loop, its weights
+/// and its i-ordered serial sum are shared.
+fn spin_components_from_blocks<F>(
+    pair_block: F,
+    eps: &[f64],
+    (nocc, nvir, first_occ, nocc_total): (usize, usize, usize, usize),
+    kappa: Option<f64>,
+) -> SpinComponents
+where
+    F: Fn(usize) -> Array2<f64> + Sync,
+{
+    use rayon::prelude::*;
+    let partials: Vec<(f64, f64)> = (0..nocc)
+        .into_par_iter()
+        .map(|i| {
+            let g_i = pair_block(i);
 
             let (mut e_os_i, mut e_ss_i) = (0.0, 0.0);
             for j in i..nocc {
@@ -1466,6 +1465,69 @@ pub fn spin_components_from_b_ov_kappa_cpu(
         e_ss,
         e_total: e_os + e_ss,
     }
+}
+
+/// A signed RI factor of an interaction kernel that is not positive definite:
+/// `K = B₊ᵀ B₊ − B₋ᵀ B₋`, i.e. the stacked factor `[B₊; B₋]` with the
+/// signature `diag(+1, −1)`.
+///
+/// The terf kernel is the case in point. Its Fourier transform carries
+/// `cos(k r0)` and is negative near `k r0 = π`, so its metric `(P|terf|Q)` is
+/// indefinite and has no inverse square root ([`metric_inverse_sqrt`] refuses
+/// it). Its fitted integrals are instead Coulomb RI minus terfc RI,
+/// `(ia|terf|jb) ≈ (B_Cᵀ B_C − B_sᵀ B_s)_{ia,jb}`: `pos` is the Coulomb
+/// `b_ov`, `neg` the terfc `b_ov`, both dressed by the Cholesky factor of their
+/// own positive definite metric. The two may have different row counts but
+/// must share the column layout `(i·nvir + a)`.
+#[derive(Clone, Copy, Debug)]
+pub struct SignedBOv<'a> {
+    /// Factor entering with `+1`, shape `(naux₊, nocc·nvir)`.
+    pub pos: &'a Array2<f64>,
+    /// Factor entering with `−1`, shape `(naux₋, nocc·nvir)`.
+    pub neg: &'a Array2<f64>,
+}
+
+/// One block of the signed interaction between two signed factors:
+/// `left.pos[:, lcols]ᵀ right.pos[:, rcols] − left.neg[:, lcols]ᵀ right.neg[:, rcols]`.
+///
+/// With `left = right` and `lcols = i·nvir..(i+1)·nvir`, `rcols = i·nvir..`,
+/// this is the `g_i[a, (j−i)·nvir + b] = (ia|jb)` block the RI-MP2 pair loop
+/// reads; with the alpha and beta factors it is the opposite-spin block
+/// `(ia|JB)`. Two GEMMs where a single factor needs one.
+pub fn signed_pair_block(
+    left: SignedBOv,
+    lcols: std::ops::Range<usize>,
+    right: SignedBOv,
+    rcols: std::ops::RangeFrom<usize>,
+) -> Array2<f64> {
+    let lp = left.pos.slice(ndarray::s![.., lcols.clone()]);
+    let rp = right.pos.slice(ndarray::s![.., rcols.clone()]);
+    let mut g = lp.t().dot(&rp);
+    let ln = left.neg.slice(ndarray::s![.., lcols]);
+    let rn = right.neg.slice(ndarray::s![.., rcols]);
+    ndarray::linalg::general_mat_mul(-1.0, &ln.t(), &rn, 1.0, &mut g);
+    g
+}
+
+/// Closed-shell MP2 spin components of a signed factor (see [`SignedBOv`]):
+/// the pair loop of [`spin_components_from_b_ov_kappa_cpu`] with each `g_i`
+/// from [`signed_pair_block`]. CPU only, no κ-regularization.
+pub fn spin_components_from_signed_b_ov(
+    f: SignedBOv,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+    first_occ: usize,
+    nocc_total: usize,
+) -> SpinComponents {
+    assert_eq!(f.pos.ncols(), nocc * nvir, "signed factor: pos width");
+    assert_eq!(f.neg.ncols(), nocc * nvir, "signed factor: neg width");
+    spin_components_from_blocks(
+        |i| signed_pair_block(f, i * nvir..(i + 1) * nvir, f, i * nvir..),
+        eps,
+        (nocc, nvir, first_occ, nocc_total),
+        None,
+    )
 }
 
 /// Compute the RI-MP2 correlation energy.
@@ -1778,7 +1840,8 @@ impl Mp2Intermediates {
 ///
 /// The Z-vector right-hand side, the frozen core–active block, the relaxed
 /// density and the energy-weighted density are built from `Imat` and `P`,
-/// so they need no change of their own. `crates/ferric-mp2/theory.md` has
+/// so they need no change of their own.
+/// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient` has
 /// the same derivation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpinScaling {
@@ -1864,7 +1927,8 @@ pub struct RpaIntermediates {
     /// ONE convention for every builder and reader (#573): the physical aux
     /// coefficients of a dressed vector `u` are `c = Fᵀ·u` (so `cᵀ V c = I`).
     /// * molecular Coulomb: `F = L⁻¹` (Cholesky, lower-triangular, square);
-    /// * molecular erf/terf: `F` = symmetric `V^{-1/2}` (square);
+    /// * molecular erf: `F` = symmetric `V^{-1/2}` (square); terf is never
+    ///   fitted (see [`SignedBOv`]);
     /// * periodic RS-GDF: `F = Wᵀ = s_kept^{-1/2} U_keptᵀ`, `(naux_kept,
     ///   naux_ao)` — rectangular after a lindep cut. Store the TRANSPOSE of
     ///   `RsGdf::metric_inv_sqrt()`, never the map itself.
@@ -1944,8 +2008,8 @@ pub fn compute_rpa_intermediates_spin(
     let naux = dfbs.nbasis();
 
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    // erf (long-range) metric is indefinite in a Coulomb aux basis → regularized
-    // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
+    // erf metric loses rank numerically in a Coulomb aux basis → regularized
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused.
     let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
     let c_occ = c_full
@@ -2022,8 +2086,8 @@ pub fn compute_rpa_intermediates(
     let c = rhf.mos_r();
 
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
-    // erf (long-range) metric is indefinite in a Coulomb aux basis → regularized
-    // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
+    // erf metric loses rank numerically in a Coulomb aux basis → regularized
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused.
     let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
     let c_occ = c
@@ -2270,8 +2334,10 @@ pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError
 /// `L^{-1}` (lower-triangular), this is symmetric, but `Bᵀ B = (ia|P) V^{-1}
 /// (Q|jb)` is identical because both satisfy `MᵀM = V^{-1}` — the RPA/MP2
 /// intermediates contract `B = M (Q|ia)` and only `BᵀB` enters, so either factor
-/// is valid. Use this for range-separated (erf) operators; Cholesky stays the
-/// fast path for Coulomb/erfc (positive-definite).
+/// is valid. Use this for the erf operator; Cholesky stays the fast path for
+/// Coulomb/erfc/terfc (positive definite). It is not a fit for a kernel that is
+/// not positive definite: for such a kernel (terf) the dropped negative modes
+/// carry part of the interaction. [`metric_inverse_sqrt`] refuses terf.
 pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let n = v.nrows();
     // One-time (naux, naux) setup factorization, outside any rayon region.
@@ -2280,29 +2346,24 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("eigh on (P|Q): {e}")))?;
     const LINDEP_THRESH: f64 = 1e-10;
-    // A physical RI metric is Gram-PSD for any positive-definite kernel (erf,
-    // erfc, Coulomb, terfc all are; verified for terfc via its 3D Fourier
-    // transform k̂(q) > 0). But erf/terf have a genuine near-null tail near
-    // their vanishing limit (Coulomb-optimized aux basis, e.g. cc-pVDZ-RI,
-    // is only marginally non-singular there) — a SMALL negative eigenvalue
-    // here is ordinary near-linear-dependence, not necessarily corruption.
-    // Any negative eigenvalue with |lambda| < LINDEP_THRESH is dropped by the
-    // canonical-orthogonalization loop below regardless of sign, so it can
-    // never contaminate the result. What DOES need attention is a negative
-    // eigenvalue LARGE enough to survive that drop and reach 1/sqrt(negative)
-    // = NaN/Inf in u_scaled below, OR a small one accompanied by energies
-    // that fail the physical sanity checks (r0-monotonicity, |E_att| <=
-    // |E_coulomb|, correct r0->limit convergence) — that combination is what
-    // signals an upstream integral bug (e.g. the 2026-07 terfc shim
-    // far-field table-domain bug) rather than routine near-null-mode noise.
+    // The RI metric of a positive definite kernel (Coulomb, erf, erfc, terfc,
+    // Yukawa) is a Gram matrix and positive semidefinite. erf, smooth and long
+    // range, has a near-null tail in a Coulomb-optimized aux basis, and its
+    // near-null eigenvalues round to either sign; the loop below drops every
+    // mode with lambda < LINDEP_THRESH, whatever its sign. For a positive
+    // definite kernel those modes carry rounding only.
     //
-    // Reference scale for the note below: NOT lmax. Comparing max_neg to lmax
-    // (the original check) fires on routine near-linear-dependence noise for
-    // erf/terf (observed 2026-07-20: every terf job on a small healthy system
-    // like ethylene fired at rel=1e-5..4e-3 to lmax, while energies passed
-    // every quantitative validity check) — that comparison conflates "small
-    // relative to the largest mode" with "corrupted," when the actual
-    // failure mode is about surviving the LINDEP_THRESH drop, not about lmax.
+    // This drop is NOT a fit for a kernel that is not positive definite. For
+    // terf (Fourier transform cos(k r0) exp(-k^2/4w^2)/(2 pi^2 k^2)) the
+    // negative eigenvalues are part of the interaction, and dropping them fits
+    // the positive part of the kernel alone; `metric_inverse_sqrt` refuses terf
+    // for that reason (see `SignedBOv` for the fit that is used). A negative
+    // eigenvalue well beyond LINDEP_THRESH reaching this function therefore
+    // means a kernel that is not positive definite or an integral defect.
+    //
+    // The note below compares max|lambda_neg| with LINDEP_THRESH, not with
+    // lmax: the near-null erf modes are small relative to lmax by
+    // construction, and what matters is whether a mode survives the drop.
     let lmax = evals[n - 1]; // eigh returns ascending order
     let max_neg = evals
         .iter()
@@ -2312,15 +2373,10 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
         eprintln!(
             "NOTE eigh_inverse_sqrt: (P|Q) metric has a negative eigenvalue \
              (max|λ_neg|={max_neg:.3e} > lindep_thresh={LINDEP_THRESH:.1e}, λ_max={lmax:.3e}, rel={:.1e}). \
-             This mode is dropped by canonical orthogonalization below (safe by \
-             construction) — for erf/terf near their Coulomb-like limit this is \
-             expected near-linear-dependence in a Coulomb-optimized aux basis \
-             (verified 2026-07-20 on ethylene: r0-monotonicity, |E_att| <= \
-             |E_coulomb|, and smooth convergence to the r0->infinity limit all \
-             held at this exact magnitude). If energies on a NEW system fail \
-             those checks, treat this as a signal of an upstream integral bug \
-             (e.g. the 2026-07 terfc far-field table-domain bug) rather than \
-             routine near-linear-dependence.",
+             The mode is dropped below. For erf this is near-linear dependence in \
+             a Coulomb-optimized aux basis; a negative eigenvalue large on the \
+             scale of λ_max means the kernel is not positive definite or an \
+             integral is wrong, and the dropped fit is then not the interaction.",
             max_neg / lmax
         );
     }
@@ -2342,37 +2398,36 @@ pub fn eigh_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     }))
 }
 
-/// V^{-1/2} that auto-selects: regularized eigendecomposition for operators whose
-/// 2-center metric can go numerically indefinite / rank-deficient, fast Cholesky
-/// otherwise (Coulomb/erfc/Terfc/Yukawa, positive-definite). Centralizes
-/// indefinite-metric handling for all RI paths.
+/// V^{-1/2} by operator: regularized eigendecomposition for erf, Cholesky for
+/// the other positive definite kernels (Coulomb, erfc, terfc, Yukawa), and an
+/// error for terf. Centralizes the factor choice for all RI paths.
 ///
-/// Eigh path:
-/// - `ErfCoulomb`: the long-range erf metric goes numerically indefinite in a
-///   Coulomb-optimized aux basis (near-null modes from tight aux functions).
-/// - `Terf`: the tempered LONG-range complement (terf + terfc = Coulomb; see
-///   `Operator::terf`) plays the same algebraic role as `erf` — r0 → ∞ drives
-///   terf → 0, exactly as ω → 0 does for erf — so its metric loses rank in the
-///   same limit and needs the same regularized eigh branch, not Cholesky.
-///
-/// `Terfc` is deliberately on the CHOLESKY path: the terfc kernel is
-/// positive-definite (3D Fourier transform k̂(q) > 0 for all q, r0), so its
-/// Gram metric is PD and Cholesky must succeed. The apparent indefiniteness
-/// that previously forced Terfc through eigh (dpotrf return_code=225 on
-/// alkane_4/cc-pVDZ-RI at r0≈1.417 Bohr) was an upstream integral bug — the
-/// shim skipped the terf subtraction for far-field primitives outside the
-/// interpolation tables, leaving full-Coulomb contamination. With that fixed
-/// (exact Poisson-series fallback in shim.cc), a Cholesky failure here is a
-/// real regression signal and must stay loud, not be regularized away.
+/// - `ErfCoulomb`: the erf kernel is positive definite, but smooth, so its
+///   metric in a Coulomb-optimized aux basis has near-null modes that round to
+///   either sign; [`eigh_inverse_sqrt`] drops them.
+/// - `Terf`: refused. The terf kernel's Fourier transform
+///   `cos(k r0) exp(−k²/4ω²)/(2π²k²)` is negative near `k r0 = π`, so its
+///   metric is indefinite (Ne2 / aug-cc-pVDZ-RIFIT at r0 = 3.18 Å, r0·ω = 4:
+///   60 of 144 eigenvalues negative). Dropping the negative modes fits the
+///   positive part of the kernel alone, which is a different interaction.
+///   Form the terf interaction as Coulomb RI minus terfc RI ([`SignedBOv`]).
+/// - Everything else, terfc included, takes Cholesky: terfc's transform
+///   `1 − cos(k r0) exp(−k²/4ω²)` is positive, so a Cholesky failure on its
+///   metric is an integral or basis defect and must stay loud.
 pub fn metric_inverse_sqrt(
     v: &Array2<f64>,
     op: ferric_integrals::operator::Operator,
 ) -> Result<Array2<f64>, FerricError> {
     use ferric_integrals::operator::OperatorKind;
-    if matches!(op.kind, OperatorKind::ErfCoulomb | OperatorKind::Terf) {
-        eigh_inverse_sqrt(v)
-    } else {
-        cholesky_inverse_sqrt(v)
+    match op.kind {
+        OperatorKind::Terf => Err(FerricError::General(
+            "metric_inverse_sqrt: the terf kernel is not positive definite, so its RI \
+             metric is indefinite and has no inverse square root; form the terf \
+             interaction as Coulomb RI minus terfc RI (a signed factor) instead"
+                .into(),
+        )),
+        OperatorKind::ErfCoulomb => eigh_inverse_sqrt(v),
+        _ => cholesky_inverse_sqrt(v),
     }
 }
 
@@ -2686,7 +2741,7 @@ mod tests {
     }
 
     /// A near-null-mode metric (one tiny eigenvalue, straddling zero under
-    /// roundoff) is the EXPECTED shape for erf/terf's long-range RI metric —
+    /// roundoff) is the EXPECTED shape for erf's long-range RI metric —
     /// see eigh_inverse_sqrt's doc comment. Regression for the 2026-07-20
     /// fix: this must NOT be reported as an indefinite-metric corruption
     /// (i.e. eigh_inverse_sqrt must still return a finite, usable V^{-1/2}

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Checks of ferric-pbc's k-point Hartree-Fock functional, its exchange-
 divergence (Madelung) term, and the Gamma and k-point MP2 and dRPA energies.
-Theory: crates/ferric-pbc/theory.md, sections "8. k-point Hartree-Fock and
-Kohn-Sham" and "9. Periodic MP2 and dRPA".
+Theory: `book/src/24-periodic/06-kpoint-scf.md#kpoint-scf`, `book/src/24-periodic/09-mp2-drpa.md#mp2-drpa`.
 
 The independent route is the SUPERCELL: an N-point Gamma-centred mesh on a
 cell is term by term the Gamma calculation of the N-fold supercell. The model

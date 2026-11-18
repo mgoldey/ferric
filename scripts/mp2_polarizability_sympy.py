@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs of the RI-MP2 static polarizability identities ferric-mp2 codes.
 
-Theory: crates/ferric-mp2/theory.md section 10, "Static polarizability".
+Theory: `book/src/15-correlated-gradients/06-mp2-polarizability.md#mp2-polarizability-relaxed-dipole`, "Static polarizability".
 Code: crates/ferric-mp2/src/cpks_polar.rs (static_relaxed_density_ao,
 first_order_fock_response, reference_at_field, relaxed_alpha_tensors,
 mp2_polarizability_analytic_hf, build_apb_amb, dynamic_cphf_alpha_iw,

@@ -3,8 +3,8 @@
 
 Paper: K. Bystrom, T. C. Berkelbach, D. Hait, arXiv:2609.25330 (equation
 numbers below are theirs). Code under test: crates/ferric-mp2/src/opmp3.rs
-(W channels, matrix Pade, models). Derivation: crates/ferric-mp2/theory.md
-section 6.2. Conventions: spin orbitals, real; <pq|rs> = (pr|qs) when the
+(W channels, matrix Pade, models). Derivation:
+`book/src/10-mp2/11-opmp3.md#opmp3`. Conventions: spin orbitals, real; <pq|rs> = (pr|qs) when the
 spins match; <pq||rs> = <pq|rs> - <pq|sr>; Delta_ijab = e_a + e_b - e_i - e_j.
 
   W_ij = 1/8 sum_kab ( c_ikab <jk||ab> + c_jkab <ik||ab> )        (Eq. 11a)

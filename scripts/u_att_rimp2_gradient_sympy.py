@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Proofs of the open-shell attenuated (erfc) RI-MP2 nuclear-gradient identities.
 
-Theory: crates/ferric-mp2/theory.md, "15.1 Open-shell attenuated (erfc) RI-MP2
-gradient". Code: crates/ferric-mp2/src/att_rimp2_gradient.rs
+Theory: `book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant`. Code: crates/ferric-mp2/src/att_rimp2_gradient.rs
 (u_att_rimp2_gradient_analytical, total_u_att_rimp2_gradient_on) over
 crates/ferric-mp2/src/u_rimp2_gradient.rs (u_correlated_gradient_timed: the
 correlation operator in the amplitudes, b_full, Imat and the RI response; the
@@ -14,7 +13,7 @@ orbitals and orbital energies, and the correlation's 3-centre integrals (P|mn)
 AND metric (P|Q) both under erfc.
 
   K  The sympy closed forms of the s-Gaussian Coulomb and erfc integrals
-     (theory.md 9.4) give the model's integrals: the 2-centre (P|erfc|Q)
+     (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2`) give the model's integrals: the 2-centre (P|erfc|Q)
      closed form equals an independent quadrature over t of
      erfc(w r)/r = (2/sqrt pi) int_w^inf exp(-t^2 r^2) dt, and sympy's
      centre derivatives of the 3- and 2-centre closed forms equal Richardson

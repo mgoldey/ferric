@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """COSMO: conductor-limit charges, energy, reaction-field Fock term, S matrix.
 
-Derivation: crates/ferric-scf/theory.md, "COSMO reaction field". Code:
+Derivation: `book/src/22-implicit-solvation/05-conductor-limit-and-cosmo.md#conductor-limit-and-cosmo-cosmo-driver`. Code:
 crates/ferric-scf/src/cosmo.rs (CosmoConfig::f_epsilon,
 CosmoCavity::build_s_matrix, cosmo_reaction_field) and
 crates/ferric-scf/src/driver.rs (solvent_terms).

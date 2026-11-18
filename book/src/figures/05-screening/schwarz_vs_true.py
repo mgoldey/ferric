@@ -3,7 +3,7 @@
 
 Two primitive s pair densities, unit charge, exponents P1 = P2 = 2 Bohr^-2,
 at centre distance R. All quantities are closed forms
-(crates/ferric-integrals/theory.md, "The Schwarz bound" and
+(section @sec:schwarz-bound-admitted-kernels and
 "Distance-dependent bounds (QQR)"):
 
     (12|K|12)    = erf(phi R)/R                   (Coulomb: phi = theta)

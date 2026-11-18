@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/numpy checks of the open-shell attenuated, SCS and SR-MP2 + LR-RPA energies.
 
-Theory: crates/ferric-mp2/theory.md, section "Open-shell attenuated and
-spin-scaled MP2", and crates/ferric-rpa/theory.md, section "Open-shell SR-MP2
-+ LR-RPA". Every check prints "FAIL [<name>]" when it fails, and the script
+Theory: `book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2`, and `book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations`. Every check prints "FAIL [<name>]" when it fails, and the script
 exits nonzero if any did.
 
 Code:

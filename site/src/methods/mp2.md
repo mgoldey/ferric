@@ -8,7 +8,8 @@ transformation. Grades per `method.kind` are on
 [Input file](../reference/input.md#mp2). The working equations of every
 variant on this page (spin factors, frozen core, operator and unit
 conventions), with the code path behind each, are in
-[`crates/ferric-mp2/theory.md`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-mp2/theory.md);
+the MP2 chapter of the ferric book,
+[`book/src/10-mp2/`](https://github.com/mgoldey/ferric/tree/main/book/src/10-mp2);
 the identities it relies on are checked by
 [`scripts/mp2_variant_identities.py`](https://github.com/mgoldey/ferric/blob/main/scripts/mp2_variant_identities.py).
 
@@ -32,7 +33,7 @@ an open-shell molecule, and Python `run_optimize(method="rimp2")` on one (or
 with `reference="uhf"`), optimize on the UHF + U-RI-MP2 surface with an
 analytic gradient: the per-spin Lagrangian of the closed-shell gradient, a
 coupled UHF Z-vector and one RI-response channel per spin (derivation in
-`crates/ferric-mp2/theory.md` §15). Frozen core applies to both spins. An
+`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-energy-weights`). Frozen core applies to both spins. An
 omitted `[scf] jk` gives the RI-JK reference on the matched JK-fit set, as
 for the closed-shell optimization, and the fitted gradient checks its peak
 memory first; `jk = "exact"` gives the four-centre reference. A ROHF
@@ -57,8 +58,8 @@ opposite-spin component is the αβ block of U-RI-MP2 and the same-spin
 component is the αα plus ββ blocks, under the kind's operator. `rs-mp2-rpa`
 uses the spin-summed U-dRPA, and subtracts its second-order term
 $E_{\alpha\beta} + \tfrac12(D_{\alpha\alpha} + D_{\beta\beta})$, not
-$2E_{\alpha\beta}$ (derivations in `crates/ferric-mp2/theory.md` §5.1 and
-`crates/ferric-rpa/theory.md`, "Open-shell SR-MP2 + LR-RPA"). The QQR-3
+$2E_{\alpha\beta}$ (derivations in `book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2` and
+`book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations`). The QQR-3
 screened `att-rimp2` build is closed shell
 only, and so is the Boys-screened χ₀ of `rs-mp2-rpa`. The values match PySCF
 `DFUMP2` and `URPA` and a numpy route on OH, NH2 and O2 at cc-pVDZ
@@ -69,9 +70,9 @@ gradient on a UHF reference: `task = "optimize"` and `"frequencies"` (central
 differences of the gradient) at `multiplicity > 1`, and Python
 `run_optimize(method="att-rimp2")` with `reference="uhf"` (the default for an
 open shell). It is the U-RI-MP2 gradient with erfc in the correlation pieces
-and Coulomb in the reference's terms (`crates/ferric-mp2/theory.md` §15.1).
+and Coulomb in the reference's terms (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-attenuated-erfc-variant`).
 Open-shell terfc (`att_operator = "terfc"`) and `scs-mp2-2terfc` have the same
-analytic gradient on a UHF (`crates/ferric-mp2/theory.md` §15.2). The other
+analytic gradient on a UHF (`book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc`). The other
 open-shell kinds above stay energy only.
 The gradient matches finite differences of ferric's own energy on OH and NH2
 and of PySCF's UHF + DF-UMP2 energy on an erfc fit (see the
@@ -116,7 +117,8 @@ fitted two-electron energy of the full-rank relaxed density, whose exchange
 intermediates are several times the RI-J tensor. Its peak is a multiple of
 the four-centre route's at the same size (measured below). Before the
 reference SCF it declares that peak from the shapes
-(`ferric_mp2::gradient_memory`, model in `crates/ferric-scf/theory.md`) and
+(`ferric_mp2::gradient_memory`, model in
+`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-peak-memory`) and
 stops with the per-term breakdown when it exceeds `[memory] budget_gb`
 (Python `memory_budget_gb`; unset, the auto-detected budget). Raise the
 budget or set `jk = "exact"`.
@@ -270,7 +272,7 @@ terfc terms share one Z-vector. Python takes `method="scs-mp2-2terfc"` with
 `r0_bonded=`, `r0_nonbonded=` (Å), `c_os=` and `c_ss=`. The terf and terfc
 derivative integrals come from the interpolation tables, so a terfc gradient
 needs `FERRIC_TERF_TABLE_DIR` too. `mp2-v` has no gradient. Derivations:
-`crates/ferric-mp2/theory.md` §9.4 (erfc), §9.5 (terfc), §9.6
+`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2` (erfc), §9.5 (terfc), §9.6
 (SCS-MP2(2terfc)), §15.1 (open-shell erfc), §15.2 (open-shell terfc and
 SCS-MP2(2terfc)).
 
@@ -354,7 +356,7 @@ otherwise); energy only. Smoke: the resummation reproduces the paper's
 per-reaction W4-17 errors from its own W matrices, and the reference path is
 compared with the paper's Q-Chem values (see the
 [validation page](../reference/validation.md)). Derivation:
-`crates/ferric-mp2/theory.md` §6.2.
+`book/src/10-mp2/11-opmp3.md#opmp3`.
 
 ## Laplace formulations
 
@@ -460,7 +462,20 @@ single-threshold local MP2 of Wang, Aldossary, Shi, Liu, Li & Head-Gordon
 (2023), with localized virtuals and per-pair domain-local RI fits. `eps` has
 no default: it is part of the model. `eps = 0` reproduces RI-MP2 exactly; a
 finite `eps` carries a one-sided truncation error that grows faster than
-linearly in `eps`.
+linearly in `eps`. That error need not reach zero as `eps` shrinks: the
+retention test reads integrals only, and an amplitude driven by the Fock
+coupling to kept ones but sitting on a zero integral is never kept. On
+adamantane/6-31G the error stays at 2.4e-7 Ha at `eps = 1e-8` with 99.998% of
+amplitudes kept. The Fock-propagated screen also keeps the amplitudes whose
+one-step Fock-dressed integral exceeds `eps`, which removes this floor. It is on by
+default on the integral-direct path (`[local] fock_screen`, default `true`;
+Python `fock_screen=`), and `false` keeps the plain integral mask. The in-core
+path and the Rust library default (`AmplitudeLmp2Config::fock_screen = None`)
+use the plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane
+and the ACONF20 conformers with the production maps, the screen lowers the
+truncation error at every `eps` tried (by a third to a half at `1e-4`, by 60–98% at
+`1e-6` and below). It costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB
+more peak memory (book chapter 13, "On by default on the integral-direct path").
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
 
@@ -505,7 +520,7 @@ domains (`aux_radius`, `virt_radius`), and truncation of each orbital's AO
 support (`ao_tail`). With every map at its trivial setting it reproduces the
 global 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
 
-**What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
 cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
 `bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`).
 The run froze the carbon cores (`frozen_core` = number of carbons) and
@@ -519,7 +534,7 @@ below do not cover:
 - Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
   kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.
 - It is at about parity with canonical RI-MP2 at C20 (about 1.1× slower)
-  and about 6× faster at C32 (5.7–6.3×).
+  and about 6× faster at C32 (5.7–6.3×). <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 -->
 
 **How to read it (provisional):** sub-quadratic on this series, but the fit
 has three points on one family of molecules in one basis. It is not shown
@@ -589,7 +604,7 @@ Each stage has a mutation test that breaks this. The local valence start
 the dense build's by up to 7e-10, the imprint of Boys's convergence
 tolerance. That changes energies by 1e-13.
 
-**Defaults (n-alkanes C8–C32, 6-31G/cc-pVDZ-RI, `eps` = 1e-4, production
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **Defaults (n-alkanes C8–C32, 6-31G/cc-pVDZ-RI, `eps` = 1e-4, production
 maps).** The local build moves the energy by 4e-13 (C8), 3e-10 (C16),
 1.6e-7 (C24) and 5.8e-8 (C32) Ha against the dense build. That is at most
 1.6e-5 of the `eps` truncation error itself (2.5e-3 to 1.4e-2 Ha). The
@@ -600,7 +615,7 @@ construction check stays at 7e-10 or below.
 shift comes from the 30 Bohr solve radius; with a global solve it is 4e-11
 at C24.
 
-**What it costs, measured** (2026-11-06; integral-direct local MP2 on
+<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **What it costs, measured** (2026-11-06; integral-direct local MP2 on
 n-alkanes, 6-31G/cc-pVDZ-RI, Coulomb, `eps` = 1e-3, production maps, carbon
 cores frozen; benchmark `bench_scaling_decisive` with
 `FERRIC_LMP2_VIRTUAL_SPACE`; release build, OPENBLAS_NUM_THREADS=1,

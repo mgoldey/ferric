@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Harmonic frequencies from a Cartesian Hessian as ferric computes them.
 
-Derivation: crates/ferric-scf/theory.md, "Harmonic frequencies".
+Derivation: `book/src/14-derivatives/06-frequencies.md#frequencies-hessian-wavenumbers`.
 Code: crates/ferric-scf/src/frequencies.rs (frequencies_from_cartesian_hessian,
 translation_rotation_basis, center_of_mass, detect_linear and the constants
 AMU_TO_ELECTRON_MASS, AU_FREQ_TO_CM), transcribed below.

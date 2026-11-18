@@ -135,8 +135,8 @@ jobs:
           # from a fix branch).
           NAME="${LABEL:-$GITHUB_REF_NAME}"
           NAME="${NAME//\//-}"
-          # No --number-sections: every title already carries its chapter or
-          # section number, and pandoc's own would print each one twice.
+          # No --number-sections: --concat writes each chapter and section number
+          # into its title, and pandoc's own would print each one twice.
           pandoc "$RUNNER_TEMP/ferric-book.md" \
             --from markdown+tex_math_dollars --pdf-engine=xelatex \
             --resource-path=.:book/src \

@@ -259,7 +259,8 @@ impl std::fmt::Display for SearchSettings {
 /// the molecular entry points. Lindh: on eight molecules from water to
 /// sulfamethoxazole at HF/STO-3G it cut the Cartesian step count from 538 to
 /// 211 and the internal one from 252 to 139 (with [`TrustUpdate::Ratio`]);
-/// `crates/ferric-scf/theory.md#lindh-model-hessian` has the table.
+/// `book/src/14-derivatives/08-geometry-search.md#geometry-search-lindh-model-hessian` has the
+/// table.
 pub const DEFAULT_INITIAL_HESSIAN: InitialHessian = InitialHessian::Lindh;
 
 /// Floor on the model Hessian's eigenvalues (Cartesian) or diagonal
@@ -1498,7 +1499,7 @@ fn internal_trial_step(
 /// scales the two blocks by different factors. That step need not descend,
 /// and the ratio of the two factors does not depend on the radius, so a
 /// shrinking radius cannot recover a descent step
-/// (`crates/ferric-scf/theory.md`, "Geometry searches").
+/// (`book/src/14-derivatives/08-geometry-search.md#geometry-search`).
 fn clip_internal_step_uniform(
     coords: &InternalCoords,
     p: &Array1<f64>,

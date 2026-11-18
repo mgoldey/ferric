@@ -20,7 +20,7 @@ eigh((A-B)^1/2 (A+B) (A-B)^1/2).
 
 <S^2> OF EACH ROOT, BY TWO CONSTRUCTIONS
 ---------------------------------------
-* `s2`: the closed formula of crates/ferric-tddft/theory.md section 11, in
+* `s2`: the closed formula of `book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`, in
   numpy (`s2_formula`), on the unit-normalized X (TDA) or the renormalized
   X = ((X+Y) + (X-Y))/2 (Casida).
 * For OH and NH2 (FCI space small enough) the same X is written into a full
@@ -196,7 +196,7 @@ def spin_overlap(mf):
 
 
 def s2_formula(o, na, nb, x):
-    """<S^2> of sum X_ia,s |Phi_i^a s> (theory.md section 11)."""
+    """<S^2> of sum X_ia,s |Phi_i^a s> (book/src/20-tddft/06-unrestricted.md#unrestricted-each-root)."""
     nva, nvb = o.shape[0] - na, o.shape[1] - nb
     x = x / np.linalg.norm(x)
     xa = x[: na * nva].reshape(na, nva)
@@ -345,7 +345,7 @@ def run_case(mol_key, only=None):
         "generator": "scripts/validation/gen_tddft_open_shell_refs.py",
         "note": "dense TDA / Casida on the two-spin A, B of tdscf.uhf.get_ab with the "
         "response (pq|rs) by ferric's Coulomb-metric RI and (pq|rs)_omega by its "
-        "erf-metric RI; flat (75,110) grid; s2 by the theory.md section 11 formula, "
+        "erf-metric RI; flat (75,110) grid; s2 by the book/src/20-tddft/06-unrestricted.md#unrestricted-each-root formula, "
         "checked against pyscf.fci.spin_op on the expanded determinant vector when "
         "s2_fci_max_dev is not null",
         "cases": {},

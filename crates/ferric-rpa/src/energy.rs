@@ -531,6 +531,155 @@ pub fn eval_trace_log_summands_aux_budgeted(
     trace_log_summands_of_projection(b_ov, eps_occ, eps_vir, quad_freqs, memory_budget_bytes)
 }
 
+/// One χ₀ channel of a signed dielectric (see [`eval_signed_trace_log_summands`]):
+/// the `+` and `−` blocks of a signed factor `K = B₊ᵀ B₊ − B₋ᵀ B₋`
+/// ([`ferric_mp2::rimp2::SignedBOv`]), the active occupied and virtual
+/// energies, and the χ₀ prefactor (4 closed shell, 2 per spin open shell).
+#[derive(Clone, Copy, Debug)]
+pub struct SignedChannel<'a> {
+    /// Rows entering with `+1`, shape `(n₊, nocc·nvir)`.
+    pub pos: &'a Array2<f64>,
+    /// Rows entering with `−1`, shape `(n₋, nocc·nvir)`.
+    pub neg: &'a Array2<f64>,
+    /// Active occupied orbital energies.
+    pub eps_occ: &'a [f64],
+    /// Virtual orbital energies.
+    pub eps_vir: &'a [f64],
+    /// χ₀ prefactor: 4 for a closed-shell channel, 2 for one spin.
+    pub prefactor: f64,
+}
+
+/// Per-frequency dRPA summands `ln det(1 + Σ P) − tr(Σ P)` of a signed factor,
+/// `P(iω) = Σ_c Y_c S_c(iω)² Y_cᵀ`, `Y_c = [B₊; B₋]` of channel `c`,
+/// `S_c² = prefactor·e_ia/(ω² + e_ia²)` and `Σ = diag(1_{n₊}, −1_{n₋})`.
+///
+/// By Sylvester's identity `det(1 + ΣYGYᵀ) = det(1 + G^½ YᵀΣY G^½)`, this is
+/// the dRPA integrand of the kernel `K = YᵀΣY = B₊ᵀB₊ − B₋ᵀB₋` in the
+/// excitation space, which need not be positive semidefinite (the terf
+/// interaction as Coulomb RI minus terfc RI). `ΣP` is not symmetric, so the
+/// determinant is taken by LU ([`ferric_core::linalg::logdet_lu`], which
+/// refuses a nonpositive determinant); no eigenvalues are formed, so no PDEP
+/// truncation or static eigenbasis applies. The frequency integral equals the
+/// plasmon formula of `K` (`scripts/rpa_terf_signed_fit_sympy.py`, checks
+/// `logdet-vs-plasmon`, `u-logdet-vs-plasmon`).
+///
+/// All channels share `n₊` and `n₋` (one aux basis per sign). The per-worker
+/// scratch is `(n₊ + n₋) × panel` plus the `(n₊ + n₋)²` dielectric, with the
+/// panel from `quad_panel_width` at `m = n₊ + n₋`.
+///
+/// # Errors
+/// No channel, mismatched shapes, a non-positive or non-finite `e_ia`, or a
+/// nonpositive determinant.
+pub fn eval_signed_trace_log_summands(
+    channels: &[SignedChannel],
+    quad_freqs: &[f64],
+    memory_budget_bytes: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
+    use crate::sternheimer::{build_scale_factors_with_prefactor, syrk_aat_accumulate_into};
+    use ndarray::{s, Axis, Zip};
+
+    let first = channels
+        .first()
+        .ok_or_else(|| FerricError::General("signed dRPA: no channel".into()))?;
+    let (n_pos, n_neg) = (first.pos.nrows(), first.neg.nrows());
+    let mut nov_max = 0;
+    for c in channels {
+        let nov = c.eps_occ.len() * c.eps_vir.len();
+        if c.pos.nrows() != n_pos
+            || c.neg.nrows() != n_neg
+            || c.pos.ncols() != nov
+            || c.neg.ncols() != nov
+        {
+            return Err(FerricError::General(format!(
+                "signed dRPA: channel shapes {:?} / {:?} do not match ({n_pos}, {n_neg}) rows \
+                 and nocc*nvir = {nov} columns",
+                c.pos.dim(),
+                c.neg.dim()
+            )));
+        }
+        for &eo in c.eps_occ {
+            for &ev in c.eps_vir {
+                let e = ev - eo;
+                if !(e.is_finite() && e > 0.0) {
+                    return Err(FerricError::General(format!(
+                        "signed dRPA: orbital energy gap e_ia = {e} is not finite and positive"
+                    )));
+                }
+            }
+        }
+        nov_max = nov_max.max(nov);
+    }
+    let m = n_pos + n_neg;
+    let n_workers = rayon::current_num_threads().max(1);
+    let panel_width = quad_panel_width(m, nov_max, n_workers, memory_budget_bytes).max(1);
+
+    per_frequency(
+        quad_freqs,
+        || {
+            (
+                Array2::<f64>::zeros((m, panel_width)),
+                Array2::<f64>::zeros((m, m)),
+            )
+        },
+        |(scratch, out), omega| {
+            out.fill(0.0);
+            for c in channels {
+                let scale =
+                    build_scale_factors_with_prefactor(c.eps_occ, c.eps_vir, omega, c.prefactor);
+                let nov = scale.len();
+                let mut c0 = 0;
+                while c0 < nov {
+                    let c1 = (c0 + panel_width).min(nov);
+                    let w = c1 - c0;
+                    let mut panel = scratch.slice_mut(s![.., ..w]);
+                    panel
+                        .slice_mut(s![..n_pos, ..])
+                        .assign(&c.pos.slice(s![.., c0..c1]));
+                    panel
+                        .slice_mut(s![n_pos.., ..])
+                        .assign(&c.neg.slice(s![.., c0..c1]));
+                    let row = scale.slice(s![c0..c1]).insert_axis(Axis(0));
+                    Zip::from(&mut panel)
+                        .and_broadcast(row)
+                        .for_each(|x, &f| *x *= f);
+                    if w == panel_width {
+                        syrk_aat_accumulate_into(panel.view(), out);
+                    } else {
+                        let owned = panel.to_owned();
+                        syrk_aat_accumulate_into(owned.view(), out);
+                    }
+                    c0 = c1;
+                }
+            }
+            // dsyrk wrote one triangle: mirror it, then apply the signature to
+            // the rows of the minus block and add the identity.
+            for i in 0..m {
+                for j in 0..i {
+                    out[(i, j)] = out[(j, i)];
+                }
+            }
+            out.slice_mut(s![n_pos.., ..]).mapv_inplace(|x| -x);
+            for alpha in 0..m {
+                out[(alpha, alpha)] += 1.0;
+            }
+            dielectric_trace_log_summand(out, "signed dielectric log-det failed")
+        },
+    )
+}
+
+/// The dRPA correlation energy of a signed factor:
+/// [`eval_signed_trace_log_summands`] on the quadrature of `quadrature`,
+/// integrated by [`rpa_correlation_energy_from_summands`].
+pub fn signed_drpa_energy(
+    channels: &[SignedChannel],
+    quadrature: &crate::config::QuadratureConfig,
+    memory_budget_bytes: Option<usize>,
+) -> Result<f64, FerricError> {
+    let (freqs, weights) = crate::quadrature::build_quadrature(quadrature);
+    let summands = eval_signed_trace_log_summands(channels, &freqs, memory_budget_bytes)?;
+    Ok(rpa_correlation_energy_from_summands(&weights, &summands))
+}
+
 /// The frequency loop both log-det entries share: per worker, scale the
 /// `(m, nov)` projection `y` by `sqrt(4 e_ia / (ω² + e_ia²))`, form
 /// `ε̃ = I + y S² yᵀ` (full width or nov-panelled, per [`quad_panel_width`]),
@@ -649,6 +798,194 @@ pub fn eval_inv_dielectric_matrices_unrestricted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deterministic fill in [-1, 1).
+    fn fill(rows: usize, cols: usize, seed: u64) -> Array2<f64> {
+        let mut x = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        Array2::from_shape_fn((rows, cols), |_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((x >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
+        })
+    }
+
+    fn gaps(eps_occ: &[f64], eps_vir: &[f64]) -> Vec<f64> {
+        let mut d = Vec::new();
+        for &o in eps_occ {
+            for &v in eps_vir {
+                d.push(v - o);
+            }
+        }
+        d
+    }
+
+    /// Direct-RPA plasmon energy of kernel `k` over gaps `d`:
+    /// `½(Σ√eig(D½(D + c·K)D½) − ΣD − (c/2)·tr K)` (c = 4 closed shell, 2 for
+    /// the spin-orbital open-shell space).
+    fn plasmon(k: &Array2<f64>, d: &[f64], c: f64) -> f64 {
+        use ndarray_linalg::{Eigh, UPLO};
+        let n = d.len();
+        let m = Array2::from_shape_fn((n, n), |(p, q)| {
+            let a = if p == q { d[p] } else { 0.0 } + c * k[(p, q)];
+            d[p].sqrt() * a * d[q].sqrt()
+        });
+        let (w, _) = m.eigh(UPLO::Upper).unwrap();
+        assert!(w.iter().all(|&x| x > 0.0), "unstable model");
+        0.5 * (w.iter().map(|x| x.sqrt()).sum::<f64>()
+            - d.iter().sum::<f64>()
+            - 0.5 * c * (0..n).map(|p| k[(p, p)]).sum::<f64>())
+    }
+
+    fn quad48() -> crate::config::QuadratureConfig {
+        crate::config::QuadratureConfig {
+            n_points: crate::energy_route::EXACT_DRPA_QUAD_POINTS,
+            ..Default::default()
+        }
+    }
+
+    /// The model: 2 occ x 3 vir, gaps 0.6..2.1 Ha, a `+` block of 7 rows and a
+    /// `−` block of 5, scaled so `K = B₊ᵀB₊ − B₋ᵀB₋` is indefinite but the
+    /// dRPA stays stable.
+    fn signed_model(seed: u64) -> (Array2<f64>, Array2<f64>, Vec<f64>, Vec<f64>) {
+        let pos = fill(7, 6, seed) * 0.11;
+        let neg = fill(5, 6, seed + 17) * 0.09;
+        (pos, neg, vec![-1.3, -0.9], vec![-0.3, 0.2, 0.8])
+    }
+
+    /// The signed log-det, integrated over frequency, equals the plasmon
+    /// energy of the indefinite kernel `B₊ᵀB₊ − B₋ᵀB₋` (closed shell), and
+    /// flipping the signature to `+` misses it by far more than the bar.
+    #[test]
+    fn signed_logdet_matches_plasmon_closed_shell() {
+        let (pos, neg, eo, ev) = signed_model(3);
+        let k = pos.t().dot(&pos) - neg.t().dot(&neg);
+        let (w, _) = {
+            use ndarray_linalg::{Eigh, UPLO};
+            k.eigh(UPLO::Upper).unwrap()
+        };
+        assert!(
+            w[0] < -1e-3 && w[w.len() - 1] > 1e-3,
+            "K must be indefinite: {w}"
+        );
+        let d = gaps(&eo, &ev);
+        let want = plasmon(&k, &d, 4.0);
+        let ch = SignedChannel {
+            pos: &pos,
+            neg: &neg,
+            eps_occ: &eo,
+            eps_vir: &ev,
+            prefactor: 4.0,
+        };
+        let got = signed_drpa_energy(&[ch], &quad48(), None).unwrap();
+        // A tiny budget narrows the panel to a few columns, exercising the
+        // ragged last panel; same sum to rounding.
+        let narrow = signed_drpa_energy(&[ch], &quad48(), Some(1)).unwrap();
+        assert!((narrow - got).abs() < 1e-13, "panelled {narrow} vs {got}");
+        // 48-point Gauss-Legendre on gaps >= 0.5 Ha: quadrature error far
+        // below 1e-9 Ha at |E| ~ 1e-2 (the Coulomb anchor of
+        // terf_signed_fit.rs reaches 1e-8 on Ne2 with smaller gaps).
+        let bar = 1e-9;
+        assert!((got - want).abs() < bar, "signed {got} vs plasmon {want}");
+        // Reachability: the + signature is a different kernel.
+        let k_plus = pos.t().dot(&pos) + neg.t().dot(&neg);
+        let wrong = plasmon(&k_plus, &d, 4.0);
+        assert!((wrong - want).abs() > 1e3 * bar, "{wrong} vs {want}");
+    }
+
+    /// Open shell: two spin channels at prefactor 2 equal the spin-orbital
+    /// plasmon energy of the indefinite kernel over the joint α+β space.
+    #[test]
+    fn signed_logdet_matches_plasmon_open_shell() {
+        let (pa, na, eoa, eva) = signed_model(5);
+        let pb = fill(7, 2, 41) * 0.11;
+        let nb = fill(5, 2, 43) * 0.09;
+        let (eob, evb) = (vec![-1.1], vec![0.1, 0.5]);
+        let pos = ndarray::concatenate(ndarray::Axis(1), &[pa.view(), pb.view()]).unwrap();
+        let neg = ndarray::concatenate(ndarray::Axis(1), &[na.view(), nb.view()]).unwrap();
+        let k = pos.t().dot(&pos) - neg.t().dot(&neg);
+        let mut d = gaps(&eoa, &eva);
+        d.extend(gaps(&eob, &evb));
+        let want = plasmon(&k, &d, 2.0);
+        let chans = [
+            SignedChannel {
+                pos: &pa,
+                neg: &na,
+                eps_occ: &eoa,
+                eps_vir: &eva,
+                prefactor: 2.0,
+            },
+            SignedChannel {
+                pos: &pb,
+                neg: &nb,
+                eps_occ: &eob,
+                eps_vir: &evb,
+                prefactor: 2.0,
+            },
+        ];
+        let got = signed_drpa_energy(&chans, &quad48(), None).unwrap();
+        assert!((got - want).abs() < 1e-9, "signed {got} vs plasmon {want}");
+    }
+
+    /// Trivial limit: with an all-zero `−` block the signed route is the
+    /// unsigned aux-basis log-det of `B₊` (rounding only), per frequency.
+    #[test]
+    fn signed_logdet_with_empty_minus_block_is_the_unsigned_route() {
+        let (pos, _, eo, ev) = signed_model(7);
+        let zero = Array2::<f64>::zeros((5, pos.ncols()));
+        let (freqs, _) = crate::quadrature::build_quadrature(&quad48());
+        let ch = SignedChannel {
+            pos: &pos,
+            neg: &zero,
+            eps_occ: &eo,
+            eps_vir: &ev,
+            prefactor: 4.0,
+        };
+        let signed = eval_signed_trace_log_summands(&[ch], &freqs, None).unwrap();
+        let plain = eval_trace_log_summands_aux_budgeted(&pos, &eo, &ev, &freqs, None).unwrap();
+        // Bar, derived: each summand is ln det(ε) + (m − tr ε) with tr ε ≈ m,
+        // so its rounding is absolute and of order m·ε_mach whatever the
+        // summand's size. The two routes differ only in rounding: a 12×12 LU
+        // here against 7×7 (the zero rows add identity) and SYRK against GEMM
+        // summation order. Bar = 16·m·ε_mach with m = 12 rows.
+        let m = (pos.nrows() + zero.nrows()) as f64;
+        let bar = 16.0 * m * f64::EPSILON;
+        for (s, p) in signed.iter().zip(&plain) {
+            assert!((s - p).abs() <= bar, "{s} vs {p} (bar {bar:.1e})");
+        }
+        // Negative control: perturbing one plus-block entry by 1e-12 must
+        // trip the bar (measured: a 1e-12 bump moves a summand by 1.6e-13,
+        // a 1e-13 bump by 1.7e-14, below it).
+        let mut bumped = pos.clone();
+        bumped[(0, 0)] += 1e-12;
+        let pb = eval_trace_log_summands_aux_budgeted(&bumped, &eo, &ev, &freqs, None).unwrap();
+        let d = signed
+            .iter()
+            .zip(&pb)
+            .map(|(s, p)| (s - p).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            d > bar,
+            "a 1e-12 perturbation ({d:.1e}) must exceed the bar {bar:.1e}"
+        );
+    }
+
+    /// A zero or negative orbital gap is an error, not a NaN.
+    #[test]
+    fn signed_logdet_refuses_a_nonpositive_gap() {
+        let (pos, neg, _, ev) = signed_model(9);
+        let eo = vec![-1.3, -0.3];
+        let ch = SignedChannel {
+            pos: &pos,
+            neg: &neg,
+            eps_occ: &eo,
+            eps_vir: &ev,
+            prefactor: 4.0,
+        };
+        assert!(eval_signed_trace_log_summands(&[ch], &[0.5], None).is_err());
+    }
 
     #[test]
     fn trace_log_two_eigenvalues() {

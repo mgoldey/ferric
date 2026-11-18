@@ -14,7 +14,7 @@
 //!    (the Python rig measured a 4e-7 Fock inconsistency producing a 1.7e-9
 //!    anchor failure), and masked-solve energy errors are one-sided and
 //!    SUPERLINEAR in ε (a log-log slope above 1, not 1 and not 2; the local
-//!    MP2 C4 record is ~1.2 per decade of ε,
+//!    MP2 C4 record is ~1.4 per decade of ε at λ-Boys λ = 10, ~1.2 with plain Boys,
 //!    `lmp2_certificate::MEASURED_SLOPE_C4`), not quadratic.
 //!
 //! Spin-adapted closed-shell drCCD: `B_iajb = 2 (ia|jb)`,
@@ -296,6 +296,8 @@ pub fn amplitude_drpa_with_virtuals(
         eps: cfg.eps,
         frozen_core: cfg.frozen_core,
         eri3_budget_bytes: cfg.eri3_budget_bytes,
+        // plain Boys: λ-Boys is the local-MP2 default only
+        lambda_boys: 0.0,
         ..Default::default()
     };
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
@@ -338,6 +340,8 @@ pub fn amplitude_drpa_scan(
         eps: 0.0,
         frozen_core: base_cfg.frozen_core,
         eri3_budget_bytes: base_cfg.eri3_budget_bytes,
+        // plain Boys: λ-Boys is the local-MP2 default only
+        lambda_boys: 0.0,
         ..Default::default()
     };
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
@@ -384,6 +388,8 @@ pub fn amplitude_drpa_scan_timed(
         eps: 0.0,
         frozen_core: base_cfg.frozen_core,
         eri3_budget_bytes: base_cfg.eri3_budget_bytes,
+        // plain Boys: λ-Boys is the local-MP2 default only
+        lambda_boys: 0.0,
         ..Default::default()
     };
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
@@ -767,6 +773,8 @@ pub fn amplitude_drpa_dense(
         eps: cfg.eps,
         frozen_core: cfg.frozen_core,
         eri3_budget_bytes: cfg.eri3_budget_bytes,
+        // plain Boys: λ-Boys is the local-MP2 default only
+        lambda_boys: 0.0,
         ..Default::default()
     };
     let lp = assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;

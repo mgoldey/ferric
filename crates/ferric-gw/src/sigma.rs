@@ -1616,7 +1616,8 @@ mod tests {
     }
 
     /// Single-pole W(iω) = −2Ωs/(ω² + Ω²) (the exact W of one RPA pair,
-    /// theory.md §3): the imaginary-axis integral in `sigma_c_at_z` must equal
+    /// `book/src/19-gw-bse/02-screened-interaction.md#screened-interaction-dielectric-matrix-single-pole`):
+    /// the imaginary-axis integral in `sigma_c_at_z` must equal
     /// the closed-form residue result Σ_n M²_mn s/(z − ε_n ± Ω), + for
     /// occupied n, − for virtual n (scripts/gw_self_energy_sympy.py claim 2).
     /// Independent construction: no quadrature, no Padé on the reference side.
@@ -1658,7 +1659,8 @@ mod tests {
 
     /// Static W (W(iω) = w₀ at every node), z real in the gap: the same
     /// integral gives −½ Σ_n w₀ M²_mn sgn(z − ε_n) = ΔΣ_SEX + Σ_COH, i.e.
-    /// `sigma_c_at_z` must reproduce `cohsex::cohsex_pieces` (theory.md §5,
+    /// `sigma_c_at_z` must reproduce `cohsex::cohsex_pieces`
+    /// (`book/src/19-gw-bse/04-cohsex.md#cohsex-static-limit`,
     /// sympy claim 3). Pins the two modules against each other.
     #[test]
     fn sigma_c_static_w_in_gap_equals_cohsex_pieces() {

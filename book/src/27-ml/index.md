@@ -1,9 +1,18 @@
-# 27. ML integration touchpoints
+# ML integration touchpoints {#ml}
 
-This chapter is for someone wiring ferric outputs into a machine-learning
-model: as input features, as training labels, or as provenance for a dataset.
-It describes what each exported quantity is, as computed by the code, and how
-far it can be trusted. It does not describe models.
+A model trained on quantum-chemical labels inherits every convention the
+labels were computed with. If one sample's charges are Löwdin and the next
+one's are Hirshfeld, or one polarizability was converged and the next was
+not, the model fits the difference as if it were chemistry. So a dataset
+builder needs four things from the code: the definition of each array, its
+units and shape, what produced it, and how far it has been checked.
+
+This chapter supplies those for ferric's outputs, read from the code. It is
+for someone wiring ferric into a machine-learning model as input features,
+as training labels, or as the provenance record of a dataset. It does not
+describe models. The derivations behind the polarizabilities and charges are
+in chapter @sec:polarizabilities, and those behind $C_6$ in chapter @sec:dispersion. Here the subject is the
+arrays a consumer receives.
 
 | § | Read it when you need |
 |---|---|

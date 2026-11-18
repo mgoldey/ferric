@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Thole polarizable embedding: induction, Fock term and gradients.
 
-Derivation: crates/ferric-scf/theory.md, "Thole polarizable embedding". Code:
+Derivation: `book/src/23-embedding/03-polarizable-embedding.md#polarizable-embedding-induction-model`. Code:
 crates/ferric-scf/src/polarizable.rs (thole_screening, thole_tensor,
 solve_induction, induce, build_v_induced, qm_gradient_contribution,
 site_gradient, charge_gradient_contribution, norm_int_p_shell,

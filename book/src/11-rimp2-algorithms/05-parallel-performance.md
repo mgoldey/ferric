@@ -1,13 +1,13 @@
-<!-- section: 11.5; status: verify; registry: ri-mp2;
-     theory: none -->
+<!-- status: verify; registry: ri-mp2 -->
 
-# 11.5 Parallel performance, then and now
+# Parallel performance, then and now {#parallel-performance}
 
 This section has no equations. It records what the 2014 algorithm measured,
 which design changes answer those measurements, and what the code has not
-yet measured.
+yet measured. The operation counts of sections @sec:four-step-algorithm to @sec:pair-kernel say where the
+work is; only a timing says where the wall time goes.
 
-## 11.5.1 What the dissertation measured
+## What the dissertation measured {#parallel-performance-dissertation-measured}
 
 The test was strong scaling of RI-MP2/cc-pVDZ on linear polyglycines with 4,
 8, 16 and 32 subunits, on one 12-core node, for the whole algorithm and for
@@ -22,23 +22,28 @@ redrawn here).
 | Recommendation: use whole nodes for large molecules, to minimize disk reads | conclusion 1 |
 | On the application systems, RI-MP2/aug-cc-pVDZ cost less than 40% of the SCF, and RI-MP2/aug-cc-pVTZ on the tetrapeptides less than 10% | section 4.4 and conclusion 2 |
 
-The per-system timings and energies of section 4.4 are not carried here.
+The first finding is the ratio of section @sec:four-step-algorithm-algorithm-code seen in wall time: step 4
+over the dressing grows as $(n_o+1)n_v/(2N_{\mathrm{aux}})$, linearly in
+the size. The per-system timings and energies of section 4.4 are not carried
+here.
 
-## 11.5.2 How the code answers each finding
+## How the code answers each finding {#parallel-performance-code-answers-each-finding}
 
 | 2014 bottleneck | Change in the code | Section |
 |---|---|---|
-| Transform batched by auxiliary shell, single-threaded per batch | each auxiliary row of a chunk is a task above a work threshold; the dressing is one thread-count-independent `par_gemm` per chunk | 11.2.1 |
-| Seek-bound storage of $(ia\vert P)$ and $B$ | neither is stored; only the raw AO tensor spills, read sequentially in blocks | 11.1.3, 11.4.2 |
-| Function 4 reading $B$ from disk, batch $n_B$ tied to the core count | all of $B$ in memory; one GEMM task per $i$ over the $j \ge i$ tail | 11.3.1 |
-| Reductions in thread-dependent order | per-$i$ partials summed in order on one thread; chunk width independent of the thread count | 11.2.4, 11.3.4 |
+| Transform batched by auxiliary shell, single-threaded per batch | each auxiliary row of a chunk is a task above a work threshold; the dressing is one thread-count-independent `par_gemm` per chunk | @sec:streaming-transform-pass |
+| Seek-bound storage of $(ia\vert P)$ and $B$ | neither is stored; only the raw AO tensor spills, read sequentially in blocks | @sec:four-step-algorithm-changed, @sec:memory-budget-run-holds |
+| Function 4 reading $B$ from disk, batch $n_B$ tied to the core count | all of $B$ in memory; one GEMM task per $i$ over the $j \ge i$ tail | @sec:pair-kernel-batching-over-occupied-index |
+| Reductions in thread-dependent order | per-$i$ partials summed in order on one thread; chunk width independent of the thread count | @sec:streaming-transform-reproducibility, @sec:pair-kernel-parallel-loop-fixed-summation |
 | One node only | auxiliary bands across MPI ranks (library only) | 11.7 |
 
 The first and third rows remove the reason the 2014 efficiency fell at small
-sizes. Whether the small systems now scale well is a question for a
-measurement, below.
+sizes. Section @sec:pair-kernel-parallel-loop-fixed-summation derives a limit of the current design: with one task per
+$i$, the pair stage cannot speed up by more than $(n_o+1)/2$, so a small
+molecule on a wide node leaves workers idle in that stage. Whether the small
+systems now scale well is a question for a measurement, below.
 
-## 11.5.3 What has not been measured
+## What has not been measured {#parallel-performance-has-been-measured}
 
 No strong-scaling or thread-count timing of the closed-shell RI-MP2 energy is
 committed: `site/src/reference/validation.md` grades RI-MP2's accuracy, not
@@ -51,24 +56,25 @@ A measurement that could support a statement in this section needs:
 
 | Requirement | Reason |
 |---|---|
-| A series of sizes past the point where the pair stage dominates, with the tail fitted rather than the whole series | the dissertation's own finding is that efficiency is size dependent |
-| The transform and the pair stage timed separately | they have different parallel structure (11.2, 11.3) |
+| A series of sizes past the point where the pair stage dominates, with the tail fitted, not the whole series | the dissertation's own finding is that efficiency is size dependent |
+| The transform and the pair stage timed separately | they have different parallel structure (@sec:streaming-transform, @sec:pair-kernel) |
 | Fixed `[memory] budget_gb` and `OPENBLAS_NUM_THREADS=1` | the budget changes the chunk and the tier; BLAS threads inside rayon oversubscribe |
-| The bits of the energy compared across thread counts | it doubles as the missing reproducibility test of section 11.3.4 |
+| The bits of the energy compared across thread counts | the committed bit-identity test (section @sec:pair-kernel-parallel-loop-fixed-summation) runs water/cc-pVDZ only; a timing series would extend it to the measured sizes |
 | Runs on a quiet machine (`box-lease`, `scripts/README.md`) | timings taken beside other jobs are biased |
 
-## 11.5.4 Known limits (2026-11-15)
+## Known limits (2026-11-15) {#parallel-performance-known-limits-2026-11}
 
 - No committed timing of RI-MP2 parallel scaling.
-- No committed test that the CPU energy is bit-identical across
-  `RAYON_NUM_THREADS`.
+- The committed test that the CPU energy is bit-identical across rayon pool
+  sizes covers one small system (H2O/cc-pVDZ, pools of 1, 2 and 6).
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| Dissertation, chapter 4, sections 4.3 to 4.5 (Figure 4.1, Table 4.2, conclusions 1 and 2) | section 11.5.1 |
-| `crates/ferric-mp2/src/rimp2.rs` | section 11.5.2 |
+| Dissertation, chapter 4, sections 4.3 to 4.5 (Figure 4.1, Table 4.2, conclusions 1 and 2) | section @sec:parallel-performance-dissertation-measured |
+| `crates/ferric-mp2/src/rimp2.rs` | section @sec:parallel-performance-code-answers-each-finding |
+| `crates/ferric-mp2/tests/mo_stream_dressing_threads.rs` | the bit-identity test |
 | `site/src/reference/validation.md` | the absence of a graded timing |
 
 Changes from the sources: none to equations; the dissertation's findings are

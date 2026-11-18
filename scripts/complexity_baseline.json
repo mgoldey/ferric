@@ -337,7 +337,7 @@
   },
   "crates/ferric-cc/src/ccsd_closed_shell.rs::cs_ccsd_auto_picks_dense_when_it_fits_and_ri_otherwise::<anonymous>": {
     "cc": 1.0,
-    "mi": 155.57643482053922
+    "mi": 123.51065405124743
   },
   "crates/ferric-cc/src/ccsd_closed_shell.rs::cs_ccsd_auto_picks_dense_when_it_fits_and_ri_otherwise::<anonymous>#1": {
     "cc": 1.0,
@@ -709,11 +709,11 @@
   },
   "crates/ferric-cc/src/ccsd_t_closed_shell.rs::ccsd_t_closed_shell::<anonymous>#1": {
     "cc": 1.0,
-    "mi": 155.57643482053922
+    "mi": 149.19291094797606
   },
   "crates/ferric-cc/src/ccsd_t_closed_shell.rs::ccsd_t_closed_shell::<anonymous>#2": {
     "cc": 1.0,
-    "mi": 155.01840677617037
+    "mi": 149.19291094797606
   },
   "crates/ferric-cc/src/ccsd_t_closed_shell.rs::ccsd_t_closed_shell::<anonymous>#3": {
     "cc": 1.0,
@@ -1280,8 +1280,8 @@
     "mi": 155.01840677617037
   },
   "crates/ferric-cc/src/dlpno_ccsd_kernel.rs::real_system_contractions_match_dense_water_631g::<anonymous>#2": {
-    "cc": 1.0,
-    "mi": 157.8484854211024
+    "cc": 2.0,
+    "mi": 116.91179069985316
   },
   "crates/ferric-cc/src/dlpno_ccsd_kernel.rs::real_system_contractions_match_dense_water_631g::<anonymous>#3": {
     "cc": 2.0,
@@ -1792,12 +1792,12 @@
     "mi": 157.8484854211024
   },
   "crates/ferric-cc/src/dlpno_ccsd_t_kernel.rs::real_h2o::<anonymous>#2": {
-    "cc": 1.0,
-    "mi": 155.01840677617037
+    "cc": 2.0,
+    "mi": 128.25230593121856
   },
   "crates/ferric-cc/src/dlpno_ccsd_t_kernel.rs::real_h2o::<anonymous>#3": {
     "cc": 2.0,
-    "mi": 128.25230593121856
+    "mi": 120.12826329270902
   },
   "crates/ferric-cc/src/dlpno_ccsd_t_kernel.rs::real_h2o::<anonymous>#3::<anonymous>": {
     "cc": 1.0,
@@ -2549,7 +2549,7 @@
   },
   "crates/ferric-cc/src/dlpno_ccsd_virtual.rs::stage3_real_system::<anonymous>": {
     "cc": 1.0,
-    "mi": 155.57643482053922
+    "mi": 127.3861219939379
   },
   "crates/ferric-cc/src/dlpno_ccsd_virtual.rs::stage3_real_system::<anonymous>#1": {
     "cc": 1.0,
@@ -2560,8 +2560,8 @@
     "mi": 155.01840677617037
   },
   "crates/ferric-cc/src/dlpno_ccsd_virtual.rs::stage3_real_system::<anonymous>#3": {
-    "cc": 1.0,
-    "mi": 157.8484854211024
+    "cc": 2.0,
+    "mi": 116.91179069985316
   },
   "crates/ferric-cc/src/dlpno_ccsd_virtual.rs::stage3_real_system::<anonymous>#4": {
     "cc": 2.0,
@@ -4460,8 +4460,8 @@
     "mi": 161.1663534315451
   },
   "crates/ferric-cli/src/config.rs::impl:Config#3::validate_local_direct": {
-    "cc": 17.0,
-    "mi": 73.57798893292153
+    "cc": 23.0,
+    "mi": 64.91701401321579
   },
   "crates/ferric-cli/src/config.rs::impl:Config#3::validate_local_direct::<anonymous>": {
     "cc": 1.0,
@@ -6465,15 +6465,15 @@
   },
   "crates/ferric-cli/src/lib.rs::lmp2_local_json_with_vs": {
     "cc": 3.0,
-    "mi": 98.88624209851284
+    "mi": 84.85661545070354
   },
   "crates/ferric-cli/src/lib.rs::lmp2_timings_json": {
     "cc": 2.0,
     "mi": 57.97848579522628
   },
   "crates/ferric-cli/src/lib.rs::lmp2_timings_json::<anonymous>": {
-    "cc": 1.0,
-    "mi": 63.82134909580802
+    "cc": 2.0,
+    "mi": 57.648773745646764
   },
   "crates/ferric-cli/src/lib.rs::lmp2_timings_json_carries_every_field": {
     "cc": 3.0,
@@ -6520,8 +6520,8 @@
     "mi": 158.79655751643097
   },
   "crates/ferric-cli/src/lib.rs::log_jk_path::<anonymous>#4": {
-    "cc": 1.0,
-    "mi": 155.7127700178179
+    "cc": 2.0,
+    "mi": 115.90658741688642
   },
   "crates/ferric-cli/src/lib.rs::log_jk_path::<anonymous>#5": {
     "cc": 1.0,
@@ -6609,7 +6609,7 @@
   },
   "crates/ferric-cli/src/lib.rs::preflight_exact_drpa::<anonymous>": {
     "cc": 1.0,
-    "mi": 152.06460113916833
+    "mi": 127.59108063160195
   },
   "crates/ferric-cli/src/lib.rs::print_and_note_certificate": {
     "cc": 2.0,
@@ -6720,8 +6720,8 @@
     "mi": 152.06460113916833
   },
   "crates/ferric-cli/src/lib.rs::run::<anonymous>#12": {
-    "cc": 1.0,
-    "mi": 127.59108063160195
+    "cc": 2.0,
+    "mi": 120.68589998742868
   },
   "crates/ferric-cli/src/lib.rs::run::<anonymous>#13": {
     "cc": 1.0,
@@ -6737,11 +6737,11 @@
   },
   "crates/ferric-cli/src/lib.rs::run::<anonymous>#16": {
     "cc": 1.0,
-    "mi": 157.04690188600065
+    "mi": 127.59108063160195
   },
   "crates/ferric-cli/src/lib.rs::run::<anonymous>#17": {
     "cc": 1.0,
-    "mi": 156.27079806218674
+    "mi": 127.59108063160195
   },
   "crates/ferric-cli/src/lib.rs::run::<anonymous>#18": {
     "cc": 1.0,
@@ -6901,7 +6901,7 @@
   },
   "crates/ferric-cli/src/lib.rs::run_drpa::<anonymous>": {
     "cc": 1.0,
-    "mi": 155.01840677617037
+    "mi": 126.33003775913079
   },
   "crates/ferric-cli/src/lib.rs::run_drpa::<anonymous>#1": {
     "cc": 1.0,
@@ -7180,16 +7180,16 @@
     "mi": 127.59108063160195
   },
   "crates/ferric-cli/src/lib.rs::run_optimize::<anonymous>#4": {
-    "cc": 1.0,
-    "mi": 127.59108063160195
+    "cc": 4.0,
+    "mi": 103.20932289955634
   },
   "crates/ferric-cli/src/lib.rs::run_optimize::<anonymous>#5": {
     "cc": 1.0,
     "mi": 127.59108063160195
   },
   "crates/ferric-cli/src/lib.rs::run_optimize::<anonymous>#6": {
-    "cc": 1.0,
-    "mi": 127.59108063160195
+    "cc": 4.0,
+    "mi": 103.20932289955634
   },
   "crates/ferric-cli/src/lib.rs::run_optimize::<anonymous>#7": {
     "cc": 1.0,
@@ -7337,7 +7337,7 @@
   },
   "crates/ferric-cli/src/lib.rs::run_rimp2_local::<anonymous>#2": {
     "cc": 1.0,
-    "mi": 127.59108063160195
+    "mi": 111.60466249192818
   },
   "crates/ferric-cli/src/lib.rs::run_rimp2_local::<anonymous>#3": {
     "cc": 1.0,
@@ -21700,8 +21700,8 @@
     "mi": 99.23705132997557
   },
   "crates/ferric-gw/src/vxc_mo.rs::vxc_diagonal_mo_on_grids": {
-    "cc": 8.0,
-    "mi": 69.87264944606247
+    "cc": 10.0,
+    "mi": 64.1325653681125
   },
   "crates/ferric-gw/src/vxc_mo.rs::vxc_diagonal_mo_on_grids::<anonymous>": {
     "cc": 1.0,
@@ -29324,8 +29324,8 @@
     "mi": 112.53359852557469
   },
   "crates/ferric-mp2/src/lmp2_amplitude.rs::build_vvhv_traced::<anonymous>#4": {
-    "cc": 1.0,
-    "mi": 153.42889531439928
+    "cc": 2.0,
+    "mi": 112.53359852557469
   },
   "crates/ferric-mp2/src/lmp2_amplitude.rs::build_vvhv_traced::<anonymous>#5": {
     "cc": 1.0,
@@ -29984,8 +29984,8 @@
     "mi": 89.24289602998128
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct_with_virtuals": {
-    "cc": 7.0,
-    "mi": 60.82589159483331
+    "cc": 8.0,
+    "mi": 52.88701778027614
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::assemble_boo_direct": {
     "cc": 27.0,
@@ -30444,8 +30444,8 @@
     "mi": 156.27079806218674
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::fit_pairs": {
-    "cc": 27.0,
-    "mi": 45.58764426896394
+    "cc": 39.0,
+    "mi": 33.314510491452054
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::fit_pairs::<anonymous>": {
     "cc": 1.0,
@@ -30908,8 +30908,8 @@
     "mi": 97.68343186834858
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::strips_and_metric": {
-    "cc": 10.0,
-    "mi": 57.80591700564531
+    "cc": 15.0,
+    "mi": 46.77222997199668
   },
   "crates/ferric-mp2/src/lmp2_direct.rs::strips_and_metric::<anonymous>": {
     "cc": 1.0,
@@ -31477,7 +31477,7 @@
   },
   "crates/ferric-mp2/src/oo_rimp2.rs::oo_ri_mp2::<anonymous>#2": {
     "cc": 1.0,
-    "mi": 159.05793486938265
+    "mi": 97.78963811990133
   },
   "crates/ferric-mp2/src/oo_rimp2.rs::oo_ri_mp2::<anonymous>#3": {
     "cc": 1.0,
@@ -32688,8 +32688,8 @@
     "mi": 130.687221869187
   },
   "crates/ferric-mp2/src/rimp2.rs::metric_inverse_sqrt": {
-    "cc": 2.0,
-    "mi": 104.21738995872116
+    "cc": 4.0,
+    "mi": 96.16116562935376
   },
   "crates/ferric-mp2/src/rimp2.rs::metric_solve_quadratic_form_is_smooth": {
     "cc": 18.0,
@@ -33392,8 +33392,8 @@
     "mi": 90.43890419265301
   },
   "crates/ferric-mp2/src/u_oo_rimp2.rs::u_gradient_solver_frame::<anonymous>#1": {
-    "cc": 1.0,
-    "mi": 101.41784236668855
+    "cc": 3.0,
+    "mi": 90.43890419265301
   },
   "crates/ferric-mp2/src/u_oo_rimp2.rs::u_max_err": {
     "cc": 3.0,
@@ -33445,7 +33445,7 @@
   },
   "crates/ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2::<anonymous>#3": {
     "cc": 1.0,
-    "mi": 159.05793486938265
+    "mi": 95.19294626702275
   },
   "crates/ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2::<anonymous>#4": {
     "cc": 1.0,
@@ -33457,7 +33457,7 @@
   },
   "crates/ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2::<anonymous>#6": {
     "cc": 1.0,
-    "mi": 153.362447374354
+    "mi": 117.57723277171954
   },
   "crates/ferric-mp2/src/u_oo_rimp2.rs::u_oo_rimp2_lowers_energy_on_oh": {
     "cc": 1.0,
@@ -48117,7 +48117,7 @@
   },
   "crates/ferric-pcm/src/cavity.rs::build_cavity::<anonymous>": {
     "cc": 1.0,
-    "mi": 153.46801625837676
+    "mi": 121.95201756147767
   },
   "crates/ferric-pcm/src/cavity.rs::empty_molecule_is_an_error": {
     "cc": 2.0,
@@ -49480,8 +49480,8 @@
     "mi": 65.2
   },
   "crates/ferric-python/src/blocks.rs::solve_open_shell::<anonymous>": {
-    "cc": 3.0,
-    "mi": 121.19026236106123
+    "cc": 7.0,
+    "mi": 88.98592569219049
   },
   "crates/ferric-python/src/blocks.rs::solve_open_shell::<anonymous>#1": {
     "cc": 1.0,
@@ -60624,16 +60624,16 @@
     "mi": 75.99409533041866
   },
   "crates/ferric-scf/src/cosx_k.rs::impl:CosxK<'a>#1::blocks_dense": {
-    "cc": 6.0,
-    "mi": 71.34141210058729
+    "cc": 13.0,
+    "mi": 55.80928944465303
   },
   "crates/ferric-scf/src/cosx_k.rs::impl:CosxK<'a>#1::blocks_sparse": {
-    "cc": 15.0,
-    "mi": 51.165109060467515
+    "cc": 19.0,
+    "mi": 49.03189637727722
   },
   "crates/ferric-scf/src/cosx_k.rs::impl:CosxK<'a>#1::blocks_sparse::<anonymous>": {
     "cc": 1.0,
-    "mi": 155.01840677617037
+    "mi": 147.44017147447585
   },
   "crates/ferric-scf/src/cosx_k.rs::impl:CosxK<'a>#1::blocks_sparse::<anonymous>#1": {
     "cc": 1.0,
@@ -61724,16 +61724,16 @@
     "mi": 110.14966228632821
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#2::build::<anonymous>#3": {
-    "cc": 3.0,
-    "mi": 101.85141298420238
+    "cc": 6.0,
+    "mi": 83.35418864607612
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#2::build::<anonymous>#3::<anonymous>": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#2::build::<anonymous>#4": {
-    "cc": 1.0,
-    "mi": 153.0837736153568
+    "cc": 3.0,
+    "mi": 101.85141298420238
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#2::build::<anonymous>::<anonymous>": {
     "cc": 1.0,
@@ -63657,7 +63657,7 @@
   },
   "crates/ferric-scf/src/driver.rs::auto_budget_allows_for_planned_xc_memory::<anonymous>#1": {
     "cc": 1.0,
-    "mi": 155.01840677617037
+    "mi": 149.79445470859366
   },
   "crates/ferric-scf/src/driver.rs::auto_budget_allows_for_planned_xc_memory::<anonymous>#2": {
     "cc": 1.0,
@@ -65345,7 +65345,7 @@
   },
   "crates/ferric-scf/src/hessian.rs::cpks_response_with::<anonymous>": {
     "cc": 1.0,
-    "mi": 155.01840677617037
+    "mi": 131.4185623295971
   },
   "crates/ferric-scf/src/hessian.rs::deriv1_1e_matrices": {
     "cc": 9.0,
@@ -66341,7 +66341,7 @@
   },
   "crates/ferric-scf/src/hessian.rs::ucphf_response_with::<anonymous>": {
     "cc": 1.0,
-    "mi": 155.01840677617037
+    "mi": 103.6914993101033
   },
   "crates/ferric-scf/src/hessian.rs::uhf_hessian": {
     "cc": 2.0,
@@ -68193,7 +68193,7 @@
   },
   "crates/ferric-scf/src/ks_fixed_grid.rs::impl:FixedGridKs::response::<anonymous>": {
     "cc": 1.0,
-    "mi": 151.18942743888599
+    "mi": 131.66211700236792
   },
   "crates/ferric-scf/src/ks_fixed_grid.rs::impl:FixedGridKs::response::<anonymous>#1": {
     "cc": 1.0,
@@ -68633,7 +68633,7 @@
   },
   "crates/ferric-scf/src/ks_fixed_grid/polarized.rs::impl:PolarizedKs<'a>::response::<anonymous>": {
     "cc": 1.0,
-    "mi": 151.18942743888599
+    "mi": 131.66211700236792
   },
   "crates/ferric-scf/src/ks_fixed_grid/polarized.rs::impl:PolarizedKs<'a>::response::<anonymous>#1": {
     "cc": 2.0,
@@ -69637,7 +69637,7 @@
   },
   "crates/ferric-scf/src/optimize.rs::optimize_coordinates::<anonymous>": {
     "cc": 1.0,
-    "mi": 157.8484854211024
+    "mi": 150.80406598368663
   },
   "crates/ferric-scf/src/optimize.rs::optimize_coordinates::<anonymous>#1": {
     "cc": 1.0,
@@ -72264,8 +72264,8 @@
     "mi": 153.97676999581998
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>#1": {
-    "cc": 1.0,
-    "mi": 157.8484854211024
+    "cc": 2.0,
+    "mi": 152.07766979154286
   },
   "crates/ferric-scf/src/rhf.rs::solve_rhf_impl::<anonymous>#10": {
     "cc": 1.0,
@@ -72792,8 +72792,8 @@
     "mi": -39.08617466929748
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_impl::<anonymous>": {
-    "cc": 1.0,
-    "mi": 157.8484854211024
+    "cc": 2.0,
+    "mi": 152.07766979154286
   },
   "crates/ferric-scf/src/rohf.rs::solve_rohf_impl::<anonymous>#1": {
     "cc": 1.0,
@@ -73033,7 +73033,7 @@
   },
   "crates/ferric-scf/src/rohf_newton.rs::rohf_newton_step::<anonymous>#3": {
     "cc": 1.0,
-    "mi": 152.13570152002825
+    "mi": 127.54914876520067
   },
   "crates/ferric-scf/src/rohf_newton.rs::rohf_newton_step::<anonymous>#4": {
     "cc": 1.0,
@@ -76248,8 +76248,8 @@
     "mi": -54.41276139573188
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_impl::<anonymous>": {
-    "cc": 1.0,
-    "mi": 157.8484854211024
+    "cc": 2.0,
+    "mi": 152.07766979154286
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_impl::<anonymous>#1": {
     "cc": 1.0,
@@ -77381,7 +77381,7 @@
   },
   "crates/ferric-tddft/src/certificate.rs::grade_follows_the_method_and_caps_at_the_reference::<anonymous>": {
     "cc": 1.0,
-    "mi": 157.04690188600065
+    "mi": 123.28065068938864
   },
   "crates/ferric-tddft/src/certificate.rs::grid_detail": {
     "cc": 2.0,
@@ -77540,8 +77540,8 @@
     "mi": 151.48947944012582
   },
   "crates/ferric-tddft/src/tddft.rs::solve_casida::<anonymous>#3": {
-    "cc": 1.0,
-    "mi": 157.8484854211024
+    "cc": 2.0,
+    "mi": 151.48947944012582
   },
   "crates/ferric-tddft/src/tddft.rs::solve_tda": {
     "cc": 2.0,

@@ -8,8 +8,7 @@
 //! conventions, and the residual equations transcribe
 //! `pyscf/cc/uccsd.py::update_amps` with the canonical-HF simplification
 //! (`f_ov = 0`, diagonal `f_oo`/`f_vv`), matching the restricted solvers.
-//! Derivation: `crates/ferric-cc/theory.md`, section "Unrestricted CCSD and
-//! CCSD(T)".
+//! Derivation: `book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations`.
 //!
 //! Integrals are chemist blocks `(pq|rs) = sum_P B^P_pq B^P_rs` from per-spin
 //! dressed RI 3-index blocks

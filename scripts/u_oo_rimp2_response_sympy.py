@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """U-OO-RI-MP2 orbital gradient: the integral-response loop, transcribed.
 
-Theory: crates/ferric-mp2/theory.md section 14 ("Unrestricted OO-RI-MP2
+Theory: `book/src/12-oo-laplace/02-unrestricted-oo-rimp2.md#unrestricted-oo-rimp2-orbital-gradient` ("Unrestricted OO-RI-MP2
 orbital gradient") and 14.1 ("The integral-response loop"). Code:
 crates/ferric-mp2/src/u_rimp2.rs (u_mp2_orbital_gradient_kernel,
 build_u_mp2_density / u_mp2_density_from_amplitudes),

@@ -434,6 +434,8 @@ fn localized_with_virtuals(
         eps: 0.0, // this lane is untruncated: no amplitude threshold
         frozen_core,
         eri3_budget_bytes,
+        // plain Boys: λ-Boys is the local-MP2 default only
+        lambda_boys: 0.0,
         ..Default::default()
     };
     assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)

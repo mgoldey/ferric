@@ -890,10 +890,12 @@ fn bench_direct_alkane_series() {
         .unwrap_or(4);
     let (eri3_pass, batch_merge) =
         bench_eri3_pass(bench_env("FERRIC_LMP2_BENCH_ERI3_PASS").as_deref());
+    // the CLI/Python defaults (virt_radius 20, ao_tail 1e-4 since 2026-11-17;
+    // rows recorded before then used virt_radius 12, ao_tail 1e-3)
     let prod = DirectConfig {
         aux_radius_bohr: 10.0,
-        virt_radius_bohr: Some(12.0),
-        ao_tail: 1e-3,
+        virt_radius_bohr: Some(20.0),
+        ao_tail: 1e-4,
         schwarz_skip: 1e-5, // calibrated: 66-69% triples cut for ~1e-8 Ha at C16
         // merged batches (2026-09-05b): rows recorded before this date used
         // batch_merge=1 — expect ~0.4× the eri3 evaluations vs those rows

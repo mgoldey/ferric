@@ -1,11 +1,20 @@
-# 5. Screening
+# Screening {#screening}
 
-Most two-electron integrals in a large molecule are negligible, and every fast
-algorithm in ferric rests on knowing which ones before computing them. A
-screen is safe only if its estimate is an upper bound, and a bound is useful
-only if it is tight where the integrals are small. This chapter derives the
-bounds ferric uses, states for which kernels each holds, and shows why the
-standard bound cannot see the attenuation of a short-range kernel.
+A molecule with $N$ basis functions has $O(N^4)$ two-electron integrals, but
+in a large molecule most of them are negligible. An integral
+$(\mu\nu|\lambda\sigma)$ is the repulsion between the charge clouds
+$\chi_\mu\chi_\nu$ and $\chi_\lambda\chi_\sigma$. If $\chi_\mu$ and $\chi_\nu$
+sit on atoms far apart, their product is close to zero everywhere, and so is
+the integral. Every fast algorithm in ferric depends on finding these
+integrals before it computes them.
+
+A screen decides from a cheap estimate. Two properties make the estimate
+useful. It must be an upper bound: if it ever falls below the integral, the
+screen drops an integral that matters and nothing reports it. And it should be
+tight where the integrals are small, or it keeps work it could skip. This
+chapter derives the bounds ferric uses, states for which kernels each one
+holds, and shows why the standard bound cannot see the attenuation of a
+short-range kernel.
 
 | Section | Bound | Valid for |
 |---|---|---|

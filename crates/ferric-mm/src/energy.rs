@@ -98,14 +98,18 @@ pub fn gradient(
     Ok((e.sum(), g))
 }
 
-/// Bond, angle and torsion energies and gradient (theory.md 1-4); the LJ and
+/// Bond, angle and torsion energies and gradient
+/// (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-bonds-angles-torsions`,
+/// `book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient`);
+/// the LJ and
 /// Coulomb fields of the returned [`MmEnergy`] are zero and `total` is unset.
 pub(crate) fn bonded_terms(top: &MmTopology, coords: &Array2<f64>) -> (MmEnergy, Array2<f64>) {
     let n = top.n_atoms();
     let mut g = Array2::<f64>::zeros((n, 3));
     let mut e = MmEnergy::default();
 
-    // Bonds (theory.md 1).
+    // Bonds
+    // (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-bonds-angles-torsions`).
     for b in &top.bonds {
         let rij = diff(coords, b.i, b.j);
         let r = norm(rij);
@@ -125,7 +129,8 @@ pub(crate) fn bonded_terms(top: &MmTopology, coords: &Array2<f64>) -> (MmEnergy,
         );
     }
 
-    // Angles (theory.md 2).
+    // Angles
+    // (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-bonds-angles-torsions`).
     for a in &top.angles {
         let rji = diff(coords, a.i, a.j); // Ri - Rj
         let rjk = diff(coords, a.k, a.j);
@@ -138,8 +143,10 @@ pub(crate) fn bonded_terms(top: &MmTopology, coords: &Array2<f64>) -> (MmEnergy,
         let dedtheta = 2.0 * a.k_theta * dtheta;
 
         // Linear i-j-k (theta = 0 or pi): |a x b| = 0, the angle gradient
-        // ~ 1/sin(theta) is singular and its direction undefined (theory.md
-        // 2). Same convention as the degenerate torsion (theory.md 4.4):
+        // ~ 1/sin(theta) is singular and its direction undefined
+        // (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-bonds-angles-torsions`).
+        // Same convention as the degenerate torsion
+        // (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient`):
         // the energy stays finite and this term contributes a zero gradient.
         let cross_sq = {
             let c = cross(rji, rjk);
@@ -176,7 +183,8 @@ pub(crate) fn bonded_terms(top: &MmTopology, coords: &Array2<f64>) -> (MmEnergy,
         );
     }
 
-    // Torsions: E = k(1 + cos(n*phi - delta)); chain rule through phi (theory.md 4).
+    // Torsions: E = k(1 + cos(n*phi - delta)); chain rule through phi
+    // (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient`).
     for t in &top.torsions {
         let (phi, grads) = dihedral_and_gradient(coords, t.i, t.j, t.k, t.l);
         let n = t.periodicity as f64;
@@ -224,7 +232,9 @@ pub(crate) fn bonded_terms(top: &MmTopology, coords: &Array2<f64>) -> (MmEnergy,
     (e, g)
 }
 
-/// All-pairs nonbonded sum (theory.md 5, 6): every non-excluded `i < j` pair,
+/// All-pairs nonbonded sum
+/// (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-nonbonded-terms-exclusions-1`):
+/// every non-excluded `i < j` pair,
 /// no cutoff, accumulated into `e.lj`, `e.coulomb` and `g`.
 fn nonbonded_all_pairs(
     top: &MmTopology,
@@ -250,7 +260,9 @@ fn nonbonded_all_pairs(
 }
 
 /// One plain (uncut, unshifted) nonbonded pair: scaled LJ then scaled
-/// Coulomb, theory.md 5. Shared by the all-pairs sum and by the 1-4 pairs of
+/// Coulomb,
+/// `book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-nonbonded-terms-exclusions-1`.
+/// Shared by the all-pairs sum and by the 1-4 pairs of
 /// the cutoff path (`crate::cutoff`), so both evaluate the same operations.
 #[allow(clippy::too_many_arguments)]
 #[inline]
@@ -298,7 +310,9 @@ pub(crate) fn mix(a: LjParams, b: LjParams) -> LjParams {
 }
 
 /// Signed dihedral `phi` (radians) for atoms i-j-k-l and `dphi/dR` for each of
-/// the four atoms (Bekker form). Equations: `theory.md` section 4; checked by
+/// the four atoms (Bekker form). Equations:
+/// `book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient`;
+/// checked by
 /// `scripts/mm_dihedral_gradient_sympy.py`.
 fn dihedral_and_gradient(
     coords: &Array2<f64>,
@@ -318,7 +332,8 @@ fn dihedral_and_gradient(
     let n_sq = dot(n, n);
     let kj_norm = norm(r_kj);
 
-    // Linear i-j-k or j-k-l: m or n vanishes, phi is undefined (theory.md 4.4);
+    // Linear i-j-k or j-k-l: m or n vanishes, phi is undefined
+    // (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient`);
     // use phi = 0 so the energy stays finite.
     let mut phi = if m_sq > 1e-20 && n_sq > 1e-20 {
         let cos_phi = (dot(m, n) / (m_sq.sqrt() * n_sq.sqrt())).clamp(-1.0, 1.0);
@@ -335,7 +350,8 @@ fn dihedral_and_gradient(
     let mut grad_k = [0.0; 3];
     let mut grad_l = [0.0; 3];
 
-    // Zero-gradient fallback when phi is undefined (theory.md 4.4).
+    // Zero-gradient fallback when phi is undefined
+    // (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-dihedral-angle-gradient`).
     if m_sq > 1e-20 && n_sq > 1e-20 && kj_norm > 1e-20 {
         for c in 0..3 {
             grad_i[c] = (kj_norm / m_sq) * m[c];

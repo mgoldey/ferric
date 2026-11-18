@@ -51,7 +51,7 @@
 //! # Measured (2026-11-12)
 //!
 //! See the `eprintln!` lines; the `tests/casci_rdm3.rs` row of the Checks
-//! table in `crates/ferric-ci/theory.md` records them and the mutations
+//! table in `book/src/17-multireference/04-rdms.md#rdms-checks` records them and the mutations
 //! that fail this file.
 
 mod casci_rdm_common;

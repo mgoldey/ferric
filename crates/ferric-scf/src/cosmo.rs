@@ -25,7 +25,7 @@
 //!    formulation [`crate::cosmo::SMatrixKind::GaussianSmeared`] (PySCF `pcm.py`
 //!    convention, Li/Scalmani/Frisch, J. Chem. Phys. 122, 194110 (2005)):
 //!    each segment is a Gaussian charge distribution of width `xi_k` set by
-//!    the LOCAL Lebedev grid density, giving off-diagonal `S_kl = erf(xi_kl *
+//!    its sphere's radius and its Lebedev weight only, giving off-diagonal `S_kl = erf(xi_kl *
 //!    r_kl) / r_kl` (`xi_kl` the harmonic-combined width of segments k,l) and
 //!    diagonal `S_kk = xi_k * sqrt(2/pi) / switch_fun_k`. The original
 //!    [`crate::cosmo::SMatrixKind::PointCharge`] formulation is still available (for two
@@ -127,10 +127,10 @@ const COSMO_XI: f64 = 3.8;
 ///   segment is a bare point charge (`S_kl = 1/|s_k - s_l|` off-diagonal,
 ///   `S_kk = xi_COSMO * sqrt(4*pi/a_k)` diagonal, `xi_COSMO = 3.8` fixed).
 /// * [`SMatrixKind::GaussianSmeared`] -- PySCF `pcm.py`'s formulation: each
-///   segment is a Gaussian charge distribution of width `xi_k` set by the
-///   LOCAL grid density (`gaussian_xi_table`), giving `S_kl = erf(xi_kl *
-///   r_kl) / r_kl` off-diagonal (`xi_kl` the harmonic-sum combined width of
-///   segments k,l) and a density-dependent diagonal `S_kk = xi_k *
+///   segment is a Gaussian charge distribution of width `xi_k` set by its
+///   sphere's radius and Lebedev weight only (`gaussian_xi_table`), giving
+///   `S_kl = erf(xi_kl * r_kl) / r_kl` off-diagonal (`xi_kl` the harmonic-sum
+///   combined width of segments k,l) and a diagonal `S_kk = xi_k *
 ///   sqrt(2/pi) / switch_fun_k`. This is the default (see
 ///   [`CosmoConfig::default`]); `PointCharge` is kept only for the
 ///   regression test that measures the isolated S-matrix effect and for any
@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn f_epsilon_matches_pyscf_cosmo_convention() {
-        // f(eps) = (eps-1)/(eps+0.5); water eps=78.39 -> ~0.9873.
+        // f(eps) = (eps-1)/(eps+0.5); water eps=78.39 -> ~0.9810.
         let cfg = CosmoConfig {
             epsilon: 78.39,
             ..Default::default()

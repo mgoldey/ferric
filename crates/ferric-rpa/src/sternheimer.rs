@@ -146,7 +146,7 @@ pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
 /// contiguous row-major sub-slice of the caller's `(m, panel_width)` scratch —
 /// can be passed directly with no copy; only the caller's ragged final panel
 /// (`w < panel_width`) needs an owned, right-sized `to_owned()` first.
-fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
+pub(crate) fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
     let m = a.nrows();
     let kdim = a.ncols();
     assert_eq!(

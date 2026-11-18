@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Sympy/numpy checks of the closed- and open-shell dRPA energy identities.
 
-Theory and notation: crates/ferric-rpa/theory.md, sections "RPA correlation
-energy", "The PDEP eigenpotential approach" and "Open-shell (spin-summed)
-dielectric". Every check prints "FAIL [<name>]" when it fails, and the script
+Theory and notation: `book/src/18-rpa/01-drpa-three-ways.md#drpa-three-ways-plasmon-formula`, `book/src/18-rpa/03-pdep.md#pdep-dielectric-matrix-static-modes`, `book/src/18-rpa/04-open-shell-dielectric.md#open-shell-dielectric-spin-summed-dielectric`. Every check prints "FAIL [<name>]" when it fails, and the script
 exits nonzero if any did.
 
 The independent route is the definition: the spin-orbital direct RPA

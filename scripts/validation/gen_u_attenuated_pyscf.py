@@ -16,8 +16,8 @@ omega = 0.222254 Bohr^-1, with B_s = M (Q|ia)_s per spin s:
                on the Gauss-Legendre grid nw = 20, x0 = 0.5 (ferric's default
                QuadratureConfig: the same map and weights)
 
-and the fields ferric reports (crates/ferric-mp2/theory.md section 5.1,
-crates/ferric-rpa/theory.md "Open-shell SR-MP2 + LR-RPA"):
+and the fields ferric reports (`book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2`,
+`book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations`):
 
   att_erfc   = E_MP2[erfc]           att_erf = E_MP2[erf]
   scs        = 6/5 e_ab[C] + 1/3 (e_aa + e_bb)[C]

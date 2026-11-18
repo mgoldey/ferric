@@ -1347,6 +1347,11 @@ pub struct LocalCfg {
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
     /// Omitted = off.
     pub virt_schwarz_kappa: Option<f64>,
+    /// Integral-direct only: the Fock-propagated screen of the amplitude mask
+    /// (book §amplitude-lmp2-fock-screen), κ =
+    /// `ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA`. Default true;
+    /// `false` keeps the plain Eq-8 mask.
+    pub fock_screen: Option<bool>,
     /// `kind = "rimp2"` / `"att-rimp2"` only: which VV-HV virtual-space build
     /// to use, `"dense"` (default, O(N³)) or `"local"` (the opt-in
     /// threshold-sparse build, `ferric_mp2::vvhv_local`).
@@ -1363,6 +1368,10 @@ pub struct LocalCfg {
     /// `virtual_space = "local"` only: Boys pair-screen threshold. Default
     /// 1e-8; 0 rotates every pair.
     pub virtual_boys_tau: Option<f64>,
+    /// `kind = "rimp2"` / `"att-rimp2"` only: λ (Bohr²/Ha²) of the λ-Boys
+    /// occupied localization (finite, >= 0). Default
+    /// [`ferric_mp2::boys::LAMBDA_BOYS_DEFAULT`]; 0 = plain Boys.
+    pub lambda_boys: Option<f64>,
 }
 
 /// The integral-direct locality knobs of a local MP2 run, with their
@@ -1390,6 +1399,9 @@ pub struct LocalDirectKnobs {
     /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
     /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
+    /// `[local] fock_screen`: the Fock-propagated mask screen's κ, `Some(
+    /// DIRECT_FOCK_SCREEN_KAPPA)` by default, `None` with `fock_screen = false`.
+    pub fock_screen: Option<f64>,
 }
 
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
@@ -1407,6 +1419,9 @@ pub struct LocalModel {
     pub direct: Option<LocalDirectKnobs>,
     /// `[local] virtual_space` with its thresholds (default dense).
     pub virtual_space: ferric_mp2::vvhv_local::VirtualSpace,
+    /// `[local] lambda_boys`, default applied (local MP2 only; the dRPA and
+    /// LinLCCD paths refuse the key and localize with plain Boys).
+    pub lambda_boys: f64,
 }
 
 impl LocalCfg {
@@ -1418,6 +1433,7 @@ impl LocalCfg {
             || self.batch_merge.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
+            || self.fock_screen.is_some()
     }
 
     fn sets_virtual_thresholds(&self) -> bool {
@@ -1493,11 +1509,13 @@ impl LocalCfg {
                 ("batch_merge", self.batch_merge.is_some()),
                 ("gate_cal", self.gate_cal.is_some()),
                 ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+                ("fock_screen", self.fock_screen.is_some()),
                 ("virtual_space", self.virtual_space.is_some()),
                 ("virtual_tau", self.virtual_tau.is_some()),
                 ("virtual_tau_loose", self.virtual_tau_loose.is_some()),
                 ("virtual_solve_radius", self.virtual_solve_radius.is_some()),
                 ("virtual_boys_tau", self.virtual_boys_tau.is_some()),
+                ("lambda_boys", self.lambda_boys.is_some()),
             ]
             .into_iter()
             .filter_map(|(k, set)| set.then_some(k))
@@ -1591,18 +1609,23 @@ impl LocalCfg {
             }
             Some(LocalDirectKnobs {
                 aux_radius: pos("aux_radius", self.aux_radius, 10.0)?,
-                virt_radius: pos("virt_radius", self.virt_radius, 12.0)?,
-                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-3)?,
+                virt_radius: pos("virt_radius", self.virt_radius, 20.0)?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-4)?,
                 schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, 1e-5)?,
                 batch_merge: self.batch_merge.unwrap_or(4),
                 gate_cal: opt_pos("gate_cal", self.gate_cal)?,
                 virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
+                fock_screen: self
+                    .fock_screen
+                    .unwrap_or(true)
+                    .then_some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         } else {
             if self.sets_direct_knobs() {
                 return Err(
                     "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                            batch_merge / gate_cal / virt_schwarz_kappa are the integral-direct \
+                            batch_merge / gate_cal / virt_schwarz_kappa / fock_screen are the \
+                            integral-direct \
                             locality maps and are read only with integral_direct = true; \
                             without it they would be silently ignored"
                         .to_string(),
@@ -1611,12 +1634,17 @@ impl LocalCfg {
             None
         };
         let virtual_space = self.virtual_space()?;
+        let lambda_boys = self
+            .lambda_boys
+            .unwrap_or(ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
             reference: self.reference.unwrap_or(false),
             direct,
             virtual_space,
+            lambda_boys,
         }))
     }
 }
@@ -4329,7 +4357,8 @@ impl Config {
     /// for an energy and for the MP2 optimizations alike (the fitted
     /// gradient checks its peak memory against `[memory] budget_gb` before
     /// it allocates, `ferric_mp2::gradient_memory`). The evidence for the
-    /// fitted default is `crates/ferric-mp2/theory.md` §9.1.
+    /// fitted default is
+    /// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference`.
     pub fn omitted_scf_jk(&self) -> OmittedJk {
         use ferric_scf::scf_jk::{matched_jk_aux, ScfJkMode};
         let kind = self.method.kind.as_str();
@@ -4876,6 +4905,16 @@ impl Config {
                 "[local] virtual_space selects the VV-HV build of the local MP2 and applies \
                  to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", which \
                  always uses the dense build)"
+            ));
+        }
+        if self.local.as_ref().and_then(|l| l.lambda_boys).is_some()
+            && kind != "rimp2"
+            && kind != "att-rimp2"
+        {
+            return Err(format!(
+                "[local] lambda_boys sets the λ-Boys occupied localization of the local MP2 \
+                 and applies to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", \
+                 which localizes with plain Boys)"
             ));
         }
         if kind == "att-rimp2"
@@ -6522,6 +6561,8 @@ mod compat_guard_tests {
             ("batch_merge", "4"),
             ("gate_cal", "0.7"),
             ("virt_schwarz_kappa", "1.0"),
+            ("fock_screen", "false"),
+            ("fock_screen", "true"),
         ] {
             for direct in ["", "integral_direct = false\n"] {
                 let e = model(&format!(
@@ -6539,14 +6580,30 @@ mod compat_guard_tests {
             m.direct,
             Some(LocalDirectKnobs {
                 aux_radius: 10.0,
-                virt_radius: 12.0,
-                ao_tail: 1e-3,
+                virt_radius: 20.0,
+                ao_tail: 1e-4,
                 schwarz_skip: 1e-5,
                 batch_merge: 4,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
+                fock_screen: Some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         );
+        // fock_screen = false turns the screen off; a non-bool is a type error
+        let off = model(
+            "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\nfock_screen = false",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(off.direct.unwrap().fock_screen, None);
+        for bad in ["fock_screen = 1.0", "fock_screen = \"off\""] {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"rimp2\"\ntask = \"energy\"\n[local]\n\
+                 scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n{bad}"
+            );
+            assert!(toml::from_str::<Config>(&src).is_err(), "{bad}");
+        }
         for bad in [
             "aux_radius = 0.0",
             "virt_radius = -1.0",
@@ -6662,6 +6719,49 @@ mod compat_guard_tests {
             assert!(e.contains("omega"), "{value}: {e}");
         }
         assert!(cfg("drpa", "energy", "").mp2.set_keys().is_empty());
+    }
+
+    /// `[local] lambda_boys`: default 10 for local MP2, 0 accepted (plain
+    /// Boys), negative / non-finite refused, refused under scheme = "none"
+    /// and on the kinds that localize with plain Boys (drpa, linlccd).
+    #[test]
+    fn local_lambda_boys_is_strict_and_mp2_only() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let model =
+            |kind: &str, extra: &str| cfg(kind, "energy", &format!("{at}{extra}")).local_model();
+        let lam = |m: Result<Option<LocalModel>, String>| m.unwrap().unwrap().lambda_boys;
+        assert_eq!(
+            lam(model("rimp2", "")),
+            ferric_mp2::boys::LAMBDA_BOYS_DEFAULT
+        );
+        assert_eq!(lam(model("rimp2", "lambda_boys = 0.0\n")), 0.0);
+        assert_eq!(lam(model("rimp2", "lambda_boys = 3.5\n")), 3.5);
+        for bad in ["-1.0", "nan", "inf"] {
+            let e = model("rimp2", &format!("lambda_boys = {bad}\n")).unwrap_err();
+            assert!(
+                e.contains("lambda_boys") && e.contains(">= 0"),
+                "{bad}: {e}"
+            );
+        }
+        let e = cfg(
+            "rimp2",
+            "energy",
+            "[local]\nscheme = \"none\"\nlambda_boys = 10.0\n",
+        )
+        .local_model()
+        .unwrap_err();
+        assert!(
+            e.contains("lambda_boys") && e.contains("scheme = \"none\""),
+            "{e}"
+        );
+        let ok = |kind: &str| {
+            cfg(kind, "energy", &format!("{at}lambda_boys = 10.0\n")).validate_task_compat()
+        };
+        assert_eq!(ok("rimp2"), Ok(()));
+        for kind in ["drpa", "linlccd"] {
+            let e = ok(kind).expect_err(kind);
+            assert!(e.contains("lambda_boys") && e.contains("plain Boys"), "{e}");
+        }
     }
 
     #[test]

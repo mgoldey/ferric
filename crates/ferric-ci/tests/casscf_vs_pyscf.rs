@@ -35,7 +35,8 @@
 //!
 //! The converged point is a minimum, not a saddle on which both codes could
 //! stop alike (as the BFGS, AH and PySCF point of N2 CAS(10,10)/cc-pVDZ is,
-//! `theory.md`): `λ_min(h) > 2 |λ_min(2h) − λ_min(h)| / 3 + n δg / h`. The
+//! `book/src/17-multireference/05-casscf.md#casscf-proven-stationary`): `λ_min(h) > 2 |λ_min(2h) −
+//! λ_min(h)| / 3 + n δg / h`. The
 //! first term is twice the leading `O(h²)` truncation error of the central
 //! difference (the factor 2 for the higher orders); the second is the
 //! gradient error `δg = 8 r + 4 ε n_mo² max|F|` (`r` the CI threshold, the
@@ -57,7 +58,7 @@
 //!
 //! # Measured (2026-11-11)
 //!
-//! Tables in `crates/ferric-ci/theory.md` ("Two-step CASSCF").
+//! Tables in `book/src/17-multireference/05-casscf.md#casscf`.
 
 mod casscf_common;
 

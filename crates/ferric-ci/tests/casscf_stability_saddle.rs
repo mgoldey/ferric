@@ -1,6 +1,7 @@
 //! The CASSCF second-order check on the two cc-pVDZ systems where the
-//! optimizers stop above a lower point (`crates/ferric-ci/theory.md`,
-//! "Second-order check"): N2 CAS(10,10) above 2 core, where the point the
+//! optimizers stop above a lower point
+//! (`book/src/17-multireference/05-casscf.md#casscf-second-order-check`): N2 CAS(10,10) above 2
+//! core, where the point the
 //! RHF start converges to is a saddle, and benzene CAS(6,6) above 18 core
 //! on the dense route, which stops 5.9 mHa above PySCF.
 //!
@@ -19,7 +20,8 @@
 //! A pair that passes is an eigenpair of the finite-difference Hessian to
 //! that bar, whatever its sign.
 //!
-//! The followed N2 point is compared with the minimum of `theory.md`
+//! The followed N2 point is compared with the minimum in
+//! `book/src/17-multireference/05-casscf.md#casscf-proven-stationary`
 //! (`−109.1347620089` Ha, BFGS to `‖g‖ < 1e-9`, `‖g_ref‖ = 6.2e-10`):
 //! `|ΔE| <= (‖g‖² + ‖g_ref‖²) / (2 λ_min) + 8 ε |E| √N_det`, `λ_min` the
 //! check's eigenvalue at the followed point.

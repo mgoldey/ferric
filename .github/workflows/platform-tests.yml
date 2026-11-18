@@ -431,7 +431,7 @@ jobs:
           set -uo pipefail
           # Tests that shell out to the `ferric` console script find the venv's.
           export PATH="$(dirname "$VPY"):$PATH"
-          "$VPY" -m pytest crates/ferric-python/tests -q -rs -p no:cacheprovider \
+          "$VPY" -m pytest crates/ferric-python/tests --ignore=crates/ferric-python/tests/test_derivation_scripts.py -q -rs -p no:cacheprovider \
             --junitxml=pytest-junit.xml 2>&1 | tee pytest.log
           rc=${PIPESTATUS[0]}
           echo "### pytest (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"

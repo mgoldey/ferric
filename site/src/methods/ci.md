@@ -9,7 +9,7 @@ the CLI kinds `casscf` and `nevpt2` (see [From the CLI](#from-the-cli));
 CAS-CI has no CLI kind.
 
 The Hamiltonian, the determinant phase convention and the Slater-Condon rules
-are derived in `crates/ferric-ci/theory.md`. The phase conventions are checked
+are derived in `book/src/17-multireference/02-slater-condon.md#slater-condon-rules`. The phase conventions are checked
 by `scripts/casci_slater_condon_phases_sympy.py`.
 
 ## Scope
@@ -72,7 +72,7 @@ The RDMs are built from the same single-excitation string lists as the sigma
 vector, as vectors $E_{rs}C$ and one $n^2 \times n^2$ matrix product per block
 of determinants; no determinant pair is visited. Cost is
 $O(N_\text{det}\, n^4)$; the scratch is charged to the CAS-CI memory budget.
-Derivation: `crates/ferric-ci/theory.md`.
+Derivation: `book/src/17-multireference/03-direct-sigma-davidson.md#direct-sigma-davidson-split`.
 
 ## Library use
 
@@ -121,7 +121,7 @@ inactive and active Fock matrices and the generalized Fock matrix $F$, and
 takes an orbital step $C \leftarrow C\exp(K)$ over the core-active,
 core-virtual and active-virtual rotations, with gradient
 $\partial E/\partial\kappa_{pq} = 2(F_{pq} - F_{qp})$. Equations:
-`crates/ferric-ci/theory.md`.
+`book/src/17-multireference/05-casscf.md#casscf-energy-gradient-step`.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -143,7 +143,7 @@ orbital Hessian and reset to it when the energy rises; it needs 1.4 to 5
 times the macro iterations (CAS(6,6)/cc-pVDZ benzene: 89 instead of 19).
 On the five tested systems AH takes less wall time: benzene CAS(6,6)
 27 s against 42 s, N2 CAS(10,10)/cc-pVDZ 19 s against 27 s (timings on a
-loaded machine, in `crates/ferric-ci/theory.md`). Both reach the same stationary point on the
+loaded machine, in `book/src/17-multireference/05-casscf.md#casscf-proven-timings`). Both reach the same stationary point on the
 tested systems; neither moves benzene to the lower minimum PySCF finds. A run that reaches the
 iteration cap returns `converged = false`; Python adds a `RuntimeWarning` and
 a certificate warning; the certificate (capability `casscf`, graded Proven)
@@ -185,7 +185,7 @@ lower, which has a symmetric $\sigma_g$ and $\sigma_u$ active space. The
 benzene CAS(6,6)/cc-pVDZ dense endpoint, 5.9 mHa above PySCF's, is a local
 minimum (positive $\lambda_\text{min}$), so `"follow"` leaves it in place.
 Numbers, cost and the comparison with finite differences are in
-`crates/ferric-ci/theory.md` ("Second-order check"); the tests are
+`book/src/17-multireference/05-casscf.md#casscf-second-order-check`; the tests are
 `crates/ferric-ci/tests/casscf_stability.rs` and
 `casscf_stability_saddle.rs`.
 
@@ -247,7 +247,7 @@ Limits:
 
 Validation (`crates/ferric-ci/tests/casscf.rs`, `casscf_vs_pyscf.rs`,
 `casscf_canonical.rs`, measured 2026-11-11; equations and bars in
-`crates/ferric-ci/theory.md`). PySCF `mcscf.CASSCF` runs on ferric's AO
+`book/src/17-multireference/05-casscf.md#casscf-proven`). PySCF `mcscf.CASSCF` runs on ferric's AO
 integrals from PySCF's own RHF orbitals (`scripts/gen_casscf_refs.py`);
 ferric starts from its own RHF:
 
@@ -276,7 +276,7 @@ eigenvectors of the core and virtual blocks of $F^I + F^A$, as in PySCF
 `mrpt.NEVPT`. The result carries the eight class energies and norms
 (`Sr`, `Si`, `Sijrs`, `Sijr`, `Srsi`, `Srs`, `Sij`, `Sir`), their sum
 `e_corr`, and `e_total = e_reference + e_corr`. Equations:
-`crates/ferric-ci/theory.md`.
+`book/src/17-multireference/06-nevpt2.md#nevpt2-method`.
 
 ```python
 import ferric

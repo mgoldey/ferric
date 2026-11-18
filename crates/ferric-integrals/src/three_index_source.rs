@@ -211,9 +211,9 @@ const DRESS_ROW_BLOCK: usize = 64;
 /// An ACCURACY knob as much as a determinism one. Summing the k axis in
 /// fixed-size blocks and accumulating the partials is a coarse pairwise
 /// summation: partial sums stay smaller, so less magnitude is lost to rounding
-/// than in one full-k reduction. Note the in-core path does NO
-/// blocking at all — an in-core source reports `block_naux = band`, so
-/// `block_edges()` yields a single block — i.e. the least accurate option.
+/// than in one full-k reduction. Every dressing route uses it, the in-core
+/// fast path included: there each [`DRESS_COL_BLOCK`]-column tile sweeps Q in
+/// ascending blocks of this many rows (`dress_resident_into_packed`).
 ///
 /// Both axes measured; 128 is the knee, not a guess:
 /// ```text

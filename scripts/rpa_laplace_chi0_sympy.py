@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Laplace-transformed chi0: the kernel identity, the gap scaling, the dielectric.
 
-Derivation: crates/ferric-rpa/theory.md, "Laplace-transformed chi0". Code:
+Derivation: `book/src/18-rpa/05-laplace-ao-chi0.md#laplace-ao-chi0-laplace-form-kernel`. Code:
 crates/ferric-rpa/src/laplace_chi0.rs (build_laplace_for_gaps,
 dielectric_matrix_laplace_into, dielectric_matrix_laplace_unrestricted_into,
 accumulate_one_spin), crates/ferric-quadrature/src/minimax.rs

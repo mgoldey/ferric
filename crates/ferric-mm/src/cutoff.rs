@@ -2,7 +2,8 @@
 //!
 //! [`crate::gradient`] sums every non-excluded pair with no cutoff and stays
 //! the default. [`gradient_with`] with [`NonbondedMethod::CutoffNonPeriodic`]
-//! instead evaluates, as OpenMM's `CutoffNonPeriodic` does (theory.md 8):
+//! instead evaluates, as OpenMM's `CutoffNonPeriodic` does
+//! (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff`):
 //!
 //! - ordinary pairs (neither excluded nor 1-4) only when `r < r_c`, found by
 //!   a cell list ([`neighbor_pairs`]), with reaction-field Coulomb
@@ -63,7 +64,8 @@ impl CutoffParams {
         self
     }
 
-    /// Reaction-field constants `(k_rf, c_rf)` (theory.md 8.1):
+    /// Reaction-field constants `(k_rf, c_rf)`
+    /// (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff`):
     /// `k_rf = (eps-1) / ((2 eps + 1) r_c^3)`, `c_rf = 3 eps / ((2 eps + 1) r_c)`.
     pub fn reaction_field_constants(&self) -> (f64, f64) {
         let eps = self.reaction_field_dielectric;
@@ -191,7 +193,9 @@ pub fn neighbor_pairs(coords: &Array2<f64>, cutoff: f64) -> Vec<(usize, usize)> 
     pairs
 }
 
-/// Cutoff nonbonded sum (theory.md 8). Pairs are visited in lexicographic
+/// Cutoff nonbonded sum
+/// (`book/src/23-embedding/04-molecular-mechanics.md#molecular-mechanics-opt-nonbonded-cutoff`).
+/// Pairs are visited in lexicographic
 /// `(i, j)` order, the order of the all-pairs loop, so with `r_c` beyond the
 /// system diameter, `eps_rf = 1` and no switching the LJ energy and the whole
 /// gradient are bit-identical to [`crate::gradient`] and the Coulomb energy

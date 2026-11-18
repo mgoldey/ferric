@@ -1,6 +1,6 @@
-# Appendix D: The semiempirical interface (xTB)
+# Appendix D: The semiempirical interface (xTB) {#appendix-d}
 
-<!-- section: D; status: gap; registry: none; theory: none -->
+<!-- status: gap; registry: none -->
 
 ferric can call the GFN family of semiempirical methods through the `xtb`
 library, for conformer screening and for relaxing a structure before a
@@ -18,7 +18,7 @@ header records that.
 | Python | `run_xtb_energy_gradient`, `run_xtb_optimize`, `run_xtb_frequencies` (`crates/ferric-python/ferric.pyi`) |
 | CLI | none: no `method.kind` runs xTB |
 
-## D.1 Build and availability
+## Build and availability {#appendix-d-build-availability}
 
 The interface is off unless the `xtb` cargo feature is on. With it off, the
 crate has no native dependency and no API surface beyond
@@ -40,7 +40,7 @@ Two build facts matter:
   `XTBPATH`. ferric sets it, once, to the build-time prefix if the variable is
   unset, and never overwrites a value the caller set.
 
-## D.2 What is computed
+## What is computed {#appendix-d-computed}
 
 | Method | Name in code | Kind |
 |---|---|---|
@@ -75,7 +75,7 @@ counterpart, and ferric would otherwise compute a different system from the
 one asked for. Any error that libxtb queues (an unsupported element, an SCC
 that does not converge) comes back as the library's own message.
 
-## D.3 Drivers
+## Drivers {#appendix-d-drivers}
 
 | Task | Function | How |
 |---|---|---|
@@ -94,7 +94,7 @@ An SCC that fails to converge makes the calculator return an error. In an
 optimization or a frequency run that error ends the run: the search does not
 continue on a density that is not self-consistent.
 
-## D.4 Threading
+## Threading {#appendix-d-threading}
 
 libxtb keeps process-global state, so it is not thread-safe, and
 `XtbCalculator` is deliberately neither `Send` nor `Sync`. A compile-time guard
@@ -108,7 +108,7 @@ follow.
 
 The crate's own tests take a process-wide lock for the same reason.
 
-## D.5 Evidence
+## Evidence {#appendix-d-evidence}
 
 The tests need libxtb and run only with the `xtb` feature
 (`crates/ferric-xtb/tests/xtb_singlepoint.rs`,
@@ -134,7 +134,7 @@ no xTB kind, and the Python optimization result carries a certificate graded
 checks above support the binding. They do not support a statement about the
 accuracy of GFN-xTB for any chemistry.
 
-## D.6 Known limits (2026-11-15)
+## Known limits (2026-11-15) {#appendix-d-known-limits-2026-11}
 
 - Not in the CLI. Python and Rust only.
 - Ghost atoms and ECP atoms are refused (D.2).
@@ -146,7 +146,7 @@ accuracy of GFN-xTB for any chemistry.
 - A libxtb built at `-O3` gives wrong gradients (D.1).
 - Periodic cells are not passed: the molecule is created with no lattice.
 
-## D.7 Sources
+## Sources {#appendix-d-sources}
 
 | Source | Used for |
 |---|---|

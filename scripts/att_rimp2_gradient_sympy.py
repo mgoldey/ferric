@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs of the attenuated (erfc) RI-MP2 nuclear-gradient identities ferric-mp2 codes.
 
-Theory: crates/ferric-mp2/theory.md, "9.4 Attenuated (erfc) RI-MP2 gradient".
+Theory: `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-attenuated-erfc-ri-mp2`.
 Code: crates/ferric-mp2/src/att_rimp2_gradient.rs (att_rimp2_gradient_analytical,
 total_att_rimp2_gradient_on) over gradient.rs (relaxed_gradient_from_intermediates:
 the four-centre term on bounds.op, the RI response on the correlation operator).

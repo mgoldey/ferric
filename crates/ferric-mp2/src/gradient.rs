@@ -1044,7 +1044,9 @@ pub fn exact_scf_jk() -> ScfJk {
 /// [`total_rimp2_gradient_warm`] on the reference J/K route `scf_jk`:
 /// `"exact"` (four-centre, the default of every other entry point) or
 /// `"rijk"` (RI-J + RI-K on `scf_jk.aux`, the SCF, Z-vector and two-electron
-/// derivative terms all fitted; `crates/ferric-mp2/theory.md` §9.1). The
+/// derivative terms all fitted;
+/// `book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference`).
+/// The
 /// gradient is that of the energy the fitted SCF and RI-MP2 compute.
 /// `"rijcosx"` is an error: there is no COSX exchange response here.
 #[allow(clippy::too_many_arguments)]
@@ -1242,7 +1244,8 @@ pub(crate) struct CorrelationTerm {
 
 /// `d(E_HF + Σ_k E_k)/dR` on the converged RHF `rhf` (J/K route `bounds`),
 /// `E_k` the correlation energy of `terms[k]`: one relaxed Lagrangian and
-/// ONE Z-vector (theory.md §9.6). Each term contributes its own `Imat_k`
+/// ONE Z-vector (`book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient`). Each term
+/// contributes its own `Imat_k`
 /// and unrelaxed density (on `op_k`, with its scaling) and its own 3c/2c
 /// response; the Z-vector right-hand side, the relaxed density and every
 /// reference-side term are linear in `(Σ Imat_k, Σ P_k)`. The terms are

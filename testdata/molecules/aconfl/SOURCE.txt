@@ -1,0 +1,2 @@
+ACONF20 subset of ACONFL (grimme-lab/benchmark-ACONFL, commit 5e5dcbff40863476710ec55a1e88ef57793bb427), B97-3c geometries.
+Only the geometries are used here; the PNO-LCCSD(T)-F12 reference values are not used (errors are local minus canonical).
