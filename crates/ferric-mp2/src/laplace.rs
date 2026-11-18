@@ -1275,8 +1275,10 @@ impl LaplaceMp2 {
 
         // Parallel over quadrature points. Only the J (Coulomb) trace survives —
         // the `laplace_exchange_energy` call that `compute_mo` makes here is the
-        // same-spin piece and is deliberately absent.
-        let e_os: f64 = self
+        // same-spin piece and is deliberately absent. The per-point terms are
+        // collected and summed in point order: a rayon `.sum()` splits the
+        // reduction by thread count and moves the last bits.
+        let per_point: Vec<f64> = self
             .points
             .par_iter()
             .zip(self.weights.par_iter())
@@ -1284,7 +1286,8 @@ impl LaplaceMp2 {
                 let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
                 -w * sos_j_square_trace(&b_t)
             })
-            .sum();
+            .collect();
+        let e_os: f64 = per_point.iter().sum();
 
         Ok(e_os)
     }
