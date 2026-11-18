@@ -146,6 +146,35 @@ $\sum_B H_{(A,\alpha),(B,\beta)} = 0$.
 >
 > <!-- verified: id=scf.hess.assembled; script=scripts/hf_hessian_sympy.py; claim=H1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/hessian.rs::{rhf_hessian,uhf_hessian,assemble_response},ferric-scf/src/hessian/rohf.rs::rohf_hessian; rust_test=ferric-scf/tests/validation_rhf_hessian.rs::h2o_ccpvdz; registry=hf-hessian -->
 
+Both checks on the analytic RHF Hessian of water in cc-pVDZ at its
+minimum, from the `589b50832` build. `asymmetry` is the largest
+$\lvert H_{xy} - H_{yx}\rvert$ before symmetrization, the row sums are the
+translational check, and the six projected translations and rotations sit
+within $10^{-4}$ cm⁻¹ of zero:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")  # HF/cc-pVDZ minimum
+r = ferric.run_frequencies(mol, "cc-pvdz", reference="rhf", hessian="analytic")
+H = np.asarray(r.cartesian_hessian)
+n = H.shape[0] // 3
+print("hessian_source:", r.hessian_source, " asymmetry:", r.asymmetry)
+# sum_B H[(A,a),(B,b)] = 0 for every row (A,a) and column axis b
+rowsum = np.array([[H[i, b::3].sum() for b in range(3)] for i in range(3 * n)])
+print("max |sum over atoms B of H[(A,a),(B,b)]|:", np.abs(rowsum).max())
+print("frequencies (cm^-1):", r.frequencies)
+print("projected translation/rotation (cm^-1):", r.trans_rot_frequencies)
+```
+
+```text
+hessian_source: analytic  asymmetry: 9.50040046632239e-12
+max |sum over atoms B of H[(A,a),(B,b)]|: 2.5959789873297723e-12
+frequencies (cm^-1): [1808.3240700727306, 3953.633842062811, 4047.387730578505]
+projected translation/rotation (cm^-1): [-1.786027697564419e-05, -1.3169891007397875e-05, -1.4465003008048993e-06, 3.509332069214367e-06, 5.022276922418194e-06, 5.177484186138785e-05]
+```
+
 > **Verified equation {#eq:scf-hess-occ-occ-rotation}** · the occupied-occupied rotation and the closed-shell limit
 >
 > $U = -\tfrac12S^y_{\mathrm{MO}} + \kappa$ satisfies the differentiated

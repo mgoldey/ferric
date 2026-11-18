@@ -111,6 +111,41 @@ UMP2 unchanged.
 >
 > <!-- verified: id=mp2.u.quarter-factor; script=scripts/mp2_family_sympy.py; claim=B; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/u_rimp2.rs::same_spin_block_energy -->
 
+Here are the spin blocks for the OH radical in cc-pVDZ, from the
+`589b50832` build. `run_rimp2` picks the UHF reference from the multiplicity,
+and `run_scs_mp2` with both weights at 1 returns the two groups of the split
+above:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/oh.xyz", charge=0, multiplicity=2)
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_rimp2(mol, bs, aux)
+print("reference:", r.reference)
+print("E_UHF       = %.10f" % r.rhf_energy)
+print("E_c(UMP2)   = %.10f" % r.mp2_corr)
+
+# c_os = c_ss = 1: plain UMP2, split into E_OS = E_ab and E_SS = E_aa + E_bb
+s = ferric.run_scs_mp2(mol, bs, aux, c_os=1.0, c_ss=1.0)
+print("E_OS = E_ab        = %.10f" % s.e_os)
+print("E_SS = E_aa + E_bb = %.10f" % s.e_ss)
+print("sum               = %.10f" % (s.e_os + s.e_ss))
+print("OS fraction       = %.3f" % (s.e_os / (s.e_os + s.e_ss)))
+```
+
+```text
+reference: UHF
+E_UHF       = -75.3938460335
+E_c(UMP2)   = -0.1509932670
+E_OS = E_ab        = -0.1141556216
+E_SS = E_aa + E_bb = -0.0368376453
+sum               = -0.1509932670
+OS fraction       = 0.756
+```
+
 ## How the code evaluates it {#unrestricted-ri-mp2-code-evaluates}
 
 The same-spin kernel uses the symmetry of $K$ under the joint swap

@@ -191,6 +191,43 @@ distance-preserving rotations, rank 5 for a linear triatomic), and that the
 projection leaves the vibrations of a pair-spring model unchanged at its
 minimum and zeroes six modes away from it.
 
+The rank rule on two molecules at RHF/STO-3G, from the `589b50832` build.
+Water keeps six projected rigid modes, all within $10^{-4}$ cm⁻¹ of zero;
+linear CO2 keeps five and has $3N - 5 = 4$ vibrations. The last three lines
+use the thermochemistry and IR intensities of section @sec:frequencies-thermochemistry-ir-intensities.
+
+```python
+# Water (nonlinear, six rigid modes) and CO2 (linear, five) at RHF/STO-3G,
+# then RRHO thermochemistry and IR intensities of water.
+import ferric
+
+water = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+r = ferric.run_frequencies(water, "sto-3g", hessian="analytic")
+print("water linear:", r.is_linear, " hessian:", r.hessian_source)
+print("water rigid-mode cm-1 (expect 6 near zero):", [f"{f:.2e}" for f in r.trans_rot_frequencies])
+print("water vibrations cm-1:", [f"{f:.2f}" for f in r.frequencies])
+
+co2 = ferric.Molecule.from_arrays(["O", "C", "O"], [(0, 0, -1.16), (0, 0, 0), (0, 0, 1.16)])
+c = ferric.run_frequencies(co2, "sto-3g", hessian="analytic")
+print("co2 linear:", c.is_linear, " rigid modes:", len(c.trans_rot_frequencies),
+      " vibrations:", len(c.frequencies))
+
+t = r.thermo(temperature=298.15, symmetry_number=2)
+print("zpe (Ha):", t["zpe"], " S_vib (Ha/K):", t["vibrational"]["entropy"])
+print("G total (Ha):", t["total"]["gibbs"])
+print("IR intensities (km/mol):", [f"{a:.2f}" for a in r.ir_intensities()])
+```
+
+```text
+water linear: False  hessian: analytic
+water rigid-mode cm-1 (expect 6 near zero): ['-2.70e-05', '-1.48e-05', '-5.15e-06', '-3.19e-06', '1.59e-05', '7.45e-05']
+water vibrations cm-1: ['2049.42', '4489.24', '4788.00']
+co2 linear: True  rigid modes: 5  vibrations: 4
+zpe (Ha): 0.025804029463216825  S_vib (Ha/K): 1.748126046653006e-09
+G total (Ha): -74.95497689282388
+IR intensities (km/mol): ['11.19', '37.90', '20.49']
+```
+
 ## The algorithm {#frequencies-algorithm}
 
 | Step | Quantity | Function |

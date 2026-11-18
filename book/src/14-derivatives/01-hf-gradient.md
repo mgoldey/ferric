@@ -132,6 +132,48 @@ fourth-order stencil. The analytic formula with the code's $W$ and $\Gamma$
 matches to $3\times10^{-11}$ (RHF), $2\times10^{-11}$ (UHF) and
 $2\times10^{-11}$ (ROHF).
 
+Both checks on a real molecule, from the `589b50832` build: water in
+cc-pVDZ, pushed off its minimum so the forces are not zero. The rows of the
+analytic gradient sum to zero at the level of rounding, and two components
+match a central difference of the energy ($h = 10^{-3}$ Bohr) to about
+$10^{-7}$ Ha/Bohr, the $O(h^2)$ error of the stencil.
+
+```python
+import numpy as np
+import ferric
+
+# Water, distorted from the HF/cc-pVDZ minimum so the forces are not zero (Bohr).
+sym = ["O", "H", "H"]
+x0 = np.array([[0.0, 0.0, 0.25], [0.0, 1.50, -0.85], [0.0, -1.35, -0.95]])
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+
+def run(x, grad=False):
+    mol = ferric.Molecule.from_arrays(sym, x, units="bohr")
+    return ferric.run_rhf(mol, bs, energy_conv=1e-11, density_conv=1e-9, with_gradient=grad)
+
+
+g = np.asarray(run(x0, grad=True).gradient())
+print("analytic gradient (Ha/Bohr):\n", g)
+print("sum over atoms (translational invariance):", g.sum(axis=0))
+h = 1e-3
+for atom, axis in ((0, 2), (1, 1)):
+    xp = x0.copy(); xp[atom, axis] += h
+    xm = x0.copy(); xm[atom, axis] -= h
+    fd = (run(xp).energy - run(xm).energy) / (2 * h)
+    print(f"atom {atom} axis {axis}: analytic {g[atom, axis]:.10f}  FD {fd:.10f}  diff {abs(fd - g[atom, axis]):.1e}")
+```
+
+```text
+analytic gradient (Ha/Bohr):
+ [[ 4.22569852e-16 -2.39602914e-02  3.31319737e-02]
+ [-2.26713528e-16  2.89788597e-02 -2.47658342e-02]
+ [-1.95856324e-16 -5.01856830e-03 -8.36613955e-03]]
+sum over atoms (translational invariance): [-3.94430453e-30 -2.77555756e-17 -1.33226763e-15]
+atom 0 axis 2: analytic 0.0331319737  FD 0.0331318859  diff 8.8e-08
+atom 1 axis 1: analytic 0.0289788597  FD 0.0289787254  diff 1.3e-07
+```
+
 > **Verified equation {#eq:scf-grad-pulay}** · the Pulay term is $-\mathrm{tr}[W\,S^x]$
 >
 > For one doubly occupied orbital in a two-function basis, at fixed

@@ -138,6 +138,32 @@ The unit test
 bounds that residual by 0.05 Ha for H2 at $\omega = 0.5$ Bohr⁻¹. That is a
 smoke check that the three energies are wired, not a measurement of $X$.
 
+For water in cc-pVDZ at $\omega = 0.420$ Å⁻¹, from the `589b50832` build, the
+three energies and the residual are below. The residual is 5 mEh, larger than
+the long-range energy itself; it is $X$ plus the three fitting differences,
+and this run does not separate the two:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_rs_mp2_rpa(mol, bs, aux, omega=0.420, formulation="delta-lr")  # omega in 1/Angstrom
+print(f"E_MP2[1/r]  = {r.e_mp2_full:.8f} Ha")
+print(f"E_MP2[erfc] = {r.e_sr_mp2:.8f} Ha")
+print(f"E_MP2[erf]  = {r.e_lr_mp2:.8f} Ha")
+print(f"residual E[1/r] - E[erfc] - E[erf] = {r.e_mp2_full - r.e_sr_mp2 - r.e_lr_mp2:.8f} Ha  (X plus fit differences)")
+```
+
+```text
+E_MP2[1/r]  = -0.20400857 Ha
+E_MP2[erfc] = -0.19862440 Ha
+E_MP2[erf]  = -0.00014730 Ha
+residual E[1/r] - E[erfc] - E[erf] = -0.00523687 Ha  (X plus fit differences)
+```
+
 ## Known limits (2026-11-15)
 
 - No entry point returns $X$ itself.

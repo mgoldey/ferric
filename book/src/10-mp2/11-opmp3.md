@@ -225,6 +225,39 @@ A reference with no printed value and no explicit `x_ss` is an error.
 >
 > <!-- verified: id=opmp3.pade; script=scripts/opmp3_identities_sympy.py; claim=b1; runner=crates/ferric-python/tests/test_opmp3_identities_sympy.py; code=ferric-mp2/src/opmp3.rs::{pade,pade_trace,op_mp3,sop_mp3,ssd_opmp3,scalar_pade}; rust_test=ferric-mp2/tests/opmp3.rs::pade_taylor_coefficients_are_e2_e3_and_the_second_order_term; registry=opmp3 -->
 
+Every model on an HF reference for water in cc-pVDZ, from the `589b50832`
+build. The run uses exact four-centre integrals, so its MP2 and MP3 differ
+from the RI values of section @sec:mp3, by 0.015 mEh (MP2) and 0.095 mEh (MP3). The traces of
+$W^{(2)}$ and $W^{(3)}$ reproduce the MP2 and MP3 rows:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+
+r = ferric.run_opmp3(mol, bs, reference="hf")          # exact four-centre integrals, x_ss = 0 for HF
+print(f"E_HF[rho] {r.e_hf:.8f}  E_NBS {r.e_nbs:.3e}  x_ss {r.x_ss}")
+for model, e in r.correlation.items():
+    print(f"  {model:10s} {e:.8f} Ha")
+w2, w3 = r.w(2), r.w(3)
+tr2 = sum(np.trace(m) for m in w2.values())
+tr3 = sum(np.trace(m) for m in w3.values())
+print(f"Tr W2 {tr2:.8f}  Tr W3 {tr3:.8f}  Tr W2 + Tr W3 {tr2 + tr3:.8f}")
+```
+
+```text
+E_HF[rho] -76.02676800  E_NBS -6.200e-29  x_ss 0.0
+  mp2        -0.20404841 Ha
+  mp3        -0.21083219 Ha
+  p-mp3      -0.21106548 Ha
+  op-mp3     -0.21139968 Ha
+  sop-mp3    -0.21211404 Ha
+  ssd-opmp3  -0.21559413 Ha
+Tr W2 -0.20404841  Tr W3 -0.00678378  Tr W2 + Tr W3 -0.21083219
+```
+
 ## The reference {#opmp3-reference}
 
 The reference may be Hartree–Fock or Kohn–Sham, but the perturbation

@@ -62,6 +62,33 @@ restricted reference and the grouping $E_{\mathrm{OS}} = E_{\alpha\beta}$,
 $E_{\mathrm{SS}} = E_{\alpha\alpha} + E_{\beta\beta}$ of section @sec:unrestricted-ri-mp2 on an
 unrestricted one. So one line serves both.
 
+For water in cc-pVDZ (cc-pVDZ-RI fitting basis, from the `589b50832` build),
+Grimme's weights move the correlation energy by about 4 mEh, and dropping the
+same-spin part leaves $E_{\mathrm{OS}}$ alone:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+mp2 = ferric.run_scs_mp2(mol, bs, aux, c_os=1.0, c_ss=1.0)
+scs = ferric.run_scs_mp2(mol, bs, aux)  # defaults 6/5, 1/3
+sos = ferric.run_scs_mp2(mol, bs, aux, c_os=1.0, c_ss=0.0)
+print("E_OS = %.6f  E_SS = %.6f" % (mp2.e_os, mp2.e_ss))
+print("MP2     E_c = %.6f" % mp2.scs_corr)
+print("SCS-MP2 E_c = %.6f  (6/5, 1/3)" % scs.scs_corr)
+print("c_ss=0  E_c = %.6f  (E_OS only)" % sos.scs_corr)
+```
+
+```text
+E_OS = -0.152440  E_SS = -0.051593
+MP2     E_c = -0.204033
+SCS-MP2 E_c = -0.200126  (6/5, 1/3)
+c_ss=0  E_c = -0.152440  (E_OS only)
+```
+
 (@eq:scs-and-kappa-1) is linear in the two components, so it needs no new proof beyond the
 spin adaptation of section @sec:closed-shell-ri-mp2.
 
@@ -116,6 +143,36 @@ At $\kappa_{\mathrm{reg}} = 1.45$ Eh⁻¹ the factor is
 | $(1 - e^{-1.45\Delta})^2$ | 0.018 | 0.266 | 0.586 | 0.893 | 0.9986 |
 
 so a pair with a denominator of 1 Eh keeps 59% of its MP2 weight.
+
+The same water run, from the `589b50832` build, shows the factor at work. At
+small $\kappa_{\mathrm{reg}}$ most of the correlation is gone; at 1.45 Eh⁻¹ about
+1.3% is removed; by $\kappa_{\mathrm{reg}} = 20$ Eh⁻¹ the energy is RI-MP2 to the
+printed digits:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+ref = ferric.run_rimp2(mol, bs, aux)
+print("RI-MP2         E_c = %.8f" % ref.mp2_corr)
+for kappa in (0.1, 0.5, 1.45, 4.0, 20.0, 100.0):
+    r = ferric.run_rimp2(mol, bs, aux, kappa=kappa)
+    print("kappa = %6.2f  E_c = %.8f  ratio to MP2 = %.4f"
+          % (kappa, r.mp2_corr, r.mp2_corr / ref.mp2_corr))
+```
+
+```text
+RI-MP2         E_c = -0.20403346
+kappa =   0.10  E_c = -0.03041023  ratio to MP2 = 0.1490
+kappa =   0.50  E_c = -0.15495177  ratio to MP2 = 0.7594
+kappa =   1.45  E_c = -0.20133264  ratio to MP2 = 0.9868
+kappa =   4.00  E_c = -0.20402549  ratio to MP2 = 1.0000
+kappa =  20.00  E_c = -0.20403346  ratio to MP2 = 1.0000
+kappa = 100.00  E_c = -0.20403346  ratio to MP2 = 1.0000
+```
 
 $\kappa_{\mathrm{reg}}$ (`kappa` in the code and on every surface; $\kappa$
 alone is reserved for orbital rotations) is in inverse Hartree, must be

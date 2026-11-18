@@ -143,6 +143,32 @@ The KS orbitals are not Hartree–Fock orbitals, so the Brillouin condition
 fails and the singles term of MP2 is not zero. Standard double hybrids,
 B2PLYP included, drop it; so does ferric (@sec:double-hybrids-derivation).
 
+For water in cc-pVDZ (cc-pVDZ-RI fit), from the `589b50832` build, the two
+double hybrids report their parts below. The D3(BJ) variant of DSD-PBEP86
+switches to its own refit coefficients (0.52/0.22, the second table above),
+so its total is not the plain total plus $E_{\mathrm{D3(BJ)}}$:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+for kind in ("b2plyp", "dsd-pbep86"):
+    r = ferric.run_double_hybrid(mol, bs, aux, kind=kind)
+    print(f"{kind}: E_KS {r.e_ks:.8f}  E_OS {r.e_os:.8f}  E_SS {r.e_ss:.8f}  "
+          f"c_OS {r.c_os} c_SS {r.c_ss}  scaled {r.e_corr_scaled:.8f}  total {r.total_energy:.8f} Ha")
+r = ferric.run_double_hybrid(mol, bs, aux, kind="dsd-pbep86", dispersion="d3bj")
+print(f"dsd-pbep86-d3bj: c_OS {r.c_os} c_SS {r.c_ss}  E_D3(BJ) {r.e_dispersion:.8f}  total {r.total_energy:.8f} Ha")
+```
+
+```text
+b2plyp: E_KS -76.28847284  E_OS -0.18094189  E_SS -0.06097447  c_OS 0.27 c_SS 0.27  scaled -0.06531742  total -76.35379026 Ha
+dsd-pbep86: E_KS -76.17899005  E_OS -0.16785877  E_SS -0.05671784  c_OS 0.51 c_SS 0.36  scaled -0.10602639  total -76.28501644 Ha
+dsd-pbep86-d3bj: c_OS 0.52 c_SS 0.22  E_D3(BJ) -0.00021634  total -76.27927890 Ha
+```
+
 ## What is anchored {#double-hybrids-anchored}
 
 | Kind | Grade | Evidence |

@@ -504,6 +504,41 @@ The second row is the reason the production route is the moving grid. The
 fixed-grid Hessian is the exact derivative of a different energy, and on
 distorted water it misses the production surface's curvature by 3.0 cm⁻¹.
 
+From Python the two routes sit one keyword apart. Here is water in 6-31G
+with PBE, from the `589b50832` build: the analytic moving-grid Hessian
+against `hessian="fd"`, central differences of the analytic gradient at
+the default step and SCF thresholds:
+
+```python
+# Analytic moving-grid PBE Hessian against central differences of the analytic gradient,
+# water / 6-31G. Prints which Hessian ran and the largest frequency difference.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+
+ana = ferric.run_frequencies(mol, "6-31g", xc="PBE", hessian="analytic-moving-grid")
+fd = ferric.run_frequencies(mol, "6-31g", xc="PBE", hessian="fd")
+
+print("analytic source:", ana.hessian_source, " fd source:", fd.hessian_source)
+print("analytic cm-1:", [f"{f:.3f}" for f in ana.frequencies])
+print("fd       cm-1:", [f"{f:.3f}" for f in fd.frequencies])
+print("max |diff| cm-1:", max(abs(a - b) for a, b in zip(ana.frequencies, fd.frequencies)))
+print("fd gradient evaluations:", fd.n_gradient_evaluations, " fd asymmetry:", fd.asymmetry)
+```
+
+```text
+analytic source: analytic-moving-grid  fd source: finite-difference
+analytic cm-1: ['1551.700', '3878.556', '4020.652']
+fd       cm-1: ['1551.629', '3878.579', '4020.851']
+max |diff| cm-1: 0.1991081593241688
+fd gradient evaluations: 18  fd asymmetry: 2.319192026284389e-05
+```
+
+The 0.2 cm⁻¹ here is the finite-difference error of the default `"fd"`
+settings; its asymmetry of $2\times10^{-5}$ Ha/Bohr² measures the same
+noise. The Richardson stencil with a tight SCF in the table above closes
+the gap to $5\times10^{-7}$ cm⁻¹.
+
 On PySCF's analytic cc-pVDZ Hessian: about 9.2e-7 of it is not the
 derivative of PySCF's own gradient, and that accounts for all of the 9.3e-7
 by which the fixed-grid Hessian differs from it. The cause on the PySCF side

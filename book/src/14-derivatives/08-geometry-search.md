@@ -855,6 +855,60 @@ reaction. The step, initial displacement and threshold must be finite and
 positive. Infinities would fail without an error (an infinite threshold
 reports the first point as converged), so they are refused at the boundary.
 
+All three searches on small systems at RHF/STO-3G, from the `589b50832`
+build: a distorted water minimized with the default (`lindh` + `ratio`) and
+the old (`simple` + `fixed`) settings, then the NH3 inversion saddle from a
+near-planar start and the IRC from it. `run_optimize` prints a step table
+for each search; the output keeps the first table and drops the second and
+the warm-start summaries. Both minimizations reach the same energy to
+$10^{-9}$ Ha, in 3 and 6 steps; the saddle has one imaginary mode, and both
+IRC branches converge in 63 steps, with barriers that agree to
+$10^{-9}$ Ha.
+
+```python
+# A distorted water minimized with the default (lindh + ratio) and the old (simple + fixed)
+# search; then the NH3 inversion saddle (planar start) and its IRC, RHF/STO-3G.
+import ferric
+
+water = ferric.Molecule.from_arrays(
+    ["O", "H", "H"], [(0.0, 0.0, 0.12), (0.0, 0.85, -0.45), (0.0, -0.70, -0.50)]
+)
+new = ferric.run_optimize(water, "sto-3g")
+old = ferric.run_optimize(water, "sto-3g", initial_hessian="simple", trust_update="fixed")
+print("lindh+ratio steps:", new.steps, new.converged, f"{new.energy:.10f}")
+print("simple+fixed steps:", old.steps, old.converged, f"{old.energy:.10f}")
+
+nh3 = ferric.Molecule.from_arrays(
+    ["N", "H", "H", "H"],
+    [(0.0, 0.0, 0.05), (0.0, 1.00, 0.0), (0.866, -0.50, 0.0), (-0.866, -0.50, 0.0)],
+)
+ts = ferric.run_saddle(nh3, "sto-3g", hessian="analytic")
+print("saddle:", ts.converged, " n_imaginary:", ts.n_imaginary,
+      " transition state:", ts.is_transition_state(), f" E = {ts.energy:.10f}")
+
+# SaddleResult.coords is assumed to be in Angstrom (from_arrays default); check before use.
+ts_mol = ferric.Molecule.from_arrays(ts.symbols, ts.coords)
+irc = ferric.run_irc(ts_mol, "sto-3g", ts.imaginary_mode)
+print("IRC both converged:", irc.both_converged(),
+      " forward/reverse steps:", irc.forward.steps, irc.reverse.steps)
+print("barriers (Ha):", irc.forward_barrier(), irc.reverse_barrier())
+```
+
+```text
+Step | Energy (Ha) | Delta E | Max Grad | RMS Grad
+-----+-------------+---------+----------+---------
+   0 | -74.95978531 |   0.0e0 |  9.30e-2 |  4.58e-2
+   1 | -74.96585597 | -6.1e-3 |  6.41e-3 |  2.72e-3
+   2 | -74.96590056 | -4.5e-5 |  7.51e-4 |  3.08e-4
+   3 | -74.96590122 | -6.6e-7 |  1.80e-5 |  8.29e-6
+...
+lindh+ratio steps: 3 True -74.9659012168
+simple+fixed steps: 6 True -74.9659012161
+saddle: True  n_imaginary: 1  transition state: True  E = -55.4376652481
+IRC both converged: True  forward/reverse steps: 63 63
+barriers (Ha): 0.01775452065485439 0.01775452159194657
+```
+
 ## Reproducibility {#geometry-search-reproducibility}
 
 - The Cartesian minimizer path is pinned bit for bit by

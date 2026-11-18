@@ -180,6 +180,45 @@ constant-trace hook
 with it must reach the plain geometry
 (`test_optimize_with_a_constant_hook_reaches_the_plain_geometry`).
 
+The same hook on water in 6-31G, from the `589b50832` build. The energy
+moves by $\lambda N = 1$ Ha, one half alone is 0.03 Ha/Bohr, and the hooked
+and plain gradients agree to $10^{-11}$ Ha/Bohr:
+
+```python
+# E_h = lam tr(D S) is the constant lam*N: the hooked gradient must equal the plain one,
+# although each half (explicit term, hook part of the Pulay term) is nonzero.
+import numpy as np
+import ferric
+
+LAM = 0.1
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+ao = ferric.AoIntegrals(mol, bs)
+s = ao.overlap()
+
+def hook(d):
+    return LAM * np.sum(d * s), LAM * s          # (E_h, V = dE_h/dD)
+
+def hook_grad(d, m):
+    return LAM * ao.grad_overlap(d)                # lam tr(D dS/dR), the explicit term
+
+tight = {"energy_conv": 1e-10, "density_conv": 1e-9}
+plain = ferric.run_rhf(mol, bs, with_gradient=True, **tight)
+hooked = ferric.run_rhf(mol, bs, fock_hook=hook, fock_hook_grad=hook_grad,
+                        with_gradient=True, **tight)
+half = LAM * np.abs(ao.grad_overlap(plain.density())).max()
+print("energy shift (Ha):", hooked.energy - plain.energy, " expected lam*N:", LAM * 10)
+print("one half, max |.| (Ha/Bohr):", half)
+print("|hooked - plain| gradient (Ha/Bohr):",
+      np.abs(np.asarray(hooked.gradient()) - np.asarray(plain.gradient())).max())
+```
+
+```text
+energy shift (Ha): 0.9999999999999858  expected lam*N: 1.0
+one half, max |.| (Ha/Bohr): 0.030859927410406236
+|hooked - plain| gradient (Ha/Bohr): 1.3948911470329506e-11
+```
+
 ### When the formula holds
 
 The formula holds for the converged hooked solution only, because
