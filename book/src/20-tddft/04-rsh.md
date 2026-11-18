@@ -166,6 +166,30 @@ the erf tensors are built.
 >
 > <!-- verified: id=td.rsh.split; script=scripts/tddft_response_sympy.py; claim=A4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::build_b_matrix; registry=tddft -->
 
+B3LYP against CAM-B3LYP for water / 6-31G (TDA), from the `589b50832`
+build. The long-range exchange of CAM-B3LYP ($c_{\rm lr} = 0.65$ against
+0.2) raises each of the five roots, by 0.03 to 0.15 eV.
+
+```python
+import ferric
+
+HA_TO_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+for xc in ("B3LYP", "HYB_GGA_XC_CAM_B3LYP"):
+    r = ferric.run_tddft(mol, bs, aux, functional=xc, n_roots=5, method="tda")
+    print(xc, "c_sr", r.c_hf, "c_lr", r.c_lr, "omega", r.omega)
+    print("  roots (eV):", [round(e * HA_TO_EV, 5) for e in r.excitation_energies])
+```
+
+```text
+B3LYP c_sr 0.2 c_lr 0.2 omega 0.0
+  roots (eV): [7.8261, 9.95555, 10.01225, 12.45036, 14.80836]
+HYB_GGA_XC_CAM_B3LYP c_sr 0.19 c_lr 0.65 omega 0.33
+  roots (eV): [7.9152, 10.08533, 10.10049, 12.59825, 14.83606]
+```
+
 ## Numerical anchors {#rsh-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Range-separated hybrid and triplet

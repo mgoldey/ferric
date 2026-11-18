@@ -363,6 +363,39 @@ The script checks the conclusions of @sec:drpa-three-ways-plasmon-formula to @se
 steps written out there (the eigenvector form of $\mathbf T$, the determinant
 product).
 
+Water / 6-31G with the oxygen core frozen, from the `589b50832` build, runs two of the
+routes: the Riccati solve of `run_drpa` and the full-rank frequency integral
+of `run_pdep_rpa` on 48 Gauss–Legendre nodes. The last two lines put dRPA
+next to direct MP2, $2E_{\mathrm{OS}}$, the second-order term of the ring
+series, and next to MP2 itself.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+ric = ferric.run_drpa(mol, bs, aux, frozen_core=1)  # drCCD Riccati at eps = 0
+freq = ferric.run_pdep_rpa(mol, bs, aux, frozen_core=1, trunc_thresh=0.0,
+                           quadrature="gauss-legendre", n_quad=48, u0=0.5)
+mp2 = ferric.run_scs_mp2(mol, bs, aux, c_os=1.0, c_ss=1.0, frozen_core=1)
+
+print(f"dRPA, Riccati           {ric['e_corr']:.10f}")
+print(f"dRPA, frequency (48 GL) {freq.e_rpa:.10f}")
+print(f"difference              {ric['e_corr'] - freq.e_rpa:.2e}")
+print(f"2 E_OS (direct MP2)     {2 * mp2.e_os:.10f}")
+print(f"MP2 = E_OS + E_SS       {mp2.e_os + mp2.e_ss:.10f}")
+```
+
+```text
+dRPA, Riccati           -0.1370918099
+dRPA, frequency (48 GL) -0.1370918099
+difference              1.94e-15
+2 E_OS (direct MP2)     -0.1959636980
+MP2 = E_OS + E_SS       -0.1278349610
+```
+
 ## The algorithms {#drpa-three-ways-algorithms}
 
 Each form costs something different, which is why each has one job.

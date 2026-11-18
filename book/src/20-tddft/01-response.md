@@ -306,6 +306,54 @@ diagonalization in place of two, and it never needs $\mathbf A-\mathbf B$ to
 be positive definite, so it runs on references where Casida fails. The
 cost is the $\mathbf B$ shift of each root, $-b^2/(2a)$ in the scalar case.
 
+TDA and Casida side by side for water / 6-31G, from the `589b50832` build,
+at HF (CIS and TDHF), PBE and B3LYP. Every Casida root lies below its TDA
+partner, by 0.003 to 0.09 eV. At B3LYP the second and third roots change
+order between the two: the bright one ($f \approx 0.1$) is the third TDA
+root and the second Casida root.
+
+```python
+import ferric
+
+HA_TO_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+for functional in (None, "PBE", "B3LYP"):
+    tda = ferric.run_tddft(mol, bs, aux, functional=functional, n_roots=5, method="tda")
+    cas = ferric.run_tddft(mol, bs, aux, functional=functional, n_roots=5, method="casida")
+    label = functional or "HF (CIS / TDHF)"
+    print(label)
+    for n in range(5):
+        e_t = tda.excitation_energies[n] * HA_TO_EV
+        e_c = cas.excitation_energies[n] * HA_TO_EV
+        print(f"  root {n + 1}: TDA {e_t:9.5f} eV  Casida {e_c:9.5f} eV  "
+              f"Casida - TDA {e_c - e_t:+.5f} eV  "
+              f"f(TDA) {tda.oscillator_strengths[n]:.5f}  f(Casida) {cas.oscillator_strengths[n]:.5f}")
+```
+
+```text
+HF (CIS / TDHF)
+  root 1: TDA   9.40529 eV  Casida   9.34854 eV  Casida - TDA -0.05675 eV  f(TDA) 0.01503  f(Casida) 0.01456
+  root 2: TDA  11.34728 eV  Casida  11.27372 eV  Casida - TDA -0.07356 eV  f(TDA) 0.00000  f(Casida) 0.00000
+  root 3: TDA  11.87564 eV  Casida  11.79286 eV  Casida - TDA -0.08277 eV  f(TDA) 0.12122  f(Casida) 0.11301
+  root 4: TDA  13.95825 eV  Casida  13.86799 eV  Casida - TDA -0.09026 eV  f(TDA) 0.10455  f(Casida) 0.09618
+  root 5: TDA  15.50651 eV  Casida  15.45368 eV  Casida - TDA -0.05283 eV  f(TDA) 0.47123  f(Casida) 0.44163
+PBE
+  root 1: TDA   7.53950 eV  Casida   7.51906 eV  Casida - TDA -0.02044 eV  f(TDA) 0.01227  f(Casida) 0.01164
+  root 2: TDA   9.68326 eV  Casida   9.59501 eV  Casida - TDA -0.08825 eV  f(TDA) 0.10769  f(Casida) 0.09779
+  root 3: TDA   9.73256 eV  Casida   9.72987 eV  Casida - TDA -0.00270 eV  f(TDA) 0.00000  f(Casida) 0.00000
+  root 4: TDA  12.22189 eV  Casida  12.15415 eV  Casida - TDA -0.06774 eV  f(TDA) 0.09875  f(Casida) 0.09006
+  root 5: TDA  14.72545 eV  Casida  14.64695 eV  Casida - TDA -0.07851 eV  f(TDA) 0.45631  f(Casida) 0.39791
+B3LYP
+  root 1: TDA   7.82610 eV  Casida   7.80519 eV  Casida - TDA -0.02090 eV  f(TDA) 0.01221  f(Casida) 0.01157
+  root 2: TDA   9.95555 eV  Casida   9.93123 eV  Casida - TDA -0.02432 eV  f(TDA) 0.00000  f(Casida) 0.09675
+  root 3: TDA  10.01225 eV  Casida   9.95087 eV  Casida - TDA -0.06139 eV  f(TDA) 0.10640  f(Casida) 0.00000
+  root 4: TDA  12.45036 eV  Casida  12.39400 eV  Casida - TDA -0.05636 eV  f(TDA) 0.09492  f(Casida) 0.08685
+  root 5: TDA  14.80836 eV  Casida  14.74155 eV  Casida - TDA -0.06682 eV  f(TDA) 0.46594  f(Casida) 0.41112
+```
+
 ## The matrix-free solvers {#response-matrix-free-solvers}
 
 The dense path holds $\mathbf A$, $\mathbf B$, $\mathbf A\pm\mathbf B$, $T$

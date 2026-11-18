@@ -184,6 +184,38 @@ as a flag.
 **$Z$ is evaluated at the mean-field energy.** `GwResult.z_factor` is
 $Z_p$ at $\epsilon_p$, the linearization point, not at the converged root.
 
+G0W0@HF for water / cc-pVDZ, from the `589b50832` build, at the matched
+settings of the validation tables. Every $Z$ lies in $(0, 1]$, and the
+$Z$ printed is the one at $\epsilon_p$.
+
+```python
+# Water / cc-pVDZ G0W0@HF: Koopmans energies against quasiparticle energies, with Sigma_x, Sigma_c and Z.
+import ferric
+
+HA_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+# Matched settings of the validation tables (n_quad = 100, trunc_thresh = 0).
+r = ferric.run_gw(mol, bs, aux, method="g0w0", n_quad=100, trunc_thresh=0.0)
+print(" MO   eps_HF(eV)  eps_QP(eV)  Sigma_x(eV) Sigma_c(eV)   Z    converged")
+for k, mo in enumerate(r.mo_indices):
+    print(f"{mo:3d} {r.eps_mf[k]*HA_EV:11.4f} {r.eps_qp[k]*HA_EV:11.4f} "
+          f"{r.sigma_x[k]*HA_EV:11.4f} {r.sigma_c[k]*HA_EV:11.4f} "
+          f"{r.z_factor[k]:6.3f}  {r.qp_converged[k]}")
+```
+
+```text
+ MO   eps_HF(eV)  eps_QP(eV)  Sigma_x(eV) Sigma_c(eV)   Z    converged
+  2    -18.9990    -18.5312    -24.6776      0.4678  0.953  True
+  3    -15.4359    -14.4566    -26.3257      0.9793  0.950  True
+  4    -13.4218    -12.1600    -27.0142      1.2618  0.949  True
+  5      5.0444      4.7034     -2.6009     -0.3410  0.989  True
+  6      6.9717      6.6555     -2.5337     -0.3162  0.988  True
+  7     21.4290     20.3167     -5.5093     -1.1123  0.969  True
+```
+
 **Newton.** From $E_0$, iterate
 $E_{k+1} = E_k - d\,f(E_k)/f'(E_k)$ with $f' = 1 - \partial_E\mathrm{Re}\,\Sigma^c$.
 The damping $d$ is `qp_newton_damp` clamped to $[0.1, 1]$. The loop takes at

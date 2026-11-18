@@ -167,6 +167,33 @@ larger ones. That is one molecule in one basis; the test asserts only the
 sign and the monotonic growth. The positive sign is a measurement, not a
 consequence of @sec:local-drpa-masked-riccati-equation, which allows either sign.
 
+A smaller case you can run in seconds, from the `589b50832` build:
+`run_drpa_scan` sweeps $\varepsilon$ on one SCF of water / 6-31G (oxygen
+core frozen). The error is $+1.6\times10^{-8}$ Ha at $10^{-5}$ and
+$-3.5\times10^{-8}$ Ha at $10^{-4}$, with the same kept fraction to three
+digits, so on water neither the positive sign nor the monotonic growth seen
+on n-octane holds below $10^{-3}$.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+rows = ferric.run_drpa_scan(mol, bs, aux, eps_list=[0.0, 1e-5, 1e-4, 1e-3], frozen_core=1)
+e0 = rows[0]["e_corr"]
+for eps, r in zip([0.0, 1e-5, 1e-4, 1e-3], rows):
+    print(f"eps={eps:.0e}  E_c={r['e_corr']:.10f}  E_c - E_c(0)={r['e_corr'] - e0:+.2e}  kept={r['keep_fraction']:.3f}")
+```
+
+```text
+eps=0e+00  E_c=-0.1370918099  E_c - E_c(0)=+0.00e+00  kept=1.000
+eps=1e-05  E_c=-0.1370917936  E_c - E_c(0)=+1.63e-08  kept=0.922
+eps=1e-04  E_c=-0.1370918452  E_c - E_c(0)=-3.52e-08  kept=0.922
+eps=1e-03  E_c=-0.1370495549  E_c - E_c(0)=+4.23e-05  kept=0.885
+```
+
 ## Sources {#local-drpa-sources}
 
 | Source | What it gives |

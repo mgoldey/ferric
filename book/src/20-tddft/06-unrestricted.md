@@ -288,6 +288,51 @@ with `pyscf.fci.spin_op.spin_square`, which builds it from the 2-RDMs, an
 independent construction. It asserts agreement to $10^{-10}$ on every root,
 and the Rust test compares ferric's values with the recorded ones.
 
+NH2 at PBE / 6-31G and closed-shell water through the unrestricted route,
+from the `589b50832` build. On NH2 most roots sit near the doublet value
+0.75, and roots 3 and 6 are strongly spin-contaminated ($\langle S^2\rangle
+\approx 2.7$). On water each root has $\langle S^2\rangle$ 0 or 2, and the
+energies are the restricted singlets and triplets of the example in
+@sec:triplets-spin-blocks, to $10^{-5}$ eV.
+
+```python
+import ferric
+
+HA_TO_EV = 27.211386245988
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+nh2 = ferric.Molecule.from_xyz("testdata/molecules/nh2.xyz", multiplicity=2)
+r = ferric.run_tddft(nh2, bs, aux, functional="PBE", n_roots=8, method="tda")
+print("NH2 PBE: <S^2> of the reference", r.s2_reference)
+for n in range(r.n_roots):
+    print(f"  root {n + 1}: {r.excitation_energies[n] * HA_TO_EV:9.5f} eV  <S^2> {r.s2[n]:.5f}  f {r.oscillator_strengths[n]:.5f}")
+
+# Closed-shell water through the unrestricted route: the restricted singlets and triplets, <S^2> 0 or 2.
+water = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+u = ferric.run_tddft(water, bs, aux, n_roots=6, method="tda", reference="unrestricted")
+for n in range(u.n_roots):
+    print(f"  water UHF root {n + 1}: {u.excitation_energies[n] * HA_TO_EV:9.5f} eV  <S^2> {u.s2[n]:.5f}")
+```
+
+```text
+NH2 PBE: <S^2> of the reference 0.7516594991540426
+  root 1:   2.21686 eV  <S^2> 0.75262  f 0.00508
+  root 2:   7.05954 eV  <S^2> 0.75241  f 0.00000
+  root 3:   7.49707 eV  <S^2> 2.66798  f 0.00407
+  root 4:   8.26795 eV  <S^2> 0.75118  f 0.00684
+  root 5:   8.59155 eV  <S^2> 0.83434  f 0.11157
+  root 6:   9.19905 eV  <S^2> 2.70998  f 0.00308
+  root 7:  10.24358 eV  <S^2> 0.75158  f 0.00000
+  root 8:  11.00321 eV  <S^2> 0.79357  f 0.13017
+  water UHF root 1:   8.46195 eV  <S^2> 2.00000
+  water UHF root 2:   9.40530 eV  <S^2> 0.00000
+  water UHF root 3:  10.28941 eV  <S^2> 2.00000
+  water UHF root 4:  10.71261 eV  <S^2> 2.00000
+  water UHF root 5:  11.34728 eV  <S^2> 0.00000
+  water UHF root 6:  11.87564 eV  <S^2> 0.00000
+```
+
 ## Numerical anchors {#unrestricted-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Spin-conserving TDA and Casida

@@ -220,6 +220,39 @@ all roots, which fixes both the $\sqrt2$ and the factor $\Omega$.
 >
 > <!-- verified: id=bse.tda.osc; script=scripts/gw_bse_rpax_sympy.py; claim=B3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::tda_oscillator_strengths; rust_test=ferric-gw/tests/bse_oscillator_strength.rs::cis_tda_oscillator_strengths_match_pyscf_df_kernel; registry=bse-tda -->
 
+The lowest five singlets of water / cc-pVDZ, from the `589b50832` build, with
+their oscillator strengths. Every root lies below the G0W0@HF gap of the
+first line: the screened electron–hole attraction of the direct term pulls
+them down. The second root is dark ($f = 0$ to five places).
+
+```python
+# Water / cc-pVDZ: lowest five BSE-TDA singlets, their oscillator strengths, and the G0W0 gap they sit below.
+import ferric
+
+HA_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_bse_tda(mol, bs, aux, n_quad=100, trunc_thresh=0.0)
+homo = r.nocc - 1  # active indices; frozen_core = 0 here
+gap = r.eps_qp[homo + 1] - r.eps_qp[homo]
+print(f"G0W0@HF gap: {gap*HA_EV:.4f} eV")
+for n in range(5):
+    print(f"Omega_{n}: {r.omega[n]*HA_EV:9.4f} eV   f = {r.oscillator_strength[n]:.5f}")
+print("certificate warnings:", r.certificate.get("warnings"))
+```
+
+```text
+G0W0@HF gap: 16.8635 eV
+Omega_0:    8.4576 eV   f = 0.02685
+Omega_1:   10.5022 eV   f = 0.00000
+Omega_2:   11.1690 eV   f = 0.10004
+Omega_3:   13.2132 eV   f = 0.07737
+Omega_4:   14.9967 eV   f = 0.29619
+certificate warnings: []
+```
+
 ## The algorithm {#bse-tda-algorithm}
 
 | Step | Quantity | Cost | Function |

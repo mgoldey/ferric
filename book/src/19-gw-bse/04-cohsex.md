@@ -101,6 +101,39 @@ $$ \epsilon^{\rm QP}_p = \epsilon_p + \Delta\Sigma^{\rm SEX}_p + \Sigma^{\rm COH
 `ferric-gw/src/cohsex.rs::run_cohsex` assembles it, adding the KS shift as a
 plain additive term, and `GwResult.z_factor` is all ones.
 
+COHSEX next to G0W0 for water / cc-pVDZ at HF, from the `589b50832` build,
+for the six states around the gap. The $Z$ column is 1 for every state.
+COHSEX lowers the occupied energies below G0W0 by about 1 eV here and
+lowers the virtual ones by about 0.1 eV.
+
+```python
+# Water / cc-pVDZ at HF: COHSEX against G0W0 for HOMO-2 ... LUMO+2.
+import ferric
+
+HA_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+kw = dict(n_quad=100, trunc_thresh=0.0)
+cx = ferric.run_gw(mol, bs, aux, method="cohsex", **kw)
+g0 = ferric.run_gw(mol, bs, aux, method="g0w0", **kw)
+print(" MO   eps_HF(eV)  COHSEX(eV)  G0W0(eV)  Z_cohsex")
+for k, mo in enumerate(cx.mo_indices):
+    print(f"{mo:3d} {cx.eps_mf[k]*HA_EV:11.4f} {cx.eps_qp[k]*HA_EV:11.4f} "
+          f"{g0.eps_qp[k]*HA_EV:10.4f} {cx.z_factor[k]:6.3f}")
+```
+
+```text
+ MO   eps_HF(eV)  COHSEX(eV)  G0W0(eV)  Z_cohsex
+  2    -18.9990    -19.7179   -18.5312  1.000
+  3    -15.4359    -15.5074   -14.4566  1.000
+  4    -13.4218    -13.1360   -12.1600  1.000
+  5      5.0444      4.5861     4.7034  1.000
+  6      6.9717      6.5239     6.6555  1.000
+  7     21.4290     20.2017    20.3167  1.000
+```
+
 The two sums for one state, from `ferric-gw/src/cohsex.rs::cohsex_pieces`
 (`alpha` is the mode $\xi$, `m_idx` the state $p$):
 

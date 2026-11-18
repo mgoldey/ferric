@@ -273,6 +273,37 @@ the `tdhf-static-polarizability` row of the capability table):
 
 Further tests are in `crates/ferric-gw/tests/rpax_*.rs`.
 
+The physical-accuracy row and the scissor-0 refusal, from the `589b50832`
+build. The script cuts the error message at 200 characters.
+
+```python
+# Water / cc-pVDZ at PBE, scissor 0.36 Ha: statically screened RPAx alpha tensor and alpha_iso (DOSD 9.64 a.u.).
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_tdhf_static_polarizability(mol, bs, aux, xc="PBE", scissor=0.36, trunc_thresh=0.0)
+print("alpha tensor (a.u.):")
+print(r.tensor)
+print(f"alpha_iso = {r.iso:.3f} a.u.; DOSD 9.64; ratio {r.iso/9.64:.3f}")
+try:
+    ferric.run_tdhf_static_polarizability(mol, bs, aux, xc="PBE", scissor=0.0, trunc_thresh=0.0)
+    print("scissor 0: no error raised")
+except Exception as e:
+    print("scissor 0 raised:", type(e).__name__, str(e)[:200])
+```
+
+```text
+alpha tensor (a.u.):
+[[3.17316347e+00 4.29357137e-16 9.80918785e-16]
+ [4.29357137e-16 7.12027031e+00 1.76776903e-14]
+ [9.80918785e-16 1.70340909e-14 5.31800015e+00]]
+alpha_iso = 5.204 a.u.; DOSD 9.64; ratio 0.540
+scissor 0 raised: RuntimeError General error: run_rpax_static_polarizability: unphysical static polarizability -- every Cartesian diagonal element must be strictly positive, but alpha_xx = -2.682779e0 (negative). A non-positive alp
+```
+
 ## Sources {#rpax-static-polarizability-sources}
 
 | Source | What it gives |

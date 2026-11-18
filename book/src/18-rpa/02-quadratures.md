@@ -163,6 +163,40 @@ correlated, 32 nodes miss by up to $1.3\times10^{-8}$ Ha (water / cc-pVDZ) and
 $2.7\times10^{-10}$. From 64 on, rounding grows past the quadrature error, so
 more nodes stop helping. The test asserts the chosen order.
 
+The same convergence on the Python side, from the `589b50832` build: the
+full-rank energy of water / cc-pVDZ against the number of nodes, for
+Gauss–Legendre and the Chebyshev-tan map, measured from a 96-node
+Gauss–Legendre run rather than from a plasmon reference.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+ref = ferric.run_pdep_rpa(mol, bs, aux, trunc_thresh=0.0, quadrature="gauss-legendre",
+                          n_quad=96, u0=0.5).e_rpa
+for scheme in ["gauss-legendre", "chebyshev-tan"]:
+    for n in [8, 16, 24, 32, 48]:
+        e = ferric.run_pdep_rpa(mol, bs, aux, trunc_thresh=0.0, quadrature=scheme,
+                                n_quad=n, u0=0.5).e_rpa
+        print(f"{scheme:15s} n={n:3d}  E_c={e:.12f}  E_c - E_c(GL,96)={e - ref:+.2e}")
+```
+
+```text
+gauss-legendre  n=  8  E_c=-0.231575889230  E_c - E_c(GL,96)=-3.56e-04
+gauss-legendre  n= 16  E_c=-0.231216906009  E_c - E_c(GL,96)=+2.64e-06
+gauss-legendre  n= 24  E_c=-0.231219461038  E_c - E_c(GL,96)=+8.58e-08
+gauss-legendre  n= 32  E_c=-0.231219560344  E_c - E_c(GL,96)=-1.35e-08
+gauss-legendre  n= 48  E_c=-0.231219546916  E_c - E_c(GL,96)=-5.02e-11
+chebyshev-tan   n=  8  E_c=-0.230166784099  E_c - E_c(GL,96)=+1.05e-03
+chebyshev-tan   n= 16  E_c=-0.231058388653  E_c - E_c(GL,96)=+1.61e-04
+chebyshev-tan   n= 24  E_c=-0.231147674205  E_c - E_c(GL,96)=+7.19e-05
+chebyshev-tan   n= 32  E_c=-0.231179296718  E_c - E_c(GL,96)=+4.03e-05
+chebyshev-tan   n= 48  E_c=-0.231201208855  E_c - E_c(GL,96)=+1.83e-05
+```
+
 **$u_0$.** Only $u_0 = 0.5$ has been calibrated on the production (dense
 $\chi_0$) path; there the scheme changes only the quadrature error. The
 Laplace $\chi_0$ backend (section @sec:laplace-ao-chi0) falls back to the dense kernel at any

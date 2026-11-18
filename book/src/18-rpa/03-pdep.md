@@ -102,6 +102,33 @@ truncation error is positive (the truncated energy is less negative) and
 falls with the number of modes kept, faster once the threshold passes into
 the steep tail of the spectrum.
 
+The same numbers from Python, from the `589b50832` build: the modes kept and
+the energy error at five thresholds, against the full-rank run (water /
+cc-pVDZ).
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+full = ferric.run_pdep_rpa(mol, bs, aux, trunc_thresh=0.0)
+print(f"full rank: {full.n_eigenpotentials} modes, E_c = {full.e_rpa:.10f}")
+for tau in [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]:
+    r = ferric.run_pdep_rpa(mol, bs, aux, trunc_thresh=tau)
+    print(f"tau={tau:.0e}: {r.n_eigenpotentials:3d} modes, E_c - E_c(full) = {r.e_rpa - full.e_rpa:+.2e}")
+```
+
+```text
+full rank: 84 modes, E_c = -0.2312229690
+tau=1e-01:  15 modes, E_c - E_c(full) = +1.04e-02
+tau=1e-02:  36 modes, E_c - E_c(full) = +5.25e-04
+tau=1e-03:  51 modes, E_c - E_c(full) = +1.49e-05
+tau=1e-04:  60 modes, E_c - E_c(full) = +1.95e-07
+tau=1e-05:  67 modes, E_c - E_c(full) = +2.03e-08
+```
+
 ## The frequency loop {#pdep-frequency-loop}
 
 Let $\mathbf U$ be the $N_{\mathrm{aux}} \times N_{\mathrm{pdep}}$ matrix of

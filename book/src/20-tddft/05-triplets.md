@@ -189,6 +189,54 @@ of equal and opposite spin amplitudes.
 >
 > <!-- verified: id=td.triplet.blocks; script=scripts/tddft_response_sympy.py; claim=A1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::coulomb_factor; registry=tddft -->
 
+Singlet and triplet TDA roots of water / 6-31G, from the `589b50832` build.
+Each triplet lies below its singlet, and every triplet oscillator strength
+prints as zero. The last two lines are RHF ethylene, the triplet instability
+of @sec:triplets-triplet-instability: TDA returns roots and the Casida
+triplet problem is refused with its $\Omega^2$.
+
+```python
+import ferric
+
+HA_TO_EV = 27.211386245988
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+water = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+for functional in (None, "B3LYP"):
+    s = ferric.run_tddft(water, bs, aux, functional=functional, n_roots=4, method="tda", spin="singlet")
+    t = ferric.run_tddft(water, bs, aux, functional=functional, n_roots=4, method="tda", spin="triplet")
+    print(functional or "HF")
+    for n in range(4):
+        print(f"  root {n + 1}: singlet {s.excitation_energies[n] * HA_TO_EV:9.5f} eV "
+              f"(f {s.oscillator_strengths[n]:.5f})  triplet {t.excitation_energies[n] * HA_TO_EV:9.5f} eV "
+              f"(f {t.oscillator_strengths[n]:.1f})")
+
+# RHF ethylene is triplet-unstable: TDA runs, the Casida triplet problem is refused.
+c2h4 = ferric.Molecule.from_xyz("testdata/molecules/c2h4.xyz")
+t = ferric.run_tddft(c2h4, bs, aux, n_roots=3, method="tda", spin="triplet")
+print("C2H4 HF triplet TDA (eV):", [round(e * HA_TO_EV, 5) for e in t.excitation_energies])
+try:
+    ferric.run_tddft(c2h4, bs, aux, n_roots=3, method="casida", spin="triplet", solver="dense")
+except Exception as exc:  # the refusal names Omega^2_min
+    print("C2H4 HF triplet Casida refused:", exc)
+```
+
+```text
+HF
+  root 1: singlet   9.40529 eV (f 0.01503)  triplet   8.46195 eV (f 0.0)
+  root 2: singlet  11.34728 eV (f 0.00000)  triplet  10.28941 eV (f 0.0)
+  root 3: singlet  11.87564 eV (f 0.12122)  triplet  10.71261 eV (f 0.0)
+  root 4: singlet  13.95825 eV (f 0.10455)  triplet  12.06116 eV (f 0.0)
+B3LYP
+  root 1: singlet   7.82610 eV (f 0.01221)  triplet   7.06569 eV (f 0.0)
+  root 2: singlet   9.95555 eV (f 0.00000)  triplet   8.82604 eV (f 0.0)
+  root 3: singlet  10.01225 eV (f 0.10640)  triplet   9.40834 eV (f 0.0)
+  root 4: singlet  12.45036 eV (f 0.09492)  triplet  10.96506 eV (f 0.0)
+C2H4 HF triplet TDA (eV): [3.42642, 8.90421, 9.68615]
+C2H4 HF triplet Casida refused: General error: TDDFT: Casida has an imaginary root (Omega^2 = -3.176238e-3 Ha^2): A+B is not positive definite, so the reference is unstable in this spin channel (for spin = triplet, a triplet instability). Refused rather than dropped from the roots; TDA has no such failure.
+```
+
 ## Triplet instability {#triplets-triplet-instability}
 
 $\mathbf A^T + \mathbf B^T = \Delta - c(K_A + K_B) + 2K^T$, with $K_A$ and
