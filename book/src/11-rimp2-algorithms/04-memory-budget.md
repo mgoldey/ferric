@@ -106,6 +106,34 @@ MO-side term. $n_w$ is `rayon::current_num_threads()`.
 `mo_side_alloc_bytes` is the same sum without the $G^{(i)}$ term. It is pure,
 so callers can report a size without running the check.
 
+For water in cc-pVDZ with cc-pVDZ-RI, $B_{ov}$ is 63 840 bytes and
+$G^{(i)}$ is 14 440 bytes per worker, so on 12 workers the sum is
+237 120 bytes. A budget of $10^{-5}$ GiB (10 737 bytes) is refused before any
+three-index work, and 1 GiB admits (the `589b50832` build). The message
+prints both sizes in GB to two decimals, which at this scale reads
+"0.00 GB" for each:
+
+```python
+# Water/cc-pVDZ, cc-pVDZ-RI: B_ov = 8*84*5*19 = 63 840 bytes, G^(i) = 8*5*19*19 = 14 440 bytes per worker.
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+for gb in (1e-5, 1.0):  # 10 kB is below B_ov alone; 1 GB admits
+    try:
+        r = ferric.run_rimp2(mol, bs, aux, scf_jk="exact", memory_budget_gb=gb)
+        print(f"budget {gb:g} GB: E_corr = {r.mp2_corr:.10f}")
+    except Exception as e:  # the check_alloc error names the size, the budget and the knobs
+        print(f"budget {gb:g} GB: refused: {e}")
+```
+
+```text
+budget 1e-05 GB: refused: General error: RI-MP2 MO-side blocks (naux=84, nocc=5, nvir=19, 12 workers) requires 0.00 GB; budget is 0.00 GB — raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB or shrink the system
+budget 1 GB: E_corr = -0.2040334567
+```
+
 | Test (`crates/ferric-mp2/tests/mwe_rimp2_has_no_guard.rs`) | What it pins |
 |---|---|
 | `b_vv_reaches_the_documented_13gb` | the $B_{vv}$ term is counted |

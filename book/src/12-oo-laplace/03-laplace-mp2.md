@@ -87,6 +87,65 @@ relative error $x\,\lvert 1/x - \sum_kw_ke^{-t_kx}\rvert$ is largest at the
 top of the interval, where it reaches $R\,\delta(R)$. Only the ratio $R$
 decides which table entry is needed.
 
+Both claims can be checked from the tables alone. The script below needs
+numpy and the source tree, not the extension; it reads `minimax.rs` at the
+`589b50832` commit, counts the extrema of each error curve on a fine grid,
+and compares the rescaled error with $1/y_{\min}$ for $y_{\min} = 0.37$.
+The two smallest-$R$ entries of $n_q = 7$ are the ones with extra extrema:
+
+```python
+# Standalone: needs only numpy and the ferric source tree (reads crates/ferric-quadrature/src/minimax.rs).
+import re
+import numpy as np
+
+src = open("crates/ferric-quadrature/src/minimax.rs").read()
+
+def table(name):
+    blk = src.split(f"static {name}")[1].split("];\n\n")[0]
+    num = lambda s: np.array([float(x) for x in re.findall(r"[0-9.]+e[+-]\d+", s)])
+    return [(float(r), num(t), num(w))
+            for r, t, w in re.findall(r"\(\s*([0-9.e+-]+),\s*&\[(.*?)\],\s*&\[(.*?)\],\s*\)", blk, re.S)]
+
+for name, nq in (("MINIMAX_K3", 3), ("MINIMAX_K5", 5), ("MINIMAX_K7", 7)):
+    for R, tau, om in table(name):
+        y = np.geomspace(1.0, R, 200001)
+        err = 1.0 / y - (om[None, :] * np.exp(-np.outer(y, tau))).sum(1)
+        d = np.diff(err)
+        ext = np.r_[0, np.where(np.sign(d[1:]) != np.sign(d[:-1]))[0] + 1, len(err) - 1]
+        print(f"n_q={nq} R={R:7.1f} delta={abs(err).max():.2e} extrema={len(ext)} (expect {2*nq+1})")
+
+R, tau, om = table("MINIMAX_K7")[3]
+ymin = 0.37
+x = np.geomspace(ymin, R * ymin, 20001)
+e_x = abs(1 / x - (om / ymin * np.exp(-np.outer(x, tau / ymin))).sum(1)).max()
+y = x / ymin
+e_y = abs(1 / y - (om * np.exp(-np.outer(y, tau))).sum(1)).max()
+print(f"rescaled max error / table max error = {e_x / e_y:.6f}  (1/y_min = {1 / ymin:.6f})")
+```
+
+```text
+n_q=3 R=    5.0 delta=1.50e-04 extrema=7 (expect 7)
+n_q=3 R=   10.0 delta=7.15e-04 extrema=7 (expect 7)
+n_q=3 R=   20.0 delta=1.82e-03 extrema=7 (expect 7)
+n_q=3 R=   50.0 delta=3.66e-03 extrema=7 (expect 7)
+n_q=3 R=  100.0 delta=4.79e-03 extrema=7 (expect 7)
+n_q=5 R=    5.0 delta=2.54e-07 extrema=11 (expect 11)
+n_q=5 R=   10.0 delta=4.24e-06 extrema=11 (expect 11)
+n_q=5 R=   20.0 delta=2.52e-05 extrema=11 (expect 11)
+n_q=5 R=   50.0 delta=1.11e-04 extrema=11 (expect 11)
+n_q=5 R=  100.0 delta=2.27e-04 extrema=11 (expect 11)
+n_q=5 R=  500.0 delta=5.52e-04 extrema=11 (expect 11)
+n_q=5 R= 1000.0 delta=6.38e-04 extrema=11 (expect 11)
+n_q=7 R=    5.0 delta=4.01e-10 extrema=169 (expect 15)
+n_q=7 R=   10.0 delta=2.34e-08 extrema=17 (expect 15)
+n_q=7 R=   20.0 delta=3.25e-07 extrema=15 (expect 15)
+n_q=7 R=   50.0 delta=3.12e-06 extrema=15 (expect 15)
+n_q=7 R=  100.0 delta=9.84e-06 extrema=15 (expect 15)
+n_q=7 R=  500.0 delta=4.84e-05 extrema=15 (expect 15)
+n_q=7 R= 1000.0 delta=7.15e-05 extrema=15 (expect 15)
+rescaled max error / table max error = 2.702703  (1/y_min = 2.702703)
+```
+
 **The range.** Every driver sets
 
 $$ y_{\min} = 2(\varepsilon_{\mathrm{LUMO}} - \varepsilon_{\mathrm{HOMO}}), \qquad y_{\max} = 2(\varepsilon_{n_{\mathrm{mo}}} - \varepsilon_1) . $$
@@ -272,6 +331,31 @@ Check the limit $c_{\mathrm{OS}} = 1$. Then $E_{\mathrm{SOS}} = E_{\mathrm{OS}}$
 and the Laplace result must reproduce the opposite-spin energy of
 `scs_mp2` to within the quadrature error. Section @sec:laplace-mp2-anchors gives the measured
 agreement.
+
+For water in cc-pVDZ (the `589b50832` build) the error against the
+canonical RI value falls from $3.72\times10^{-4}$ to $4.94\times10^{-8}$ Ha
+as `n_quad` goes from 3 to 7:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+ref = ferric.run_scs_mp2(mol, bs, aux, c_os=1.0, c_ss=1.0).e_os
+print(f"E_OS (canonical RI) = {ref:.10f}")
+for n in (3, 5, 7):
+    r = ferric.run_laplace_sos_mp2(mol, bs, aux, c_os=1.0, n_quad=n)
+    print(f"n_quad={n}: E_OS = {r.e_os:.10f}  error = {r.e_os - ref:+.2e}")
+```
+
+```text
+E_OS (canonical RI) = -0.1524402132
+n_quad=3: E_OS = -0.1528123252  error = -3.72e-04
+n_quad=5: E_OS = -0.1524478826  error = -7.67e-06
+n_quad=7: E_OS = -0.1524402626  error = -4.94e-08
+```
 
 ## The algorithm {#laplace-mp2-algorithm}
 

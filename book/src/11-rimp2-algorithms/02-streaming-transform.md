@@ -185,6 +185,39 @@ accumulate nothing, so only the dressing constrains $k$. Three rules follow.
   and through the block size of a spilled source (section @sec:memory-budget). Pin
   `budget_gb` to pin the digits.
 
+Water in cc-pVDZ shows the three rules at work (the `589b50832` build). At
+1 GiB and at 0.004 GiB (4.29 MB, above the 3.11 MB threshold) the width is
+256 and the correlation energies agree bit for bit. At 0.001 GiB the width
+drops to 88, and the energy moves in the last bits:
+
+```python
+# Water/cc-pVDZ, cc-pVDZ-RI: n_o n_v = 5*19 = 95, so k = 256 needs a budget of at least 32768*95 bytes = 3.11 MB.
+# Run with OPENBLAS_NUM_THREADS=1 FERRIC_MO_STREAM_TRACE=1 to see the resolved width on stderr.
+import os
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+results = {}
+for gb in (1.0, 0.004, 0.001):  # budget_gb is GiB: k = 256, 256 (4.29 MB > 3.11 MB), 88
+    r = ferric.run_rimp2(mol, bs, aux, scf_jk="exact", memory_budget_gb=gb)
+    results[gb] = r.mp2_corr
+    print(f"budget {gb:6.3f} GB  E_corr = {r.mp2_corr:.15f}  bits {r.mp2_corr.hex()}")
+
+print("1 GB vs 4 MB identical:", results[1.0] == results[0.004])
+print("1 GB vs 1 MB difference:", results[1.0] - results[0.001])
+```
+
+```text
+budget  1.000 GB  E_corr = -0.204033456682291  bits -0x1.a1dc4afdec140p-3
+budget  0.004 GB  E_corr = -0.204033456682291  bits -0x1.a1dc4afdec140p-3
+budget  0.001 GB  E_corr = -0.204033456682292  bits -0x1.a1dc4afdec15ep-3
+1 GB vs 4 MB identical: True
+1 GB vs 1 MB difference: 8.326672684688674e-16
+```
+
 ## Sources
 
 | Source | Used for |

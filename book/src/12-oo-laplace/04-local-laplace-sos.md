@@ -106,6 +106,28 @@ rounding), and the scalar-weight control differs. That check is not
 committed, so the box stays unverified. The Rust test is the exactness
 anchor: with vacuous radii the production code must give the `mo` energy.
 
+The same anchor from Python, on water / 6-31G (the `589b50832` build): at a
+1000 Bohr radius both truncated formulations give the `mo` energy to
+rounding:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("6-31g")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+mo = ferric.run_laplace_sos_mp2(mol, bs, aux, c_os=1.0, formulation="mo").e_os
+for f in ("local", "ao-sparse"):
+    r = ferric.run_laplace_sos_mp2(mol, bs, aux, c_os=1.0, formulation=f, domain_cutoff_bohr=1.0e3)
+    print(f"{f:9s} r=1000 Bohr: E_OS - E_OS(mo) = {r.e_os - mo:+.2e}")
+```
+
+```text
+local     r=1000 Bohr: E_OS - E_OS(mo) = +4.16e-16
+ao-sparse r=1000 Bohr: E_OS - E_OS(mo) = -4.16e-16
+```
+
 ## The truncations of `local` {#local-laplace-sos-truncations}
 
 Each truncation is exact as its threshold goes to its vacuous value.

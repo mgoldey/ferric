@@ -301,6 +301,40 @@ the global-tensor domain-fit path of the same radius, and canonical RI-MP2,
 to the CG tolerance. The test has one mutation arm per map, so each map is
 shown to change the energy when it is broken.
 
+n-Butane in cc-pVDZ shows the trivial limit and then the default maps
+(the `589b50832` build). Python has no way to pass `virt_radius = None`, so
+the first run keeps the 20 Bohr default; butane is 10.5 Bohr between its
+farthest atoms, so that radius drops nothing. The trivial run matches exact
+RI-MP2 to $4.93\times10^{-13}$ Ha. With the default maps (`virt_radius` 20,
+`ao_tail` $10^{-4}$) the direct recovery agrees with the in-core one to
+$10^{-4}$ percentage points at each $\varepsilon$:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/alkane_4.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+exact = ferric.run_rimp2(mol, bs, aux, frozen_core=0).mp2_corr
+trivial = ferric.run_rimp2(mol, bs, aux, frozen_core=0, local="amplitude-threshold", eps=0.0,
+                           integral_direct=True, aux_radius=1e5, ao_tail=0.0, schwarz_skip=0.0,
+                           batch_merge=1).mp2_corr
+print(f"exact {exact:.12f}  direct trivial maps {trivial:.12f}  diff {trivial - exact:+.2e} Ha")
+for eps in (1e-5, 1e-4, 1e-3):
+    incore = ferric.run_rimp2(mol, bs, aux, frozen_core=0, local="amplitude-threshold", eps=eps).mp2_corr
+    direct = ferric.run_rimp2(mol, bs, aux, frozen_core=0, local="amplitude-threshold", eps=eps,
+                              integral_direct=True).mp2_corr
+    print(f"eps={eps:7.0e}  in-core {100 * incore / exact:8.4f}%  direct (default maps) {100 * direct / exact:8.4f}%")
+```
+
+```text
+exact -0.599645225098  direct trivial maps -0.599645225098  diff +4.93e-13 Ha
+eps=  1e-05  in-core  99.9804%  direct (default maps)  99.9805%
+eps=  1e-04  in-core  99.6708%  direct (default maps)  99.6708%
+eps=  1e-03  in-core  94.9942%  direct (default maps)  94.9943%
+```
+
 **Artifact hypothesis.** The two outcomes of a size sweep are predicted in
 advance:
 

@@ -575,6 +575,35 @@ missing correlation energy therefore grows faster than linearly in
 $\varepsilon$. There is no tolerance on it. To reach a target accuracy, run
 a series of $\varepsilon$ values and choose from it.
 
+n-Butane in cc-pVDZ, all electrons, from the `589b50832` build. Each line
+of the output is cut after `keep_fraction`; the full `local` dict also
+carries the solver statistics, the timings and the trust text. The
+$\varepsilon = 0$ run reproduces the exact RI-MP2 energy to
+$4.919\times10^{-13}$ Ha, and the recovery falls as stated above:
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/alkane_4.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+exact = ferric.run_rimp2(mol, bs, aux, frozen_core=0).mp2_corr
+print(f"exact RI-MP2 E_corr = {exact:.10f} Ha")
+for eps in (0.0, 1e-5, 1e-4, 1e-3):
+    r = ferric.run_rimp2(mol, bs, aux, frozen_core=0, local="amplitude-threshold", eps=eps)
+    print(f"eps={eps:7.0e}  E_corr={r.mp2_corr:.10f}  recovery={100 * r.mp2_corr / exact:8.4f}%  "
+          f"E-E*={r.mp2_corr - exact:+.3e} Ha  local={r.local}")
+```
+
+```text
+exact RI-MP2 E_corr = -0.5996452251 Ha
+eps=  0e+00  E_corr=-0.5996452251  recovery=100.0000%  E-E*=+4.919e-13 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0, 'keep_fraction': 1.0, ...}
+eps=  1e-05  E_corr=-0.5995279382  recovery= 99.9804%  E-E*=+1.173e-04 Ha  local={'scheme': 'amplitude-threshold', 'eps': 1e-05, 'keep_fraction': 0.6013112181756786, ...}
+eps=  1e-04  E_corr=-0.5976711043  recovery= 99.6708%  E-E*=+1.974e-03 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0001, 'keep_fraction': 0.22030308815120248, ...}
+eps=  1e-03  E_corr=-0.5696280916  recovery= 94.9942%  E-E*=+3.002e-02 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.001, 'keep_fraction': 0.029930075062173215, ...}
+```
+
 ## Sources
 
 | Source | Used for |

@@ -17,6 +17,30 @@ variational SCF gradient. The relaxation also lowers the energy: for H2O and
 NH3 in cc-pVDZ, plain RI-MP2 lies $9.2\times10^{-4}$ Ha and
 $8.7\times10^{-4}$ Ha above the OO-RI-MP2 minimum (section @sec:oo-rimp2-anchors).
 
+The bundled water geometry, from the `589b50832` build, gives a gap of
+$8.989\times10^{-4}$ Ha. The $9.2\times10^{-4}$ Ha above is the validation
+test's off-$C_{2v}$ H2O, a different geometry.
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+mp2 = ferric.run_rimp2(mol, bs, aux)
+oo = ferric.run_oo_rimp2(mol, bs, aux)
+print(f"RI-MP2     E = {mp2.total_energy:.10f}")
+print(f"OO-RI-MP2  E = {oo.total_energy:.10f}  converged = {oo.converged}")
+print(f"RI-MP2 - OO-RI-MP2 = {mp2.total_energy - oo.total_energy:.3e} Ha")
+```
+
+```text
+RI-MP2     E = -76.2308014541
+OO-RI-MP2  E = -76.2317003687  converged = True
+RI-MP2 - OO-RI-MP2 = 8.989e-04 Ha
+```
+
 The plan:
 
 1. Write the functional, and show why it is invariant to rotations within
