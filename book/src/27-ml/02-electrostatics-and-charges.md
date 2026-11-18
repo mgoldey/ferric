@@ -200,6 +200,48 @@ definitions, not five estimates of one quantity, so a model trained on a mix
 of them fits the difference between definitions. Pick one scheme for a
 dataset and record which; the NPZ key name is the only tag the charges carry.
 
+The numbers behind panel (a), with the ESP at the nuclei and on the surface,
+all from one RHF/cc-pVDZ density, from the `589b50832` build:
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+rhf = ferric.run_rhf(mol, bs)
+
+schemes = {
+    "mulliken": ferric.mulliken_charges(mol, bs, rhf),
+    "lowdin": ferric.lowdin_charges(mol, bs, rhf),
+    "hirshfeld": ferric.hirshfeld_charges(mol, bs, rhf),
+    "chelpg": ferric.chelpg_charges(mol, bs, rhf),
+    "resp": ferric.resp_charges(mol, bs, rhf),
+}
+for name, q in schemes.items():
+    print(f"{name:10s} O {q[0]:+.4f}  H {q[1]:+.4f} {q[2]:+.4f}  sum {sum(q):+.2e}")
+
+print("ESP at nuclei (Hartree/e):", ferric.esp_at_atoms(mol, bs, rhf))
+pts, esp, n_buried = ferric.esp_on_surface(mol, bs, rhf)
+print("surface points:", np.asarray(pts).shape, " buried:", n_buried,
+      " ESP range:", min(esp), max(esp))
+```
+
+```text
+mulliken   O -0.3054  H +0.1527 +0.1527  sum +1.55e-15
+lowdin     O -0.4808  H +0.2404 +0.2404  sum +9.66e-15
+hirshfeld  O -0.3216  H +0.1608 +0.1608  sum +5.55e-16
+chelpg     O -0.7400  H +0.3700 +0.3700  sum +0.00e+00
+resp       O -0.7400  H +0.3700 +0.3700  sum +0.00e+00
+ESP at nuclei (Hartree/e): [-22.34264733809706, -1.0034463361416686, -1.0034463361416641]
+surface points: (154, 3)  buried: 176  ESP range: -0.044758491203114925 0.04182960525836821
+```
+
+Every scheme sums to the neutral charge to $10^{-14}$ or better. The oxygen
+charge runs from $-0.31$ (Mulliken) to $-0.74$ (CHELPG). CHELPG and RESP
+agree to the four printed decimals: on three atoms the restraint with
+$a = 0.0005$ barely moves the fit.
+
 ## How well these are checked {#electrostatics-and-charges-well-these-checked}
 
 | Quantity | Check | Agreement | Test |

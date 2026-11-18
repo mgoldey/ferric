@@ -285,6 +285,49 @@ than $R^{-6}$. In a numpy model of two bare oscillators ($\alpha = 9$ and
 4.5, $\omega = 0.6$ and 0.43, $f = 1$) the ratio is 1.0008 at 6 Bohr and
 $1 + 6\times10^{-7}$ at 20 Bohr.
 
+The same limit in ferric, from the `589b50832` build: Ar$_2$ with free-atom
+volume ratios and $\beta = 0.83$, then MBD@rsSCS for water at PBE/cc-pVDZ,
+once inside the SCF and once from the standalone energy with the SCF's
+volume ratios.
+
+```python
+# Standalone; run from the ferric repo root with OPENBLAS_NUM_THREADS=1.
+import ferric
+
+BOHR = 0.529177210903
+# Ar2 with free-atom volume ratios: screening and damping die out with R, and the
+# energy approaches -C6/R^6 with the TS free-atom C6 of argon (64.3 a.u.).
+for r_bohr in (10.0, 15.0, 20.0, 30.0):
+    mol = ferric.Molecule.from_xyz_string(f"2\n\nAr 0 0 0\nAr 0 0 {r_bohr * BOHR}\n")
+    res = ferric.mbd_rsscs_energy(mol, [1.0, 1.0], beta=0.83)
+    pair = -64.3 / r_bohr**6
+    print(f"R = {r_bohr:5.1f} Bohr  E_MBD = {res.energy:.6e}  -C6/R^6 = {pair:.6e}  "
+          f"ratio = {res.energy / pair:.6f}  C6_rsSCS = {res.c6_rsscs}")
+
+# Water at PBE/cc-pVDZ with MBD@rsSCS, then the standalone energy from the same ratios.
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+r = ferric.run_dft(mol, bs, functional="PBE", dispersion="mbd")
+print("water PBE+MBD: E_disp =", r.e_dispersion, "volume ratios =", r.volume_ratios)
+m = ferric.mbd_rsscs_energy(mol, r.volume_ratios, functional="PBE")
+print("standalone E_MBD =", m.energy, " alpha_TS =", m.alpha_0_ts, " alpha_rsSCS =", m.alpha_0_rsscs)
+```
+
+```text
+R =  10.0 Bohr  E_MBD = -6.238680e-05  -C6/R^6 = -6.430000e-05  ratio = 0.970246  C6_rsSCS = [64.30000448298603, 64.30000448298604]
+R =  15.0 Bohr  E_MBD = -5.643989e-06  -C6/R^6 = -5.644993e-06  ratio = 0.999822  C6_rsSCS = [64.29999999941695, 64.29999999941695]
+R =  20.0 Bohr  E_MBD = -1.004688e-06  -C6/R^6 = -1.004687e-06  ratio = 1.000001  C6_rsSCS = [64.29999999940162, 64.2999999994016]
+R =  30.0 Bohr  E_MBD = -8.820303e-08  -C6/R^6 = -8.820302e-08  ratio = 1.000000  C6_rsSCS = [64.2999999994016, 64.2999999994016]
+water PBE+MBD: E_disp = -0.00024228853342078693 volume ratios = [0.9631543356796384, 0.5818934328900807, 0.5818934328900766]
+standalone E_MBD = -0.00024228853342078693  alpha_TS = [5.201033412670047, 2.6185204480053628, 2.6185204480053446]  alpha_rsSCS = [5.018088320383405, 2.1613451373827854, 2.1613451373827703]
+```
+
+The ratio is 0.970 at 10 Bohr and 1.000001 at 20 Bohr. Screening moves the
+$C_6$ of each argon atom off the free-atom 64.3 a.u. by only
+$4.5\times10^{-6}$ a.u. even at 10 Bohr, so the 3% gap there is the damping
+and the higher orders. The standalone energy for water reproduces the SCF's `e_dispersion`
+bit for bit when it is given the same volume ratios.
+
 `ferric-rpa/src/dispersion/mbd_rsscs.rs::rsscs_forward` builds
 $\mathbf H$ pair by pair. The off-diagonal block and the energy, unchanged:
 

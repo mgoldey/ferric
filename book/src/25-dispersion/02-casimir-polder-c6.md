@@ -149,6 +149,42 @@ warning; no denominator is fabricated. The volume ratios are always
 Hirshfeld, whatever `c6_partition` says, because TS was parametrized with
 Hirshfeld volumes.
 
+The three sources give different coefficients for the same molecule. Here
+are the molecular and pair $C_6$ of water at RHF/cc-pVDZ from each, from the
+`589b50832` build:
+
+```python
+# Standalone; run from the ferric repo root with OPENBLAS_NUM_THREADS=1.
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+for src in ("ts", "pdep", "mbd"):
+    r = ferric.run_pdep_rpa(mol, bs, aux, properties=True, c6_source=src)
+    c6 = np.asarray(r.c6_iso)
+    print(f"{src:4s} C6_mol = {r.c6_molecular_iso:.4f}  sum of pair C6 = {c6.sum():.4f}  "
+          f"C6(O,O) = {c6[0, 0]:.4f}  C6(O,H) = {c6[0, 1]:.4f}  C6(H,H') = {c6[1, 2]:.4f}  "
+          f"gaps = {r.property_gaps}")
+# For ts and mbd the molecular alpha is the atom sum, so C6_mol equals the sum of
+# the full pair matrix; for pdep the difference is the charge-transfer response.
+```
+
+```text
+ts   C6_mol = 45.3824  sum of pair C6 = 45.3824  C6(O,O) = 14.9166  C6(O,H) = 5.4738  C6(H,H') = 2.1426  gaps = []
+pdep C6_mol = 11.5138  sum of pair C6 = 5.9400  C6(O,O) = 2.6284  C6(O,H) = 0.6572  C6(H,H') = 0.1707  gaps = []
+mbd  C6_mol = 41.2501  sum of pair C6 = 41.2501  C6(O,O) = 15.7118  C6(O,H) = 4.8248  C6(H,H') = 1.5598  gaps = []
+```
+
+For `ts` and `mbd` the molecular tensor is the atom sum, so $C_{6,\mathrm{mol}}$
+equals the sum of the pair matrix to every printed digit. For `pdep` it does
+not: the pair sum is 5.94 a.u. and the molecular value 11.51 a.u., and the
+difference is the charge-transfer response that no atom owns
+(@sec:casimir-polder-c6-direct-rpa-per-atom). The `pdep` numbers are also far
+below the TS ones. TS scales tabulated free-atom values, while `pdep` is the
+RPA response of this basis, and cc-pVDZ has no diffuse functions.
+
 ## The direct-RPA per-atom polarizability {#casimir-polder-c6-direct-rpa-per-atom}
 
 The TS pole is a model. The `pdep` source computes $\alpha^A(iu)$ from the

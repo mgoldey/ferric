@@ -164,16 +164,72 @@ compute_esp_surface = true     # the only knob that defaults to off
 compute_c6 = false             # skip the dispersion block
 ```
 
-Reading the file back needs only numpy. The last line checks the
-charge-transfer identity of section @sec:polarizability-pdep-c6-per-atom-split-charge on the arrays themselves:
+Python writes the same file through `run_pdep_rpa(export_npz=...)`, with
+the default knobs: no surface ESP, and the $C_6$ block from the default `ts`
+source. Reading it back needs only numpy. The snippet below writes the
+water/cc-pVDZ bundle, lists its keys, checks the charge-transfer identity of
+section @sec:polarizability-pdep-c6-per-atom-split-charge on the arrays
+themselves, and reads the certificate. From the `589b50832` build, with the
+key listing trimmed (`...`) to the keys of the polarizability and $C_6$
+blocks and a few others, and the certificate's `build` line (the full
+commit hash, `dirty: False`) trimmed as well:
 
 ```python
-import json, numpy as np
-f = np.load("water.npz")
-cert = json.loads(f["certificate"].tobytes().decode())
-q = f["lowdin_charges"]               # (N,)
-assert np.allclose(f["alpha_ct"] + f["alpha_atomic"].sum(0), f["alpha_tensor"])
+import json
+
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_pdep_rpa(mol, bs, aux, export_npz="water.npz")
+print("total energy (not in the NPZ):", r.total_energy)
+print("property gaps:", r.property_gaps)
+
+with np.load("water.npz") as f:
+    for k in sorted(f.files):
+        print(f"{k:24s} {str(f[k].dtype):8s} {f[k].shape}")
+    resid = f["alpha_ct"] + f["alpha_atomic"].sum(0) - f["alpha_tensor"]
+    print("max |alpha_ct + sum alpha_atomic - alpha_tensor|:", np.abs(resid).max())
+    print("c6_iso.sum() =", f["c6_iso"].sum(), " c6_molecular_iso =", f["c6_molecular_iso"][0])
+    cert = json.loads(f["certificate"].tobytes().decode())
+    print("capability:", cert["capability"], " grade:", cert["grade"])
+    print("build:", cert.get("build"))
+    print("measured_error:", cert.get("measured_error"))
 ```
+
+```text
+total energy (not in the NPZ): -76.25799077123932
+property gaps: []
+alpha_atomic             float64  (3, 3, 3)
+alpha_atomic_dynamic     float64  (3, 20, 3, 3)
+alpha_ct                 float64  (3, 3)
+alpha_tensor             float64  (3, 3)
+...
+c6_iso                   float64  (3, 3)
+c6_molecular_iso         float64  (1,)
+...
+certificate              uint8    (746,)
+...
+mo_coeffs                float64  (24, 24)
+...
+pdep_eigenvectors        float64  (84, 60)
+...
+max |alpha_ct + sum alpha_atomic - alpha_tensor|: 0.0
+c6_iso.sum() = 45.38239500919036  c6_molecular_iso = 45.38239500919036
+capability: pdep-rpa  grade: proven
+...
+measured_error: None
+```
+
+The full listing has 29 keys. `esp_surface`, `esp_points`,
+`alpha_ct_dynamic` and `boys_coeffs` are absent, as the table says for these
+knobs. The identity holds exactly, because `alpha_ct` is defined as the
+difference. With the `ts` source the molecular tensor is the atom sum, so
+`c6_iso.sum()` equals `c6_molecular_iso`. The total energy is printed from
+the result object, because the NPZ does not carry it.
 
 ## Known limits (2026-11-15)
 
