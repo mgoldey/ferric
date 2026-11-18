@@ -379,7 +379,10 @@ The two predictions differ, so the sweep can tell them apart.
 The Rust `DirectConfig` defaults are the trivial limits for every option in
 the table except `aux_radius_bohr`, which defaults to 10.0 Bohr as in the
 CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
-`schwarz_skip` and `batch_merge`. The CLI defaults are in
+`schwarz_skip` and `batch_merge`. `DirectConfig::production()` holds the
+CLI defaults, and the CLI `[local]` section and Python
+`run_rimp2(integral_direct=True)` both build their configs from it, so the
+two entry points cannot drift apart. The CLI defaults are in
 `site/src/reference/input.md`, section `[local]`.
 
 ## What is measured {#integral-direct-measured}
@@ -387,13 +390,15 @@ CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, trivial maps, integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri) | PySCF `DFMP2`, same auxiliary basis | at most $1.38\times10^{-11}$ Ha over the 24 comparisons of the validation page, bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `crates/ferric-mp2/tests/lmp2_direct.rs` |
-| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.98%, 99.72%, 95.2% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps, against 99.99%, 99.73%, 95.2% in core (λ-Boys, λ = 10) <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> | same |
+| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.999%, 99.89%, 96.6% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ at the default maps (virtual radius 20 Bohr, AO tail 1e-4, no pair gate, Fock screen κ = 1), against 99.99%, 99.73%, 95.2% in core (λ-Boys, λ = 10 on both). The Fock screen keeps more amplitudes than the plain mask, so direct exceeds in-core here. At the old maps (virtual radius 12 Bohr, AO tail 1e-3, gate 0.7, Fock screen off) direct recovered 99.98%, 99.72%, 95.2% | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
-<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> On this molecule the integral-direct maps change the recovery by 0.02
-percentage points at $\varepsilon = 10^{-4}$, and not at the reported
-precision at the other two thresholds.
+On this molecule the integral-direct defaults raise the recovery over
+in-core by 0.007, 0.16 and 1.38 percentage points at $\varepsilon =
+10^{-5}$, $10^{-4}$, $10^{-3}$ (all electrons; 2026-11-18). The rise comes
+from the Fock screen, which the in-core path does not run. At the old maps,
+with the screen off, the difference was 0.01 to 0.02 points.
 
 **Cost and scaling (provisional).** <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> On n-alkanes C20 to C48 (6-31G with
 cc-pVDZ-RI, $\varepsilon = 10^{-4}$, frozen carbon cores, a calibrated pair

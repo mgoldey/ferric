@@ -49,7 +49,9 @@
 //!
 //! On n-butane/cc-pVDZ at ε = 1e-5, 1e-4 (the value the examples and the
 //! measured error maps use) and 1e-3, both frozen-core settings, both
-//! paths at their production settings: the error against PySCF is recorded
+//! paths at their production settings (the user-facing defaults: λ-Boys
+//! λ = 10, and on the direct path `DirectConfig::production` maps, Fock
+//! screen κ = 1, no pair gate): the error against PySCF is recorded
 //! with the keep / pair fractions and domain sizes, and the assertion is
 //! only the structure the method guarantees — under-correlation (one-sided)
 //! that grows monotonically with ε. No finite-ε tolerance is a bar.
@@ -82,6 +84,7 @@ use ferric_mp2::lmp2_amplitude::{
 };
 use ferric_mp2::lmp2_direct::{
     amplitude_lmp2_direct, amplitude_lmp2_direct_with_virtuals, DirectConfig,
+    DIRECT_FOCK_SCREEN_KAPPA,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -260,19 +263,11 @@ fn trivial_maps() -> DirectConfig {
     }
 }
 
-/// The integral-direct production maps (`examples/alkane8-rimp2-local-direct.toml`).
+/// The integral-direct production maps: the defaults the CLI `[local]` and
+/// Python `run_rimp2(integral_direct=True)` run (`DirectConfig::production`).
 fn production_maps() -> DirectConfig {
-    DirectConfig {
-        aux_radius_bohr: 10.0,
-        virt_radius_bohr: Some(12.0),
-        ao_tail: 1e-3,
-        schwarz_skip: 1e-5,
-        batch_merge: 4,
-        virt_schwarz_kappa: None,
-        ..Default::default()
-    }
+    DirectConfig::production()
 }
-const PRODUCTION_GATE_CAL: f64 = 0.7;
 
 fn in_core(su: &Setup, cfg: &AmplitudeLmp2Config) -> AmplitudeLmp2Result {
     let r = amplitude_lmp2(
@@ -445,8 +440,10 @@ fn finite_eps_c4h10_ccpvdz_error_is_one_sided_and_monotone() {
                 } else {
                     direct(
                         &su,
+                        // The user-facing defaults: Fock screen on, no
+                        // pair gate, λ-Boys (lcfg's Default).
                         &AmplitudeLmp2Config {
-                            pair_gate_cal: Some(PRODUCTION_GATE_CAL),
+                            fock_screen: Some(DIRECT_FOCK_SCREEN_KAPPA),
                             ..lcfg(eps, fc, None)
                         },
                         &production_maps(),
