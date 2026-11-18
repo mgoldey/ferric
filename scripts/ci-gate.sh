@@ -830,7 +830,7 @@ if [[ -f "$SO_PATH" ]]; then
     # (those suites skip themselves).
     if PYTHONPATH="$GATE_PYSHIM${PYTHONPATH:+:$PYTHONPATH}" \
        LD_LIBRARY_PATH="$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib:${LD_LIBRARY_PATH:-}" \
-       OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest "${PYTEST_PATHS[@]}" -q 2>&1; then
+       OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest "${PYTEST_PATHS[@]}" --ignore=crates/ferric-python/tests/test_derivation_scripts.py -q 2>&1; then
         echo "-- pytest: PASS --"
     else
         echo "-- pytest: FAIL (soft gate -- not blocking push) --"

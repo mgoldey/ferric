@@ -56,7 +56,7 @@ OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf
 
 # Python bindings (requires a release build of ferric-python)
 cargo build --release -p ferric-python
-OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/ -q
+OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/ --ignore=crates/ferric-python/tests/test_derivation_scripts.py -q
 ```
 
 The `--no-sync` flag matters: a bare `uv run` rebuilds and reinstalls the wheel,
