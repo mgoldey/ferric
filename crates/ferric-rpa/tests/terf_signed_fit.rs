@@ -46,7 +46,11 @@
 //!   fails at r0·ω = 2 (−1013.0 vs −4352.7 µHa; run on 0fe427de1, which is
 //!   this state).
 //! * Flip the signature to `+` (`K = B_Cᵀ B_C + B_sᵀ B_s`) in
-//!   `ferric_mp2::rimp2::signed_pair_block`: the same assertion fails.
+//!   `ferric_mp2::rimp2::signed_pair_block`: the same assertion fails
+//!   (e_dmp2_lr −2.5471 vs −0.0043527 Ha).
+//! * Drop the row negation in `ferric_rpa::energy::eval_signed_trace_log_summands`
+//!   (signed dRPA with signature +): the dimer `e_drpa_lr` assertion fails
+//!   (−1.6842 vs −0.0044846 Ha); the energy.rs plasmon unit tests fail too.
 //!
 //! Needs the terf interpolation tables (`FERRIC_TERF_TABLE_DIR`); skips with
 //! a note without them.
