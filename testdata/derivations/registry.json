@@ -896,7 +896,8 @@
     "rs-mp2-rpa": {
       "book": [
         "book/src/26-rs-mp2-rpa/01-cross-term.md#cross-term-split-energy",
-        "book/src/06-density-fitting/01-factorization-and-metric.md#factorization-and-metric-signed"
+        "book/src/06-density-fitting/01-factorization-and-metric.md#factorization-and-metric-signed",
+        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations-terf"
       ],
       "scripts": [
         "scripts/rpa_rs_mp2_rpa_sympy.py",
@@ -1194,7 +1195,8 @@
     "u-rs-mp2-rpa": {
       "book": [
         "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations",
-        "book/src/06-density-fitting/01-factorization-and-metric.md#factorization-and-metric-signed"
+        "book/src/06-density-fitting/01-factorization-and-metric.md#factorization-and-metric-signed",
+        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations-terf"
       ],
       "scripts": [
         "scripts/u_attenuated_sympy.py",

@@ -2,9 +2,22 @@
 
 <!-- status: ready; registry: rs-mp2-rpa, u-rs-mp2-rpa -->
 
-`rs_mp2_lr_rpa` evaluates one of two energies. Both keep full-Coulomb MP2
-and add dRPA brackets that start at third order (section @sec:cross-term-rule). They differ
-in which ring diagrams beyond second order they keep.
+MP2 lets every pair of electrons interact once through a ring of two
+particle–hole excitations, and it does so without screening. Two
+polarizable fragments far apart then correlate too strongly, because the
+medium between them never weakens the interaction. The dRPA screens the
+interaction by summing rings of every length. `rs_mp2_lr_rpa` keeps
+full-Coulomb MP2, exchange and cross term included, and adds dRPA rings
+beyond second order. Its two formulations differ in which of those rings
+they keep.
+
+The plan:
+
+1. write both energies and check their second and third orders
+   (@sec:two-formulations-energies) and their limits (@sec:two-formulations-limits);
+2. explain the terf long range, which has no positive definite kernel
+   (@sec:two-formulations-terf);
+3. read the code, a run on water, the options and the anchors.
 
 | Entry point | Location |
 |---|---|
@@ -22,23 +35,30 @@ $$ E^{\mathrm T}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mat
 
 B replaces the long-range direct rings of MP2 with their dRPA resummation.
 T screens every ring with the full operator and then removes the screening
-from the purely short-range rings. Each $E_{\mathrm{dRPA}}$ is a full-rank
-PDEP evaluation (section @sec:pdep, `trunc_thresh` @sec:notation by default) on the same
-fitted integrals as the MP2 components of the same operator.
+from the purely short-range rings. Each bracket uses one operator's fitted
+integrals for both of its terms. With erf every $E_{\mathrm{dRPA}}$ is a
+full-rank PDEP evaluation (section @sec:pdep; `trunc_thresh` is 0 by
+default). With terf, $E_{\mathrm{dRPA}}[\mathrm{lr}]$ of B is the signed
+log-determinant of section @sec:two-formulations-terf, and T's two dRPA
+energies are PDEP evaluations with Coulomb and terfc.
 
-Scaling every integral by $\lambda$, both energies have second-order term
-$E_{\mathrm{MP2}}[\mathrm C]$ (exchange and the cross term $X$ included). At
-third order, from (@eq:cross-term-3),
+Scale every integral by $\lambda$. Both energies then have the
+second-order term $E_{\mathrm{MP2}}[\mathrm C]$, exchange and the cross term
+$X$ included, because each bracket starts at third order (section
+@sec:cross-term-rule). At third order, from (@eq:cross-term-3),
 
 $$ E^{\mathrm B\,(3)}_c = E^{(3)}_{\mathrm{dRPA}}[\mathrm{lr}], \qquad E^{\mathrm T\,(3)}_c = E^{(3)}_{\mathrm{dRPA}}[\mathrm C] - E^{(3)}_{\mathrm{dRPA}}[\mathrm{sr}] . \label{eq:rsrpa-forms-orders} $$
 
-In one mode, $k = k_s + k_l$ and (@eq:rsrpa-one-mode-series),
+In one mode, write $k = k_s + k_l$ and use (@eq:rsrpa-one-mode-series):
 
 $$ E^{\mathrm T\,(3)}_c - E^{\mathrm B\,(3)}_c = \frac{(k_s + k_l)^3 - k_s^3 - k_l^3}{4\Delta^2} = \frac{3k_sk_l(k_s + k_l)}{4\Delta^2} : \label{eq:rsrpa-forms-one-mode} $$
 
-the third-order rings with both short- and long-range interactions, which T
-keeps and B drops. Neither formulation keeps the purely short-range rings
-beyond second order.
+these are the third-order rings with both short- and long-range
+interactions. T keeps them and B drops them. Neither formulation keeps the
+purely short-range rings beyond second order. The direct part of the cross term $X$ of (@eq:cross-term-2)
+is the second-order ring with one short-range and one long-range
+interaction; the mixed rings of T are that coloring at third order and
+beyond.
 
 > **Verified equation @eq:rsrpa-forms-orders** · second order is full MP2; the third-order rings of each formulation
 >
@@ -84,7 +104,7 @@ and both are $E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm C]$
 MP2 with every ring beyond second order screened.
 
 The terf attenuator satisfies the same split identity, so it has the same
-limits, with the direction reversed: $\omega = 1/(r_0\sqrt2)$, so a large
+limits with the direction reversed: $\omega = 1/(r_0\sqrt2)$, so a large
 $r_0$ gives MP2 and a small $r_0$ gives MP2 + ΔdRPA.
 
 > **Verified limits** · $\omega \to 0$ and $\omega \to \infty$
@@ -103,53 +123,215 @@ $r_0$ gives MP2 and a small $r_0$ gives MP2 + ΔdRPA.
 >
 > <!-- verified: id=rsrpa.forms.limits; script=scripts/rpa_rs_mp2_rpa_sympy.py; claim=omega-to-infinity; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/rs_mp2_rpa.rs::rs_mp2_lr_rpa; rust_test=ferric-rpa/src/rs_mp2_rpa.rs::omega_to_infinity_is_mp2_plus_delta_drpa; registry=rs-mp2-rpa -->
 
+The terf tests reach their limits at different distances. On H2 / cc-pVDZ,
+built from the `1fa635be6` sources, B equals RI-MP2 to $8.2\times10^{-13}$ Ha
+and T to $2.1\times10^{-9}$ Ha at $r_0 = 20$ Bohr. At $r_0 = 0.05$ Bohr, the
+smallest the tables reach, B is $-1.79\times10^{-4}$ Ha and T
+$-7.1\times10^{-9}$ Ha from MP2 + ΔdRPA[C], inside the test's
+$5\times10^{-4}$ Ha bar. The residual is the finite range of terf at
+$\omega \approx 14$ Bohr⁻¹, the same truncation the erf test removes with
+$\omega = 200$ Bohr⁻¹.
+
+## The terf long range {#two-formulations-terf}
+
+### Why the terf kernel is not positive definite {#two-formulations-terf-indefinite}
+
+A Coulomb-like kernel is positive definite when every nonzero charge
+distribution has positive self-interaction through it. Coulomb, erf, erfc
+and terfc pass. terf fails, and a two-charge picture shows why. Put $+q$ at
+the origin and $-q$ at distance $r$. With a kernel $w$ that is finite at
+zero separation, the self-interaction is
+
+$$ (\rho|w|\rho) = q^2\big[2w(0) - 2w(r)\big], $$
+
+negative as soon as $w(r) > w(0)$. The erf kernel $\operatorname{erf}(\omega r)/r$
+is largest at $r = 0$. The terf kernel switches on near $r = r_0$ instead
+(@eq:erf-terf-2): for $r_0\omega > 1/\sqrt2$ its curvature at the origin,
+$\tau_3$ of (@eq:op-terf-curvature-constraint), is positive, and it rises to
+a maximum at $1.26$ to $1.39\,r_0$ for $r_0\omega = 1$, 2 and 4. At $r_0\omega = 2$, $w(0) = 0.041/r_0$ and
+$w(r_0) = 0.500/r_0$, so the pair at separation $r_0$ has interaction
+$-0.917\,q^2/r_0$. At $r_0\omega = 1/\sqrt2$ the maximum sits at the origin
+and the two-charge argument does not apply, but the Fourier transform
+$\cos(kr_0)\,e^{-k^2/4\omega^2}$ is still negative at $kr_0 = \pi$ (section
+@sec:erf-terf-properties-decide-integrals-used), so the kernel is
+indefinite for every finite $r_0$ and $\omega$. A density modulated at
+wavelength near $2r_0$ lowers its energy through terf.
+
+What does that do to the fit? The metric $V_{\mathrm t} = (P|\operatorname{terf}|Q)$
+inherits the sign. On Ne$_2$ at 3.6 Å with aug-cc-pVDZ-RIFIT and
+$r_0 = 1.35$ Å, 68, 78 and 70 of its 144 eigenvalues are negative at
+$r_0\omega = 1/\sqrt2$, 2 and 4 (`testdata/reference/ne2_terf_signed_fit.json`).
+An indefinite matrix has no real $M$ with $M^{\mathsf T}M = V_{\mathrm t}^{-1}$,
+so the factorization (@eq:factorization-and-metric-1) does not exist. A
+factor built from the positive eigenvalues alone describes a different,
+positive definite kernel (section @sec:factorization-and-metric-signed).
+
+### The signed factor {#two-formulations-terf-signed}
+
+ferric never fits terf. It fits Coulomb and terfc, both positive definite,
+each by Cholesky in its own metric, and takes the difference. That is
+(@eq:factorization-and-metric-signed): a factor with $2N_{\mathrm{aux}}$ rows and
+signature $\boldsymbol\Sigma = \operatorname{diag}(\mathbf 1, -\mathbf 1)$.
+Three properties make it the right construction.
+
+- Each fit is the stationary fit of its own positive definite kernel, so
+  each error is second order in its own residual (section
+  @sec:factorization-and-metric-factorization).
+- For a density in the auxiliary span it reproduces $d^{\mathsf T}V_{\mathrm t}d$
+  exactly, negative modes included.
+- The split is exact on the fitted integrals,
+  $(ia|jb)_{\mathrm{lr}} = (ia|jb)_{\mathrm C} - (ia|jb)_{\mathrm{sr}}$, so
+  (@eq:cross-term-2) holds exactly for them, and the long-range MP2
+  components and B's long-range dRPA share one set of integrals with the
+  Coulomb and terfc ones.
+
+MP2 needs only the integrals: `ferric-mp2/src/rimp2.rs::signed_pair_block`
+forms each pair block with two GEMMs. The dRPA energy needs a determinant.
+Sylvester's identity (@eq:factorization-and-metric-signed-sylvester) moves it
+from the excitation space to the $2N_{\mathrm{aux}}$-dimensional space,
+with $\boldsymbol\Sigma$ inside. $\boldsymbol\Sigma\mathbf B\chi_0\mathbf B^{\mathsf T}$
+is not symmetric, so `ferric-rpa/src/energy.rs::eval_signed_trace_log_summands`
+takes its log-determinant by LU. The frequency integral equals the plasmon
+energy of the indefinite kernel while the determinant stays positive at
+every frequency. In one mode that is the condition under which the square
+root of (@eq:rsrpa-one-mode-series) is real, $k > -\Delta/2$: a negative
+coupling stronger than that makes the reference unstable, and the LU routine
+refuses the nonpositive determinant.
+
+### The sign of B's correction {#two-formulations-terf-sign}
+
+In one mode the bracket $\Delta E_{\mathrm{dRPA}}(k) = E_{\mathrm{dRPA}}(k) + k^2/(4\Delta)$
+has the sign of $k$ (checked numerically over $-\Delta/2 < k \le 5\Delta$).
+A positive coupling, the only kind a positive definite kernel has, gives a
+positive bracket: the higher rings screen and weaken the correlation. A
+negative mode gives a negative bracket: the higher rings deepen it. The
+terf kernel has negative modes, so B's correction with terf need not have
+the screening sign. The one-mode model shows how the sign can flip; it does
+not predict the many-mode sign.
+
+The measurement is the counterpoise interaction energy of $\Delta E_{\mathrm{dRPA}}[\mathrm{lr}]$
+on Ne$_2$ at 3.6 Å, aug-cc-pVDZ / aug-cc-pVDZ-RIFIT, $r_0 = 1.35$ Å, in µHa.
+Every column comes from one run of
+`terf_lr_matches_independent_constructions_ne2`
+(`crates/ferric-rpa/tests/terf_signed_fit.rs`), built from the `1fa635be6`
+sources. The ferric column is `rs_mp2_lr_rpa`; the other four are the
+constructions the test builds from the raw integrals
+(`scripts/gen_terf_signed_fit_refs.py` records them in
+`testdata/reference/ne2_terf_signed_fit.json`):
+
+| $r_0\omega$ | ferric | Coulomb RI − terfc RI | signed pseudo-inverse of $V_{\mathrm t}$ | Coulomb-fitted densities, $V_{\mathrm t}$ between | positive eigenvalues of $V_{\mathrm t}$ only |
+|---|---|---|---|---|---|
+| 2 | −3.1143 | −3.1141 | −3.1141 | −3.1965 | +23.6172 |
+| 4 | −5.3226 | −5.3226 | −5.3217 | −5.5193 | +82.9808 |
+
+The same quantity with the full Coulomb operator, from the JSON file, is
+$+9.56$ µHa. ferric and the next three constructions agree to within
+0.20 µHa, inside the test's 0.5 µHa bar; ferric's dimer and monomer
+$E_{\mathrm{MP2}}$ pieces equal Coulomb RI − terfc RI to $2\times10^{-16}$ Ha. The positive-subspace fit misses by 27 and 88 µHa
+and has the opposite sign: it computes the interaction under the positive
+part of the kernel alone.
+
+Interpretation, on this one system: with terf, B's long-range correction
+binds Ne$_2$ more strongly, where the Coulomb ring correction binds it less.
+That sign belongs to the kernel, since three independent fits give it. No
+benchmark yet says whether it helps or hurts accuracy.
+
+### What the code refuses, and why {#two-formulations-terf-refusals}
+
+- **A terf metric factor.** `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`
+  returns an error for terf: an indefinite metric has no inverse square root.
+- **PDEP truncation with B and terf** (`trunc_thresh > 0`). Truncation keeps
+  the leading modes of a symmetric static dielectric matrix. The signed
+  log-determinant forms no symmetric matrix and no eigenvalues, so there is
+  nothing to truncate.
+- **The Laplace $\chi_0$ backend with B and terf.** The signed route
+  implements one $\chi_0$: dense, with the exact energy denominator at each
+  frequency.
+- **The Boys-screened $\chi_0$ with B and terf**, including an `Auto`
+  sparsity that resolves to it for a molecule with at least the cutoff
+  number of atoms. The signed route has no screened build.
+- **The inverse dielectric with B and terf** (`need_inv_dielectric_freq`).
+  The signed route returns only the per-frequency energy summands.
+- **A nonpositive determinant** at any frequency, in
+  `eval_signed_trace_log_summands`: its logarithm is not real and the
+  plasmon formula does not hold there.
+- **Schwarz screening of terf integrals** (section
+  @sec:erf-terf-properties-decide-integrals-used): a kernel that is not
+  positive definite has no Cauchy–Schwarz bound.
+
+The first five refusals come from `refuse_unsupported_signed_drpa`, which
+runs only when B is requested with terf, before any integral is built. Its
+error names the option and the alternative (`trunc_thresh = 0`, dense
+$\chi_0$). T with terf needs none of them: its dRPA energies use Coulomb and
+terfc. The CLI reads only `trunc_thresh` from `[rpa]` for `rs-mp2-rpa`, and
+`run_rs_mp2_rpa` exposes no dRPA option, so the others are reachable from
+Rust through `RsMp2RpaConfig::drpa` only.
+
 ## In the code {#two-formulations-code}
 
-The `match cfg.formulation` of `rs_mp2_lr_rpa`, from the
-`coupled-rings` arm (quoted, not a checked excerpt):
+`Rings::assemble` turns one operator set's pieces into either energy. The
+`match` on the formulation, unchanged except that the two `Option` fields
+of each arm's tuple that the arm leaves `None` are cut:
 
+<!-- excerpt: ferric-rpa/src/rs_mp2_rpa.rs::assemble -->
 ```rust
-let delta_full = drpa_coul.e_rpa - 2.0 * sc_full.e_os;
-let delta_sr = drpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
-// T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
-let e_corr = sc_full.e_total + delta_full - delta_sr;
+RsMp2RpaFormulation::DeltaLr => {
+    let e_drpa = self.drpa_lr.expect("B requested => LR dRPA computed");
+    (
+        self.full.e_total + e_drpa - self.lr.dmp2,
 ```
 
-and from the `delta-lr` arm, with `e_dmp2_lr = 2.0 * sc_lr.e_os`:
-
+<!-- excerpt: ferric-rpa/src/rs_mp2_rpa.rs::assemble -->
 ```rust
-let e_corr = sc_full.e_total + drpa_lr.e_rpa - e_dmp2_lr;
+RsMp2RpaFormulation::CoupledRings => {
+    let e_coul = self
+        .drpa_coulomb
+        .expect("T requested => Coulomb dRPA computed");
+    let e_sr = self.drpa_sr.expect("T requested => SR dRPA computed");
+    let delta_full = e_coul - self.full.dmp2;
+    let delta_sr = e_sr - self.sr.dmp2;
+    (
+        self.full.e_total + delta_full - delta_sr,
 ```
+
+- The B arm is (@eq:two-formulations-1): `self.full.e_total` is
+  $E_{\mathrm{MP2}}[\mathrm C]$, `e_drpa - self.lr.dmp2` is
+  $\Delta E_{\mathrm{dRPA}}[\mathrm{lr}]$. In the T arm `delta_full` and
+  `delta_sr` are $\Delta E_{\mathrm{dRPA}}[\mathrm C]$ and
+  $\Delta E_{\mathrm{dRPA}}[\mathrm{sr}]$ of (@eq:two-formulations-2).
+- `dmp2` is $2E_{\mathrm{OS}}$ for a closed-shell reference and $d$ of the
+  open-shell section below for an open-shell one; `assemble` does not know
+  which.
+- The B arm also returns `e_drpa_lr` and the diagnostic
+  `e_corr_naive` $= E_{\mathrm{MP2}}[\mathrm{sr}] + E_{\mathrm{dRPA}}[\mathrm{lr}]$
+  (@eq:cross-term-6); the T arm returns the two brackets.
+- With terf, `self.lr` comes from the signed MP2 kernel
+  `ferric-mp2/src/rimp2.rs::spin_components_from_signed_b_ov` and
+  `self.drpa_lr` from `ferric-rpa/src/energy.rs::signed_drpa_energy`; the
+  assembly is the same.
 
 | Symbol | Code |
 |---|---|
-| $E_{\mathrm{MP2}}[v]$, $E_{\mathrm{OS}}[v]$ | `sc_full`, `sc_sr`, `sc_lr` `.e_total`, `.e_os` |
-| $E_{\mathrm{dRPA}}[\mathrm{lr}]$, $[\mathrm C]$, $[\mathrm{sr}]$ | `drpa_lr`, `drpa_coul`, `drpa_erfc` `.e_rpa` |
-| $v_{\mathrm{lr}}$, $v_{\mathrm{sr}}$ | `op_lr`, `op_sr`: `Operator::erf(ω)`, `Operator::erfc(ω)`, or `terf(r0)`, `terfc(r0)` (with `terf_omega`: `terf_with_omega`, `terfc_with_omega`) |
+| $E_{\mathrm{MP2}}[v]$, $2E_{\mathrm{OS}}[v]$ | `self.full`, `self.sr`, `self.lr` `.e_total`, `.dmp2` |
+| $E_{\mathrm{dRPA}}[\mathrm{lr}]$, $[\mathrm C]$, $[\mathrm{sr}]$ | `self.drpa_lr`, `self.drpa_coulomb`, `self.drpa_sr` |
+| $v_{\mathrm{lr}}$, $v_{\mathrm{sr}}$ | `Operator::erf(ω)`, `Operator::erfc(ω)`, or `terf(r0)`, `terfc(r0)` (with `terf_omega`: `terf_with_omega`, `terfc_with_omega`) |
 
 Every call computes the MP2 components of all three operators, so the
 result always carries `e_mp2_full`, `e_sr_mp2`, `e_lr_mp2` and
-`e_dmp2_lr` $= 2E_{\mathrm{OS}}[\mathrm{lr}]$. B adds `e_drpa_lr` and the
-diagnostic `e_corr_naive` (@eq:cross-term-6); T adds `e_delta_drpa_full` and
-`e_delta_drpa_sr`. B makes one dRPA evaluation, T two.
+`e_dmp2_lr` $= 2E_{\mathrm{OS}}[\mathrm{lr}]$. B makes one dRPA evaluation,
+T two.
 
 **RI.** Coulomb, erfc and terfc are each fitted in their own metric by
 Cholesky; erf by a symmetric $V^{-1/2}$ from an eigendecomposition with
 modes below $10^{-10}$ dropped (`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`).
 For erf the fitted $(ia|jb)_{\mathrm C}$ is therefore not exactly
-$(ia|jb)_{\mathrm{sr}} + (ia|jb)_{\mathrm{lr}}$. terf is not fitted at all.
-Its kernel is not positive definite, so its metric is indefinite, and the
-long-range integrals are Coulomb RI minus terfc RI, the signed factor of
-(@eq:factorization-and-metric-signed). For terf the split is then exact on
-the fitted integrals, $(ia|jb)_{\mathrm{lr}} = (ia|jb)_{\mathrm C} - (ia|jb)_{\mathrm{sr}}$,
-and $E_{\mathrm{dRPA}}[\mathrm{lr}]$ is the signed log-determinant of
-(@eq:factorization-and-metric-signed-sylvester). B with terf therefore
-refuses PDEP truncation and the Laplace and Boys-screened $\chi_0$. T's
-energy uses only the Coulomb and terfc integrals and does not change; its
-reported long-range MP2 components do. Second order is unaffected:
-each bracket of (@eq:two-formulations-1) and (@eq:two-formulations-2) uses one operator's integrals, so it
-starts at third order for any fit. The decomposition (@eq:rsrpa-forms-orders)–(@eq:rsrpa-forms-one-mode), which
-compares operators, holds up to the fitting differences.
+$(ia|jb)_{\mathrm{sr}} + (ia|jb)_{\mathrm{lr}}$, and the decomposition
+(@eq:rsrpa-forms-orders)–(@eq:rsrpa-forms-one-mode), which compares
+operators, holds up to the fitting differences. For terf the split is exact
+on the fitted integrals (section @sec:two-formulations-terf-signed). Second
+order is unaffected either way: each bracket of (@eq:two-formulations-1) and
+(@eq:two-formulations-2) uses one operator's integrals, so it starts at
+third order for any fit.
 
 ## Options {#two-formulations-options}
 
@@ -162,9 +344,10 @@ compares operators, holds up to the fitting differences.
 | `terf_omega` | positive, Å⁻¹ | unset: $\omega = 1/(r_0\sqrt2)$ | terf sharpness decoupled from $r_0$ |
 | `frozen_core` | integer | 0 | applied to every MP2 and dRPA call |
 
-The dRPA solver and quadrature knobs are those of `pdep-rpa` (section @sec:pdep);
-the default here is full rank. The choice of $\omega$ is not benchmarked, and
-the CLI prints a notice saying so.
+The dRPA runs at full rank by default (`RsMp2RpaConfig::drpa`, a
+`PdepRpaConfig` with `trunc_thresh = 0`). The CLI reads only `trunc_thresh`
+from `[rpa]`; the Python entry point exposes no dRPA option. The choice of
+$\omega$ is not benchmarked, and the CLI prints a notice saying so.
 
 ## Anchors {#two-formulations-anchors}
 
@@ -179,17 +362,22 @@ From `site/src/reference/validation.md` (rs-mp2-rpa is graded Proven):
 The grade covers an RHF reference with exact J and K, the erf attenuator at
 the default $\omega$, either formulation, frozen core 0, `trunc_thresh` 0 or
 below, and Gauss–Legendre quadrature with $u_0 = 0.5$ and 20 or 40 points.
-The terf split is checked by its limits only.
+The terf split is checked by its limits and, for B's long range, by the
+Ne$_2$ comparison of section @sec:two-formulations-terf-sign; the grade does
+not cover it.
 
-## Known limits (2026-11-15)
+## Known limits (2026-11-17)
 
 - Energy only, no gradient. The closed-shell RHF path is the one the
   sections above derive; the open-shell path is below.
-- No benchmark selects $\omega$ or $r_0$. The terf arm is checked by its
-  limits and, for formulation B, by the Ne$_2$ anchor of section
-  @sec:factorization-and-metric-signed against independent fits of the
-  terf interaction. Numbers recorded for B with terf before that fix used
-  a fit that dropped the negative modes of the terf metric and do not hold.
+- No benchmark selects $\omega$ or $r_0$.
+- B with terf is compared against independent fits on one system, Ne$_2$
+  at one geometry, $r_0 = 1.35$ Å and $r_0\omega \in \{2, 4\}$. The
+  open-shell terf B path (`open_shell_signed_parts`) has no molecular test;
+  its signed log-determinant is checked on a random model
+  (`signed_logdet_matches_plasmon_open_shell` in
+  `crates/ferric-rpa/src/energy.rs`).
+- No test triggers the refusals of section @sec:two-formulations-terf-refusals.
 - The fusion test of section @sec:shared-intermediates covers `coupled-rings` only.
 
 ## Open shell
@@ -214,7 +402,11 @@ gives the spin-summed dRPA of section @sec:open-shell-dielectric.
 $D_{\sigma\sigma}$ is the $E_{\rm OS}$ of the closed-shell kernel
 `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov` run on spin $\sigma$'s
 $B$ and orbital energies. Here $D_{ij}^{ab} = -\Delta_{ij}^{ab}$ is negative.
-The two energies are the closed-shell ones with $2E_{\rm OS}$ replaced by $d$:
+With terf the long range uses the signed factor per spin:
+`ferric-mp2/src/u_rimp2.rs::u_ri_mp2_signed_from_parts` for the U-MP2 blocks,
+the signed closed-shell kernel for $D_{\sigma\sigma}$, and
+`signed_drpa_energy` with one channel per spin (prefactor 2 each) for the
+dRPA. The two energies are the closed-shell ones with $2E_{\rm OS}$ replaced by $d$:
 
 $$ E^{\rm B}_c = E_{\rm MP2}[\mathrm C] + E_{\rm dRPA}[\mathrm{lr}] - d[\mathrm{lr}], \qquad
 E^{\rm T}_c = E_{\rm MP2}[\mathrm C] + \big(E_{\rm dRPA}[\mathrm C] - d[\mathrm C]\big) - \big(E_{\rm dRPA}[\mathrm{sr}] - d[\mathrm{sr}]\big), $$
@@ -263,10 +455,14 @@ is closed shell only.
 | Source | Used for |
 |---|---|
 | section @sec:cross-term-split-energy | (@eq:two-formulations-1)–(@eq:rsrpa-forms-one-mode), the limits |
-| `crates/ferric-rpa/src/rs_mp2_rpa.rs` (the `match` arms, `RsMp2RpaConfig`, `RsMp2RpaResult`) | @sec:two-formulations-code, @sec:two-formulations-options |
+| `crates/ferric-rpa/src/rs_mp2_rpa.rs` (`Rings::assemble`, `refuse_unsupported_signed_drpa`, `RsMp2RpaConfig`, `RsMp2RpaResult`) | @sec:two-formulations-code, @sec:two-formulations-terf-refusals, @sec:two-formulations-options |
 | `crates/ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` | the RI paragraph |
+| section @sec:factorization-and-metric-signed, `scripts/rpa_terf_signed_fit_sympy.py` | @sec:two-formulations-terf-signed |
+| `crates/ferric-rpa/tests/terf_signed_fit.rs`, `testdata/reference/ne2_terf_signed_fit.json` | the Ne$_2$ table |
 | `scripts/rpa_rs_mp2_rpa_sympy.py` | the verified boxes |
 | `site/src/reference/validation.md` | @sec:two-formulations-anchors |
 
 The script writes the denominator as the negative $D$; this section uses
-$\Delta$ (section @sec:cross-term).
+$\Delta$ (section @sec:cross-term). The two-charge interaction and the sign
+rule of the one-mode bracket were checked numerically for this section and
+are not in a committed script.
