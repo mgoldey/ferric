@@ -15,6 +15,7 @@ CERT_KEYS = [
     "pair_fraction",
     "n_pairs_gated",
     "gate_cal",
+    "fock_screen",
     "integral_direct",
     "maps",
     "pair_fit",
@@ -80,6 +81,7 @@ def test_certificate_fields_round_trip_direct(water):
     assert loc["eps"] == 1e-4
     assert loc["integral_direct"] is True
     assert loc["gate_cal"] == 0.7
+    assert loc["fock_screen"] == 1.0  # on by default on the integral-direct path
     assert loc["precision"] == "f64"
     assert loc["frozen_core"] == 1
     assert loc["cg_converged"] is True and 0.0 <= loc["cg_relres"] < 1e-6
@@ -126,6 +128,7 @@ def test_certificate_in_core_exact_limit(water):
         assert k in loc, f"certificate field {k} missing"
     assert loc["integral_direct"] is False
     assert loc["maps"] is None and loc["gate_cal"] is None
+    assert loc["fock_screen"] is None  # off on the in-core path
     assert loc["pair_fit"] is None
     assert loc["validation_grade"].startswith("Proven")
     assert "exact" in loc["eps_trust"]
@@ -151,3 +154,20 @@ def test_certificate_flags_a_non_coulomb_operator(water):
     assert loc["operator"].startswith("erfc(")
     assert "CAVEAT" in loc["eps_trust"]
     assert any("non-Coulomb" in w for w in loc["warnings"])
+
+
+def test_fock_screen_kwarg_off_and_strict(water):
+    """`fock_screen=False` turns the default-on screen off on the
+    integral-direct path (it only adds amplitudes, so keep can only drop);
+    without `integral_direct=True` the kwarg is a ValueError, as in the CLI."""
+    mol, obs, aux = water
+    kw = dict(frozen_core=1, local="amplitude-threshold", eps=1e-4, integral_direct=True)
+    on = ferric.run_rimp2(mol, obs, aux, **kw).local
+    off = ferric.run_rimp2(mol, obs, aux, fock_screen=False, **kw).local
+    assert on["fock_screen"] == 1.0 and off["fock_screen"] is None
+    assert off["keep_fraction"] <= on["keep_fraction"]
+    with pytest.raises(ValueError, match="integral_direct"):
+        ferric.run_rimp2(
+            mol, obs, aux, frozen_core=1, local="amplitude-threshold", eps=1e-4,
+            fock_screen=False,
+        )

@@ -159,7 +159,10 @@ pub struct AmplitudeLmp2Config {
     /// virtual-Fock-dressed integral `|g̃_ab|` (or `|g̃_ba|`) exceeds κ·ε —
     /// the amplitudes the integral-size mask misses because they are driven
     /// through the off-diagonal VV-HV Fock coupling, not by their own
-    /// integral. `None` is the plain WSHG23 mask, bitwise. Inert at ε = 0.
+    /// integral. `None` (the library default) is the plain WSHG23 mask,
+    /// bitwise. Inert at ε = 0. The CLI and Python integral-direct paths set
+    /// it to [`crate::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA`] unless the user
+    /// turns it off.
     pub fock_screen: Option<f64>,
 }
 

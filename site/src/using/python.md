@@ -873,8 +873,10 @@ the same rules, raised as `ValueError` before any SCF:
   removes any cost saving.
 - `run_rimp2(integral_direct=True, ...)` selects the integral-direct local
   MP2, with its locality maps `aux_radius`, `virt_radius` (Bohr), `ao_tail`,
-  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa` (the CLI
-  names and defaults). They are errors without `integral_direct=True`.
+  `schwarz_skip`, `batch_merge`, `gate_cal` and `virt_schwarz_kappa`, and
+  `fock_screen` (default `True`, the Fock-propagated mask screen; `False` keeps
+  the plain integral mask), with the CLI names and defaults. They are errors
+  without `integral_direct=True`.
   `kappa` is an error on the local MP2.
 
 Every result says which model it is: `RiMp2Result.local` and the dicts'

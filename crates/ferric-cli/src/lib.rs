@@ -2635,6 +2635,7 @@ fn run_rimp2_local(
         eri3_budget_bytes: budget_bytes,
         compute_reference: want_ref,
         pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
+        fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
         virtual_space: model.virtual_space.clone(),
         ..Default::default()
     };
@@ -2689,7 +2690,8 @@ fn run_rimp2_local(
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
-             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
+             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}, \
+             fock_screen {}",
             d.aux_radius,
             d.virt_radius,
             d.ao_tail,
@@ -2698,6 +2700,8 @@ fn run_rimp2_local(
             d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
             d.virt_schwarz_kappa
                 .map_or("off".to_string(), |k| format!("{k}")),
+            d.fock_screen
+                .map_or("off".to_string(), |k| format!("kappa {k}")),
         );
     }
     println!("  RHF energy            = {:.10} Ha", result.energy);
@@ -9144,6 +9148,7 @@ mod local_printout_tests {
             pair_fraction: 0.75,
             n_pairs_gated: 7,
             gate_cal: Some(0.7),
+            fock_screen: Some(1.0),
             integral_direct: true,
             maps: Some(DirectMaps {
                 aux_radius: 10.0,
@@ -9202,11 +9207,12 @@ mod local_printout_tests {
             }
         }
         let fields = cert.fields();
-        assert_eq!(fields.len(), 28);
+        assert_eq!(fields.len(), 29);
         for (k, v) in &fields {
             assert!(same(&back[*k], v), "field {k}: {} vs {v:?}", back[*k]);
         }
         assert!(back["maps"]["virt_schwarz_kappa"].is_null());
+        assert_eq!(back["fock_screen"], 1.0);
         assert_eq!(back["maps"]["batch_merge"], 4);
         assert_eq!(back["pair_fit"]["n_trsm"], 93);
         assert_eq!(back["build_commit"], ferric_build_info::COMMIT);

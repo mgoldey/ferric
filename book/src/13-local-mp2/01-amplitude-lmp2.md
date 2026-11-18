@@ -594,8 +594,11 @@ Points about the screen:
   pairs' integrals. On the systems measured it ranks the dropped amplitudes
   worse than the virtual part. Section @sec:amplitude-lmp2-combined-truncation
   states what that omission costs.
-- **The limits.** `None`, the default, is the plain Eq-8 pattern bitwise. At
-  $\varepsilon = 0$ the screen is inert. A vacuous $κ$ keeps the whole
+- **The limits.** `None`, the library default of `AmplitudeLmp2Config`, is
+  the plain Eq-8 pattern bitwise. The integral-direct CLI and Python paths
+  switch the screen on with κ = 1
+  (`ferric-mp2/src/lmp2_direct.rs::DIRECT_FOCK_SCREEN_KAPPA`; section
+  @sec:amplitude-lmp2-fock-screen-default). At $\varepsilon = 0$ the screen is inert. A vacuous $κ$ keeps the whole
   candidate square (`crates/ferric-mp2/tests/lmp2_fock_screen.rs`).
 - **Memory.** On the integral-direct path the gate holds six
   candidate-square matrices per pair ($F'$, $t^0$, $F't^0$, the $t^0F'$
@@ -711,7 +714,129 @@ What the table shows:
   of the same size (octane 20%: 9.4e-8 vs 1.07e-6; adamantane
   $\varepsilon$=1e-7, 20%: 3.6e-9 vs 1.7e-7).
 
-Timings are not measured yet.
+Timings on the production path are in section @sec:amplitude-lmp2-fock-screen-default.
+
+### On by default on the integral-direct path {#amplitude-lmp2-fock-screen-default}
+
+`[local] integral_direct = true` (CLI) and `run_rimp2(..., integral_direct=True)`
+(Python) run the screen with κ = 1 unless `fock_screen = false` /
+`fock_screen=False` is given. The key is an error without `integral_direct`.
+The in-core path and the Rust `AmplitudeLmp2Config::default` keep the plain
+mask.
+
+The decision rests on criteria fixed before any of the data below was taken.
+At matched $\varepsilon$ the wall-time overhead is at most 10% on the
+largest systems, and the error is lower on every system. On the n-alkanes
+the error grows by less per CH$_2$. On the ACONF20 conformers the error in
+the conformer energy differences is smaller. All four hold.
+
+**Construction.** Measured 2026-11-18 with
+`crates/ferric-mp2/tests/lmp2_fock_default_probe.rs` (`probe_fock_default`,
+`#[ignore]`), library code of commit `ac41c2305`. The setup is 6-31G with
+cc-pVDZ-RI, all-electron, Coulomb, and the CLI integral-direct maps
+(aux_radius 10, virt_radius 20 Bohr, ao_tail 1e-4, schwarz_skip 1e-5,
+batch_merge 4, no pair gate). Only $\varepsilon$ and κ vary. The anchor
+`fock_screen_is_inert_at_eps0_butane` passes: at $\varepsilon = 0$, screen
+on minus screen off is 0 on the production maps, and with every map inert
+both are $+1.5\times10^{-13}$ Ha from canonical RI-MP2.
+
+The error is $E - E_0$, where $E_0$ is the $\varepsilon = 0$ run on the same
+path and maps. C24 and C32 at $\varepsilon = 0$ do not fit the memory
+budget (C32 needs 51.7 GB resident). For them, and for ACONF20, the error is
+taken against canonical RI-MP2 instead (marked \*). That reference
+includes the maps' own error, $+0.9$ to $+3.2\times10^{-6}$ Ha on C12–C20
+and $\pm1.9\times10^{-6}$ Ha on naphthalene and adamantane. Keep is the
+retained fraction; the errors are in Ha.
+
+| system | $\varepsilon$ | keep off / on | error off | error κ = 1 | ratio |
+|---|---|---|---|---|---|
+| C12 | 1e-4 | 0.0269 / 0.0314 | 4.32e-3 | 2.72e-3 | 0.63 |
+| C12 | 1e-6 | 0.2968 / 0.3235 | 9.05e-6 | 2.29e-6 | 0.25 |
+| C12 | 1e-7 | 0.5507 / 0.5772 | 7.60e-7 | 5.08e-8 | 0.07 |
+| C16 | 1e-4 | 0.0122 / 0.0144 | 6.19e-3 | 3.97e-3 | 0.64 |
+| C16 | 1e-6 | 0.1567 / 0.1735 | 1.42e-5 | 3.95e-6 | 0.28 |
+| C16 | 1e-7 | 0.3340 / 0.3572 | 1.15e-6 | 9.53e-8 | 0.08 |
+| C20 | 1e-4 | 0.0066 / 0.0077 | 8.06e-3 | 5.22e-3 | 0.65 |
+| C20 | 1e-6 | 0.0906 / 0.1011 | 1.79e-5 | 5.70e-6 | 0.32 |
+| C24 | 1e-4 | 0.0039 / 0.0046 | 9.95e-3\* | 6.48e-3\* | 0.65 |
+| C24 | 1e-6 | 0.0565 / 0.0634 | 3.13e-5\* | 1.18e-5\* | 0.38 |
+| C32 | 1e-4 | 0.0017 / 0.0020 | 1.37e-2\* | 8.98e-3\* | 0.66 |
+| C32 | 1e-5 | 0.0080 / 0.0092 | 8.44e-4\* | 3.29e-4\* | 0.39 |
+| naphthalene | 1e-4 | 0.1337 / 0.1538 | 4.17e-3 | 2.15e-3 | 0.51 |
+| naphthalene | 1e-6 | 0.7477 / 0.7649 | 3.80e-6 | 8.77e-7 | 0.23 |
+| naphthalene | 1e-7 | 0.9319 / 0.9369 | 4.10e-7 | 9.44e-9 | 0.02 |
+| adamantane | 1e-4 | 0.1219 / 0.1457 | 5.61e-3 | 3.38e-3 | 0.60 |
+| adamantane | 1e-6 | 0.8334 / 0.8466 | 1.03e-5 | 1.49e-6 | 0.14 |
+| adamantane | 1e-7 | 0.9728 / 0.9757 | 6.63e-7 | 1.49e-8 | 0.02 |
+
+The full grid also has $\varepsilon$ = 3e-5, 1e-5, 3e-6 and 3e-7, plus
+κ = 0.3 on the four smaller systems. Every one of the 38 off/on pairs has
+the lower error with the screen, ratios 0.022–0.66. C20 at 1e-7 and C32 at
+1e-6 are refused by the memory budget in both arms.
+
+**Not only more amplitudes.** The screen keeps 0.3–19.5% more amplitudes.
+Interpolating the plain arm's error to the screen's kept fraction (log-log,
+along the $\varepsilon$ series) leaves the screen ahead everywhere. The
+ratio at matched keep is 0.73–0.89 at $\varepsilon$ = 1e-4 and 0.09–0.70
+from 3e-5 to 3e-7.
+
+**Cost.** Each run is one process, with a 3-index memory budget of 8 GB for
+both arms (`FERRIC_MEM_BUDGET_GB = 8`, a 12 GB cgroup cap). There are three
+repeats with the κ order alternated. Wall time is the whole
+`amplitude_lmp2_direct` call, in seconds, as median (range).
+
+| system | $\varepsilon$ | off | κ = 1 | overhead | peak RSS off / on (GB) |
+|---|---|---|---|---|---|
+| C24 | 1e-4 | 88.6 (88.6–89.8) | 95.6 (95.2–95.8) | +7.8% | 2.47 / 2.89 |
+| C24 | 1e-5 | 118.1 (117.7–118.8) | 128.4 (127.3–128.5) | +8.7% | 2.45 / 2.76 |
+| C24 | 1e-6 | 227.2 (225.3–227.6) | 246.4 (245.9–249.2) | +8.5% | 6.68 / 7.27 |
+| C32 | 1e-4 | 210.3 (208.9–213.9) | 222.4 (222.3–222.6) | +5.7% | 4.02 / 4.68 |
+| C32 | 1e-5 | 258.0 (256.2–258.2) | 275.6 (274.4–276.4) | +6.8% | 3.88 / 4.22 |
+
+Most of the overhead is in the assembly, where `fock_dressed_gate` runs
+two candidate-square GEMMs per pair. At C32, $\varepsilon$ = 1e-4, the
+assembly goes from 204 s to 214 s and the solve from 6.8 s to 8.1 s. The
+peak RSS rises by 0.3–0.7 GB, the six candidate-square matrices per pair
+that `group_scratch_bound` charges. At matched final error (the plain arm's
+wall time interpolated to the screen's error), the ratio is 0.87 on C24 at
+$\varepsilon$ = 1e-5 and 1.03 at 1e-4 on C24 and C32. On naphthalene and
+adamantane (one run each, 3–15 s) it is 0.85–1.01. The overhead at matched
+$\varepsilon$ there is −2% to +12%, the largest at 1e-4.
+
+**Size extensivity.** Error per added CH$_2$ along the n-alkanes, a linear
+fit to the last three sizes (μHa per CH$_2$; \* against canonical RI-MP2):
+
+| $\varepsilon$ | sizes | off | κ = 1 |
+|---|---|---|---|
+| 1e-4 | C20, C24, C32\* | 468 | 313 |
+| 1e-5 | C20, C24, C32\* | 26.5 | 12.3 |
+| 1e-6 | C16, C20, C24\* | 1.88 | 0.73 |
+
+The error per carbon at $\varepsilon$ = 1e-5 is 26.0, 27.2 and 26.4 μHa
+from C20 to C32 without the screen, and 9.1, 9.6 and 10.3 μHa with it.
+The screen is lower at every size, but its per-carbon error has not
+levelled off by C32.
+
+**Conformer energies.** These are the 22 ACONF20 C20H42 conformers
+(`testdata/molecules/aconfl/`). Each conformer error is the local
+correlation energy minus canonical RI-MP2. The tabulated quantity is the
+error in the conformer energy relative to A2000, the reactions of
+`ref_aconf20.csv`, in kJ/mol. At $\varepsilon$ = 1e-6 the 8 GB budget
+refuses 9 of the 22 conformers in both arms, A2000 among them. That row is
+over all pairs of the 13 that fit.
+
+| $\varepsilon$ | conformers | max\|Δ\| off | max\|Δ\| κ = 1 | MAD off | MAD κ = 1 |
+|---|---|---|---|---|---|
+| 1e-4 | 22 | 7.76 | 5.38 | 4.01 | 2.96 |
+| 1e-5 | 22 | 0.642 | 0.359 | 0.343 | 0.199 |
+| 1e-6 | 13 (all pairs) | 0.0253 | 0.0055 | 0.0104 | 0.0016 |
+
+**Reading (provisional, one basis, one family of chains plus two rigid
+molecules).** At the production example $\varepsilon$ = 1e-4 the screen
+removes a third to a half of the truncation error for 6–9% more wall time. At
+1e-6 and below it removes 60–98%. The 1e-4 conformer errors stay at several
+kJ/mol with or without it: $\varepsilon$ = 1e-4 is a loose model whichever
+mask is used.
 
 ## Combining the screen, the embedding and λ-Boys orbitals {#amplitude-lmp2-combined-truncation}
 
@@ -1098,7 +1223,7 @@ error.
 | `pair_gate_cal` | enables the gate (@eq:amplitude-lmp2-4); off by default | this section |
 | `fit_radius_bohr` | per-pair domain-local RI fit in place of the global-metric fit | section @sec:integral-direct |
 | `aux_tail_frac` | per-pair auxiliary truncation, rigorously bounded per element by $f\varepsilon$; inactive at $\varepsilon = 0$ | `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config` |
-| `fock_screen` | Rust only, off by default: also keeps elements whose one-step Fock-propagated integral clears $\kappa\varepsilon$ (section @sec:amplitude-lmp2-fock-screen); inert at $\varepsilon = 0$ | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
+| `fock_screen` | also keeps elements whose one-step Fock-propagated integral clears $\kappa\varepsilon$ (section @sec:amplitude-lmp2-fock-screen); inert at $\varepsilon = 0$. On by default (κ = 1) on the integral-direct CLI and Python paths, `[local] fock_screen = false` to turn it off; off in the in-core path and the Rust default | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
 | `cg_rtol`, `cg_max_iter` | Rust only: an explicit tolerance disables the tightening; neither is a CLI or Python option | this section |
 | operator | Coulomb or erfc, in the metric and the three-index integrals | chapter @sec:operators |
 

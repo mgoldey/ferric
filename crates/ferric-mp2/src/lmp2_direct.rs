@@ -66,6 +66,17 @@ use crate::lmp2_amplitude::{
 use crate::ragged::{pair_blocks_screened, PairBlock, Ragged};
 use crate::rimp2::{ri_mp2, RiMp2Config};
 
+/// κ of the Fock-propagated screen ([`AmplitudeLmp2Config::fock_screen`]) that
+/// the user-facing integral-direct entry points (CLI `[local] integral_direct
+/// = true`, Python `run_rimp2(..., integral_direct=True)`) switch on by
+/// default; `[local] fock_screen = false` / `fock_screen=False` turns it off.
+/// The library default (`AmplitudeLmp2Config::default`) stays `None`, the
+/// plain Eq-8 mask bitwise. The decision measurement (2026-11-18, n-alkanes
+/// C12–C32, naphthalene, adamantane, ACONF20, 6-31G / cc-pVDZ-RI,
+/// all-electron, production maps) is in book chapter 13,
+/// §amplitude-lmp2-fock-screen-default.
+pub const DIRECT_FOCK_SCREEN_KAPPA: f64 = 1.0;
+
 /// Locality knobs of the integral-direct path. Every knob has a trivial
 /// limit in which it is a no-op (the exactness-anchor configuration).
 #[derive(Debug, Clone)]

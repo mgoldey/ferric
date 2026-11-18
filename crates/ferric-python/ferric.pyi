@@ -5117,6 +5117,7 @@ def run_rimp2(
     batch_merge: int | None = None,
     gate_cal: float | None = None,
     virt_schwarz_kappa: float | None = None,
+    fock_screen: bool | None = None,
     att_operator: str | None = None,
     omega: float | None = None,
     att_r0: float | None = None,
@@ -5155,7 +5156,9 @@ def run_rimp2(
     amplitude-threshold local MP2 (closed-shell; eps=0 reproduces the exact
     RI-MP2); `integral_direct=True` its integral-direct variant with the
     locality maps aux_radius/virt_radius (Bohr), ao_tail, schwarz_skip,
-    batch_merge, gate_cal and virt_schwarz_kappa. Same rules as the CLI
+    batch_merge, gate_cal and virt_schwarz_kappa, and `fock_screen` (default
+    True: the Fock-propagated mask screen, kappa = 1; False keeps the plain
+    integral mask). Same rules as the CLI
     `[local]` section: every local kwarg is a ValueError on the exact method,
     and `kappa` a ValueError on the local one. `result.local` is None for the
     exact method, else the local model dict.

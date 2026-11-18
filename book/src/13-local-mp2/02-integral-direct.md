@@ -37,7 +37,7 @@ check them.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct`, `ferric-mp2/src/lmp2_direct.rs::assemble_ragged_direct_local` |
-| CLI | `[local] scheme = "amplitude-threshold"`, `eps`, `integral_direct = true`, with `aux_radius`, `virt_radius`, `ao_tail`, `schwarz_skip`, `batch_merge`, `gate_cal`, `virt_schwarz_kappa` (`examples/alkane8-rimp2-local-direct.toml`) |
+| CLI | `[local] scheme = "amplitude-threshold"`, `eps`, `integral_direct = true`, with `aux_radius`, `virt_radius`, `ao_tail`, `schwarz_skip`, `batch_merge`, `gate_cal`, `virt_schwarz_kappa`, `fock_screen` (`examples/alkane8-rimp2-local-direct.toml`) |
 | Python | `run_rimp2(..., local="amplitude-threshold", eps=..., integral_direct=True)` |
 
 ## The domain-local fit {#integral-direct-domain-local-fit}
@@ -373,6 +373,7 @@ The two predictions differ, so the sweep can tell them apart.
 | `schwarz_skip` | 0.0 evaluates every triple (bit-identical to a run without the cut) | 1e-5 | Cauchy–Schwarz cut on batch triples, $\sqrt{\max(P\vert P)}\,Q(\mu\nu) <$ the threshold, with both factors from the run's operator |
 | `gate_cal` | none (gate off) | none | the pair gate of equation @eq:amplitude-lmp2-4 |
 | `virt_schwarz_kappa` | none (off) | none | $\varepsilon$-linked virtual-candidate screen: keep $a$ if $q_{ia}q^{\max}_j \ge \kappa\varepsilon$ or the mirror |
+| `fock_screen` | `false` (plain Eq-8 mask) | `true` (κ = 1) | the Fock-propagated screen of section @sec:amplitude-lmp2-fock-screen; inert at $\varepsilon = 0$ |
 | `batch_merge` | 1 | 4 | batches merged per integral pass |
 
 The Rust `DirectConfig` defaults are the trivial limits for every option in

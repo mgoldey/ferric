@@ -1347,6 +1347,11 @@ pub struct LocalCfg {
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
     /// Omitted = off.
     pub virt_schwarz_kappa: Option<f64>,
+    /// Integral-direct only: the Fock-propagated screen of the amplitude mask
+    /// (book §amplitude-lmp2-fock-screen), κ =
+    /// `ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA`. Default true;
+    /// `false` keeps the plain Eq-8 mask.
+    pub fock_screen: Option<bool>,
     /// `kind = "rimp2"` / `"att-rimp2"` only: which VV-HV virtual-space build
     /// to use, `"dense"` (default, O(N³)) or `"local"` (the opt-in
     /// threshold-sparse build, `ferric_mp2::vvhv_local`).
@@ -1390,6 +1395,9 @@ pub struct LocalDirectKnobs {
     /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
     /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
+    /// `[local] fock_screen`: the Fock-propagated mask screen's κ, `Some(
+    /// DIRECT_FOCK_SCREEN_KAPPA)` by default, `None` with `fock_screen = false`.
+    pub fock_screen: Option<f64>,
 }
 
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
@@ -1418,6 +1426,7 @@ impl LocalCfg {
             || self.batch_merge.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
+            || self.fock_screen.is_some()
     }
 
     fn sets_virtual_thresholds(&self) -> bool {
@@ -1493,6 +1502,7 @@ impl LocalCfg {
                 ("batch_merge", self.batch_merge.is_some()),
                 ("gate_cal", self.gate_cal.is_some()),
                 ("virt_schwarz_kappa", self.virt_schwarz_kappa.is_some()),
+                ("fock_screen", self.fock_screen.is_some()),
                 ("virtual_space", self.virtual_space.is_some()),
                 ("virtual_tau", self.virtual_tau.is_some()),
                 ("virtual_tau_loose", self.virtual_tau_loose.is_some()),
@@ -1597,12 +1607,17 @@ impl LocalCfg {
                 batch_merge: self.batch_merge.unwrap_or(4),
                 gate_cal: opt_pos("gate_cal", self.gate_cal)?,
                 virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
+                fock_screen: self
+                    .fock_screen
+                    .unwrap_or(true)
+                    .then_some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         } else {
             if self.sets_direct_knobs() {
                 return Err(
                     "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                            batch_merge / gate_cal / virt_schwarz_kappa are the integral-direct \
+                            batch_merge / gate_cal / virt_schwarz_kappa / fock_screen are the \
+                            integral-direct \
                             locality maps and are read only with integral_direct = true; \
                             without it they would be silently ignored"
                         .to_string(),
@@ -6523,6 +6538,8 @@ mod compat_guard_tests {
             ("batch_merge", "4"),
             ("gate_cal", "0.7"),
             ("virt_schwarz_kappa", "1.0"),
+            ("fock_screen", "false"),
+            ("fock_screen", "true"),
         ] {
             for direct in ["", "integral_direct = false\n"] {
                 let e = model(&format!(
@@ -6546,8 +6563,24 @@ mod compat_guard_tests {
                 batch_merge: 4,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
+                fock_screen: Some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         );
+        // fock_screen = false turns the screen off; a non-bool is a type error
+        let off = model(
+            "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\nfock_screen = false",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(off.direct.unwrap().fock_screen, None);
+        for bad in ["fock_screen = 1.0", "fock_screen = \"off\""] {
+            let src = format!(
+                "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                 [method]\nkind = \"rimp2\"\ntask = \"energy\"\n[local]\n\
+                 scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n{bad}"
+            );
+            assert!(toml::from_str::<Config>(&src).is_err(), "{bad}");
+        }
         for bad in [
             "aux_radius = 0.0",
             "virt_radius = -1.0",

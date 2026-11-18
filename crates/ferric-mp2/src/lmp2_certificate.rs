@@ -218,6 +218,8 @@ pub struct Lmp2Certificate {
     pub n_pairs_gated: usize,
     /// [`AmplitudeLmp2Config::pair_gate_cal`]; `None` when the gate is off.
     pub gate_cal: Option<f64>,
+    /// [`AmplitudeLmp2Config::fock_screen`] (κ); `None` when the screen is off.
+    pub fock_screen: Option<f64>,
     /// Whether the run used the integral-direct assembly.
     pub integral_direct: bool,
     /// `None` on the in-core (global-B) path.
@@ -299,6 +301,7 @@ impl Lmp2Certificate {
             pair_fraction: r.pair_fraction,
             n_pairs_gated: r.n_pairs_gated,
             gate_cal: cfg.pair_gate_cal,
+            fock_screen: cfg.fock_screen,
             integral_direct: direct.is_some(),
             maps: direct.map(DirectMaps::from),
             pair_fit: None,
@@ -368,6 +371,7 @@ impl Lmp2Certificate {
             ("pair_fraction", V::F64(self.pair_fraction)),
             ("n_pairs_gated", V::Usize(self.n_pairs_gated)),
             ("gate_cal", self.gate_cal.into()),
+            ("fock_screen", self.fock_screen.into()),
             ("integral_direct", V::Bool(self.integral_direct)),
             ("maps", maps),
             ("pair_fit", pair_fit),
@@ -646,6 +650,7 @@ mod tests {
             pair_fraction: 0.75,
             n_pairs_gated: 0,
             gate_cal: None,
+            fock_screen: None,
             integral_direct: false,
             maps: None,
             pair_fit: None,
