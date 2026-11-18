@@ -1094,6 +1094,32 @@ CASES = [
         ],
     ),
     (
+        "lmp2_lambda_boys_sympy.py",
+        10,
+        [
+            (
+                "pair_grad = sum(4 * w * (X[p, p] - X[q, q]) * X[p, q]",
+                "pair_grad = sum(w * (X[p, p] - X[q, q]) * X[p, q]",
+                "S1: gradient",
+            ),
+            (
+                "    return np.arctan2(b, a) / 4",
+                "    return np.arctan2(-b, -a) / 4",
+                "S2: maximum",
+            ),
+            (
+                "for X, w in list(zip(Xm, (1.0, 1.0, 1.0))) + [(Fm, lam_v)]:",
+                "for X, w in list(zip(Xm, (1.0, 1.0, 1.0))) + [(Fm, 0.0)]:",
+                "S3: stationarity",
+            ),
+            (
+                "    return sp.atan2(-Bb_, Ab_) / 4",
+                "    return sp.atan2(Bb_, Ab_) / 4",
+                "S4: Boys",
+            ),
+        ],
+    ),
+    (
         "lmp2_combined_sympy.py",
         20,
         [

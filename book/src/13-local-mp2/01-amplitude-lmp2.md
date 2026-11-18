@@ -293,7 +293,7 @@ element.
 |---|---|---|
 | 1 | RHF reference: canonical orbitals and Fock matrix | `ferric-scf/src/rhf.rs::solve_rhf` |
 | 2 | virtual space: valence virtuals from projected minimal-basis functions, hard virtuals from the rest | `ferric-mp2/src/lmp2_amplitude.rs::build_vvhv` |
-| 3 | Boys-localized active occupieds, their centroids and spreads, and the localized Fock blocks $f$ and $F$ | `ferric-mp2/src/lmp2_amplitude.rs::localized_spaces` |
+| 3 | λ-Boys-localized active occupieds (section @sec:amplitude-lmp2-lambda-boys), their centroids and spreads, and the localized Fock blocks $f$ and $F$ | `ferric-mp2/src/lmp2_amplitude.rs::localized_spaces_lambda` |
 | 4 | three-index factors in the localized basis, and the metric | `ferric-mp2/src/lmp2_amplitude.rs::assemble_basis` |
 | 5 | integral-free pair gate | `ferric-mp2/src/lmp2_amplitude.rs::pair_gate_keep` |
 | 6 | per unique pair: $J_{ij}$ by a Gram product of whitened factors over Schwarz-screened candidates, or a domain-local fit; the $\varepsilon$ mask; the ragged block | `ferric-mp2/src/lmp2_amplitude.rs::assemble_ragged_direct_aux`, `ferric-mp2/src/ragged.rs::pair_block_from_g_cand` |
@@ -366,7 +366,8 @@ $\varepsilon = 0$ agreement (`mutated_virtual_space_fails_the_anchor`).
 
 ### Step 3: localized occupieds and their sizes
 
-`localized_spaces` Boys-localizes the active occupied orbitals and records,
+`localized_spaces_lambda` localizes the active occupied orbitals by
+λ-Boys (Boys at `lambda_boys = 0`; section @sec:amplitude-lmp2-lambda-boys) and records,
 for each, its centroid $\langle\mathbf r\rangle_i$ and spread
 $\sigma_i = \sqrt{\langle r^2\rangle_i - \lvert\langle\mathbf r\rangle_i\rvert^2}$.
 It also forms the two Fock blocks of @sec:amplitude-lmp2-amplitude-equations-energy, $f = C_{\mathrm{locc}}^{\mathsf T}FC_{\mathrm{locc}}$
@@ -1119,7 +1120,7 @@ magnitude.
 > | Proof | `scripts/lmp2_combined_sympy.py`, P4 |
 > | Negative control | the runner drops the factor 4 from the gradient ("P4: gradient") and sets the $f_{oo}$ weight to 0 ("P4: stationarity") |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/lmp2_amplitude.rs::localized_spaces` (plain Boys, $\lambda = 0$; λ-Boys has no production code) |
+> | Code | `ferric-mp2/src/lmp2_amplitude.rs::localized_spaces` (plain Boys, $\lambda = 0$; λ-Boys is section @sec:amplitude-lmp2-lambda-boys) |
 >
 > <!-- verified: id=lmp2.combined.lambda-boys; script=scripts/lmp2_combined_sympy.py; claim=P4: gradient; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_amplitude.rs::localized_spaces; registry=local-mp2 -->
 
@@ -1186,6 +1187,152 @@ pattern is the Eq-8 pattern, rotating the orbitals leaves $E^*$ unchanged
 (mutation "P6: rotational invariance"), and non-interacting fragments give
 $E(A{+}B) = E(A) + E(B)$ to a relative $10^{-11}$ for every arm.
 
+## λ-Boys occupied orbitals, the default {#amplitude-lmp2-lambda-boys}
+
+Boys orbitals are as compact as a Jacobi sweep can make them, and nothing
+else. In a conjugated molecule several placements of the π bonds have
+nearly the same spread, so Boys picks one of them by small differences, and
+the one it picks can leave large off-diagonal elements $f_{ik}$ between
+neighbouring π orbitals. Those elements drive amplitudes that the
+integral-size mask does not see (section @sec:amplitude-lmp2-fock-screen,
+P2 and P4 above). λ-Boys adds a penalty on that coupling to the Boys
+objective and keeps the rest of the method unchanged.
+
+The local MP2 drivers localize the active occupieds with λ-Boys at
+$\lambda = 10$ $\text{Bohr}^2/\text{Ha}^2$. `lambda_boys = 0` gives plain
+Boys. The dRPA, LinLCCD and rCCD drivers that share the localized spaces
+keep plain Boys, because the measurements below were made on MP2 only.
+
+**The objective and its stationarity condition.** $G$ is the function of
+section @sec:amplitude-lmp2-combined-p4. The code rotates orbitals $p<q$ as
+$p' = c\,p + s\,q$, $q' = -s\,p + c\,q$ with $c=\cos\theta$, $s=\sin\theta$.
+This is $\kappa_{pq} = -\theta$ in the book's $U = 1+\kappa$, so
+(@eq:lmp2-combined-lambda-boys) changes sign. With
+$d_X = (X_{pp}-X_{qq})/2$, $c_X = X_{pq}$, $a = \sum_X w_X(d_X^2-c_X^2)$ and
+$b = 2\sum_X w_X d_Xc_X$:
+
+$$ \left.\frac{\partial G}{\partial\theta_{pq}}\right|_{\theta=0} = 4\sum_X w_X\,(X_{pp}-X_{qq})\,X_{pq} = 4b_{pq}, \qquad G'' (\theta^*) = -16\sqrt{a^2+b^2}\ \text{at}\ \theta^* = \tfrac14\operatorname{atan2}(b, a) . \label{eq:lmp2-lambda-boys-stationarity} $$
+
+A point is stationary when $b_{pq} = 0$ for every pair. There the step
+angle is zero exactly when $a_{pq} > 0$, so a sweep that moves nothing ends
+on a point that is a maximum in every plane. Two limits:
+
+- $\lambda = 0$: $a$ and $b$ are the $A$ and $B$ of
+  `ferric-mp2/src/boys.rs::boys_localize`, which rotates by
+  $x' = c\,x - s\,y$ through $\tfrac14\operatorname{atan2}(-B, A)$. That is
+  the same rotation, so the λ = 0 step is the Boys step.
+- Two orbitals on non-interacting fragments: $c_X = 0$ for every $X$,
+  $b = 0$, $a > 0$ and $\theta = 0$. The penalty never mixes fragments.
+
+The energy at $\varepsilon = 0$ does not depend on λ, because $E^*$ is
+invariant under any orthogonal occupied rotation (P6). At finite
+$\varepsilon$, λ changes $J$ and therefore the kept set, but the error keeps
+its sign: P1 holds in any orthonormal occupied basis, and $E^*$ is the same
+in all of them.
+
+**The code.** `ferric-mp2/src/boys.rs::lambda_boys_localize_checked` runs
+converged Boys first, forms $r^x$ and $f$ in the Boys orbitals, and calls
+`ferric-mp2/src/boys.rs::lambda_boys_rotation`. Its sweep, with the setup
+and the result struct removed:
+
+<!-- excerpt: ferric-mp2/src/boys.rs::lambda_boys_rotation -->
+```rust
+for p in 0..n {
+    for q in p + 1..n {
+        // θ* = atan2(b, a)/4: the maximum of G in the (p, q) plane
+        let th = lambda_boys_pair_angle(&x, &f, lambda, p, q);
+        if th == 0.0 {
+            continue; // b = 0 and a > 0: already the in-plane maximum
+        }
+        let (c, s) = (th.cos(), th.sin());
+        // r^x ← Rᵀ r^x R and f ← Rᵀ f R
+        for m in x.iter_mut() {
+            rotate_sym_pair(m, p, q, c, s);
+        }
+        rotate_sym_pair(&mut f, p, q, c, s);
+        // U ← U R: p' = c p + s q, q' = −s p + c q
+        for k in 0..n {
+            let (a, b) = (u[(k, p)], u[(k, q)]);
+            u[(k, p)] = c * a + s * b;
+            u[(k, q)] = -s * a + c * b;
+        }
+    }
+}
+// stop on max over p < q of |∂G/∂θ_pq| after the whole sweep
+max_grad = lambda_boys_max_grad(&x, &f, lambda);
+```
+
+- The sweep works on $n_o\times n_o$ matrices only. The AO coefficients are
+  rotated once at the end, $C_{\mathrm{locc}} = C_{\mathrm{Boys}}U$.
+- The pair order is fixed and the loop is serial, so the result does not
+  depend on the thread count.
+- The stop is $\max_{p<q}\lvert 4b_{pq}\rvert < 10^{-8}$ $\text{Bohr}^2$
+  (`LAMBDA_BOYS_GRAD_TOL`), evaluated after a whole sweep. A run that does
+  not reach it within `LAMBDA_BOYS_MAX_SWEEPS` sweeps is a `Convergence`
+  error, the same rule as for Boys: the orbitals would still span the
+  occupied space, but the pair gate, the domains and the mask are built
+  from them.
+- At $\lambda = 0$ the optimiser is not called and the Boys orbitals are
+  returned bit for bit.
+
+**Design choices.** Why start from Boys and not from the canonical
+orbitals? $G$ has several local maxima, and on naphthalene the λ = 10
+optimum is a different π localization from the Boys one (the largest
+element of $\lvert U\rvert - 1$ is 0.707). Starting from converged Boys makes
+the λ-Boys result a deterministic function of the Boys result, and the
+λ = 0 limit the Boys orbitals themselves. Why 10? It is the smallest value
+of the measured grid at which naphthalene moves to the better localization;
+on octane larger λ spreads the orbitals and costs accuracy (λ = 100 made
+$f_{oo}$ 40% more diagonal and the largest spread 1.5 times larger).
+
+**Measured.** 6-31G, at matched kept fraction, on the dense oracle of
+section @sec:amplitude-lmp2-fock-screen-measured:
+
+| System | Effect of λ = 10 against λ = 0 |
+|---|---|
+| naphthalene | error 10 to 30 times smaller in every arm, plain mask included; at keep 0.83, $6.8\times10^{-7}$ to $3.8\times10^{-8}$ Ha. Largest orbital spread 5.1 to 8.5 $\text{Bohr}^2$ |
+| n-octane | at most 2.5% better; 2 to 7% worse with the screen at $\kappa = 0.3$, no change at $\kappa = 1$ |
+| adamantane | no change at keep 0.99 |
+
+End to end, from the `76ffd5a79` CLI build: 6-31G, cc-pvdz-ri,
+$\varepsilon = 10^{-4}$, frozen core (one orbital per heavy atom), one run
+each on a quiet box. The error is against canonical RI-MP2 in the same
+basis; $t_{\mathrm{corr}}$ is assembly plus solve. Single runs, so a
+difference of a few percent in $t_{\mathrm{corr}}$ is noise:
+
+| System, path | λ-Boys sweeps | λ-Boys time | $t_{\mathrm{corr}}$, λ = 0 / 10 | λ-Boys share of $t_{\mathrm{corr}}$ | error, λ = 0 / 10 (Ha) |
+|---|---|---|---|---|---|
+| n-octane, in core | 7 | 2.2 ms | 0.87 / 0.88 s | 0.25% | $1.912 / 1.913\times10^{-3}$ |
+| naphthalene, in core | 21 | 5.0 ms | 1.60 / 1.33 s | 0.37% | $3.733 / 2.135\times10^{-3}$ |
+| n-octane, integral-direct | 7 | 2.2 ms | 1.30 / 1.28 s | 0.17% | $1.913 / 1.916\times10^{-3}$ |
+| n-C20H42, integral-direct | 7 | 17.9 ms | 8.53 / 8.87 s | 0.20% | $6.434 / 6.466\times10^{-3}$ |
+
+On n-butane / cc-pVDZ with all electrons the in-core recovery moves from
+99.980, 99.671, 94.99% to 99.992, 99.735, 95.20% at
+$\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$, and n-octane at
+$10^{-3}$ from 93.81 to 94.00%. With frozen core the same n-butane errors
+move by 2 to 3% in either direction. The frozen-core alkane errors grow
+by 0.05 to 0.5%; the default is taken for the
+naphthalene gain at a cost below 0.4% of $t_{\mathrm{corr}}$.
+
+> **Verified equation @eq:lmp2-lambda-boys-stationarity** · the λ-Boys pair gradient, the in-plane maximum and the λ = 0 limit
+>
+> The pair gradient in the code's rotation convention, the Jacobi form and
+> its second derivative at $\theta^*$, the stationarity condition
+> $b_{pq} = 0$, and the identity of the λ = 0 step with the Boys step,
+> symbolically; numerically, the gradient against a finite difference along
+> $\exp(sK)$, and a Jacobi optimum that is stationary, rises monotonically
+> and has negative curvature along random directions.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/lmp2_lambda_boys_sympy.py`, S1 to S4 |
+> | Negative control | the runner drops the factor 4 ("S1: gradient"), takes the minimum branch of the angle ("S2: maximum"), drops λ from the angle ("S3: stationarity") and flips the Boys angle ("S4: Boys") |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/boys.rs::lambda_boys_rotation` |
+>
+> <!-- verified: id=lmp2.lambda-boys; script=scripts/lmp2_lambda_boys_sympy.py; claim=S3: stationarity; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/boys.rs::{lambda_boys_rotation,lambda_boys_pair_gradient,lambda_boys_pair_angle}; rust_test=ferric-mp2/src/boys.rs::lambda_boys_pair_gradient_matches_central_difference; registry=local-mp2 -->
+
 ## Reproducibility and memory {#amplitude-lmp2-reproducibility-memory}
 
 - The ragged matrix-vector product runs in parallel over output pairs with
@@ -1223,6 +1370,7 @@ error.
 | `pair_gate_cal` | enables the gate (@eq:amplitude-lmp2-4); off by default | this section |
 | `fit_radius_bohr` | per-pair domain-local RI fit in place of the global-metric fit | section @sec:integral-direct |
 | `aux_tail_frac` | per-pair auxiliary truncation, rigorously bounded per element by $f\varepsilon$; inactive at $\varepsilon = 0$ | `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config` |
+| `lambda_boys` | λ of the λ-Boys occupied localization, default 10; 0 is plain Boys. Changes the orbitals, so $J$ and the kept set; the error stays one-sided because $E^*$ is rotation invariant; inert at $\varepsilon = 0$ | section @sec:amplitude-lmp2-lambda-boys |
 | `fock_screen` | also keeps elements whose one-step Fock-propagated integral clears $\kappa\varepsilon$ (section @sec:amplitude-lmp2-fock-screen); inert at $\varepsilon = 0$. On by default (κ = 1) on the integral-direct CLI and Python paths, `[local] fock_screen = false` to turn it off; off in the in-core path and the Rust default | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
 | `cg_rtol`, `cg_max_iter` | Rust only: an explicit tolerance disables the tightening; neither is a CLI or Python option | this section |
 | operator | Coulomb or erfc, in the metric and the three-index integrals | chapter @sec:operators |
@@ -1240,7 +1388,7 @@ mutation, dropping one hard virtual, breaks the agreement
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, every locality map at its no-op limit, in-core (global and per-pair domain fit) and integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri), frozen core 0 and one per heavy atom | PySCF `DFMP2` with the same auxiliary basis, checked against a dense numpy sum to $10^{-12}$ | $E_{\mathrm{corr}}$ at most $1.38\times10^{-11}$ Ha over 24 comparisons, at the default PCG stop; bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `eps_zero_matches_canonical_ri_mp2` in `crates/ferric-mp2/tests/lmp2_amplitude.rs` |
-| finite $\varepsilon$ on n-butane / cc-pVDZ, all electrons | PySCF `DFMP2` (canonical) | recovers 99.98%, 99.67%, 95.0% of the DF-MP2 correlation energy in core at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps; the error is one-sided and has no tolerance | same |
+| finite $\varepsilon$ on n-butane / cc-pVDZ, all electrons | PySCF `DFMP2` (canonical) | recovers 99.99%, 99.73%, 95.2% of the DF-MP2 correlation energy in core (λ-Boys, λ = 10) at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps; the error is one-sided and has no tolerance | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
@@ -1249,16 +1397,16 @@ a ballpark only. It truncates by pair-natural-orbital occupation, not by an
 amplitude threshold, so the two recoveries are not compared.
 
 **The error is superlinear in $\varepsilon$.** As $\varepsilon$ grows by
-factors of ten, the recovery falls from 99.98% to 99.67% to 95.0%. The
+factors of ten, the recovery falls from 99.99% to 99.73% to 95.2%. The
 missing correlation energy therefore grows faster than linearly in
 $\varepsilon$. There is no tolerance on it. To reach a target accuracy, run
 a series of $\varepsilon$ values and choose from it.
 
-n-Butane in cc-pVDZ, all electrons, from the `589b50832` build. Each line
+n-Butane in cc-pVDZ, all electrons, from the `76ffd5a79` build (λ-Boys, λ = 10). Each line
 of the output is cut after `keep_fraction`; the full `local` dict also
 carries the solver statistics, the timings and the trust text. The
 $\varepsilon = 0$ run reproduces the exact RI-MP2 energy to
-$4.919\times10^{-13}$ Ha, and the recovery falls as stated above:
+$2.726\times10^{-13}$ Ha, and the recovery falls as stated above:
 
 ```python
 import ferric
@@ -1277,10 +1425,10 @@ for eps in (0.0, 1e-5, 1e-4, 1e-3):
 
 ```text
 exact RI-MP2 E_corr = -0.5996452251 Ha
-eps=  0e+00  E_corr=-0.5996452251  recovery=100.0000%  E-E*=+4.919e-13 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0, 'keep_fraction': 1.0, ...}
-eps=  1e-05  E_corr=-0.5995279382  recovery= 99.9804%  E-E*=+1.173e-04 Ha  local={'scheme': 'amplitude-threshold', 'eps': 1e-05, 'keep_fraction': 0.6013112181756786, ...}
-eps=  1e-04  E_corr=-0.5976711043  recovery= 99.6708%  E-E*=+1.974e-03 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0001, 'keep_fraction': 0.22030308815120248, ...}
-eps=  1e-03  E_corr=-0.5696280916  recovery= 94.9942%  E-E*=+3.002e-02 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.001, 'keep_fraction': 0.029930075062173215, ...}
+eps=  0e+00  E_corr=-0.5996452251  recovery=100.0000%  E-E*=+2.726e-13 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0, 'keep_fraction': 1.0, ...}
+eps=  1e-05  E_corr=-0.5995980733  recovery= 99.9921%  E-E*=+4.715e-05 Ha  local={'scheme': 'amplitude-threshold', 'eps': 1e-05, 'keep_fraction': 0.5846693712871353, ...}
+eps=  1e-04  E_corr=-0.5980550045  recovery= 99.7348%  E-E*=+1.590e-03 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0001, 'keep_fraction': 0.21723822050709232, ...}
+eps=  1e-03  E_corr=-0.5708766759  recovery= 95.2024%  E-E*=+2.877e-02 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.001, 'keep_fraction': 0.02984183343387928, ...}
 ```
 
 ## Sources
@@ -1290,6 +1438,7 @@ eps=  1e-03  E_corr=-0.5696280916  recovery= 94.9942%  E-E*=+3.002e-02 Ha  local
 | `crates/ferric-mp2/src/lmp2_amplitude.rs`, `crates/ferric-mp2/src/ragged.rs` | the algorithm, the policy and the mask |
 | `scripts/lmp2_hylleraas_vs_wshg23_sympy.py`, claims 1, 2, 4, 5, 6 | verified equations @eq:lmp2-hylleraas and @eq:lmp2-cg-bound |
 | `scripts/lmp2_fock_screen_sympy.py`, claims 1, 2, 3 | verified equation @eq:lmp2-fock-screen-schur |
+| `scripts/lmp2_lambda_boys_sympy.py`, S1 to S4 | verified equation @eq:lmp2-lambda-boys-stationarity |
 | `scripts/lmp2_combined_sympy.py`, P1 to P6 | verified equations @eq:lmp2-combined-truncation-error, @eq:lmp2-combined-jacobi-remainder, @eq:lmp2-combined-embedding-residual and @eq:lmp2-combined-lambda-boys |
 | `crates/ferric-mp2/tests/lmp2_fock_screen_probe.rs` | the dense-oracle measurements of section @sec:amplitude-lmp2-fock-screen-measured |
 | Wang, Ling, Shi, Shen, Wang, Yang, Li and Head-Gordon, JCTC 21, 10910 (2025) | the block-Kapuy embedding compared with the screen |

@@ -302,10 +302,10 @@ to the CG tolerance. The test has one mutation arm per map, so each map is
 shown to change the energy when it is broken.
 
 n-Butane in cc-pVDZ shows the trivial limit and then the default maps
-(the `589b50832` build). Python has no way to pass `virt_radius = None`, so
+(the `76ffd5a79` build, λ-Boys λ = 10). Python has no way to pass `virt_radius = None`, so
 the first run keeps the 20 Bohr default; butane is 10.5 Bohr between its
 farthest atoms, so that radius drops nothing. The trivial run matches exact
-RI-MP2 to $4.93\times10^{-13}$ Ha. With the default maps (`virt_radius` 20,
+RI-MP2 to $2.71\times10^{-13}$ Ha. With the default maps (`virt_radius` 20,
 `ao_tail` $10^{-4}$) the direct recovery agrees with the in-core one to
 $10^{-4}$ percentage points at each $\varepsilon$:
 
@@ -329,10 +329,10 @@ for eps in (1e-5, 1e-4, 1e-3):
 ```
 
 ```text
-exact -0.599645225098  direct trivial maps -0.599645225098  diff +4.93e-13 Ha
-eps=  1e-05  in-core  99.9804%  direct (default maps)  99.9805%
-eps=  1e-04  in-core  99.6708%  direct (default maps)  99.6708%
-eps=  1e-03  in-core  94.9942%  direct (default maps)  94.9943%
+exact -0.599645225098  direct trivial maps -0.599645225098  diff +2.71e-13 Ha
+eps=  1e-05  in-core  99.9921%  direct (default maps)  99.9922%
+eps=  1e-04  in-core  99.7348%  direct (default maps)  99.7349%
+eps=  1e-03  in-core  95.2024%  direct (default maps)  95.2025%
 ```
 
 **Artifact hypothesis.** The two outcomes of a size sweep are predicted in
@@ -387,7 +387,7 @@ CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, trivial maps, integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri) | PySCF `DFMP2`, same auxiliary basis | at most $1.38\times10^{-11}$ Ha over the 24 comparisons of the validation page, bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `crates/ferric-mp2/tests/lmp2_direct.rs` |
-| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.98%, 99.65%, 95.0% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps, against 99.98%, 99.67%, 95.0% in core <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> | same |
+| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.98%, 99.72%, 95.2% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps, against 99.99%, 99.73%, 95.2% in core (λ-Boys, λ = 10) <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
