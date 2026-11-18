@@ -157,6 +157,27 @@ $\cos(kr_0)\,e^{-k^2/4\omega^2}$ is still negative at $kr_0 = \pi$ (section
 indefinite for every finite $r_0$ and $\omega$. A density modulated at
 wavelength near $2r_0$ lowers its energy through terf.
 
+> **Verified claim** · the two-charge interaction of the terf kernel
+>
+> With $W(r) = \operatorname{terf}(r)/r$, $W(0) = (2\omega/\sqrt\pi)\,e^{-\omega^2r_0^2}$
+> and $W(r_0) = \operatorname{erf}(2\omega r_0)/(2r_0)$ symbolically. The pair
+> interaction $2W(0) - 2W(r_0)$ is $-0.165$, $-0.917$ and $-1.000\,q^2/r_0$ at
+> $r_0\omega = 1$, 2 and 4, and $+0.013\,q^2/r_0$ at $1/\sqrt2$. The
+> maximum of $W$ lies at $1.32$, $1.39$ and $1.26\,r_0$ for $r_0\omega = 1$,
+> 2 and 4. The momentum-space integral of
+> $\cos(kr_0)e^{-k^2/4\omega^2}$, which uses no real-space kernel, reproduces
+> the pair interaction to $3\times10^{-22}$, and the transform is negative at
+> $kr_0 = \pi$ for every $\omega$ and $r_0$ tried.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/terf_kernel_sign_sympy.py`, checks `two-charge`, `two-charge-fourier` |
+> | Negative control | the first error function takes $r + r_0$; the transform loses its cosine; each turns its check red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-rpa/src/rs_mp2_rpa.rs::rs_mp2_lr_rpa` |
+>
+> <!-- verified: id=rsrpa.terf-two-charge; script=scripts/terf_kernel_sign_sympy.py; claim=two-charge; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/rs_mp2_rpa.rs::rs_mp2_lr_rpa; registry=rs-mp2-rpa -->
+
 What does that do to the fit? The metric $V_{\mathrm t} = (P|\operatorname{terf}|Q)$
 inherits the sign. On Ne$_2$ at 3.6 Å with aug-cc-pVDZ-RIFIT and
 $r_0 = 1.35$ Å, 68, 78 and 70 of its 144 eigenvalues are negative at
@@ -201,13 +222,35 @@ refuses the nonpositive determinant.
 ### The sign of B's correction {#two-formulations-terf-sign}
 
 In one mode the bracket $\Delta E_{\mathrm{dRPA}}(k) = E_{\mathrm{dRPA}}(k) + k^2/(4\Delta)$
-has the sign of $k$ (checked numerically over $-\Delta/2 < k \le 5\Delta$).
+has the sign of $k$ for every $k > -\Delta/2$. With
+$s = \sqrt{1 + 2k/\Delta}$, which is positive exactly on that range,
+$k = \Delta(s-1)(s+1)/2$ and the bracket is
+$\Delta\,(s-1)^3(s+3)/16$, so its sign is that of $s - 1$, which is that of $k$.
 A positive coupling, the only kind a positive definite kernel has, gives a
 positive bracket: the higher rings screen and weaken the correlation. A
 negative mode gives a negative bracket: the higher rings deepen it. The
 terf kernel has negative modes, so B's correction with terf need not have
 the screening sign. The one-mode model shows how the sign can flip; it does
 not predict the many-mode sign.
+
+> **Verified claim** · the sign of the one-mode bracket
+>
+> $\tfrac12\big(\sqrt{\Delta(\Delta+2k)} - \Delta - k\big) + k^2/(4\Delta)$
+> equals $\Delta(s-1)^3(s+3)/16$ symbolically, and a scan over
+> $-\Delta/2 < k \le 5\Delta$ finds the sign of $k$. The frequency integral
+> $\frac1{2\pi}\int_0^\infty[\ln(1+p) - p]\,d\omega$ with
+> $p = 2\Delta k/(\Delta^2 + \omega^2)$ equals the closed form to $10^{-19}$ at
+> seven couplings from $-0.45\Delta$ to $5\Delta$. At $k \le -\Delta/2$ the
+> determinant $1 + p(0)$ is nonpositive.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/terf_kernel_sign_sympy.py`, checks `one-mode-sign`, `one-mode-integral` |
+> | Negative control | the shift $k^2/(2\Delta)$ replaces $k^2/(4\Delta)$; the check turns red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-rpa/src/energy.rs::eval_signed_trace_log_summands` |
+>
+> <!-- verified: id=rsrpa.terf-one-mode-sign; script=scripts/terf_kernel_sign_sympy.py; claim=one-mode-sign; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/energy.rs::eval_signed_trace_log_summands; registry=rs-mp2-rpa -->
 
 The measurement is the counterpoise interaction energy of $\Delta E_{\mathrm{dRPA}}[\mathrm{lr}]$
 on Ne$_2$ at 3.6 Å, aug-cc-pVDZ / aug-cc-pVDZ-RIFIT, $r_0 = 1.35$ Å, in µHa.
@@ -260,12 +303,18 @@ benchmark yet says whether it helps or hurts accuracy.
   positive definite has no Cauchy–Schwarz bound.
 
 The first five refusals come from `refuse_unsupported_signed_drpa`, which
-runs only when B is requested with terf, before any integral is built. Its
-error names the option and the alternative (`trunc_thresh = 0`, dense
-$\chi_0$). T with terf needs none of them: its dRPA energies use Coulomb and
-terfc. The CLI reads only `trunc_thresh` from `[rpa]` for `rs-mp2-rpa`, and
-`run_rs_mp2_rpa` exposes no dRPA option, so the others are reachable from
-Rust through `RsMp2RpaConfig::drpa` only.
+runs only when B is requested with terf, before any integral is built. Four
+of them are option refusals (`trunc_thresh`, the Laplace $\chi_0$, the
+Boys-screened $\chi_0$, `need_inv_dielectric_freq`) and return
+`FerricError::Unsupported { feature, reason }`: `feature` names the option as
+the caller set it, `reason` gives the cause and the supported alternative
+(`trunc_thresh = 0`, dense $\chi_0$). `crates/ferric-rpa/tests/terf_refusals.rs`
+triggers each, closed shell and for truncation open shell, and shows that erf
+with B and terf with T take the same options. T with terf needs none of them:
+its dRPA energies use Coulomb and terfc. The CLI reads only `trunc_thresh` from
+`[rpa]` for `rs-mp2-rpa`, and `run_rs_mp2_rpa` exposes no dRPA option, so the
+others are reachable from Rust through `RsMp2RpaConfig::drpa` only. The Python
+binding maps `Unsupported` to `NotImplementedError`.
 
 ## In the code {#two-formulations-code}
 
@@ -501,9 +550,10 @@ is closed shell only.
 | section @sec:factorization-and-metric-signed, `scripts/rpa_terf_signed_fit_sympy.py` | @sec:two-formulations-terf-signed |
 | `crates/ferric-rpa/tests/terf_signed_fit.rs`, `testdata/reference/ne2_terf_signed_fit.json` | the Ne$_2$ table |
 | `scripts/rpa_rs_mp2_rpa_sympy.py` | the verified boxes |
+| `scripts/terf_kernel_sign_sympy.py` | the two verified claims of @sec:two-formulations-terf-indefinite and @sec:two-formulations-terf-sign |
+| `crates/ferric-rpa/tests/terf_refusals.rs` | @sec:two-formulations-terf-refusals |
 | `site/src/reference/validation.md` | @sec:two-formulations-anchors |
 
 The script writes the denominator as the negative $D$; this section uses
-$\Delta$ (section @sec:cross-term). The two-charge interaction and the sign
-rule of the one-mode bracket were checked numerically for this section and
-are not in a committed script.
+$\Delta$ (section @sec:cross-term). `scripts/terf_kernel_sign_sympy.py` checks the two-charge interaction and the
+sign rule of the one-mode bracket with this section's $\Delta$ and $k$.

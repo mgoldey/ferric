@@ -901,7 +901,8 @@
       ],
       "scripts": [
         "scripts/rpa_rs_mp2_rpa_sympy.py",
-        "scripts/rpa_terf_signed_fit_sympy.py"
+        "scripts/rpa_terf_signed_fit_sympy.py",
+        "scripts/terf_kernel_sign_sympy.py"
       ]
     },
     "scs-mp2": {
@@ -1200,7 +1201,8 @@
       ],
       "scripts": [
         "scripts/u_attenuated_sympy.py",
-        "scripts/rpa_terf_signed_fit_sympy.py"
+        "scripts/rpa_terf_signed_fit_sympy.py",
+        "scripts/terf_kernel_sign_sympy.py"
       ]
     },
     "scs-2terfc-gradient": {

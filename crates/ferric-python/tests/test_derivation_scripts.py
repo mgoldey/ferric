@@ -88,6 +88,23 @@ CASES = [
         ],
     ),
     (
+        "terf_kernel_sign_sympy.py",
+        30,
+        [
+            (
+                "FIRST_ARG_SIGN = -1",
+                "FIRST_ARG_SIGN = 1",
+                "FAIL [two-charge]",
+            ),
+            (
+                "return mp.cos(k * r0)  # PHASE",
+                "return mp.mpf(1)  # PHASE",
+                "FAIL [two-charge-fourier]",
+            ),
+            ("BRACKET_DIV = 4", "BRACKET_DIV = 2", "FAIL [one-mode-sign]"),
+        ],
+    ),
+    (
         "u_attenuated_sympy.py",
         15,
         [
