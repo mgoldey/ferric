@@ -32,10 +32,6 @@ multiplier in an outer loop.
 | CLI | `[cdft]` on `kind = "uhf"`, `task = "energy"` |
 | Python | `run_cdft`, `CdftConstraint`, `cdft_coupling` |
 
-The code lives in `ferric-dft/src/cdft.rs`, `ferric-scf/src/cdft_driver.rs`
-and `ferric-scf/src/cdft_coupling.rs`; the proof script is
-`scripts/cdft_constraint_coupling_sympy.py`.
-
 ## Equations {#cdft-equations}
 
 **The population as a trace.** "How many electrons are on fragment $C$"
@@ -117,8 +113,11 @@ So $-\lambda$ is the change in energy per electron added to the fragment.
 
 On the lowest solution $V(\lambda) = \min_\rho(E + \lambda c)$ is a minimum
 of functions linear in $\lambda$, so it is concave. Its derivative $c$ can
-only decrease: $dc/d\lambda \le 0$. The reported energy is $E$ at the
-constrained density, without $\lambda c$.
+only decrease: $dc/d\lambda \le 0$. Two consequences are what the solver
+uses. The constrained state, $c = 0$, is the maximum of $V(\lambda)$. And
+since $c$ is monotone along one SCF branch, a bracket on the sign of $c$
+contains the root, as long as both ends lie on that branch. The reported
+energy is $E$ at the constrained density, without $\lambda c$.
 
 > **Verified equation {#eq:ks-cdft-envelope}** · the Fock shift and $dE/dN = -\lambda$
 >
@@ -228,7 +227,10 @@ convention. $\lvert H_{ab}\rvert$ does not depend on it.
 **The Hamiltonian element.** Wu and Van Voorhis evaluate it from the
 state energies and one-body elements only. Each converged state is treated as an eigenfunction of
 $\hat H + \lambda_X\hat w_X$, the Hamiltonian it was solved with, with
-eigenvalue $F_X = E_X + \lambda_XN_X$. Here
+eigenvalue $F_X = E_X + \lambda_XN_X$. This is a model, not a derivation: a
+KS (or UHF) determinant is not an eigenfunction of the interacting
+Hamiltonian, so the right- and left-acting forms below differ. Averaging
+them makes $H_{\rm raw}$ symmetric in $a$ and $b$. Here
 $N_X = \langle\Psi_X|\hat w_X|\Psi_X\rangle$ comes from the state's own
 orbitals (`own_population`). Then
 $\langle a|\hat H|b\rangle = F_bS_{ab} - \lambda_b\langle a|\hat w_b|b\rangle$
@@ -254,11 +256,11 @@ At $S_{ab} = 0$ this is $H_{\rm raw}$. When $\lvert 1 - S_{ab}^2\rvert < 10^{-10
 the two states are the same state and `coupling_hab` returns $E_a$.
 
 **Offset invariance.** Any constant added to the weight operator,
-$W \to W - cS$ (the target moves with it, $N \to N - cN_e$), must leave the
+$W \to W - \eta S$ (the target moves with it, $N \to N - \eta N_e$), must leave the
 coupling unchanged. Each $\lambda_X$ in $H_{\rm raw}$ multiplies
 $N_XS_{ab} - \langle a|\hat w_X|b\rangle$, the matrix element of
 $\hat w_X - N_X$. Under the shift, $\langle a|\hat w|b\rangle$ moves by
-$-cN_eS_{ab}$ and $N_X$ by $-cN_e$, so the combination does not move. With
+$-\eta N_eS_{ab}$ and $N_X$ by $-\eta N_e$, so the combination does not move. With
 $E_X$ in place of $F_X$ the $N_XS_{ab}$ term is missing and the coupling is
 not invariant. The coupling takes charge constraints only, where the same
 $\hat w$ acts on both spins.
@@ -268,7 +270,7 @@ $\hat w$ acts on both spins.
 > Symbolically, the off-diagonal element of $S^{-1/2}HS^{-1/2}$ for the
 > $2\times2$ problem is $(H_{\rm raw} - \tfrac12(E_a + E_b)S_{ab})/(1 - S_{ab}^2)$.
 > Numerically, for two random UHF states with different MO sets,
-> `coupling_hab` is unchanged when both weight operators become $W - cS$;
+> `coupling_hab` is unchanged when both weight operators become $W - \eta S$;
 > the form with $E_X$ in place of $F_X$ changes by $0.23$ Ha.
 >
 > | | |
@@ -309,7 +311,7 @@ direct $\langle A|\hat H|B\rangle$.
 |---|---|---|
 | 1 | $W^C$ on its own grid (default $99\times302$) | `build_weight_matrix` |
 | 2 | inner UKS (or UHF) at fixed $\lambda$ with the shifted Fock | `solve_uhf_fockmod` |
-| 3 | $c(\lambda)$; a constraint counts as met only once $\lambda$ has been applied, unless $c$ is already at the population floor | `solve_scalar` |
+| 3 | $c(\lambda)$; a constraint counts as met only once $\lambda$ has been applied ($\lvert\lambda\rvert > 10^{-10}$), unless $\lvert c\rvert$ is already at the population floor ($10^{-3}$ electrons) | `constraint_met` |
 | 4 | one constraint: second solve at $\lambda + 10^{-3}$, finite-difference slope, Newton step clamped to the trust radius (at most 1 Ha/e) | `solve_scalar` |
 | 5 | trust the pair only if $V(\lambda + h) - V(\lambda) = h(c_\lambda + c_{\lambda+h})/2$ to the trapezoid error (same SCF branch); otherwise step toward lower $\lvert c\rvert$ | `solve_scalar` |
 | 6 | keep a sign-change bracket and bisect when a step leaves it; backtrack after an unconverged inner SCF | `Bracket` |
@@ -334,7 +336,19 @@ same-basin pairs fall between $1.8\times10^{-14}$ and $7.0\times10^{-9}$ Ha and
 cross-basin pairs between $5.5\times10^{-5}$ and $0.35$ Ha. $10^{-6}$ is 140
 times the largest same-basin value and 55 times below the smallest
 cross-basin one. One pair, at $2.7\times10^{-7}$ Ha on a steep stretch of
-$c(\lambda)$ ($dc/d\lambda = -6.6$), belongs to neither group.
+$c(\lambda)$ ($dc/d\lambda = -6.6$), belongs to neither group. It is below
+`HF_MISMATCH_TOL`, so the code trusts it; for that pair the margin is 3.7,
+not 140.
+
+Why does step 3 refuse a constraint that is met at $\lambda = 0$? At
+$\lambda = 0$ the unconstrained state can satisfy a loose tolerance by
+accident, and the loop would return it labelled as constrained. On HeNe$^+$
+at 2.0 Å the unconstrained UHF state sits $6.93\times10^{-2}$ electrons from
+the targets $N({\rm Ne}) = 9$, $N({\rm He}) = 2$; with a tolerance of
+$10^{-1}$ it passed before $\lambda$ moved. The population floor,
+`VACUOUS_RESIDUAL_FLOOR` $= 10^{-3}$, is the exception: a residual that small
+is the right answer at $\lambda = 0$ (HeNe$^+$ at 6.0 Å, where the
+unconstrained state is the $N({\rm He}) = 2$ diabat to $5.2\times10^{-4}$).
 
 Why not trust every slope? $c(\lambda)$ can be a near-step function. On
 HeNe$^+$ the populations reachable at fixed $\lambda$ form two flat branches
@@ -375,7 +389,7 @@ From `site/src/reference/validation.md`, the constrained-DFT rows.
 | $dE/dN = -\lambda$ (Simpson) | the same, def2-SVP | $2.3\times10^{-12}$ Ha | the same |
 | state selection seeded from NWChem orbitals | HeNe$^+$, LiH$^+$ / def2-SVP | $\le 7.7\times10^{-10}$ Ha | `crates/ferric-scf/tests/validation_cdft_state.rs` |
 | coupling kernel vs NWChem `et` ingredients | He$_2^+$ / def2-SVP, aug-cc-pVDZ | $\le 5.9\times10^{-11}$ Ha | `crates/ferric-scf/tests/validation_cdft_et.rs` |
-| $\lvert V\rvert$ end to end, KS-PBE diabats | the same, 2.5 to 3.5 Å | $\le 8.3\times10^{-4}$ relative | the same |
+| $\lvert H_{ab}\rvert$ end to end, KS-PBE diabats | the same, 2.5 to 3.5 Å | $\le 8.3\times10^{-4}$ relative | the same |
 
 ## Sources {#cdft-sources}
 

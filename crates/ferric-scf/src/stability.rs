@@ -1078,9 +1078,11 @@ pub enum StabilitySkip {
     /// at MO coefficients that are not a UHF stationary point — a wrong-operator
     /// verdict that would look authoritative. Skipped deliberately.
     Rohf,
-    /// The functional carries VV10 nonlocal correlation, whose linear response
-    /// exists NOWHERE in this workspace: `ferric_dft::fxc` has no VV10 term, so
-    /// `rohf::FxcKernelStore` silently omits it.
+    /// The functional carries VV10 nonlocal correlation. Its linear response
+    /// exists (`ferric_dft::vv10::Vv10Response`, used by the Python block
+    /// CPKS through `XcFunctional.response`) but is not wired into the
+    /// stability Hessian: `ferric_dft::fxc` has no VV10 term, so
+    /// `rohf::FxcKernelStore` would silently omit it.
     /// `zvector_ks` and `ferric_dft::lr_kernel::resolve_singlet_response_xc`
     /// refuse VV10 functionals for the same reason.
     ///

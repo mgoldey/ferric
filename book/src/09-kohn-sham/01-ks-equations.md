@@ -34,8 +34,8 @@ exact-exchange matrix is scaled by the functional's fractions.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-scf/src/rhf.rs::solve_rhf`, `ferric-scf/src/uhf.rs::solve_uhf`, `ferric-scf/src/rohf.rs::solve_rohf` with `RhfConfig.xc`; `ferric-dft/src/ks.rs::{KsXc,KsXcUks}`; `ferric-scf/src/rhf.rs::ks_vxc_closed` outside the loop |
-| CLI | `method.kind = "ksdft"` (RKS, UKS above multiplicity 1), or `rhf` / `uhf` / `rohf` with `[dft] functional` |
-| Python | `run_dft`, `run_ksdft`; `run_rhf`, `run_uhf`, `run_rohf` with `xc=` |
+| CLI | `method.kind = "ksdft"` (RKS, UKS above multiplicity 1), or `rhf` / `uhf` / `rohf` with `[dft] functional` (RKS, UKS, ROKS with that functional) |
+| Python | `run_dft(functional=)`, `run_ksdft` (closed shell), `run_uks`, `run_roks` |
 
 ## Energy and Fock matrix {#ks-equations-energy-fock-matrix}
 
@@ -110,6 +110,13 @@ At $D^\alpha = D^\beta = D/2$ this is the closed-shell result:
 $-K_{\rm tot}(D/2) = -\tfrac12K_{\rm tot}(D)$, and the exchange energy
 $-\tfrac12\cdot 2\cdot\mathrm{Tr}[\tfrac D2K_{\rm tot}(\tfrac D2)] = -\tfrac14\mathrm{Tr}[DK_{\rm tot}(D)]$.
 
+UKS solves the two equations $F_\sigma\mathbf C^\sigma = S\mathbf C^\sigma\boldsymbol\varepsilon^\sigma$
+with independent orbitals. ROKS builds the same $F_\alpha$ and $F_\beta$
+from one set of orbitals (doubly occupied, singly occupied, virtual) and
+couples them into the Roothaan effective operator of section
+@sec:energy-functionals; the energy is the open-shell expression above,
+and only the orbital update differs from UKS.
+
 > **Verified equation {#eq:ks-fock-is-de-dd}** · the Fock matrix is the derivative of the energy
 >
 > $F = h + J(D) - \tfrac12K_{\rm tot}(D) + V_{xc}$ with
@@ -182,9 +189,11 @@ $\rho\,\partial f/\partial\rho = f$, that is, when $f$ is homogeneous of
 degree one in $\rho$. Slater exchange, $f = -C_x\rho^{4/3}$, is homogeneous
 of degree $\tfrac43$, so $\mathrm{Tr}[DV_x] = \tfrac43E_x$. The energy
 therefore takes $E_{xc}$ from the grid as its own term, and $V_{xc}$ is
-added to $F$ after the trace. Solvation, embedding and the Fock hook follow
-the same rule: their potentials go into $F$, their energies are separate
-terms.
+added to $F$ after the trace. The other terms of the return line follow the
+same rule: their potentials go into $F$, their energies are separate
+terms. They are the Fock hook (`e_hook`, section @sec:fock-hooks), COSMO
+and PCM solvation (`e_cosmo`, `e_pcm`, chapter @sec:implicit-solvation) and
+polarizable embedding (`e_pol`, section @sec:polarizable-embedding).
 
 Water in cc-pVDZ, from the `589b50832` build, shows the factor. For Slater
 exchange alone the ratio $\mathrm{Tr}[DV_{xc}]/E_{xc}$ is $\tfrac43$ to six
@@ -219,12 +228,10 @@ whose $\rho$ (per spin, $\rho_\sigma$) is at or below
 $10^{-10}$ when any component is a meta-GGA. The energy and the matrix
 therefore differ by at most the floored points' contribution. The tests
 bound that difference through $\mathrm{Tr}[V_{xc}X] = \mathrm dE_{xc}/\mathrm dt$
-at $10^{-9}$ relative (section @sec:vxc-matrix-elements).
+to $10^{-9}\max(1, \lvert\mathrm dE_{xc}/\mathrm dt\rvert)$ (section @sec:vxc-matrix-elements).
 
 **Reproducibility.** $E_{xc}$ is a grouped, fixed-order sum over points
-(`deterministic_point_sum`), so it is bit-identical across thread counts. A
-meta-GGA SCF gets a default virtual-block level shift of 0.5 when none is
-set, ramped to zero at convergence.
+(`deterministic_point_sum`), so it is bit-identical across thread counts.
 
 ## Functional families {#ks-equations-functional-families}
 
@@ -250,6 +257,18 @@ exist:
 | `RangeSepGga` | $\rho,\sigma$ | $v_\rho, v_\sigma$ | $c_{\rm sr}, c_{\rm lr}, \omega$ | HSE06, ωB97X-V (+VV10) |
 | `MetaGga` | $\rho,\sigma,\tau$ | $v_\rho, v_\sigma, v_\tau$ | none, global or CAM | SCAN, r2SCAN, TPSS, TPSSh, M06-2X, SCAN0, r2SCAN0, ωB97M-V |
 
+`MetaGga` covers pure and hybrid meta-GGAs. The hybrid part is carried by
+the exact-exchange fraction (`b3lyp_mix`) or the range-separation
+coefficients (`CamCoeffs`) of section @sec:hybrids, not by the family.
+
+A meta-GGA SCF needs one more setting. The $\tau$ term of the Fock matrix
+amplifies grid noise, and plain DIIS then limit-cycles above the density
+threshold. When no level shift is set, `solve_rhf`, `solve_uhf` and
+`solve_rohf` therefore apply a virtual-block level shift of 0.5 Ha for a
+meta-GGA, ramped to zero at convergence (`RhfConfig::meta_gga_auto_level_shift`;
+an explicit `level_shift` on the CLI or in Python turns it off). LDA, GGA
+and hybrid GGA runs get no shift.
+
 Any libxc name is also accepted directly. A meta-GGA definition
 (`ferric-dft/src/libxc.rs::metagga_def_from_handles`) refuses, with an error
 in place of a silent approximation:
@@ -269,11 +288,15 @@ libxc and turned into the SCF's mixing coefficients in section @sec:hybrids.
 
 | Option (CLI `[dft]`, Python) | Effect |
 |---|---|
-| `functional` / `xc=` | a friendly name from the table or any libxc name |
-| `xc_omega` | overrides $\omega$ of a range-separated functional (section @sec:hybrids) |
+| `functional` | a friendly name from the table or any libxc name |
 | `grid_radial`, `grid_angular`, `grid_prune`, `grid_weight_cut` | the XC grid (section @sec:grids) |
-| `nlc_grid` | the VV10 grid (section @sec:vv10) |
 | `[scf] jk`, `k_builder` | how $J$ and $K$ are built; KS defaults to RI-J |
+
+Two more settings are reachable from Rust only. `RhfConfig::xc_omega`
+overrides $\omega$ of a range-separated functional (section @sec:hybrids);
+from Python, `tune_omega` sets it internally while it searches.
+`RhfConfig::nlc_grid` sets the VV10 grid (section @sec:vv10); the CLI and
+`run_dft` always use its $(50, 50)$ default.
 
 ## Numerical anchors {#ks-equations-numerical-anchors}
 

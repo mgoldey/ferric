@@ -19,7 +19,7 @@ exchange itself.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
-| $a$ | global exact-exchange fraction | `b3lyp_mix` |
+| $a$ | global exact-exchange fraction | `b3lyp_mix` (the field name is historical; it holds any functional's fraction) |
 | $c_{\rm sr}, c_{\rm lr}, \omega$ | short- and long-range fractions, range separation (Bohr$^{-1}$) | `CamCoeffs { c_sr, c_lr, omega }`, `KMix` |
 | $K[\mathrm{erfc}]$, $K[\mathrm{erf}]$ | exchange matrices of the two attenuated kernels | `k_sr`, `k_lr` |
 | $J(\omega)$ | tuning objective | `OmegaEval::j` |
@@ -27,8 +27,8 @@ exchange itself.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-dft/src/libxc.rs::cam_coefficients`, `ferric-scf/src/fock_assembly.rs::{subtract_rsh_exchange,build_rsh_dfk_pair}`, `ferric-scf/src/rsh_response.rs::exchange_response`, `ferric-scf/src/omega_tuning.rs::tune_omega` |
-| CLI | `[dft] functional`, `xc_omega` |
-| Python | `run_dft(xc=..., xc_omega=...)`, `tune_omega` |
+| CLI | `[dft] functional` |
+| Python | `run_dft(functional=...)`, `tune_omega` |
 
 ## Exact exchange {#hybrids-exact-exchange}
 
@@ -48,7 +48,10 @@ The two pieces have different ranges. $\mathrm{erf}(\omega r)/r$ is finite at
 $r = 0$ (it tends to $2\omega/\sqrt\pi$) and becomes $1/r$ at large $r$: it is
 the long-range part. $\mathrm{erfc}(\omega r)/r$ is $1/r$ at short range and
 decays like a Gaussian beyond $r \approx 1/\omega$: it is the short-range
-part. $\omega$ is in Bohr$^{-1}$.
+part. $\omega$ is in Bohr$^{-1}$ on this page and in `tune_omega`, which
+takes its bracket and returns $\omega^*$ in Bohr$^{-1}$. The attenuated MP2
+methods of chapter @sec:mp2 take their user-facing $\omega$ in Å$^{-1}$, so
+the two conventions can meet in one input; 1 Bohr$^{-1}$ is 1.8897 Å$^{-1}$.
 
 **ferric's form.** The CAM form of Yanai, Tew and Handy writes the
 exact-exchange kernel as $[a + b\,\mathrm{erf}(\omega r)]/r$ and gives the
@@ -99,7 +102,7 @@ long range, $\beta > 0$ more at short range.
 |---|---|---|---|---|
 | ωB97X | $(1, -0.842294, 0.3)$ | 0.157706 | 1 | long-range corrected |
 | ωB97X-V | $(1, -0.833, 0.3)$ | 0.167 | 1 | long-range corrected |
-| CAM-B3LYP | $(0.65, -0.46, 0.33)$ | 0.19 | 0.65 | long-range corrected |
+| CAM-B3LYP | $(0.65, -0.46, 0.33)$ | 0.19 | 0.65 | Coulomb attenuated |
 | LC-ωPBE | $(1, -1, 0.4)$ | 0 | 1 | long-range only |
 | HSE06 | $(0, 0.25, 0.11)$ | 0.25 | 0 | screened (short-range only) |
 | B3LYP, PBE0 | $\omega = 0$, $a = 0.2$, $0.25$ | $a$ | $a$ | global hybrid |
@@ -202,8 +205,8 @@ kernels at once, because $K_{\rm tot}$ is linear in $D$ and each kernel has
 the symmetry.
 
 **Open shell.** With per-spin densities
-$D^\sigma = C^\sigma_{\rm occ}C^{\sigma\,\mathsf T}_{\rm occ}$ (`uhf.rs`
-`solve_uhf`, `rohf.rs` `solve_rohf`),
+$D^\sigma = C^\sigma_{\rm occ}C^{\sigma\,\mathsf T}_{\rm occ}$
+(`ferric-scf/src/uhf.rs::solve_uhf`, `ferric-scf/src/rohf.rs::solve_rohf`),
 
 $$ E_x^{\rm HF} = -\tfrac12\sum_\sigma \mathrm{Tr}[D^\sigma K_{\rm tot}(D^\sigma)], \qquad F_\sigma = h + J(D^\alpha + D^\beta) - K_{\rm tot}(D^\sigma) + V_{xc}^\sigma . $$
 
@@ -278,9 +281,10 @@ differences (ωB97X-V, CAM-B3LYP, HSE06 on H$_2$/STO-3G).
 ## Tuning $\omega$ {#hybrids-tuning}
 
 A range-separated functional ships with one published $\omega$. Tuning
-picks $\omega$ per molecule instead, by asking that Koopmans' theorem hold
-for the HOMO: the HOMO energy should equal minus the ionization potential
-computed from two total energies. For a closed-shell neutral molecule and
+picks $\omega$ per molecule instead, by asking that the exact condition
+$\varepsilon_{\rm HOMO} = -\mathrm{IP}$ of (generalized) Kohn–Sham theory
+hold: the HOMO energy should equal minus the ionization potential computed
+from two total energies. For a closed-shell neutral molecule and
 its doublet cation at the same geometry, basis and grid,
 
 $$ J(\omega) = \varepsilon_{\rm HOMO}(N;\omega) + E(N-1;\omega) - E(N;\omega), \label{eq:hybrids-1} $$
@@ -303,11 +307,23 @@ the anchors below.
 | 5 | branch check: the cation's spin-population asymmetry against the nearest evaluated $\omega$ (tolerance $10^{-7}$) | `branch_tol` |
 | 6 | golden section to $\omega$ tolerance $5\times10^{-3}$, at most 24 evaluations | |
 
+**Why the stability and branch checks.** $J(\omega)$ is a curve only if
+every point is the same electronic state. The doublet cation of a symmetric
+molecule can have two: the hole shared over symmetry-equivalent centres, or
+localized on one of them. Which one an independent SCF reaches depends on
+its guess, and golden section visits $\omega$ out of order, so independent
+solves can assemble $J$ from two branches. Step 5 flags a jump in the
+spin-population asymmetry. Step 4 runs the UKS orbital Hessian on every
+cation (section @sec:stability), because a cation that is an internal saddle can have a
+smooth $J$ and $\langle S^2\rangle$; only the Hessian's lowest eigenvalue
+changes sign.
+
 Water with ωB97X-V in def2-SVP, from the `589b50832` build, sorted by
 $\omega$. The search makes 13 evaluations and returns the evaluated point
 with the smallest $\lvert J\rvert$. For this functional the build skips
-step 4 with a warning on stderr: ωB97X-V carries VV10, and no VV10 response
-kernel exists for the cation's orbital Hessian.
+step 4 with a warning on stderr: ωB97X-V carries VV10, and the VV10
+response (`ferric-dft/src/vv10.rs::Vv10Response`) is not wired into the
+orbital Hessian.
 
 ```python
 import ferric
@@ -371,27 +387,17 @@ $\lvert J(c)\rvert < \lvert J(d)\rvert$ the minimum lies in $[a, d]$, so $b$
 moves to $d$, the old $c$ becomes the new $d$, and only the new $c$ costs an
 evaluation.
 
-**Why the stability and branch checks.** $J(\omega)$ is a curve only if
-every point is the same electronic state. The doublet cation of a symmetric
-molecule can have two: the hole shared over symmetry-equivalent centres, or
-localized on one of them. Which one an independent SCF reaches depends on
-its guess, and golden section visits $\omega$ out of order, so independent
-solves can assemble $J$ from two branches. Step 5 flags a jump in the
-spin-population asymmetry. Step 4 runs the UKS orbital Hessian on every
-cation (section @sec:stability), because a cation that is an internal saddle can have a
-smooth $J$ and $\langle S^2\rangle$; only the Hessian's lowest eigenvalue
-changes sign.
-
 Continuation (seeding each solve from the nearest evaluated $\omega$) is
 off by default: it leaves $\omega^*$ bit-identical on H2O and NH3, and moves
 $J$ only by SCF stopping noise. For a VV10 functional the cation stability
-cannot be analysed (no VV10 response kernel), and the result says so.
+cannot be analysed (the VV10 response is not wired into the orbital
+Hessian), and the result says so.
 
 ## Options {#hybrids-options}
 
 | Option | Effect |
 |---|---|
-| `xc_omega` | overrides $\omega$ in every component's `_omega` parameter and in `CamCoeffs` together; $\alpha$, $\beta$ unchanged |
+| `RhfConfig::xc_omega` (Rust only; `tune_omega` sets it per evaluation) | overrides $\omega$ in every component's `_omega` parameter and in `CamCoeffs` together; $\alpha$, $\beta$ unchanged |
 | `[scf] k_builder` | for $\omega > 0$ the two K matrices come from DF-K over `df_k_aux` (default `def2-universal-jkfit`) |
 | `tune_omega(continuation=, branch_tol=, check_cation_stability=)` | as above |
 
