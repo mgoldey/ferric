@@ -1167,7 +1167,11 @@ mod tests {
             k_builder: k.k_builder.map(str::to_string),
             cosx: None,
             df_j_aux: Some(ks_aux(k.df_j_aux)),
-            df_k_aux: Some(ks_aux(k.df_k_aux)),
+            df_k_aux: df_k_aux_or_default(
+                k.k_builder,
+                k.df_k_aux.map(AuxBasis::parse),
+                Some(AuxBasis::default_jk()),
+            ),
             ri_j_precision: k.ri_j_precision,
             ri_k_precision: k.ri_k_precision,
             level_shift: k.level_shift,
@@ -1214,11 +1218,68 @@ mod tests {
         );
         let f = k.functional.unwrap_or("PBE");
         for sad in [true, false] {
-            same_msg(
-                &old_run_open_ks(k.clone(), f, sad),
-                &new_run_open_ks(k.clone(), f, sad),
-                &format!("run_uks/run_roks (sad={sad}), {msg}"),
-            );
+            let old = old_run_open_ks(k.clone(), f, sad);
+            let new = new_run_open_ks(k.clone(), f, sad);
+            if open_ks_takes_rijcosx_rule(k) {
+                // The one intended change (see
+                // `open_ks_cosx_drops_the_ri_k_default`): everything but
+                // df_k_aux is the old construction.
+                assert_eq!(new.df_k_aux, None, "{msg}");
+                let old = RhfConfig {
+                    df_k_aux: None,
+                    ..old
+                };
+                same_msg(
+                    &old,
+                    &new,
+                    &format!("run_uks/run_roks cosx (sad={sad}), {msg}"),
+                );
+            } else {
+                same_msg(&old, &new, &format!("run_uks/run_roks (sad={sad}), {msg}"));
+            }
+        }
+    }
+
+    /// Where `run_uks` / `run_roks` now differ from their old construction:
+    /// `k_builder = "cosx"` with no explicit `df_k_aux`. The old body applied
+    /// the RI-K default regardless, so COSX always met a df_k_aux conflict
+    /// the caller never set; it now takes the RIJCOSX rule, as `run_dft`.
+    fn open_ks_takes_rijcosx_rule(k: &Kw) -> bool {
+        k.k_builder == Some(COSX_K_BUILDER) && k.df_k_aux.is_none()
+    }
+
+    #[test]
+    fn open_ks_cosx_drops_the_ri_k_default() {
+        let k = Kw {
+            k_builder: Some(COSX_K_BUILDER),
+            ..Kw::default()
+        };
+        for sad in [true, false] {
+            let c = new_run_open_ks(k.clone(), "PBE0", sad);
+            assert_eq!(c.k_builder.as_deref(), Some(COSX_K_BUILDER));
+            assert_eq!(c.df_k_aux, None);
+            assert_eq!(c.df_j_aux.as_deref(), Some(DEFAULT_JK_AUX));
+            // The old construction kept the RI-K default (the bug).
+            let old = old_run_open_ks(k.clone(), "PBE0", sad);
+            assert_eq!(old.df_k_aux.as_deref(), Some(DEFAULT_JK_AUX));
+        }
+        // An explicit df_k_aux still wins (and stays the SCF's conflict).
+        let k = Kw {
+            df_k_aux: Some("def2-universal-jkfit"),
+            ..k
+        };
+        assert_eq!(
+            new_run_open_ks(k, "PBE0", true).df_k_aux.as_deref(),
+            Some(DEFAULT_JK_AUX)
+        );
+        // Without COSX the RI-K default is unchanged.
+        for kb in [None, Some("direct"), Some("link")] {
+            let k = Kw {
+                k_builder: kb,
+                ..Kw::default()
+            };
+            let c = new_run_open_ks(k, "PBE0", true);
+            assert_eq!(c.df_k_aux.as_deref(), Some(DEFAULT_JK_AUX), "{kb:?}");
         }
     }
 
