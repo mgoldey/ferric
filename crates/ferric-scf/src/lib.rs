@@ -272,6 +272,7 @@ mod hessian_smeared;
 pub mod infrared;
 pub mod irc;
 /// Geometry optimization via L-BFGS with energy/gradient convergence.
+pub mod md;
 pub mod optimize;
 pub mod raw_handoff;
 pub mod response_jk;

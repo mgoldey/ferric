@@ -11,6 +11,7 @@ mod cas;
 mod cdft;
 mod config;
 mod gpu_flag;
+mod md;
 mod opmp3;
 mod periodic;
 mod polarization;

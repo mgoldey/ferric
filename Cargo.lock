@@ -386,6 +386,7 @@ dependencies = [
  "ferric-export",
  "ferric-gw",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mp2",
  "ferric-pcm",
  "ferric-quadrature",
@@ -467,6 +468,7 @@ dependencies = [
  "ferric-export",
  "ferric-gw",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mp2",
  "ferric-pbc",
  "ferric-pcm",
@@ -580,10 +582,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-md"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ndarray",
+]
+
+[[package]]
 name = "ferric-mm"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-md",
  "ndarray",
  "serde",
  "serde_json",
@@ -658,6 +669,7 @@ dependencies = [
  "ferric-export",
  "ferric-gw",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mm",
  "ferric-mp2",
  "ferric-pbc",
@@ -712,6 +724,7 @@ dependencies = [
  "ferric-core",
  "ferric-dft",
  "ferric-integrals",
+ "ferric-md",
  "ferric-mm",
  "ferric-pcm",
  "ferric-quadrature",

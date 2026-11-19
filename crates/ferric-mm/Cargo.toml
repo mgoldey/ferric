@@ -9,6 +9,7 @@ workspace = true
 
 [dependencies]
 ferric-core = { path = "../ferric-core" }
+ferric-md = { path = "../ferric-md" }
 ndarray = { workspace = true }
 
 [dev-dependencies]
