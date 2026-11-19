@@ -557,6 +557,53 @@ pub fn solve_ragged_budgeted_steered<S>(
 where
     S: FnMut(f64) -> Option<f64>,
 {
+    budgeted_steered_rhs(
+        rg,
+        f_oo,
+        neg_j_rhs(rg),
+        rtol,
+        max_iter,
+        budget_bytes,
+        fvv_rho_star,
+        steer,
+    )
+}
+
+/// Ragged PCG on the Fock operator with a caller-supplied right-hand side:
+/// solves `P A P t = P rhs` (the amplitude equations are `rhs = −J`, which is
+/// what [`solve_ragged`] passes). `rhs` holds one `(|Da|, |Db|)` block per
+/// pair in `rg.pairs` order. Budgeted like [`solve_ragged_traced`] (resolved
+/// default budget, every Fvv product dense), so `rhs = −J` reproduces
+/// [`solve_ragged_traced`] bit for bit.
+pub fn solve_ragged_rhs(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rhs: &[Array2<f64>],
+    rtol: f64,
+    max_iter: usize,
+) -> RaggedSolve {
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    budgeted_steered_rhs(rg, f_oo, rhs.to_vec(), rtol, max_iter, budget, 0.0, |_| {
+        None
+    })
+    .solve
+}
+
+/// [`solve_ragged_budgeted_steered`] with an explicit right-hand side.
+#[allow(clippy::too_many_arguments)]
+fn budgeted_steered_rhs<S>(
+    rg: &Ragged,
+    f_oo: &Array2<f64>,
+    rhs: Vec<Array2<f64>>,
+    rtol: f64,
+    max_iter: usize,
+    budget_bytes: usize,
+    fvv_rho_star: f64,
+    steer: S,
+) -> BudgetedSolve
+where
+    S: FnMut(f64) -> Option<f64>,
+{
     let plan_bytes = SolvePlan::bytes_for_with_threshold(rg, f_oo, fvv_rho_star);
     let resident_bytes = solve_resident_bytes(rg, max_iter);
     let Some(charge) = admit_plan(plan_bytes, resident_bytes, budget_bytes) else {
@@ -570,6 +617,7 @@ where
         );
         let solve = pcg_steered(
             rg,
+            rhs,
             rtol,
             max_iter,
             |p, ap, flops| matvec_indexed_into(rg, f_oo, p, ap, flops),
@@ -589,6 +637,7 @@ where
     let plan = SolvePlan::with_fvv_threshold(rg, f_oo, fvv_rho_star);
     let solve = pcg_steered(
         rg,
+        rhs,
         rtol,
         max_iter,
         |p, ap, flops| matvec_planned(rg, &plan, p, ap, flops),
@@ -710,7 +759,13 @@ fn pcg_core<F>(rg: &Ragged, rtol: f64, max_iter: usize, matvec_into: F) -> Ragge
 where
     F: FnMut(&[Array2<f64>], &mut [Array2<f64>], &mut u64),
 {
-    pcg_steered(rg, rtol, max_iter, matvec_into, |_| None)
+    pcg_steered(rg, neg_j_rhs(rg), rtol, max_iter, matvec_into, |_| None)
+}
+
+/// The amplitude equations' right-hand side `−J`, one block per pair (not
+/// yet pattern-projected; [`pcg_steered`] projects it).
+fn neg_j_rhs(rg: &Ragged) -> Vec<Array2<f64>> {
+    rg.pairs.iter().map(|pb| -pb.j_blk.clone()).collect()
 }
 
 /// [`pcg_core`] with a continuation rule: on reaching the current tolerance,
@@ -719,8 +774,14 @@ where
 /// step, so stopping and continuing changes no iterate. A tolerance the
 /// current residual already meets ends the solve. Exhausting `max_iter`
 /// leaves `converged` false.
+///
+/// `rhs` is the right-hand side `b` of `P A P t = P b`, one block per pair
+/// in `rg.pairs` order with that pair's `(|Da|, |Db|)` shape; it is
+/// pattern-projected here and becomes the initial residual (taken by value:
+/// no second copy). The amplitude equations pass `−J` ([`neg_j_rhs`]).
 fn pcg_steered<F, S>(
     rg: &Ragged,
+    rhs: Vec<Array2<f64>>,
     rtol: f64,
     max_iter: usize,
     mut matvec_into: F,
@@ -736,15 +797,20 @@ where
         .iter()
         .map(|pb| Array2::<f64>::zeros((pb.da.len(), pb.db.len())))
         .collect();
-    let mut r: Vec<Array2<f64>> = rg
-        .pairs
-        .iter()
-        .map(|pb| {
-            let mut b = -pb.j_blk.clone();
-            apply_pattern(&mut b, &pb.pat, pb.db.len());
-            b
-        })
-        .collect();
+    assert_eq!(
+        rhs.len(),
+        rg.pairs.len(),
+        "ragged PCG: one rhs block per pair"
+    );
+    let mut r = rhs;
+    for (b, pb) in r.iter_mut().zip(&rg.pairs) {
+        assert_eq!(
+            b.dim(),
+            (pb.da.len(), pb.db.len()),
+            "ragged PCG: rhs block shape"
+        );
+        apply_pattern(b, &pb.pat, pb.db.len());
+    }
     let bnorm = dot_blocks(&r, &r).sqrt();
     let mut trace = CgTrace::default();
     if bnorm == 0.0 {
@@ -1533,7 +1599,49 @@ mod tests {
     fn kept_fraction_is_over_the_full_amplitude_space() {
         let mut rg = diag_block(&[1.0; 5]);
         rg.pairs[0].pat[2] = false;
-        assert_eq!(kept_fraction(&rg, 1, 5).to_bits(), (4.0f64 / 25.0).to_bits());
+        assert_eq!(
+            kept_fraction(&rg, 1, 5).to_bits(),
+            (4.0f64 / 25.0).to_bits()
+        );
+    }
+
+    /// The explicit-rhs seam: `rhs = −J` is the amplitude solve bit for bit,
+    /// and the solve is linear in the rhs — doubling it (exact in floating
+    /// point: every CG scalar is scale-invariant) doubles every amplitude
+    /// exactly. A seam that ignored `rhs` (solving −J regardless) fails the
+    /// second check.
+    #[test]
+    fn explicit_rhs_matches_the_amplitude_solve_and_is_linear() {
+        let m = 5;
+        let mut rg = diag_block(&[1.5, 1.8, 2.1, 2.6, 3.0]);
+        let pb = &mut rg.pairs[0];
+        pb.fvv_aa = Array2::from_elem((1, 1), 0.5);
+        pb.fvv_bb = Array2::from_shape_fn(
+            (m, m),
+            |(a, b)| {
+                if a == b {
+                    1.0 + 0.3 * a as f64
+                } else {
+                    0.05
+                }
+            },
+        );
+        let f_oo = Array2::from_elem((1, 1), -0.4);
+        let base = solve_ragged_traced(&rg, &f_oo, 1e-12, 100);
+        assert!(base.converged);
+        let neg_j: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| -&pb.j_blk).collect();
+        let same = solve_ragged_rhs(&rg, &f_oo, &neg_j, 1e-12, 100);
+        let bits = |t: &[Array2<f64>]| -> Vec<u64> {
+            t.iter()
+                .flat_map(|b| b.iter().map(|x| x.to_bits()))
+                .collect()
+        };
+        assert_eq!(bits(&same.t), bits(&base.t));
+        assert_eq!(same.iterations, base.iterations);
+        let twice: Vec<Array2<f64>> = neg_j.iter().map(|b| b * 2.0).collect();
+        let doubled = solve_ragged_rhs(&rg, &f_oo, &twice, 1e-12, 100);
+        let scaled: Vec<Array2<f64>> = base.t.iter().map(|b| b * 2.0).collect();
+        assert_eq!(bits(&doubled.t), bits(&scaled));
     }
 
     /// The CG-coefficient κ estimate on an operator with a KNOWN spectrum:
