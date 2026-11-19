@@ -1,25 +1,28 @@
 name: Wheels (macOS arm64, Windows x86_64)
 
-# The macOS arm64 and Windows x86_64 wheels of a ferric release, cp310-cp313.
+# The macOS arm64 and Windows x86_64 wheels of a ferric release: ONE stable-ABI
+# wheel per platform (cp310-abi3, built with `--features abi3`; see wheels.yml's
+# header), smoke-tested on every CPython 3.10-3.13.
 # Reusable only (workflow_call): wheels.yml calls it after
 # native-deps-macwin.yml, and release-check / publish / github-release there
 # pick up the wheels it uploads. The Linux wheels are built by wheels.yml
 # itself and are untouched by this file.
 #
-# Per platform and CPython version:
-#   build: maturin --release against the native-deps prefix (ferric's small
-#          libint2 export linked statically, OpenBLAS and libxc), the same
+#   build (per platform): maturin --release --features abi3 against the
+#          native-deps prefix (ferric's small libint2 export linked
+#          statically, OpenBLAS and libxc), the same
 #          release identity gates as the Linux build (clean tagged tree, the
 #          tag's version stamped and verified, FERRIC_RELEASE_BUILD), repair
 #          with delocate (macOS) / delvewheel (Windows), the bundled
 #          libraries' licence texts added, PyPI's 100 MiB limit checked.
-#   smoke: on a FRESH runner that never saw the build prefix, install the
-#          wheel into a new venv and run scripts/wheels/smoke.py (the Linux
+#   smoke (per platform AND CPython 3.10-3.13): on a FRESH runner that never
+#          saw the build prefix, install the platform's one wheel into a
+#          new venv and run scripts/wheels/smoke.py (the Linux
 #          smoke test's checks plus energies compared with Linux), then the
 #          docs' Python snippets, as wheels.yml smoke-test does.
 #
 # Artifact names are a publish-safety control, as in wheels.yml: the wheels
-# are `wheels-<platform>-cp3.NN`, which wheels.yml's publish (`wheels-*`)
+# are `wheels-<platform>-cp310-abi3`, which wheels.yml's publish (`wheels-*`)
 # uploads; release-check checks them per platform. The 2026-11-09 spike
 # (wiki/notes/wheels-mac-win-2026-11-09) measured an arm64 wheel at 94.1 MB
 # and a Windows one at 91.4 MB, 90% and 87% of PyPI's limit.
@@ -51,12 +54,16 @@ env:
 
 jobs:
   build:
-    name: build ${{ matrix.platform }} cp${{ matrix.python-version }}
+    name: build ${{ matrix.platform }} cp310-abi3
     strategy:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.platforms) }}
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # One value only: one abi3 wheel per platform, built with the
+        # abi3 floor's interpreter. The per-interpreter build had
+        # `python-version: ["3.10", "3.11", "3.12", "3.13"]` here and in the
+        # artifact names (`-cp<version>`).
+        python-version: ["3.10"]
     runs-on: ${{ matrix.platform == 'macos-arm64' && 'macos-15' || 'windows-2025' }}
     timeout-minutes: 90
     defaults:
@@ -168,9 +175,15 @@ jobs:
           "$PY" -m pip install -q "maturin==${MATURIN_VERSION}"
           rustc --version
           start=$(date +%s)
-          "$PY" -m maturin build --release -i "$PY" --out dist
-          echo "BUILD_SECONDS ${{ matrix.platform }} cp${{ matrix.python-version }}: $(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          # --features abi3: ferric-python's stable-ABI feature (pyo3
+          # abi3-py310) -> one cp310-abi3 wheel for every CPython >= 3.10.
+          "$PY" -m maturin build --release --features abi3 -i "$PY" --out dist
+          echo "BUILD_SECONDS ${{ matrix.platform }} cp310-abi3: $(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
           ls -l dist
+          case "$(basename dist/*.whl)" in
+            ferric-*-cp310-abi3-*.whl) ;;
+            *) echo "::error::$(basename dist/*.whl) is not a cp310-abi3 wheel"; exit 1 ;;
+          esac
 
       - name: Repair (delocate / delvewheel)
         run: |
@@ -240,7 +253,7 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wheels-${{ matrix.platform }}-cp${{ matrix.python-version }}
+          name: wheels-${{ matrix.platform }}-cp310-abi3
           path: wheelhouse/*.whl
           if-no-files-found: error
           retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
@@ -252,6 +265,7 @@ jobs:
       fail-fast: false
       matrix:
         platform: ${{ fromJSON(inputs.platforms) }}
+        # Every CPython the abi3 wheel claims, each installing the SAME wheel.
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.platform == 'macos-arm64' && 'macos-15' || 'windows-2025' }}
     timeout-minutes: 30
@@ -267,7 +281,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: wheels-${{ matrix.platform }}-cp${{ matrix.python-version }}
+          name: wheels-${{ matrix.platform }}-cp310-abi3
           path: dist
 
       # Only the smoke script, the docs and the docs runner: the import must
