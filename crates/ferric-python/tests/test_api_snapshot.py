@@ -26,7 +26,7 @@ import json
 import os
 
 import pytest
-from api_snapshot import SNAPSHOT, generate, render
+from api_snapshot import SNAPSHOT, generate, optional_missing, render
 
 HOW_TO = (
     "To regenerate after a DELIBERATE, reviewed API change:\n"
@@ -48,13 +48,24 @@ def _flatten(node, prefix=""):
 def test_public_api_matches_snapshot():
     live = render(generate())
     if os.environ.get("FERRIC_UPDATE_API_SNAPSHOT"):
+        assert not optional_missing(), (
+            f"regenerate with the optional deps installed: {optional_missing()}"
+        )
         SNAPSHOT.write_text(live)
         pytest.skip(f"snapshot rewritten: {SNAPSHOT}")
     assert SNAPSHOT.exists(), f"missing {SNAPSHOT}\n{HOW_TO}"
     committed = SNAPSHOT.read_text()
     if live == committed:
         return
-    old, new = dict(_flatten(json.loads(committed))), dict(_flatten(json.loads(live)))
+    committed_data = json.loads(committed)
+    # A submodule whose optional dependency is missing here (ferric.ase without
+    # ASE) is not compared: drop its committed section, deterministically.
+    skipped = optional_missing()
+    for name in skipped:
+        committed_data.get("submodules", {}).pop(name, None)
+    if json.loads(live) == committed_data:
+        return
+    old, new = dict(_flatten(committed_data)), dict(_flatten(json.loads(live)))
     removed = sorted(set(old) - set(new))
     added = sorted(set(new) - set(old))
     changed = sorted(k for k in set(old) & set(new) if old[k] != new[k])

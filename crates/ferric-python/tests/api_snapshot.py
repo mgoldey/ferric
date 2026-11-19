@@ -13,6 +13,15 @@ that `inspect` can read (tagged instance / static / class method); and the
 public numeric constants. Submodules are skipped, and so is anything `inspect`
 cannot handle, deterministically (recorded as `null`). Build info and version
 strings are private (`__version__`, `build_info()` values) and never captured.
+
+The pure-Python submodules (`ferric.serialize`, `.rdkit`, `.qcschema`, `.units`,
+`.molden`, `.fcidump`, `.viz`, `.ase`) go under the top-level key `submodules`:
+each is captured by its `__all__` with the same function / class / constant
+layout (a function's parameters, a constant's repr). `ferric.ase` imports ASE
+at module level, so it is recorded only when importable, and
+`test_api_snapshot.py` skips its section otherwise (`optional_missing()`);
+there only `FerricCalculator.implemented_properties` and `.default_parameters`
+are captured (the rest of the class is ASE's own, version-dependent).
 """
 
 from __future__ import annotations
@@ -58,11 +67,69 @@ def _member_kind(cls, name: str) -> str:
     return "attribute"
 
 
-def generate(module=None) -> dict:
+SUBMODULES = (
+    "serialize",
+    "rdkit",
+    "qcschema",
+    "units",
+    "molden",
+    "fcidump",
+    "viz",
+    "ase",
+)
+
+
+def _calculator_entry(module) -> dict:
+    cls = module.FerricCalculator
+    return {
+        "functions": {},
+        "classes": {
+            "FerricCalculator": {
+                "implemented_properties": list(cls.implemented_properties),
+                "default_parameters": {
+                    k: repr(v) for k, v in sorted(cls.default_parameters.items())
+                },
+            }
+        },
+        "constants": {},
+    }
+
+
+def _import_submodule(name: str):
+    """The `ferric.<name>` module, or `None` when an optional dependency of
+    its module-level imports (only `ase`) is missing."""
+    import importlib
+
+    try:
+        return importlib.import_module(f"ferric.{name}")
+    except ImportError:
+        if name == "ase":
+            return None
+        raise
+
+
+def optional_missing() -> list[str]:
+    """Submodules whose section cannot be generated here (deterministic)."""
+    return [n for n in SUBMODULES if _import_submodule(n) is None]
+
+
+def generate_submodule(name: str) -> dict | None:
+    module = _import_submodule(name)
     if module is None:
+        return None
+    if name == "ase":
+        return _calculator_entry(module)
+    return generate(module, names=module.__all__)
+
+
+def generate(module=None, names=None) -> dict:
+    top = module is None
+    if top:
         import ferric as module
     functions, classes, constants = {}, {}, {}
-    for name in sorted(n for n in dir(module) if not n.startswith("_")):
+    if names is None:
+        names = [n for n in dir(module) if not n.startswith("_")]
+    for name in sorted(names):
         obj = getattr(module, name)
         if inspect.ismodule(obj):
             continue
@@ -79,7 +146,11 @@ def generate(module=None) -> dict:
             functions[name] = _sig(obj)
         elif isinstance(obj, (int, float, str, bool)):
             constants[name] = repr(obj)
-    return {"functions": functions, "classes": classes, "constants": constants}
+    out = {"functions": functions, "classes": classes, "constants": constants}
+    if top:
+        subs = {n: generate_submodule(n) for n in SUBMODULES}
+        out["submodules"] = {n: v for n, v in subs.items() if v is not None}
+    return out
 
 
 def render(snapshot: dict) -> str:
@@ -87,6 +158,10 @@ def render(snapshot: dict) -> str:
 
 
 def main(argv: list[str]) -> int:
+    missing = optional_missing()
+    if missing and "--check" not in argv:
+        print(f"cannot regenerate without {missing}: install the optional deps")
+        return 2
     text = render(generate())
     if "--check" in argv:
         return 0 if SNAPSHOT.read_text() == text else 1
