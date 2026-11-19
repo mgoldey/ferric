@@ -1,7 +1,8 @@
 //! Frontend-neutral SCF options and their lowering to [`RhfConfig`](crate::rhf::RhfConfig).
 //!
-//! Frontends (the Python `run_rhf` / `run_uhf` / `run_rohf` today; the CLI
-//! `[scf]` section and the KS entry points are follow-ups) parse their own
+//! Frontends (the Python `run_rhf` / `run_uhf` / `run_rohf` and the Kohn-Sham
+//! `run_dft` / `run_uks` / `run_roks` today; the CLI `[scf]` section is a
+//! follow-up) parse their own
 //! surface syntax (strings, PyO3 objects, TOML) into an [`ScfOptions`](crate::options::ScfOptions), then
 //! call [`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config). The lowering is pure: no I/O, no
 //! environment reads, no process exit, no printing. It owns the defaults (the
@@ -18,6 +19,11 @@
 //! knobs a given entry point exposes) is expressed by which fields that
 //! entry point sets: an unset (`None`) field always keeps the
 //! [`RhfConfig::default`](crate::rhf::RhfConfig::default) value.
+//!
+//! Cross-option defaults that more than one frontend applies before filling
+//! an [`ScfOptions`](crate::options::ScfOptions) live here as pure functions
+//! (e.g. [`df_k_aux_or_default`](crate::options::df_k_aux_or_default), the
+//! RIJCOSX "no RI-K default under COSX" rule).
 
 use ferric_core::FerricError;
 use ndarray::Array2;
@@ -38,6 +44,29 @@ pub const DEFAULT_INTEGRAL_THRESH: f64 = 1e-12;
 pub const SOSCF_NEWTON_TRIGGER: f64 = 1e-3;
 /// Default JK-fit auxiliary basis wherever RI-J/RI-K is auto-selected.
 pub const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
+/// The [`RhfConfig::k_builder`] spelling that selects COSX exchange.
+pub const COSX_K_BUILDER: &str = "cosx";
+
+/// The RIJCOSX rule for the RI-K auxiliary basis: an `explicit` choice
+/// always wins; otherwise the frontend's `default` applies, except under
+/// `k_builder = "cosx"`, where COSX replaces RI-K and no RI-K default is
+/// applied (`None`, so an explicit `df_k_aux` next to COSX stays the conflict
+/// the SCF refuses). RI-J is unaffected.
+///
+/// Generic over the aux representation so the Python KS entry points
+/// ([`AuxBasis`]) and the CLI `[scf]` lowering (resolved strings) share the
+/// one rule.
+pub fn df_k_aux_or_default<T>(
+    k_builder: Option<&str>,
+    explicit: Option<T>,
+    default: Option<T>,
+) -> Option<T> {
+    explicit.or(if k_builder == Some(COSX_K_BUILDER) {
+        None
+    } else {
+        default
+    })
+}
 
 /// A density-fitting auxiliary basis choice for [`RhfConfig::df_j_aux`] /
 /// [`RhfConfig::df_k_aux`].
@@ -62,6 +91,12 @@ impl AuxBasis {
         } else {
             Self::Named(name)
         }
+    }
+
+    /// [`DEFAULT_JK_AUX`], the auxiliary basis the Kohn-Sham entry points
+    /// fit with when the caller names none.
+    pub fn default_jk() -> Self {
+        Self::Named(DEFAULT_JK_AUX.to_string())
     }
 
     /// The `RhfConfig` string form (`""` for [`AuxBasis::Off`]).
@@ -208,6 +243,13 @@ pub struct ScfOptions {
     pub aurora: Option<bool>,
     /// [`RhfConfig::trah_trigger`].
     pub trah_trigger: Option<TrahTrigger>,
+    /// [`RhfConfig::xc`]: the exchange-correlation functional name (passed
+    /// through verbatim; resolved by the KS solver). `None` keeps the
+    /// default, Hartree-Fock.
+    pub xc: Option<String>,
+    /// [`RhfConfig::dft_grid`]: an explicit main KS grid. `None` keeps the
+    /// default (`None`, the production grid on every KS path).
+    pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
 }
 
 impl ScfOptions {
@@ -259,6 +301,8 @@ impl ScfOptions {
             relativistic,
             aurora,
             trah_trigger,
+            xc,
+            dft_grid,
         } = self;
 
         let mut c = RhfConfig::default();
@@ -362,6 +406,12 @@ impl ScfOptions {
         if let Some(t) = trah_trigger {
             c.trah_trigger = Some(t.get());
         }
+        if xc.is_some() {
+            c.xc = xc;
+        }
+        if dft_grid.is_some() {
+            c.dft_grid = dft_grid;
+        }
         Ok(c)
     }
 }
@@ -385,6 +435,7 @@ mod tests {
     use crate::mom::MomReference;
     use crate::x2c::Relativistic;
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
+    use ferric_dft::grid::AtomicGridConfig;
 
     /// Every Python kwarg the three entry points take, already parsed, in the
     /// shape the old literals consumed them.
@@ -420,6 +471,10 @@ mod tests {
         aurora: Option<bool>,
         trah_trigger: Option<f64>,
         guess_basis: Option<crate::basis2::GuessBasis>,
+        /// KS entry points only: `functional=`.
+        functional: Option<&'static str>,
+        /// KS entry points only: the resolved `grid_*` kwargs.
+        dft_grid: Option<AtomicGridConfig>,
     }
 
     fn all_knobs() -> Kw {
@@ -468,6 +523,12 @@ mod tests {
             relativistic: Some(Relativistic::X2c1e),
             aurora: Some(true),
             trah_trigger: Some(1e-4),
+            functional: Some("B3LYP"),
+            dft_grid: Some(AtomicGridConfig {
+                n_radial: 99,
+                n_angular: 302,
+                ..AtomicGridConfig::production()
+            }),
         }
     }
 
@@ -628,6 +689,8 @@ mod tests {
             relativistic: k.relativistic,
             aurora: k.aurora,
             trah_trigger: trah(k.trah_trigger),
+            xc: None,
+            dft_grid: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -665,6 +728,8 @@ mod tests {
             relativistic: k.relativistic,
             aurora: None,
             trah_trigger: trah(k.trah_trigger),
+            xc: None,
+            dft_grid: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -702,6 +767,8 @@ mod tests {
             relativistic: k.relativistic,
             aurora: None,
             trah_trigger: None,
+            xc: None,
+            dft_grid: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -869,6 +936,17 @@ mod tests {
                 let proj = r.pick(&["fock", "overlap"]);
                 crate::basis2::GuessBasis::bundled("sto-3g", proj).unwrap()
             }),
+            functional: r.maybe(|r| r.pick(&["PBE", "B3LYP", "wB97X-V", "TPSS", "LDA"])),
+            dft_grid: r.maybe(|r| AtomicGridConfig {
+                n_radial: 50 + (r.next() % 50) as usize,
+                n_angular: r.pick(&[110, 194, 302]),
+                prune: if r.coin() {
+                    None
+                } else {
+                    AtomicGridConfig::production().prune
+                },
+                ..AtomicGridConfig::production()
+            }),
         }
     }
 
@@ -886,6 +964,259 @@ mod tests {
             same_msg(&a, &b, &msg("run_uhf"));
             let (a, b) = (old_run_rohf(k.clone()), new_run_rohf(k));
             same_msg(&a, &b, &msg("run_rohf"));
+        }
+    }
+
+    // ── Kohn-Sham entry points (run_dft / run_uks / run_roks) ──
+    //
+    // Oracles: the pre-lowering construction in `ferric-python/src/dft.rs`
+    // (`run_dft` and the shared `run_open_ks` body), copied verbatim with the
+    // two `ferric-python` helpers it called (`rhf_config_budgeted`,
+    // `resolve_df_aux`) inlined below as they were.
+
+    fn old_rhf_config_budgeted(k_builder: Option<&str>, budget_bytes: Option<usize>) -> RhfConfig {
+        RhfConfig {
+            k_builder: k_builder.map(|s| s.to_string()),
+            three_index_budget_bytes: budget_bytes.unwrap_or(0),
+            ..Default::default()
+        }
+    }
+
+    fn old_resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> {
+        match requested {
+            None => Some(default_aux.to_string()),
+            Some(v) => Some(crate::rhf::normalize_df_aux(v)),
+        }
+    }
+
+    /// `run_dft` before the lowering. `k.cosx` is what `resolve_cosx_kwargs`
+    /// returned (always `Some` there); `k.symmetry` the `symmetry=` kwarg.
+    fn old_run_dft(k: Kw) -> RhfConfig {
+        let k_builder = k.k_builder;
+        let (max_iter, energy_conv, density_conv) = (k.max_iter, k.energy_conv, k.density_conv);
+        let (level_shift, mom_after_iter) = (k.level_shift, k.mom_after_iter);
+        let (df_j_aux, df_k_aux) = (k.df_j_aux, k.df_k_aux);
+        let mut cfg = old_rhf_config_budgeted(k_builder, k.budget_bytes);
+        cfg.max_iter = max_iter.unwrap_or(cfg.max_iter);
+        cfg.energy_conv = energy_conv.unwrap_or(cfg.energy_conv);
+        cfg.density_conv = density_conv.unwrap_or(cfg.density_conv);
+        cfg.level_shift = level_shift.unwrap_or(cfg.level_shift);
+        cfg.meta_gga_auto_level_shift = level_shift.is_none();
+        cfg.mom_after_iter = mom_after_iter.unwrap_or(cfg.mom_after_iter);
+        cfg.external_potential = k.external_potential;
+        let xc_name = k.functional.unwrap_or("LDA").to_string();
+        cfg.xc = Some(xc_name.clone());
+        cfg.guess_basis = k.guess_basis;
+        cfg.relativistic = k.relativistic;
+        cfg.init_guess_density = k.init_guess_density;
+        cfg.df_j_aux = old_resolve_df_aux(df_j_aux, "def2-universal-jkfit");
+        cfg.ri_j_precision = k.ri_j_precision;
+        cfg.ri_k_precision = k.ri_k_precision;
+        cfg.df_k_aux = if k_builder == Some("cosx") && df_k_aux.is_none() {
+            None
+        } else {
+            old_resolve_df_aux(df_k_aux, "def2-universal-jkfit")
+        };
+        cfg.cosx = k.cosx.unwrap();
+        cfg.dft_grid = k.dft_grid;
+        if k.symmetry || k.irrep_nelec.is_some() {
+            cfg.symmetry = true;
+            cfg.irrep_nelec = k.irrep_nelec;
+        }
+        cfg
+    }
+
+    /// `run_open_ks` (the body of `run_uks` and `run_roks`) before the
+    /// lowering. `use_sad_guess` is `parse_guess(guess)`: `run_roks` passes
+    /// `guess = None`, so `true`.
+    fn old_run_open_ks(k: Kw, functional: &str, use_sad_guess: bool) -> RhfConfig {
+        let (max_iter, energy_conv, density_conv) = (k.max_iter, k.energy_conv, k.density_conv);
+        let (level_shift, mom_after_iter) = (k.level_shift, k.mom_after_iter);
+        let mut config = old_rhf_config_budgeted(k.k_builder, k.budget_bytes);
+        config.max_iter = max_iter.unwrap_or(config.max_iter);
+        config.energy_conv = energy_conv.unwrap_or(config.energy_conv);
+        config.density_conv = density_conv.unwrap_or(config.density_conv);
+        config.level_shift = level_shift.unwrap_or(config.level_shift);
+        config.meta_gga_auto_level_shift = level_shift.is_none();
+        config.mom_after_iter = mom_after_iter.unwrap_or(config.mom_after_iter);
+        config.use_sad_guess = use_sad_guess;
+        config.external_potential = k.external_potential;
+        config.xc = Some(functional.to_string());
+        config.relativistic = k.relativistic;
+        config.df_j_aux = old_resolve_df_aux(k.df_j_aux, "def2-universal-jkfit");
+        config.df_k_aux = old_resolve_df_aux(k.df_k_aux, "def2-universal-jkfit");
+        config.ri_j_precision = k.ri_j_precision;
+        config.ri_k_precision = k.ri_k_precision;
+        config.dft_grid = k.dft_grid;
+        config
+    }
+
+    /// The KS `df_*_aux` kwarg: a parsed spelling, or the JK-fit default.
+    fn ks_aux(v: Option<&str>) -> AuxBasis {
+        v.map(AuxBasis::parse).unwrap_or_else(AuxBasis::default_jk)
+    }
+
+    /// What `run_dft` now puts in `ScfOptions` (mirrors `dft.rs`).
+    fn new_run_dft(k: Kw) -> RhfConfig {
+        let symmetric = k.symmetry || k.irrep_nelec.is_some();
+        ScfOptions {
+            max_iter: k.max_iter,
+            energy_conv: k.energy_conv,
+            density_conv: k.density_conv,
+            diis_size: None,
+            diis_flavor: None,
+            integral_thresh: None,
+            k_builder: k.k_builder.map(str::to_string),
+            cosx: k.cosx,
+            df_j_aux: Some(ks_aux(k.df_j_aux)),
+            df_k_aux: df_k_aux_or_default(
+                k.k_builder,
+                k.df_k_aux.map(AuxBasis::parse),
+                Some(AuxBasis::default_jk()),
+            ),
+            ri_j_precision: k.ri_j_precision,
+            ri_k_precision: k.ri_k_precision,
+            level_shift: k.level_shift,
+            mom_after_iter: k.mom_after_iter,
+            mom_reference: None,
+            smearing_sigma: None,
+            soscf: None,
+            guess: None,
+            guess_basis: k.guess_basis,
+            init_guess_density: k.init_guess_density,
+            external_potential: k.external_potential,
+            pcm: None,
+            three_index_budget_bytes: k.budget_bytes,
+            stability: None,
+            symmetry: symmetric.then_some(true),
+            irrep_nelec: k.irrep_nelec,
+            eri: None,
+            relativistic: k.relativistic,
+            aurora: None,
+            trah_trigger: None,
+            xc: Some(k.functional.unwrap_or("LDA").to_string()),
+            dft_grid: k.dft_grid,
+        }
+        .into_rhf_config()
+        .unwrap()
+    }
+
+    /// What `run_open_ks` now puts in `ScfOptions` (mirrors `dft.rs`).
+    fn new_run_open_ks(k: Kw, functional: &str, use_sad_guess: bool) -> RhfConfig {
+        ScfOptions {
+            max_iter: k.max_iter,
+            energy_conv: k.energy_conv,
+            density_conv: k.density_conv,
+            diis_size: None,
+            diis_flavor: None,
+            integral_thresh: None,
+            k_builder: k.k_builder.map(str::to_string),
+            cosx: None,
+            df_j_aux: Some(ks_aux(k.df_j_aux)),
+            df_k_aux: Some(ks_aux(k.df_k_aux)),
+            ri_j_precision: k.ri_j_precision,
+            ri_k_precision: k.ri_k_precision,
+            level_shift: k.level_shift,
+            mom_after_iter: k.mom_after_iter,
+            mom_reference: None,
+            smearing_sigma: None,
+            soscf: None,
+            guess: Some(if use_sad_guess {
+                Guess::Sad
+            } else {
+                Guess::Core
+            }),
+            guess_basis: None,
+            init_guess_density: None,
+            external_potential: k.external_potential,
+            pcm: None,
+            three_index_budget_bytes: k.budget_bytes,
+            stability: None,
+            symmetry: None,
+            irrep_nelec: None,
+            eri: None,
+            relativistic: k.relativistic,
+            aurora: None,
+            trah_trigger: None,
+            xc: Some(functional.to_string()),
+            dft_grid: k.dft_grid,
+        }
+        .into_rhf_config()
+        .unwrap()
+    }
+
+    /// One KS call checked against its oracle: `run_dft` as given, and
+    /// `run_uks` (with and without `guess="hcore"`) / `run_roks` (guess
+    /// always MINAO) for `functional` (default `"PBE"`; required there).
+    fn check_ks(k: &Kw, msg: &str) {
+        same_msg(
+            &old_run_dft(k.clone()),
+            &new_run_dft(k.clone()),
+            &format!("run_dft, {msg}"),
+        );
+        let f = k.functional.unwrap_or("PBE");
+        for sad in [true, false] {
+            same_msg(
+                &old_run_open_ks(k.clone(), f, sad),
+                &new_run_open_ks(k.clone(), f, sad),
+                &format!("run_uks/run_roks (sad={sad}), {msg}"),
+            );
+        }
+    }
+
+    #[test]
+    fn ks_defaults_match_old_construction() {
+        check_ks(&defaults_with_cosx(), "defaults");
+        // run_dft with k_builder="cosx" and nothing else: RIJCOSX, no RI-K.
+        let k = Kw {
+            k_builder: Some("cosx"),
+            ..defaults_with_cosx()
+        };
+        check_ks(&k, "cosx defaults");
+        let c = new_run_dft(k);
+        assert_eq!(c.df_k_aux, None);
+        assert_eq!(c.df_j_aux.as_deref(), Some(DEFAULT_JK_AUX));
+    }
+
+    #[test]
+    fn ks_all_knobs_match_old_construction() {
+        check_ks(&all_knobs(), "all knobs");
+        // all_knobs() sets symmetry; also the unsymmetric all-knobs call.
+        let k = Kw {
+            symmetry: false,
+            irrep_nelec: None,
+            ..all_knobs()
+        };
+        check_ks(&k, "all knobs, no symmetry");
+    }
+
+    /// 256 seeded random kwarg sets: run_dft / run_uks / run_roks equal
+    /// their pre-lowering construction for each.
+    #[test]
+    fn ks_random_kwargs_match_old_construction() {
+        let mut r = Rng(0x5eed_f00d_cafe_0006);
+        for case in 0..256 {
+            let k = random_kw(&mut r);
+            check_ks(&k, &format!("case {case}"));
+        }
+    }
+
+    #[test]
+    fn rijcosx_rule_drops_only_the_ri_k_default() {
+        let named = |s: &str| Some(AuxBasis::Named(s.into()));
+        let d = named(DEFAULT_JK_AUX);
+        assert_eq!(df_k_aux_or_default(Some("cosx"), None, d.clone()), None);
+        assert_eq!(
+            df_k_aux_or_default(Some("cosx"), named("x"), d.clone()),
+            named("x")
+        );
+        assert_eq!(
+            df_k_aux_or_default(Some("cosx"), Some(AuxBasis::Off), d.clone()),
+            Some(AuxBasis::Off)
+        );
+        for kb in [None, Some("direct"), Some("link"), Some("COSX")] {
+            assert_eq!(df_k_aux_or_default(kb, None, d.clone()), d, "{kb:?}");
+            assert_eq!(df_k_aux_or_default::<String>(kb, None, None), None);
         }
     }
 
@@ -977,10 +1308,10 @@ mod tests {
             ri_j_precision: _,            // lowered
             ri_j_task: _,                 // default (geometry drivers set it)
             ri_k_precision: _,            // lowered
-            xc: _,                        // default (KS: follow-up)
-            xc_omega: _,                  // default (KS: follow-up)
-            dft_grid: _,                  // default (KS: follow-up)
-            nlc_grid: _,                  // default (KS: follow-up)
+            xc: _,                        // lowered
+            xc_omega: _,                  // default
+            dft_grid: _,                  // lowered
+            nlc_grid: _,                  // default
             level_shift: _,               // lowered
             meta_gga_auto_level_shift: _, // lowered (from level_shift)
             newton_trigger: _,            // lowered (from soscf)

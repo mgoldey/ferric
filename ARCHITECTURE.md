@@ -147,13 +147,15 @@ Done:
 5. Optional Python integrations: `ferric.rdkit`, `ferric.serialize`,
    `ferric.units`, public QCSchema molecule helpers, ASE dipole and charges,
    and `Molecule.charge`/`multiplicity` getters.
+6a. The `ferric_scf::options` lowering extended to `run_dft`, `run_uks` and
+    `run_roks` (oracle-tested against their old `rhf_config_budgeted`
+    construction), with the RIJCOSX rule as
+    `ferric_scf::options::df_k_aux_or_default`.
 
 Next, each as its own PR following the patterns above:
 
-6. Extend the SCF lowering to `run_dft`/`run_uks`/`run_roks`, with a
-   measured-difference test for their `rhf_config_budgeted` defaults; then
-   fill the keyword-argument drift between the six SCF entry points
-   additively (and in `ferric.pyi`).
+6b. Fill the keyword-argument drift between the six SCF entry points
+    additively (and in `ferric.pyi`).
 7. Lower the CLI `ScfCfg` through `ferric_scf::options`, removing the
    hand-kept "CLI and Python agree" parity.
 8. Grow the existing `converged_*` reference-SCF helpers in
