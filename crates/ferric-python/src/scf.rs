@@ -646,8 +646,8 @@ pub(crate) fn run_rhf(
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
-    // Defaults (ferric_scf::options) mirror the CLI `[scf]` section (config.rs)
-    // so CLI and Python agree.
+    // Defaults come from ferric_scf::options; the CLI `[scf]` section does not
+    // use this lowering yet and will share it (ARCHITECTURE.md roadmap 7).
     let options = ScfOptions {
         max_iter,
         energy_conv,
