@@ -31,5 +31,5 @@ The derivations, proofs and measurements for `ferric-integrals` are in the ferri
 | RI-MP2 gradient with exact and RI-JK references; SCS-MP2 | `rimp2-gradient` | [`book/src/15-correlated-gradients/02-rimp2-gradient.md`](../../book/src/15-correlated-gradients/02-rimp2-gradient.md) | — | — |
 | Export schemas | `export-schemas` | [`book/src/21-polarizabilities/03-export-schemas.md`](../../book/src/21-polarizabilities/03-export-schemas.md) | — | — |
 | The reaction field in the Fock matrix | `reaction-field` | [`book/src/22-implicit-solvation/03-reaction-field.md`](../../book/src/22-implicit-solvation/03-reaction-field.md) | — | — |
-| Point charges, smeared charges and uniform fields | `external-potentials` | [`book/src/23-embedding/01-external-potentials.md`](../../book/src/23-embedding/01-external-potentials.md) | — | — |
+| Point charges, smeared charges and uniform fields | `external-potentials` | [`book/src/23-embedding/01-external-potentials.md`](../../book/src/23-embedding/01-external-potentials.md) | `scripts/external_potential_sympy.py` | `ext.field.origin` |
 | Shared intermediates across the two kernels | `shared-intermediates` | [`book/src/26-rs-mp2-rpa/06-shared-intermediates.md`](../../book/src/26-rs-mp2-rpa/06-shared-intermediates.md) | — | — |

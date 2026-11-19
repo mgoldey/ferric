@@ -23,6 +23,10 @@ Checked (claim names are the check labels):
       tensor differs by sum over the dropped modes of s s^T / lambda).
   M3  the static limit: g = 1/Delta at u = 0 and the u -> 0 limit of the
       dynamic form agree.
+  M5  the large-u limit: u^2 alpha(iu) -> 4 mu^T Delta mu, the error falling
+      as u^-2, and the screening term falling as u^-4 (ratio 16 when u
+      doubles); negative control: the limit is not 4 mu^T (Delta + 4K) mu,
+      so the coupling K drops out.
   M4  open shell (properties.rs molecular_dynamic_polarizability, (U) branch):
       eps~_U = 1 + 2 sum_s b_s diag(g_s) b_s^T, w = sum_s b_s (g_s o mu_s),
       alpha = sum_s 2 mu_s^T diag(g_s) mu_s - 4 w^T eps~_U^-1 w. For unequal
@@ -36,6 +40,7 @@ Mutations (the runner substitutes the code line once; each exits 1):
   the screening prefactor 16 -> 4                 -> M1 fails
   the mode-sum sign + instead of -                -> M2 fails
   the open-shell screening prefactor 4 -> 16      -> M4 fails
+  g_ia = 1/(u^2 + Delta^2) without its numerator  -> M5 fails
 
 Run: python3 scripts/rpa_response_modes_sympy.py   (needs numpy)
 """
@@ -125,6 +130,26 @@ check(
     "M3",
     maxabs(st - lim) < 1e-10,
     f"static g = 1/Delta = the u -> 0 limit: {maxabs(st - lim):.1e}",
+)
+
+# ---- M5 large-u limit: u^2 alpha -> 4 mu Delta mu^T, the screening falls as u^-4
+lead = 4.0 * (mu * gaps) @ mu.T
+lead_k = 4.0 * mu @ (np.diag(gaps) + 4.0 * b_ov.T @ b_ov) @ mu.T
+errs, scr = [], []
+for u in (1e3, 2e3):
+    alpha, eps, w, bare = dielectric_form(u)
+    errs.append(maxabs(u * u * alpha - lead) / maxabs(lead))
+    scr.append(maxabs(16.0 * w @ np.linalg.solve(eps, w.T)))
+check(
+    "M5",
+    errs[1] < 1e-5 and 3.5 < errs[0] / errs[1] < 4.5 and 14 < scr[0] / scr[1] < 18,
+    f"u^2 alpha -> 4 mu Delta mu^T: rel {errs[0]:.1e}, {errs[1]:.1e} at u = 1e3, 2e3; "
+    f"screening ratio {scr[0] / scr[1]:.2f} (16 for u^-4)",
+)
+check(
+    "M5",
+    maxabs(1e6 * dielectric_form(1e3)[0] - lead_k) > 1e-2 * maxabs(lead),
+    "negative control: the limit is not 4 mu (Delta + 4K) mu^T (K drops out)",
 )
 
 # ---- M4 open shell, unequal alpha and beta spaces

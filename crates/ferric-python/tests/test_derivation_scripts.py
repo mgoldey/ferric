@@ -335,6 +335,11 @@ CASES = [
                 "omega_a = c6_eff / (alpha_eff * alpha_eff)",
                 "FAIL [ts-pole-reproduces-c6]",
             ),
+            (
+                "ct = mol - sum(per_atom)",
+                "ct = mol - sum(per_atom[1:])",
+                "FAIL [ct-sum-rule]",
+            ),
         ],
     ),
     (
@@ -1099,6 +1104,7 @@ CASES = [
         [
             ("/ w_  # dS/dr", "# dS/dr", "BAD 5"),
             ("2.0 * qq_ * k * rr", "qq_ * k * rr", "BAD 5"),
+            ("return 2 * kb * dr", "return kb * dr", "BAD 6 bond"),
         ],
     ),
     (
@@ -1655,6 +1661,11 @@ CASES = [
                 "return bare - 16.0 * w_t @ np.linalg.solve(eps, w_t.T), w_t, eps",
                 "FAIL [M4]",
             ),
+            (
+                "return gaps / (u * u + gaps * gaps)",
+                "return 1.0 / (u * u + gaps * gaps)",
+                "FAIL [M5]",
+            ),
         ],
     ),
     (
@@ -1706,6 +1717,11 @@ CASES = [
             ),
             ("full[m1] -= 0.5 * f", "full[m1] -= 1.0 * f", "FAIL Q3 full_gradient"),
             ("qb = 2 * q0", "qb = q0", "FAIL Q2 RCD conserves"),
+            (
+                "qm_mm_coul = 0.0  # the embedding holds it",
+                "qm_mm_coul = 1.0  # the embedding holds it",
+                "FAIL Q5 additive MM terms",
+            ),
         ],
     ),
     (
@@ -1726,6 +1742,11 @@ CASES = [
                 "return lam3, lam3 - v * v * v / 6 * e",
                 "return lam3, lam3 - v * v * v / 2 * e",
                 "FAIL T1 lam5",
+            ),
+            (
+                "        * z ** sp.Rational(5, 4)\n",
+                "        * z ** sp.Rational(3, 4)\n",
+                "FAIL T6 norm_int_p",
             ),
         ],
     ),
@@ -1748,6 +1769,11 @@ CASES = [
                 "mat[k, k] += a / (2 * np.sqrt(q[k] * q[k] + b * b))",
                 "FAIL A4 RESP",
             ),
+            (
+                "scale = nelec / n_e.sum() if",
+                "scale = 1.0 if",
+                "FAIL A2 Becke and Hirshfeld",
+            ),
         ],
     ),
     (
@@ -1763,6 +1789,33 @@ CASES = [
                 "np.fill_diagonal(D, -xi * np.sqrt(2 / np.pi) / (2 * rad))",
                 "np.fill_diagonal(D, -xi * np.sqrt(2 / np.pi) / rad)",
                 "[FAIL] 7 sphere",
+            ),
+            ("d_kern = -R * (1 - c)", "d_kern = +R * (1 - c)", "[FAIL] 1 D kernel"),
+            (
+                "d_l = sp.simplify(-s_l / (2 * R))",
+                "d_l = sp.simplify(-s_l / R)",
+                "[FAIL] 2 S_l",
+            ),
+            (
+                "R_l = -f * (1 - D_l / (2 * sp.pi))",
+                "R_l = -f * (1 + D_l / (2 * sp.pi))",
+                "[FAIL] 3 IEF channel",
+            ),
+            (
+                "K1, R1 = k_r(1, Dm)",
+                "K1, R1 = k_r(sp.Rational(77, 79), Dm)",
+                "[FAIL] 4 f=1",
+            ),
+            (
+                "q_sym = (q_raw + Rf.T * (Kf.T).inv() * v) / 2",
+                "q_sym = (q_raw + (Kf.T).inv() * Rf.T * v) / 2",
+                "[FAIL] 5 E(q_sym)",
+            ),
+            ("qv = Qsym * vD", "qv = Qm * vD", "[FAIL] 6 dE/dD"),
+            (
+                "+ 2.0 * c * xi9**3 * ex / rr",
+                "+ c * xi9**3 * ex / rr",
+                "[FAIL] 9 GaussianSmeared",
             ),
         ],
     ),

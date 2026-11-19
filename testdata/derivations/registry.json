@@ -51,7 +51,9 @@
       "ks-vv10",
       "ks-grid",
       "d3",
-      "mbd"
+      "mbd",
+      "pcm",
+      "cosmo"
     ],
     "cli:laplace-mp2": [
       "laplace-mp2"
@@ -78,10 +80,15 @@
     ],
     "cli:pdep-rpa": [
       "pdep-rpa",
-      "u-pdep-rpa"
+      "u-pdep-rpa",
+      "pcm",
+      "rpa-polarizability-c6",
+      "atomic-charges"
     ],
     "cli:rhf": [
-      "rhf"
+      "rhf",
+      "pcm",
+      "cosmo"
     ],
     "cli:rimp2": [
       "ri-mp2",
@@ -90,7 +97,9 @@
       "local-mp2"
     ],
     "cli:rohf": [
-      "rohf"
+      "rohf",
+      "pcm",
+      "cosmo"
     ],
     "cli:rs-mp2-rpa": [
       "rs-mp2-rpa",
@@ -115,7 +124,9 @@
       "tdhf-static-polarizability"
     ],
     "cli:uhf": [
-      "uhf"
+      "uhf",
+      "pcm",
+      "cosmo"
     ],
     "cli:wb97x-l-v": [
       "double-hybrid"
@@ -182,7 +193,8 @@
       "ks-zvector",
       "mbd",
       "cosx-gradient",
-      "vv10-gradient"
+      "vv10-gradient",
+      "pcm-gradient"
     ],
     "optimize:oo-rimp2": [
       "oo-rimp2-gradient",
@@ -195,7 +207,8 @@
     "optimize:rhf": [
       "hf-gradient",
       "geometry-search",
-      "cosx-gradient"
+      "cosx-gradient",
+      "pcm-gradient"
     ],
     "optimize:rimp2": [
       "ri-mp2-gradient",
@@ -205,7 +218,8 @@
     "optimize:rohf": [
       "hf-gradient",
       "geometry-search",
-      "cosx-gradient"
+      "cosx-gradient",
+      "pcm-gradient"
     ],
     "optimize:scs-mp2": [
       "scs-mp2-gradient",
@@ -218,10 +232,12 @@
     "optimize:uhf": [
       "hf-gradient",
       "geometry-search",
-      "cosx-gradient"
+      "cosx-gradient",
+      "pcm-gradient"
     ],
     "py:hirshfeld_polarizability": [
-      "rpa-polarizability-c6"
+      "rpa-polarizability-c6",
+      "atomic-charges"
     ],
     "py:run_attenuated_rimp2": [
       "attenuated-mp2",
@@ -357,28 +373,36 @@
       "terfc-rimp2-gradient",
       "scs-2terfc-gradient",
       "fock-hook-gradient",
-      "vv10-gradient"
+      "vv10-gradient",
+      "pcm-gradient"
     ],
     "py:run_optimize_qmmm": [
       "qmmm",
-      "geometry-search"
+      "geometry-search",
+      "mm"
     ],
     "py:run_optimize_uhf": [
       "hf-gradient",
-      "geometry-search"
+      "geometry-search",
+      "pcm-gradient"
     ],
     "py:run_pdep_rpa": [
       "pdep-rpa",
       "u-pdep-rpa",
-      "rpa-gradient"
+      "rpa-gradient",
+      "pcm",
+      "rpa-polarizability-c6",
+      "atomic-charges"
     ],
     "py:run_qmmm": [
-      "qmmm"
+      "qmmm",
+      "mm"
     ],
     "py:run_rhf": [
       "rhf",
       "fock-hook-gradient",
-      "cosx-gradient"
+      "cosx-gradient",
+      "pcm"
     ],
     "py:run_rhf_gamma": [
       "pbc-hf"

@@ -14,7 +14,8 @@ write, and the grid format for volumetric fields.
 The per-array tables, with shapes and units, are in section @sec:npz-bundle-keys.
 The consumer's reading of each array,
 including its behaviour under rotation, is in sections @sec:npz-bundle to @sec:python-cube-provenance. This
-section does not repeat them.
+section does not repeat the shapes, units or readings; the knob table below
+is the one that section @sec:npz-bundle points to.
 
 | Entry point | Location |
 |---|---|
@@ -102,7 +103,8 @@ so no file can hold an untagged per-atom $C_6$. The strings are bytes because
 `ndarray-npy` writes only numeric and `bool` elements; an integer enum code
 would have made the consumer carry ferric's discriminant table separately.
 
-Two of these rules carry a warning that is easy to miss.
+Two of these rules, and one pair of keys, carry a warning that is easy to
+miss.
 
 - **`c6_iso.sum()` is not the molecular $C_6$.** The per-atom pair tensors use
   atom-centred operators and exclude inter-atomic charge transfer, which the
@@ -114,9 +116,16 @@ Two of these rules carry a warning that is easy to miss.
 - **`esp_surface` is not `esp_atoms` at the nuclei.** The surface values keep
   every nucleus' $Z_A/r$ term and so diverge at a nucleus. `esp_atoms` leaves
   out the nucleus it is evaluated at (section @sec:electrostatics-and-charges-potential-field-nuclei).
+- **`alpha_atomic` and `alpha_atomic_dynamic` can use different partitions.**
+  `alpha_atomic` and `alpha_ct` are always Becke. With
+  `c6_partition = "hirshfeld"` (the `pdep` default) the dynamic arrays are
+  Hirshfeld, so `alpha_atomic_dynamic` at the smallest frequency does not
+  continue to `alpha_atomic`, and `alpha_ct` is not the $u\to0$ limit of
+  `alpha_ct_dynamic`. The example below writes such a file.
 
-The charge arrays carry no partition tag, unlike the per-atom polarizability
-arrays: the scheme is the key name, and the lattice parameters of CHELPG and
+The charge arrays carry no partition tag, and the tag the file does carry
+covers only the dispersion block, not the static `alpha_atomic`: the scheme is
+the key name, and the lattice parameters of CHELPG and
 RESP are not recorded (section @sec:atomic-partitions-esp-fitted-charges).
 
 ## The Gaussian cube grid {#export-schemas-gaussian-cube-grid}

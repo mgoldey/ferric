@@ -12,14 +12,16 @@ numbers for the same density, and none of them is the true atomic charge,
 because there is none.
 
 This section states four rules, derives what each conserves, and says which
-exported array uses which. The polarizability split of @sec:atomic-partitions-partition-unity-buys-polarizability is where the
+exported array uses which. Under them sit six charge models in Rust (Becke,
+Hirshfeld, Löwdin, Mulliken, CHELPG and RESP); five of them are exported to
+Python, and Becke charges are Rust only. The polarizability split of @sec:atomic-partitions-partition-unity-buys-polarizability is where the
 choice of rule meets the response of section @sec:polarizabilities-from-dielectric-modes. Section @sec:electrostatics-and-charges is the
 consumer's view of the same charges, with the agreement figures.
 
 | Rule | Splits | Weight | Used for |
 |---|---|---|---|
 | Becke | space | geometry-only fuzzy cells $w^A(\mathbf r)$ | `alpha_atomic` and `alpha_ct`, the per-atom $C_6$ with `c6_partition = "becke"` (the default for the TS and MBD routes), the integration grid, `becke_charges` |
-| Hirshfeld | space | proatom ratio $\rho^0_A/\sum_B\rho^0_B$ | `hirshfeld_charges`, `alpha_atomic` with `c6_partition = "hirshfeld"` |
+| Hirshfeld | space | proatom ratio $\rho^0_A/\sum_B\rho^0_B$ | `hirshfeld_charges`; `alpha_atomic_dynamic`, `alpha_ct_dynamic` and the per-atom $C_6$ with `c6_partition = "hirshfeld"` (the default for `c6_source = "pdep"`); `hirshfeld_polarizability` |
 | Löwdin | basis functions | symmetric orthogonalization $S^{1/2}$ | `lowdin_charges` |
 | ESP fit (CHELPG, RESP) | the potential outside the molecule | none; a least-squares fit | `chelpg_charges`, `resp_charges` |
 
@@ -74,33 +76,10 @@ Bragg–Slater radii, so unequal atoms do not split at the midpoint. Three appli
 step into the cell function $s_{AB}$. Dividing $P_A$ by the sum $T$ is what
 makes $\sum_A w^A = 1$ exact at every point. At a nucleus, $w^A(\mathbf R_A) = 1$.
 
-Gradients need the nuclear derivative, because moving a nucleus moves the
-cells. The loop codes it by the chain rule:
-
-$$ \frac{\partial\mu_{AB}}{\partial R_A^\alpha} = -\frac{(\mathbf{r}-\mathbf{R}_A)^\alpha}{r_A R_{AB}} - \frac{\mu_{AB}}{R_{AB}^2}(\mathbf{R}_A-\mathbf{R}_B)^\alpha,\qquad \frac{\partial\mu_{AB}}{\partial R_B^\alpha} = +\frac{(\mathbf{r}-\mathbf{R}_B)^\alpha}{r_B R_{AB}} + \frac{\mu_{AB}}{R_{AB}^2}(\mathbf{R}_A-\mathbf{R}_B)^\alpha, $$
-
-$$ \frac{d f^{(3)}}{d\nu} = f_2' f_1' f_0',\quad f_k' = \tfrac32(1-f_k^2),\qquad \frac{\partial\nu}{\partial\mu} = 1-2a_{AB}\mu,\qquad \frac{\partial w^A}{\partial R_C} = \frac{1}{T}\frac{\partial P_A}{\partial R_C} - \frac{P_A}{T^2}\sum_D\frac{\partial P_D}{\partial R_C} . $$
-
-Every $\mu_{AB}$ is unchanged by a rigid translation of the nuclei and the
-point together, so
-
-$$ \sum_C \frac{\partial w^A}{\partial \mathbf{R}_C}\Big|_{\mathbf{r}} + \nabla_{\mathbf{r}} w^A = 0 . $$
-
-`ferric-dft/src/grid.rs::build_atomic_grid_with_response` uses this to form
-PySCF's "weight1" derivative, in which each point rides its home atom $A$:
-$\partial w_g/\partial \mathbf{R}_b = w_r w_l[\partial w^{A}/\partial\mathbf{R}_b + \delta_{b,A}\nabla_{\mathbf{r}}w^{A}]$,
-so $\sum_b \partial w_g/\partial\mathbf{R}_b = 0$.
-
-The proof is section @sec:grids-becke-partition, verified equation @eq:ks-grid-becke.
-`scripts/dft_becke_weight_grad_sympy.py` checks each derivative
-symbolically, the assembled gradient of a three-atom cluster with unequal
-radii against sympy to $10^{-61}$, the partition of unity, and
-$\nabla_{\mathbf r}w = -\sum_C\partial w/\partial\mathbf R_C$. The Rust tests
-are `becke::tests::becke_weights_grad_finite_difference_ch` (finite
-differences, $<10^{-7}$), `becke::tests::becke_weights_grad_sums_to_zero_h2`
-and `becke::tests::partition_weight_derivative_matches_fd` (the
-neighbour-list kernel); the KS gradients test the chain end to end. That box
-is the machine check of the weights. Nothing in it concerns the charge.
+Gradients need the nuclear derivatives of $w^A$, because moving a nucleus
+moves the cells. Section @sec:grids-becke-partition derives them, and
+verified equation @eq:ks-grid-becke records their proof
+(`scripts/dft_becke_weight_grad_sympy.py`). A charge needs only the weights.
 
 **Becke charges.** `becke_charges` integrates the density inside each cell:
 
@@ -140,7 +119,7 @@ $\alpha_{\rm mol} = \langle\mu|R|\mu\rangle$. Then
 
 $$ \alpha^A_{dj}(iu) = \langle m^A_d|R(iu)|\mu_j\rangle , $$
 
-with the atom-centred dipole $m^A_d = w_A(\mathbf r)(r-R_A)_d$ on the bra and
+with the atom-centred dipole $m^A_d = w^A(\mathbf r)(r-R_A)_d$ on the bra and
 the molecular dipole on the field-side ket. In the auxiliary basis this is
 (@eq:pol-kernel-vs-casida) with the bra $\mu_d$ replaced by $m^A_d$:
 
@@ -182,27 +161,27 @@ The same function serves the static drivers, with $g = 1/\Delta$, and the
 dynamic ones, with $g_{ia}(u)$. It also serves both partitions: the Becke
 bra of @sec:atomic-partitions-becke-partition and the Hirshfeld bra of @sec:atomic-partitions-hirshfeld-l-wdin-mulliken.
 
-**The sum over atoms.** Add the bras. Because $\sum_Aw_A = 1$,
+**The sum over atoms.** Add the bras. Because $\sum_Aw^A = 1$,
 
-$$ \sum_A m^A_d = \sum_A w_A(r_d - R_{A,d}) = r_d - \sum_A R_{A,d}\,w_A , $$
+$$ \sum_A m^A_d = \sum_A w^A(r_d - R_{A,d}) = r_d - \sum_A R_{A,d}\,w^A , $$
 
 and in the occupied–virtual block $r_d$ is $\mu_d$. The response is linear in
-the bra, so $\sum_A\alpha^A = \alpha_{\rm mol} - \langle\sum_AR_Aw_A|R|\mu\rangle$.
+the bra, so $\sum_A\alpha^A = \alpha_{\rm mol} - \langle\sum_AR_Aw^A|R|\mu\rangle$.
 After symmetrization this gives the charge-transfer remainder in terms of the
 weights alone:
 
-$$ \alpha_{\rm CT} = \alpha_{\rm mol}-\sum_A\operatorname{sym}\alpha^A = \operatorname{sym}\,\Big\langle \sum_A \mathbf R_A\,w_A\Big|R\Big|\mu\Big\rangle . \label{eq:part-ct-sum-rule} $$
+$$ \alpha_{\rm CT} = \alpha_{\rm mol}-\sum_A\operatorname{sym}\alpha^A = \operatorname{sym}\,\Big\langle \sum_A \mathbf R_A\,w^A\Big|R\Big|\mu\Big\rangle . \label{eq:part-ct-sum-rule} $$
 
 The first term is the molecular tensor of section @sec:polarizabilities-from-dielectric-modes. The atoms do not add
 up to it because a field moves charge between atoms, and an atom-centred
-dipole cannot see that. $\langle w_A|R|\mu\rangle$ is the electron population
+dipole cannot see that. $\langle w^A|R|\mu\rangle$ is the electron population
 that the field moves into or out of cell $A$, so the right side of (@eq:part-ct-sum-rule) is
 the dipole of those population changes placed at the nuclei.
 
-Check the limits. For one atom, $w_A = 1$ everywhere and
+Check the limits. For one atom, $w^A = 1$ everywhere and
 $\langle i|1|a\rangle = 0$, so $\alpha_{\rm CT} = 0$ and $\alpha^A = \alpha_{\rm mol}$.
 For any molecule, shifting the origin by $\mathbf c$ shifts every
-$\mathbf R_A$ by $\mathbf c$ and adds $\mathbf c\sum_A\langle i|w_A|a\rangle = \mathbf c\,\langle i|a\rangle = 0$,
+$\mathbf R_A$ by $\mathbf c$ and adds $\mathbf c\sum_A\langle i|w^A|a\rangle = \mathbf c\,\langle i|a\rangle = 0$,
 so $\alpha_{\rm CT}$ does not depend on the origin either. For H2 along $z$,
 charge can flow only along the bond: the test
 `becke_dynamic_at_zero_frequency_is_the_static_per_atom_alpha` asserts that
@@ -235,14 +214,14 @@ molecule's.
 
 > **Verified equation @eq:part-ct-sum-rule** · the charge-transfer remainder follows from the partition of unity
 >
-> For weights with $\sum_Aw_A=1$ and bras $m^A=\langle i|(\mathbf r-\mathbf R_A)w_A|a\rangle$,
-> $\alpha_{\rm mol}-\sum_A\operatorname{sym}\alpha^A=\operatorname{sym}\langle\sum_A\mathbf R_Aw_A|R|\mu\rangle$,
+> For weights with $\sum_Aw^A=1$ and bras $m^A=\langle i|(\mathbf r-\mathbf R_A)w^A|a\rangle$,
+> $\alpha_{\rm mol}-\sum_A\operatorname{sym}\alpha^A=\operatorname{sym}\langle\sum_A\mathbf R_Aw^A|R|\mu\rangle$,
 > static and at an imaginary frequency, to $10^{-12}$ (the script's check).
 >
 > | | |
 > |---|---|
 > | Proof | `scripts/rpa_c6_polarizability_sympy.py`, claim ct-sum-rule (check 5) |
-> | Negative control | none in the runner's mutation list. The check compares two evaluations of one response function, so it tests the algebra of the sum rule, not the kernel |
+> | Negative control | the runner leaves the first atom out of $\sum_A\alpha^A$. The check compares two evaluations of one response function, so it tests the algebra of the sum rule, not the kernel |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-rpa/src/properties/per_atom.rs::charge_transfer_remainder` |
 >
@@ -319,9 +298,9 @@ $$ N^{\rm Hirsh}_A = \sum_g w_g\rho_g\,\frac{\rho^0_A(g)}{\sum_B\rho^0_B(g) + 10
 
 The grid is the atom-centred Becke–Lebedev one (default configuration), not a
 Cartesian lattice. A Cartesian lattice does not carry the molecule's point
-group and cannot resolve the nuclear cusp. On it, symmetry-equivalent atoms
-came out with different charges: the code comment records 52 of 500 QM9
-molecules with equivalent atoms differing by more than 0.05 e.
+group and cannot resolve the nuclear cusp. It gives symmetry-equivalent atoms
+different charges: more than 0.05 e in 52 of 500 QM9 molecules, per the code
+comment.
 
 The polarizability bra for `c6_partition = "hirshfeld"` is different. It is
 the dipole integral $\int\chi_\mu\chi_\nu\,w^A(\mathbf r-\mathbf R_A)_d$ with
@@ -330,7 +309,15 @@ spacing and 6 Bohr margin (`FERRIC_HIRSHFELD_SPACING`,
 `FERRIC_HIRSHFELD_MARGIN`; `ferric-rpa/src/properties/per_atom.rs::hirshfeld_bra`).
 No renormalization to the lab-frame dipole is applied, because that would
 break the origin independence. So the Hirshfeld charge and the Hirshfeld
-polarizability use two different quadratures of the same weights.
+polarizability use two different quadratures of the same weights. The cusp
+objection does not apply to the bra in the same way: its integrand carries
+$(\mathbf r-\mathbf R_A)$, which vanishes at nucleus $A$, and $w^A$ is close to
+zero at every other nucleus, so the sharp part of each $\chi_\mu\chi_\nu$ sits
+where the operator is small. On water/cc-pVDZ (RHF, cc-pVDZ-RI, build `3f612e0b3`)
+the oxygen's isotropic $\alpha$ is 2.340961, 2.341371, 2.341391 and 2.341412
+bohr$^3$ at spacings 0.30, 0.20, 0.14 and 0.10 Bohr, and each hydrogen's
+stays at 0.115181 from 0.20 down. At the default 0.20 Bohr the per-atom
+values are within $2\times10^{-5}$ relative of the finest lattice.
 
 **Löwdin.** The overlap matrix $S$ mixes basis functions on different atoms,
 so the density matrix alone does not say which electrons belong where.
@@ -352,8 +339,11 @@ positive.
 **Mulliken** is the same sum with $\mathbf PS$ in place of
 $S^{1/2}\mathbf PS^{1/2}$: $q_A=Z^{\rm eff}_A-\sum_{\mu\in A}(\mathbf PS)_{\mu\mu}$,
 again with trace $N$. Löwdin and Mulliken partition the basis, not space, so
-they change with the basis set and, for Löwdin, with the function-ordering
-convention of the basis.
+they change with the basis set. The Löwdin split also changes under any
+non-orthogonal change of the functions on an atom: Cartesian against
+spherical $d$ shells, or a different normalization. It does not depend on the
+order of the functions: a permutation $\Pi$ gives
+$S'^{1/2} = \Pi S^{1/2}\Pi^{\mathsf T}$, which only permutes the diagonal.
 
 > **Verified equation @eq:charges-population-sums** · the population sums and the grid rescale
 >
@@ -366,7 +356,7 @@ convention of the basis.
 > | | |
 > |---|---|
 > | Proof | `scripts/atomic_charges_sympy.py`, claims A1 and A2 |
-> | Negative control | the runner builds Löwdin with $S$ in place of $S^{1/2}$ (claim A1 fails) |
+> | Negative control | the runner builds Löwdin with $S$ in place of $S^{1/2}$ (claim A1 fails), and drops the rescale $s$ (claim A2 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-scf/src/properties.rs::lowdin_charges` |
 >
@@ -515,16 +505,18 @@ spherical-harmonic shells (section @sec:electrostatics-and-charges-five-charge-s
 | Charges that reproduce the electrostatics outside the molecule | CHELPG or RESP | the only rules fitted to the potential |
 | A partition of a molecular response | the same weights as the bra: Becke by default for TS and MBD, Hirshfeld for PDEP | partition of unity gives (@eq:part-ct-sum-rule) |
 
-The five charge rules are five definitions of an atomic charge, and they
-disagree by design (the figure in section
+The five charge models reachable from Python are five definitions of an
+atomic charge, and they disagree by design (the figure in section
 @sec:electrostatics-and-charges-five-charge-schemes shows water). Choose one for a dataset and
-record it with the arrays. `c6_partition` is written into the file for the
-per-atom polarizability arrays; no equivalent tag exists for the charges.
+record it with the arrays. `c6_partition` tags the dispersion block
+(`alpha_atomic_dynamic`, `alpha_ct_dynamic`, `c6_iso`, `c6_aniso`). The static
+`alpha_atomic` and `alpha_ct` are always Becke and carry no tag, and no
+equivalent tag exists for the charges.
 
 Both halves on one water / cc-pVDZ density, from the `589b50832` build. The
 first block is the Becke split of $\alpha$ and its charge-transfer remainder
 (@eq:part-ct-sum-rule), here 37.0% of $\alpha_{\rm iso}$ at cc-pVDZ; the residual of
-the sum rule prints as 0.0. The second block is the five charge rules: each sums
+the sum rule prints as 0.0. The second block is the five Python charge models: each sums
 to zero within $10^{-14}$, and the oxygen charge ranges from $-0.31$
 (Mulliken) to $-0.74$ (CHELPG).
 
@@ -597,14 +589,15 @@ sum rule (@eq:part-ct-sum-rule) the proof above.
   against PySCF on HI and CH3I, section @sec:electrostatics-and-charges-known-limits-2026-11). Hirshfeld on an ECP atom
   still divides by a proatom built for the full $Z$; that pairing is
   unchecked.
-- **Spin.** Every rule takes the total spin-summed density. The Mulliken and
-  Löwdin doc comments say closed-shell only, but the formulas have no
-  closed-shell assumption.
+- **Spin.** Every rule takes the total spin-summed density; none assumes a
+  closed shell.
 - **Orientation.** CHELPG and RESP depend on the molecule's orientation
   through the lab-frame lattice.
-- **Löwdin ordering.** The Löwdin split depends on the basis-function
-  ordering convention, so values from two codes are not comparable even on the
-  same density.
+- **Löwdin and Cartesian shells.** The Löwdin split is invariant to the order
+  of the functions and to orthogonal mixing on one atom. It differs between
+  codes only when the basis differs (Cartesian against spherical shells,
+  normalization). On a pure-function basis ferric matches PySCF
+  (`crates/ferric-scf/tests/properties_effective_z.rs`).
 
 ## Sources {#atomic-partitions-sources}
 

@@ -9,10 +9,11 @@ problem and leaves one symmetric linear system for the surface charges.
 COSMO, the conductor-like screening model, solves that system and rescales
 the answer by a function of $\varepsilon$ to account for a real, finite
 dielectric. The plan: derive the limit from the IEF-PCM operators (@sec:conductor-limit-and-cosmo-limit-ief-pcm),
-then the COSMO driver of `ferric-scf` (@sec:conductor-limit-and-cosmo-cosmo-driver), its algorithm (@sec:conductor-limit-and-cosmo-algorithm) and
-its options (@sec:conductor-limit-and-cosmo-options).
+then the COSMO driver of `ferric-scf` (@sec:conductor-limit-and-cosmo-cosmo-driver), a CLI example (@sec:conductor-limit-and-cosmo-running-it),
+its algorithm (@sec:conductor-limit-and-cosmo-algorithm) and its options (@sec:conductor-limit-and-cosmo-options).
 
-The limit is proved in `ferric-pcm` by `scripts/pcm_ief_sympy.py`. The COSMO
+The limit is proved by `scripts/pcm_ief_sympy.py`, claim 4, and tested in
+`ferric-pcm`. The COSMO
 driver's equations are in section @sec:conductor-limit-and-cosmo-cosmo-driver and are proved in `scripts/cosmo_sympy.py`.
 
 | Symbol | Meaning | Code name |
@@ -64,7 +65,7 @@ $2.1\times10^{-2}$ at $\varepsilon = 78.4$.
 > | | |
 > |---|---|
 > | Proof | `scripts/pcm_ief_sympy.py`, claim 4 |
-> | Negative control | $f < 1$ is not the conductor equation |
+> | Negative control | $f < 1$ is not the conductor equation; the runner builds the $f = 1$ operators at $f = 77/79$ (claim 4 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pcm/src/matrices.rs::build_k_r` |
 > | Code test | `ief_reduces_to_conductor_equation_as_eps_goes_to_infinity` in `crates/ferric-pcm/tests/ief_limits.rs` |
@@ -83,6 +84,10 @@ $f = 0.9748$, $k_0 = 0.9872$ and $k_1 = 0.9810$ differ in the second or
 third digit.
 
 ## The COSMO driver {#conductor-limit-and-cosmo-cosmo-driver}
+
+COSMO's code names differ from those of sections @sec:cavity-and-bem to @sec:gradient: a
+tessera is a segment, its position $\mathbf r_k$ is $\mathbf s_k$, and
+$M_k$ is the $B^k$ of section @sec:reaction-field.
 
 `ferric-scf/src/cosmo.rs` implements the conductor-like screening model of
 Klamt and Schüürmann (J. Chem. Soc. Perkin Trans. 2, 799 (1993)) as a
@@ -254,6 +259,31 @@ $\mathrm{swf}_k$ changes), the derivative of $M_k$ with respect to both the
 basis centres and the segment positions, and the derivative of the nuclear
 part of $v$. None of it is implemented. Section @sec:gradient has all of these terms
 for IEF-PCM, which is the model to use for a geometry.
+
+## Running it {#conductor-limit-and-cosmo-running-it}
+
+COSMO is a CLI section. This input runs water in cc-pVDZ with water's
+dielectric constant and the default cavity:
+
+```toml
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rhf"
+
+[cosmo]
+epsilon = 78.39
+```
+
+At build `81ff9bbcb` the SCF converges to $-76.0362581147$ Ha, and the
+certificate lists `cosmo: epsilon 78.39` under `approx`. The output does not
+print the solvation energy separately. Run the same input without `[cosmo]`
+($-76.0267679974$ Ha) and take the difference: $-9.490\times10^{-3}$ Ha, or
+$-5.955$ kcal/mol, the value in the anchors below.
 
 ## The algorithm {#conductor-limit-and-cosmo-algorithm}
 

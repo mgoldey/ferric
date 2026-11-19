@@ -96,8 +96,8 @@ $\mathsf T_{ij} = \mathsf T_{ji}$.
 
 The default is $a = 2.1304$ (Thole 1981; van Duijnen and Swart, J. Phys.
 Chem. A 102, 2399, 1998). That value belongs to this exponential form and
-not to the cubic $e^{-au^3}$ form. `thole_a = None` (Python `thole_a=0.0`)
-switches the damping off and gives $\lambda_3 = \lambda_5 = 1$.
+not to the cubic $e^{-au^3}$ form. Undamped, $\lambda_3 = \lambda_5 = 1$; the
+options table says how to ask for each.
 
 <!-- excerpt: ferric-scf/src/polarizable.rs::thole_screening -->
 ```rust
@@ -123,8 +123,6 @@ t[a][b] = (3.0 * lam5 * rhat[a] * rhat[b] - lam3 * eye) * inv_r3;
 
 Move the unknown dipoles to the left. The induction equations become one
 dense linear system:
-
-**Equation @eq:thole-fock-term, the induction system, the energy and the Fock term.**
 
 $$ \big[\operatorname{diag}(\alpha^{-1}) - \mathsf T\big]\,\boldsymbol\mu = \mathbf E^{\mathrm{ext}}, \qquad E_{\mathrm{pol}} = -\tfrac12\sum_i\boldsymbol\mu_i\cdot\mathbf E_i^{\mathrm{ext}}, \qquad V^{\mathrm{ind}}_{\mu\nu} = -\sum_i\boldsymbol\mu_i\cdot\mathbf F_i^{\mu\nu}, $$
 
@@ -255,11 +253,28 @@ nuclear-attraction derivative blocks by
 `p_shell_dipole_potential_matches_charge_derivative_block` in
 `crates/ferric-scf/tests/qmmm_polarizable.rs`.
 
+> **Verified equation {#eq:thole-p-shell-norm}** · the p-shell normalization and axis map
+>
+> For the unit-normalized $p_x = \mathcal N x\,e^{-\zeta r^2}$, the reciprocal
+> of the dipole moment $\int x\,p_x$ is $2^{1/4}\zeta^{5/4}/(2\pi^{3/4})$,
+> the coded `norm_int_p_shell`; with the real solid harmonics ordered
+> $(y, z, x)$, field axis $c$ maps to function $(c+2)\bmod3$ (claim T6).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/thole_polarizable_sympy.py`, claim T6 |
+> | Negative control | the runner transcribes the normalization with $\zeta^{3/4}$ in place of $\zeta^{5/4}$ (claim T6 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/polarizable.rs::norm_int_p_shell` |
+> | Code test | `p_shell_dipole_potential_matches_charge_derivative_block` in `crates/ferric-scf/tests/qmmm_polarizable.rs` |
+>
+> <!-- verified: id=thole.p-shell-norm; script=scripts/thole_polarizable_sympy.py; claim=T6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/polarizable.rs::norm_int_p_shell; rust_test=ferric-scf/tests/qmmm_polarizable.rs::p_shell_dipole_potential_matches_charge_derivative_block; registry=qmmm -->
+
 A sign convention sits between the integral and the Fock term. The raw
-derivative convention of that pin test,
-$\partial\langle\mu|1/|\mathbf r-\mathbf R|\,|\nu\rangle/\partial R_c = -\mathcal N_p(\mu\nu|p)$,
-and the physical field convention of `electric_field_at_points`, which
-accumulates minus the contraction, differ by one sign. The Fock term must use
+derivative block of that pin test is the nuclear-attraction one,
+$\partial\langle\mu|{-1}/|\mathbf r-\mathbf R|\,|\nu\rangle/\partial R_c = -\mathcal N_p(\mu\nu|p_c)$,
+and the physical field convention of `electric_field_at_points` accumulates
+minus that contraction. The two differ by one sign. The Fock term must use
 the physical one:
 
 <!-- excerpt: ferric-scf/src/polarizable.rs::build_v_induced -->
@@ -274,10 +289,9 @@ let coeff = -mu[c] * norm_p;
 | $(\mu\nu\vert p_{(c+2)\bmod3})$ | `block[(p_fn * n1 + a) * n2 + bb]` with `p_fn = p_axis_for_field_axis(c)` |
 
 A wrong-sign Fock term still converges, to a self-consistent but wrong fixed
-point: about $10^{-5}$ absolute error in the dipoles and $1.5\times10^{-4}$ Ha
-in the energy on the multi-site cases. The p-shell pin test does not exercise
-that sign. The comparison with an independent PySCF prototype
-(`matches_pyscf_prototype_three_sites` and its siblings) does. The scaling
+point. The p-shell pin test does not exercise that sign. The comparison with
+an independent PySCF prototype (`matches_pyscf_prototype_three_sites` and its
+siblings in `crates/ferric-scf/tests/qmmm_polarizable.rs`) does. The scaling
 uses `norm_int_p_shell` and not `SiteBasis::norm_int`, which is the $l = 0$
 charge normalization of section @sec:external-potentials.
 
@@ -301,11 +315,10 @@ centres). The second is the nuclear part of the field. A QM nucleus is a
 point charge from a site's point of view, so moving it changes
 $\mathbf E_i^{\mathrm{QM,nuc}} = \sum_AZ_A(\mathbf R_i-\mathbf R_A)/|\mathbf R_i-\mathbf R_A|^3$,
 and the term is $-\boldsymbol\mu_i\cdot\partial\mathbf E_i^{\mathrm{QM,nuc}}/\partial\mathbf R_A$
-in closed form. Without the nuclear piece,
-`qm_gradient_with_polarizable_sites_matches_finite_difference` shows a
-residual of $2.6\times10^{-5}$. The first piece alone matches an isolated
-fixed-density, fixed-$\boldsymbol\mu$ check to 6 significant figures; that
-check holds the nuclei still, so it cannot see the nuclear term.
+in closed form. `qm_gradient_with_polarizable_sites_matches_finite_difference`
+fails without the nuclear piece. A fixed-density, fixed-$\boldsymbol\mu$
+check that holds the nuclei still cannot see it, so the finite difference
+moves the nuclei.
 
 **Site rows** (`site_gradient`). Why not
 differentiate $E_{\mathrm{pol}} = -\tfrac12\boldsymbol\mu\cdot\mathbf E^{\mathrm{ext}}$
@@ -328,8 +341,6 @@ each $j$, both $-\tfrac12\boldsymbol\mu_i\cdot\mathsf T_{ij}\boldsymbol\mu_j$ an
 $-\tfrac12\boldsymbol\mu_j\cdot\mathsf T_{ji}\boldsymbol\mu_i$. The symmetry
 $\mathsf T_{ji}(\mathbf R_j,\mathbf R_i) = \mathsf T_{ij}(\mathbf R_i,\mathbf R_j)^{\mathsf T}$
 makes the two equal, so together they give coefficient 1:
-
-**Equation @eq:thole-site-gradient, the site gradient of the polarization energy.**
 
 $$ \frac{\partial E_{\mathrm{pol}}}{\partial\mathbf R_i} = -\boldsymbol\mu_i\cdot\frac{\partial\mathbf E_i^{\mathrm{ext}}}{\partial\mathbf R_i} - \sum_{j\neq i}\boldsymbol\mu_i\cdot\frac{\partial\mathsf T_{ij}}{\partial\mathbf R_i}\cdot\boldsymbol\mu_j , $$
 
@@ -362,13 +373,11 @@ and the QM-nuclear and permanent-charge parts in closed form.
 >
 > <!-- verified: id=thole.site.gradient; script=scripts/thole_polarizable_sympy.py; claim=T3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/polarizable.rs::site_gradient; rust_test=ferric-scf/tests/qmmm_polarizable.rs::site_force_with_polarizable_sites_matches_finite_difference; registry=qmmm -->
 
-The code records a measurement on a classical two-site Thole system with no
-QM region. Equation @eq:thole-site-gradient reproduced central-difference gradients to
-$10^{-8}$ absolute on every component, magnitude and sign. The naive
-$-\tfrac12\boldsymbol\mu\cdot\partial\mathbf E/\partial\mathbf R$ was off by a
-factor of roughly 2 to 20 and had the wrong sign on 2 of the 6 components.
-Coefficient $\tfrac12$ in the $\mathsf T$ loop is off by exactly a factor of 2,
-which `site_force_with_polarizable_sites_matches_finite_difference` detects.
+On the classical three-site model of claim T3 the naive
+$-\tfrac12\boldsymbol\mu\cdot\partial\mathbf E/\partial\mathbf R$ misses the
+central differences in size and in sign, and coefficient $\tfrac12$ in the
+$\mathsf T$ loop halves that term, which
+`site_force_with_polarizable_sites_matches_finite_difference` detects.
 
 The code takes $\partial\mathsf T_{ij}/\partial\mathbf R_i$ by central difference
 of the closed-form `thole_tensor`, step $h = 10^{-6}$ Bohr, in a loop over
@@ -484,9 +493,47 @@ alpha -> 0: E - E(fixed) = -1.7e-09
 dE/dx(O of water 2): analytic +0.00022669  central difference +0.00022669  diff -7.2e-10
 ```
 
-The MM oxygens sit 2.9 and 3.2 Å from the QM oxygen, far enough that damping
-moves the energy by only $4\times10^{-5}$ Ha out of an $E_{\mathrm{pol}}$ of
-$-0.24$ Ha. With $\alpha = 10^{-8}$ Å$^3$ the energy is that of fixed charges
+The only pair of polarizable sites is the two MM oxygens, 5.05 Å apart
+($u = 4.5$, $\lambda_3 = 0.996$), so damping moves the energy by only
+$4\times10^{-5}$ Ha out of an $E_{\mathrm{pol}}$ of $-0.24$ Ha. The distance to
+the QM region does not enter: the QM field at a site is not damped.
+
+Nearly all of that $E_{\mathrm{pol}}$ is each MM oxygen polarized by the
+charges of its own two hydrogens: Python and the CLI set no exclusions
+(section @sec:polarizable-embedding-exclusions). The two sites with the QM
+water removed give $-0.2398$ Ha (numpy below; $-0.2398$ Ha undamped too), so
+the interaction with the QM water is the remainder of about
+$-2.4\times10^{-3}$ Ha.
+
+```python
+# E_pol of the two MM oxygens alone (no QM region), same geometry and alpha.
+import numpy as np
+
+ang = 1 / 0.529177210903
+xyz = np.array([(0.000, -2.900, 0.000), (0.757, -3.486, 0.000), (-0.757, -3.486, 0.000),
+                (2.900, 1.200, 0.500), (3.400, 1.900, 0.900), (3.300, 0.400, 0.800)]) * ang
+chg = np.array([-0.834, 0.417, 0.417, -0.834, 0.417, 0.417])
+alpha, sites = 1.44 * ang**3, [0, 3]
+for a in (2.1304, 0.0):
+    e = []
+    for i in sites:  # permanent field, skipping the site's own charge
+        d = xyz[i] - np.delete(xyz, i, axis=0)
+        e.append((np.delete(chg, i)[:, None] * d / np.linalg.norm(d, axis=1)[:, None] ** 3).sum(0))
+    e = np.concatenate(e)
+    r = xyz[0] - xyz[3]; dist = np.linalg.norm(r); rh = r / dist
+    v = a * dist / alpha ** (1 / 3); x = np.exp(-v)
+    l3 = 1 - (1 + v + v * v / 2) * x if a else 1.0
+    l5 = l3 - v**3 / 6 * x if a else 1.0
+    t = (3 * l5 * np.outer(rh, rh) - l3 * np.eye(3)) / dist**3
+    b = np.block([[np.eye(3) / alpha, -t], [-t, np.eye(3) / alpha]])
+    mu = np.linalg.solve(b, e)
+    print(f"thole_a={a}: E_pol(MM only) = {-0.5 * mu @ e:.4f} Ha")
+```
+
+```text
+thole_a=2.1304: E_pol(MM only) = -0.2398 Ha
+thole_a=0.0: E_pol(MM only) = -0.2398 Ha
+``` With $\alpha = 10^{-8}$ Å$^3$ the energy is that of fixed charges
 to $2\times10^{-9}$ Ha, the trivial limit above, and the site row matches the
 central difference to $7\times10^{-10}$ Ha/Bohr.
 
@@ -535,7 +582,8 @@ gradient is that of the energy computed.
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `[qmmm] polarizabilities_angstrom3` | one entry per PQR atom, Å$^3$; 0.0 = not polarizable | empty | the sites; entries on QM atoms are ignored; a nonempty list with no positive MM entry is an error |
-| `[qmmm] thole_a`, Python `thole_a=` | float; `0.0` disables damping | 2.1304 | the Thole parameter; needs polarizabilities |
+| `[qmmm] thole_a`, Python `thole_a=` | float; `0.0` disables damping | 2.1304 | the Thole parameter; needs polarizabilities. In Rust `PolarizableSites::thole_a = None` is undamped; in Python `thole_a=None` is the default 2.1304 and `thole_a=0.0` is undamped |
+| `PolarizableSites::exclusions` | site-index pairs | empty | section @sec:polarizable-embedding-exclusions; library only: Python `run_qmmm` and the CLI always pass an empty set |
 | `PolarizableSites::dipole_zeta` | Bohr$^{-2}$ | $10^4$ | the point-dipole p shell; library only |
 | `PolarizableSites::max_sites_dense` | integer | 4000 | the dense-solve ceiling; more sites is a typed error |
 | a site with non-positive or non-finite $\alpha$ | | | an error |
@@ -546,7 +594,7 @@ gradient is that of the energy computed.
 |---|---|---|---|
 | total energy, $E_{\mathrm{pol}}$, induced dipoles, QM and MM gradients, against a numpy induction model on PySCF point-dipole field integrals, self-consistent in the SCF | H2O + 4 TIP3P waters, with and without intramolecular exclusions / cc-pVDZ, RHF; NH2 + 3 waters / cc-pVDZ, UHF | total energy $\le 3.7\times10^{-12}$ Ha; $E_{\mathrm{pol}} \le 1.5\times10^{-9}$; dipoles $\le 1.5\times10^{-9}$ a.u.; gradients $\le 3.0\times10^{-9}$ Ha/Bohr | `site/src/reference/validation.md`, Thole row |
 | one site 30 Å away | same | $E_{\mathrm{pol}}$ within $7.7\times10^{-8}$ relative of the classical limit $-\tfrac12\alpha\lvert E_0\rvert^2$ | same |
-| $\alpha\to0$ | same | PySCF `qmmm.mm_charge` | same |
+| $\alpha\to0$ (every $\alpha$ scaled by $10^{-12}$), against PySCF `qmmm.mm_charge` | same, with exclusions | $3.0\times10^{-12}$ Ha (bar $3\times10^{-11}$) | `anchor_tiny_alpha_is_point_charge_embedding` in `crates/ferric-scf/tests/validation_thole.rs` |
 
 The second row is the one-site check of section @sec:polarizable-embedding-induction-model measured at the far
 limit: one distant site sees an almost uniform field $\mathbf E_0$ and no
@@ -575,6 +623,9 @@ of the reference model, not an analytic reference.
   error.
 - The dense solve limits a run to `max_sites_dense` sites; an iterative solve
   is a documented follow-up.
+- `PolarizableSites::exclusions` is library only. Python `run_qmmm` and the
+  CLI always pass an empty set, so every MM site is polarized by its own
+  molecule's charges; the example above shows the size of that term.
 - `optimize_qmmm` refuses a polarizable embedding. The CLI carries the
   polarizable terms for the energy task on `rhf`, `uhf` and `ksdft` only, and
   refuses a geometry or frequency task, a correlated kind, `rohf`, `[cosmo]`

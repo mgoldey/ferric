@@ -1,6 +1,6 @@
 # Point charges, smeared charges and uniform fields {#external-potentials}
 
-<!-- status: edit; registry: none -->
+<!-- status: edit; registry: qmmm -->
 
 A molecule in a crystal, a protein or a solvent shell feels the charges
 around it. The simplest model of that environment is a set of fixed
@@ -14,7 +14,8 @@ Everything else in this chapter is built on this operator. The QM/MM charges
 of section @sec:qmmm-boundaries are an `ExternalPotential`, and the polarizable sites of
 section @sec:polarizable-embedding add a density-dependent term on top of it. The section derives
 the operator and the classical energy (@sec:external-potentials-operator-classical-energy), shows where they enter the
-SCF (@sec:external-potentials-terms-enter-scf), derives the gradient (@sec:external-potentials-gradient), and lists the options and
+SCF (@sec:external-potentials-terms-enter-scf), derives the gradient (@sec:external-potentials-gradient), runs the limits on water
+(@sec:external-potentials-running-it), and lists the options and
 anchors (@sec:external-potentials-options to @sec:external-potentials-sources). The proofs are in
 `scripts/external_potential_sympy.py`, claims E1 to E5.
 
@@ -32,7 +33,7 @@ anchors (@sec:external-potentials-options to @sec:external-potentials-sources). 
 |---|---|
 | Rust | `ferric-core/src/external_potential.rs::ExternalPotential`, `ferric-integrals/src/oneelectron.rs::{hcore_with_external,hcore_ecp_with_external,nuclear_with_external,smeared_attraction,field_hcore_term}`, `ferric-scf/src/rhf.rs::RhfConfig` field `external_potential` |
 | CLI | `[external_potential]` with `[[external_potential.point_charges]]` (`q`, `x`, `y`, `z`, optional `width`) and `field` (`examples/water-rhf-smeared-charge.toml`) |
-| Python | `point_charges=`, `smeared_charges=`, `external_field=` on `run_rhf`, `run_uhf`, `run_rohf`, `run_dft` and the geometry drivers |
+| Python | `point_charges=` and `external_field=` on `run_rhf`, `run_uhf`, `run_rohf`, `run_dft`, `run_optimize`, `run_frequencies`, `run_saddle`, `run_irc` and `run_pdep_rpa`; `smeared_charges=` on `run_rhf` only |
 
 ## The operator and the classical energy {#external-potentials-operator-classical-energy}
 
@@ -123,7 +124,7 @@ linear in $\mathbf R_A$ and contributes nothing to it.
 > | Code | `ferric-core/src/external_potential.rs::{charge_nuclear_energy,charge_nuclear_hessian}` |
 > | Code test | `smeared_charge_nuclear_hessian_matches_gradient_difference` in `crates/ferric-core/src/external_potential.rs` |
 >
-> <!-- verified: id=ext.smeared.classical; script=scripts/external_potential_sympy.py; claim=E3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/external_potential.rs::charge_nuclear_hessian; rust_test=ferric-core/src/external_potential.rs::smeared_charge_nuclear_hessian_matches_gradient_difference -->
+> <!-- verified: id=ext.smeared.classical; script=scripts/external_potential_sympy.py; claim=E3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/external_potential.rs::charge_nuclear_hessian; rust_test=ferric-core/src/external_potential.rs::smeared_charge_nuclear_hessian_matches_gradient_difference; registry=qmmm -->
 
 ### Where is the origin?
 
@@ -142,6 +143,22 @@ shifts by a constant. The shift adds $-(\mathbf E\cdot\mathbf O)S$ to $h$,
 which moves every orbital energy by the same amount, so neither the orbitals
 nor the gradient change (claim E4). The code's $\mathbf O = 0$ fixes the
 constant.
+
+> **Verified equation {#eq:ext-field-origin}** · the field term does not depend on the origin
+>
+> With $H' = +\mathbf E\cdot(\mathbf r-\mathbf O)$ and
+> $E_{\rm nuc} = -\mathbf E\cdot\sum_AZ_A(\mathbf R_A-\mathbf O)$, moving the
+> origin changes the total energy by $(\mathbf E\cdot\mathbf O)Q$, a constant
+> that vanishes for a neutral molecule (claim E4).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/external_potential_sympy.py`, claim E4 |
+> | Negative control | the un-negated electronic term does not cancel; the runner flips the sign of the electronic field term (claim E4 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-integrals/src/oneelectron.rs::field_hcore_term` |
+>
+> <!-- verified: id=ext.field.origin; script=scripts/external_potential_sympy.py; claim=E4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/oneelectron.rs::field_hcore_term; registry=qmmm -->
 
 ## Where the terms enter the SCF {#external-potentials-terms-enter-scf}
 
@@ -278,6 +295,24 @@ $-\sum_AZ_A\mathbf E$. The atom sum of the two is $-Q\mathbf E$, which is a
 net force of $Q\mathbf E$ on the molecule. A neutral molecule feels no net
 force from a uniform field, as it should (claim E5).
 
+> **Verified equation {#eq:ext-field-fd-gradient}** · the finite-difference field–electron term and the net force
+>
+> On an s-Gaussian model the central difference ($h = 10^{-4}$) of
+> $\mathrm{Tr}[P\,\mathbf E\cdot\langle\mathbf r\rangle]$ equals the analytic
+> derivative of the dipole integrals to the Richardson-estimated $O(h^2)$
+> error, its atom sum is $\mathbf E\,\mathrm{Tr}[PS]$, and with the
+> field–nucleus rows the net force is $Q\mathbf E$ (claim E5).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/external_potential_sympy.py`, claim E5 |
+> | Negative control | the runner divides the central difference by $h$ in place of $2h$ (claim E5 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/gradient.rs::field_density_gradient_fd` |
+> | Code test | `oneelectron_gradient_uniform_field_matches_finite_difference` in `crates/ferric-scf/src/gradient.rs` |
+>
+> <!-- verified: id=ext.field.fd-gradient; script=scripts/external_potential_sympy.py; claim=E5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/gradient.rs::field_density_gradient_fd; rust_test=ferric-scf/src/gradient.rs::oneelectron_gradient_uniform_field_matches_finite_difference; registry=qmmm -->
+
 ### The force on a charge
 
 The force on a charge itself is not part of this gradient, but QM/MM needs
@@ -303,9 +338,15 @@ site term of @sec:external-potentials-operator-classical-energy, and the force i
 $q_j\mathbf E(\mathbf R_j)$. `ferric-scf/src/qmmm.rs::mm_forces` (section
 @sec:qmmm-boundaries) merges the two kinds of charge.
 
-The analytic Hessian with external charges (QM–QM block, charges fixed) and
-the smeared-charge version are validated on the page named in the anchors
-table.
+The analytic Hessian with external charges (QM–QM block, charges fixed) is
+derived with the RHF Hessian (section @sec:hf-hessian-options-change-equation).
+The smeared-charge second derivatives there are a fourth-order central
+stencil of the first-derivative three-centre blocks
+(`ferric-scf/src/hessian_smeared.rs`); the anchors table gives its agreement
+with PySCF.
+
+
+## Running it {#external-potentials-running-it}
 
 Here are the limits of this page on water in cc-pVDZ, from the `589b50832`
 build: the empty charge list against vacuum, a smeared charge as its width
@@ -366,7 +407,13 @@ sum of gradient rows (neutral, expect ~0): [-2.09048140e-29 -4.69277395e-14 -3.8
 
 An empty charge list gives the vacuum energy bit for bit. The smeared charge
 approaches the point charge as $w$ shrinks, a factor of about $10^2$ per
-decade of $w$ at the small widths. Moving the molecule by 3 Å in the field
+decade of $w$ at the small widths. That is a $w^2$ law. For a site outside
+the nuclei the first-order shift is $\Delta E = q_j\,\pi w_j^2\,\rho(\mathbf R_j)$,
+because $\int[1/r - \operatorname{erf}(r/w)/r]\,d\mathbf r = \pi w^2$: the
+smeared potential differs from the point one only within a few $w$ of the
+site, where the density is nearly constant. The shift is negative for
+$q = -0.8$, and the last row gives $\rho \approx 1.8\times10^{-6}$ at the
+site. Moving the molecule by 3 Å in the field
 changes the energy by $10^{-13}$ Ha, and the gradient rows sum to
 $4\times10^{-11}$ Ha/Bohr, inside the $O(h^2)$ error of the finite-difference
 field term.
@@ -378,7 +425,7 @@ field term.
 | `[[external_potential.point_charges]]` | `q`, `x`, `y`, `z` in Bohr; `width` in Bohr optional | none | a charge; a `width` makes it smeared, and `width` $\le 0$ is an error |
 | `[external_potential] field` | $[E_x, E_y, E_z]$, atomic units | none | the uniform field |
 | `[qmmm]` with `[external_potential]` | | | refused: the MM region is an external potential, so both would count it |
-| Python `point_charges=`, `smeared_charges=`, `external_field=` | `(q,x,y,z)`, `(q,x,y,z,width)`, `(Ex,Ey,Ez)` | none | the same, in Bohr and atomic units |
+| Python `point_charges=`, `smeared_charges=`, `external_field=` | `(q,x,y,z)`, `(q,x,y,z,width)`, `(Ex,Ey,Ez)` | none | the same, in Bohr and atomic units; `smeared_charges=` on `run_rhf` only |
 
 An omitted `[external_potential]` section and an empty one both take the
 vacuum path. The MP2 and coupled-cluster Python drivers take no

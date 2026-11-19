@@ -87,13 +87,20 @@ screening: the induced density makes a Coulomb potential that pushes back on
 the electrons. $\tilde{\boldsymbol\varepsilon}$ is positive definite, so the
 term is nonnegative on the diagonal and lowers each $\alpha_{dd}$.
 
+The two equation labels read the other way round from their names: the label
+`pol-dielectric-form` sits on the $n_on_v$ response formula, and
+`pol-kernel-vs-casida` on the dielectric form that the code solves. Every
+reference below follows that.
+
 Check two limits. At $u = 0$ every $g_{ia}$ is $1/\Delta_i^a$ and (@eq:pol-kernel-vs-casida) is
 the static polarizability. As $u \to \infty$, $g_{ia} \to \Delta_i^a/u^2$, so
 $w_d$ falls as $1/u^2$ and the screening term as $1/u^4$; the tensor tends to
 $4\,\mu_d^{\mathsf T}\Delta\,\mu_e/u^2$, and the coupling $\mathbf K$ drops
-out. The source comment above the loop below writes out the same two steps; they
-and the large-$u$ limit were also checked on a random numpy model
-for this section. The verified boxes cover (@eq:pol-kernel-vs-casida) itself.
+out. The source comment above the loop below writes out the same two steps.
+`scripts/rpa_response_modes_sympy.py` claim M5 checks the large-$u$ limit on
+a random model: $u^2\alpha$ approaches $4\,\mu^{\mathsf T}\Delta\,\mu$, not
+$4\,\mu^{\mathsf T}(\Delta+4\mathbf K)\mu$, and the screening term falls by
+16 when $u$ doubles. The verified boxes cover (@eq:pol-kernel-vs-casida) itself.
 
 <!-- excerpt: ferric-rpa/src/properties.rs::pdep_polarizability_static -->
 ```rust
@@ -111,15 +118,16 @@ for this section. The verified boxes cover (@eq:pol-kernel-vs-casida) itself.
 |---|---|
 | $\mu_d^{\mathsf T}\mathrm{diag}(g)\,\mu_e$ | `bare` (here with $g = 1/\Delta$) |
 | $w_d^{\mathsf T}\tilde{\boldsymbol\varepsilon}^{-1}w_e$ | `coupled`, with `y_vec` $= \tilde{\boldsymbol\varepsilon}^{-1}w$ from `solve_dielectric_3` |
-| 4, 16 | the prefactor of the independent-particle term (2 for spin, 2 for the pair of poles), and 16 = 4 (that prefactor) $\times$ 4 (the dielectric's $4BD^{-1}B^{\mathsf T}$) |
+| 4, 16 | the prefactor of the independent-particle term (2 for spin, 2 for the pair of poles), and 16 = 4 (that prefactor) $\times$ 4 (the dielectric's $4B\Delta^{-1}B^{\mathsf T}$) |
 
 Three points about this loop:
 
 - **One factorization, three right-hand sides.** `solve_dielectric_3`
   Cholesky-factors $\tilde{\boldsymbol\varepsilon}$ once (it is symmetric
   positive definite) and back-solves for $w_x$, $w_y$, $w_z$.
-- **The static driver precomputes $D^{-1}\mu$.** `mu_flat_inv` holds
-  $\mu_d/\Delta$, so `bare` is the $u = 0$ independent-particle term.
+- **The static driver precomputes $\Delta^{-1}\mu$.** `mu_flat_inv` holds
+  $\mu_d/\Delta$, so `bare` is the $u = 0$ independent-particle term. The
+  source comment writes $D^{-1}$ for $\Delta^{-1}$.
 - **The tensor is then symmetrized.** The result also carries the
   isotropic average $\tfrac13\operatorname{Tr}\alpha$ and the principal values,
   the eigenvalues of the symmetrized tensor sorted ascending.
@@ -187,9 +195,9 @@ compares against this route.
 > | Negative control | the runner changes the kernel's screening term 16 to 4 |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-rpa/src/properties/per_atom.rs::closed_per_atom_alpha` |
-> | Code test | `crates/ferric-rpa/tests/validation_pdep_c6.rs` |
+> | Code test | `pdep_c6_per_atom_becke_h2o_aug_cc_pvdz_vs_numpy` in `crates/ferric-rpa/tests/validation_pdep_c6.rs` |
 >
-> <!-- verified: id=pol.kernel-vs-casida; script=scripts/rpa_c6_polarizability_sympy.py; claim=kernel-vs-casida; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties/per_atom.rs::closed_per_atom_alpha; registry=rpa-polarizability-c6 -->
+> <!-- verified: id=pol.kernel-vs-casida; script=scripts/rpa_c6_polarizability_sympy.py; claim=kernel-vs-casida; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties/per_atom.rs::closed_per_atom_alpha; rust_test=ferric-rpa/tests/validation_pdep_c6.rs::pdep_c6_per_atom_becke_h2o_aug_cc_pvdz_vs_numpy; registry=rpa-polarizability-c6 -->
 
 The same script checks that the static form $g = 1/\Delta$ equals the
 $u \to 0$ limit of the dynamic one (check `static-limit`), and
@@ -301,9 +309,14 @@ u =  1.0  alpha_iso(iu) = 2.110306
 u =  2.0  alpha_iso(iu) = 1.261344
 ```
 
-At $u=0$ the modes are the PDEP eigenpotentials of section @sec:pdep (test
-`leading_static_modes_are_the_pdep_eigenpotentials`). The physical
-coefficients $c_\xi = M^{\mathsf T}U_\xi$ obey
+At $u=0$ the modes are the PDEP eigenvectors of section @sec:pdep (test
+`leading_static_modes_are_the_pdep_eigenpotentials`). They live in the
+dressed auxiliary basis of section @sec:factorization-and-metric. Let $V$ be
+the auxiliary Coulomb metric $(P|Q)$, $M$ the metric factor with
+$MVM^{\mathsf T} = \mathbf 1$ that dresses the three-index integrals,
+$B = M\,b$ for the undressed $b^P_{ia} = (P|ia)$, and
+$\Pi(iu) = 4\,b\,\mathrm{diag}(g)\,b^{\mathsf T}$ the undressed response.
+The physical coefficients $c_\xi = M^{\mathsf T}U_\xi$ obey
 $(V + \Pi(iu))c_\xi = \lambda_\xi Vc_\xi$ with
 $c_\xi^{\mathsf T}Vc_\eta = \delta_{\xi\eta}$. Read that equation physically:
 add the density $\rho_\xi$ to the molecule and the electrons rearrange until
@@ -325,7 +338,8 @@ $\tilde{\boldsymbol\varepsilon}_U$ add to $4BGB^{\mathsf T}$, the bare terms
 add to $2 + 2 = 4$, and $w$ doubles, so the screening term becomes
 $4\,(2w_\sigma)^{\mathsf T}\tilde{\boldsymbol\varepsilon}^{-1}(2w_\sigma) = 16\,w_\sigma^{\mathsf T}\cdots$.
 That is (@eq:pol-kernel-vs-casida). ROHF and ROKS references are semi-canonicalized per spin
-first, as in section @sec:open-shell-gw.
+first by `ferric-scf/src/semicanonical.rs::unrestricted_reference`, as in
+section @sec:open-shell-gw; a UHF or UKS reference passes through unchanged.
 
 > **Verified equation @eq:pol-open-shell** · the open-shell form against the spin-orbital response
 >
@@ -340,9 +354,9 @@ first, as in section @sec:open-shell-gw.
 > | Negative control | leaving the $\beta$ channel out of $w$ must miss; the runner changes the screening prefactor 4 to 16 |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-rpa/src/properties.rs::molecular_dynamic_polarizability` |
-> | Code test | `crates/ferric-rpa/tests/u_pdep_rpa.rs` |
+> | Code test | `u_polarizability_oh_matches_pyscf` in `crates/ferric-rpa/tests/u_pdep_rpa.rs` |
 >
-> <!-- verified: id=pol.open-shell; script=scripts/rpa_response_modes_sympy.py; claim=M4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties.rs::molecular_dynamic_polarizability; registry=rpa-polarizability-c6 -->
+> <!-- verified: id=pol.open-shell; script=scripts/rpa_response_modes_sympy.py; claim=M4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/properties.rs::molecular_dynamic_polarizability; rust_test=ferric-rpa/tests/u_pdep_rpa.rs::u_polarizability_oh_matches_pyscf; registry=rpa-polarizability-c6 -->
 
 ## The algorithm {#polarizabilities-from-dielectric-modes-algorithm}
 
@@ -350,7 +364,7 @@ first, as in section @sec:open-shell-gw.
 |---|---|---|---|
 | 1 | reference (RHF or RKS), all occupied active (no frozen core: the response is on every occupied orbital) | | the caller |
 | 2 | $B^P_{ia}$ and the gaps, the same intermediates as RPA | as RI-MP2 | `compute_rpa_intermediates` (ferric-mp2) |
-| 3 | $\mu_{d,ia}$ from the AO dipole and the MO coefficients | $O(N^2 n_on_v)$ | `oneelectron::dipole` |
+| 3 | $\mu_{d,ia}$ from the AO dipole and the MO coefficients | $O(N^2 n_o + N n_on_v)$ per component | `oneelectron::dipole` |
 | 4 | $\tilde{\boldsymbol\varepsilon}(iu)$, one dense matrix per frequency | $N_{\rm aux}^2n_on_v$ | `pdep_polarizability_static`, `molecular_dynamic_polarizability` |
 | 5 | one SPD solve for the three right-hand sides $w_d$ | $N_{\rm aux}^3$ | `solve_dielectric_3` |
 | 6 | the tensor, symmetrized; principal values by a $3\times3$ eigensolve | $O(1)$ | `eig3_sym` |
