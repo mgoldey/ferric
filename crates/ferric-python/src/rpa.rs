@@ -7,7 +7,7 @@ use crate::pdep_properties::{
 
 /// ECP policy of the RPA drivers in this file (`run_rs_mp2_rpa`,
 /// `run_pdep_rpa`).
-pub(crate) const RPA_ECP: EcpPolicy = EcpPolicy::Skip;
+pub(crate) const RPA_ECP: EcpPolicy = EcpPolicy::Apply;
 
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 

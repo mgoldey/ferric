@@ -161,3 +161,11 @@ def test_gw_family_reference_is_run_rhf_run_uhf_or_run_dft():
     assert ferric.run_bse_tda(hi(), bs, aux).nocc == N_VALENCE_OCC
     pol = ferric.run_tdhf_static_polarizability(hi(), bs, aux, "PBE0")
     assert pol.nocc == N_VALENCE_OCC
+
+
+def test_rpa_family_reference_is_run_rhf():
+    bs, aux = bases()
+    e_rhf = rhf().energy
+    assert abs(ferric.run_pdep_rpa(hi(), bs, aux).rhf_energy - e_rhf) < EREF
+    rs = ferric.run_rs_mp2_rpa(hi(), bs, aux, scf_jk="exact")
+    assert abs(rs.rhf_energy - e_rhf) < EREF
