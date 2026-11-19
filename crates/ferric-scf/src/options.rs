@@ -137,9 +137,11 @@ impl TrahTrigger {
 }
 
 /// User-tunable SCF knobs, already parsed into typed values. `None` keeps the
-/// [`RhfConfig::default`] value of the field it lowers to; a `Some` is passed
-/// through as given (so `irrep_nelec: Some(vec![])` lowers to `Some([])`, not
-/// the default `None`). See [`ScfOptions::into_rhf_config`] for the mapping.
+/// [`RhfConfig::default`] value of the field it lowers to; a `Some` is lowered
+/// by its field's mapping (most copy the value; `soscf`, for example, sets
+/// `newton_trigger`). An empty `Some` is not treated as `None`:
+/// `irrep_nelec: Some(vec![])` lowers to `Some([])`, not the default `None`.
+/// See [`ScfOptions::into_rhf_config`] for the mapping.
 #[derive(Debug, Clone, Default)]
 pub struct ScfOptions {
     /// [`RhfConfig::max_iter`].

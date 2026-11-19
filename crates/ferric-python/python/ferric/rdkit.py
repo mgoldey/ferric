@@ -58,10 +58,12 @@ def from_rdkit(
 ) -> ferric.Molecule:
     """A ``ferric.Molecule`` from an RDKit ``Mol`` with a 3-D conformer.
 
-    ``charge=None`` uses ``Chem.GetFormalCharge(mol)``. ``conf_id`` selects the
-    conformer (-1: the default one). ``multiplicity=None`` is
-    ``sum(atom.GetNumRadicalElectrons()) + 1`` (a radical SMILES such as
-    ``[CH3]`` is a doublet); an explicit value overrides. Explicit hydrogens are NOT added; call
+    ``conf_id`` selects the conformer (-1: the default one). With
+    ``charge=None`` / ``multiplicity=None``, the ``ferric_charge`` /
+    ``ferric_multiplicity`` properties that ``to_rdkit`` stores take
+    precedence; without them, ``charge`` is ``Chem.GetFormalCharge(mol)`` and
+    ``multiplicity`` is ``sum(atom.GetNumRadicalElectrons()) + 1`` (a radical
+    SMILES such as ``[CH3]`` is a doublet). An explicit value overrides both. Explicit hydrogens are NOT added; call
     ``Chem.AddHs`` first (``from_smiles`` does). ``ValueError`` if the molecule
     has no conformer, the conformer is 2-D, or ``conf_id`` does not exist.
     """
