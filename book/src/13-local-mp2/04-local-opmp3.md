@@ -191,3 +191,65 @@ reference, not a fast method: its cost is canonical RI-MP3 plus the two
 pattern solves, and no cost or scaling claim attaches to it. A ragged
 residual (ring kernels contracted through the RI factors, ladders through
 `ferric_mp2::ladders`) is the next step and must reproduce this one.
+
+### Measured {#local-opmp3-measured}
+
+Measured 2026-11-19, provisional. The script is
+`scripts/prototypes/local_opmp3_data/v2/rust_sweep.py`, its output
+`rust_sweep.json` beside it. It runs `ferric.run_opmp3` at 6-31G with
+cc-pvdz-ri, one frozen core orbital per heavy atom, and SCF converged to
+1e-12 Ha. Each error is the local model minus the canonical RI OP-MP3 of the
+same reference, in Ha. "Default" means the maps of section
+@sec:local-opmp3-implementation: Fock screen κ = 1 and λ-Boys with λ = 10.
+"Plain" means `fock_screen = false` and `lambda_boys = 0`. The PBE0 rows use
+the HF Fock of the PBE0 density (section @sec:local-opmp3-ks-reference).
+
+| system | reference | maps | $\varepsilon$ | keep | $\Delta E^{(2)}$ | $\Delta E^{(3)}$ | $\Delta$OP-MP3 |
+|---|---|---|---|---|---|---|---|
+| n-octane | HF | plain | 1e-5 | 0.390 | +8.6e-5 | −1.0e-5 | +7.4e-5 |
+| n-octane | HF | default | 1e-5 | 0.441 | +2.1e-5 | −2.7e-6 | +1.8e-5 |
+| n-octane | HF | plain | 1e-6 | 0.746 | +2.1e-6 | −1.5e-7 | +2.0e-6 |
+| n-octane | HF | default | 1e-6 | 0.793 | +1.9e-7 | −1.5e-8 | +1.7e-7 |
+| n-octane | PBE0 | plain | 1e-5 | 0.416 | +7.8e-5 | −9.4e-6 | +6.6e-5 |
+| n-octane | PBE0 | default | 1e-5 | 0.468 | +2.2e-5 | −3.2e-6 | +1.8e-5 |
+| n-octane | PBE0 | plain | 1e-6 | 0.781 | +2.7e-6 | −5.3e-7 | +2.0e-6 |
+| n-octane | PBE0 | default | 1e-6 | 0.824 | +1.8e-7 | −1.4e-8 | +1.7e-7 |
+| naphthalene | HF | plain | 1e-5 | 0.629 | +1.4e-4 | −2.2e-5 | +1.2e-4 |
+| naphthalene | HF | default | 1e-5 | 0.540 | +1.7e-5 | −7.0e-6 | +9.8e-6 |
+| naphthalene | HF | plain | 1e-6 | 0.915 | +2.3e-6 | −1.0e-6 | +1.5e-6 |
+| naphthalene | HF | default | 1e-6 | 0.826 | +1.2e-7 | −7.3e-8 | +5.0e-8 |
+| naphthalene | PBE0 | plain | 1e-5 | 0.658 | +2.0e-4 | −3.6e-5 | +1.6e-4 |
+| naphthalene | PBE0 | default | 1e-5 | 0.557 | +1.6e-5 | −7.5e-6 | +9.1e-6 |
+| naphthalene | PBE0 | plain | 1e-6 | 0.925 | +2.5e-5 | −9.6e-6 | +1.6e-5 |
+| naphthalene | PBE0 | default | 1e-6 | 0.825 | +1.1e-7 | −4.6e-8 | +7.2e-8 |
+
+What the table shows:
+
+- **The default maps.** At the same $\varepsilon$ the default maps leave
+  4–12× less OP-MP3 error than the plain ones on octane and 12–230× less on
+  naphthalene. On octane they keep 5 percentage points more amplitudes. On naphthalene
+  they keep fewer, because λ-Boys rotates the π orbitals (max $||U|-1|$ =
+  0.71 in the prototype) and the Eq-8 mask shrinks in that basis.
+- **The third order follows the second.** $\Delta E^{(3)}$ has the opposite
+  sign to $\Delta E^{(2)}$ in every row and is 8–60% of it, so the OP-MP3
+  error is smaller than the $E^{(2)}$ error. The maps reduce both by about
+  the same factor.
+- **HF and PBE0.** With the default maps the PBE0 OP-MP3 errors are within a
+  factor 1.5 of the HF ones.
+- **The identity and the reference terms.** On all 48 runs of the sweep
+  (butane, octane and naphthalene, $\varepsilon$ = 1e-4 to 1e-7, both maps,
+  both references) $|E^{(3)} - E^{(3)}_{2n+1}| \le 6.4\times10^{-14}$,
+  $E_{\mathrm{NBS}}$ equals the canonical value bit for bit, and both
+  pattern solves reach the 1e-11 relative residual in at most 29 iterations.
+- **The prototype.** The numpy prototype
+  (`scripts/prototypes/local_opmp3_proto.py`, PySCF integrals and its own
+  localization) gives the same kept fraction to within 0.002 in all 48
+  cases. With the default maps its errors agree with these to 5% wherever
+  the error is above 1e-6 Ha; smaller errors differ by up to a factor 10.
+  With the plain maps the agreement is 10% at $\varepsilon \ge 10^{-5}$ and
+  up to a factor 3 at $10^{-6}$. One plain case is unexplained: naphthalene
+  PBE0 at $\varepsilon = 10^{-7}$ gives $\Delta E^{(2)}$ = +2.1e-6 here
+  against +4.1e-8 in the prototype.
+- **Cost.** The local run takes longer than the canonical one (octane 20 s
+  against 14 s), as section @sec:local-opmp3-implementation predicts for a
+  dense residual.
