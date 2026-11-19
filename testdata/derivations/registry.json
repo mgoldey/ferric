@@ -83,6 +83,7 @@
     ],
     "cli:rimp2": [
       "ri-mp2",
+      "kappa-mp2",
       "u-ri-mp2",
       "local-mp2"
     ],
@@ -365,6 +366,7 @@
     ],
     "py:run_rimp2": [
       "ri-mp2",
+      "kappa-mp2",
       "u-ri-mp2",
       "ri-mp2-gradient",
       "local-mp2"
@@ -497,7 +499,7 @@
     "attenuated-mp2": {
       "book": [
         "book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2-energy",
-        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-scs-mp2"
+        "book/src/10-mp2/07-range-split-cross-term.md#range-split-cross-term-identity"
       ],
       "scripts": [
         "scripts/mp2_variant_identities.py",
@@ -954,9 +956,17 @@
         "scripts/mp2_family_sympy.py"
       ]
     },
+    "kappa-mp2": {
+      "book": [
+        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-kappa-regularized-mp2"
+      ],
+      "scripts": [
+        "scripts/mp2_family_sympy.py"
+      ]
+    },
     "scs-mp2-2terfc": {
       "book": [
-        "book/src/10-mp2/03-scs-and-kappa.md#scs-and-kappa-scs-mp2"
+        "book/src/10-mp2/05-scs-mp2-2terfc.md#scs-mp2-2terfc-energy"
       ],
       "scripts": [
         "scripts/mp2_family_sympy.py"
@@ -1230,7 +1240,7 @@
     },
     "u-attenuated-mp2": {
       "book": [
-        "book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2"
+        "book/src/10-mp2/04-attenuated-mp2.md#attenuated-mp2-open-shell"
       ],
       "scripts": [
         "scripts/u_attenuated_sympy.py"

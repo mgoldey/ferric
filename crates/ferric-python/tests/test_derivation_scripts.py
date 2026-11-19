@@ -568,6 +568,26 @@ CASES = [
                 "omega_link = 1 / (r0 * 2)  # Operator::terfc",
                 "FAIL D",
             ),
+            (
+                "return 1 - tc * tc  # vv10.rs factor_from_r2",
+                "return 1 - tc  # vv10.rs factor_from_r2",
+                "FAIL E",
+            ),
+            (
+                "d1 = 1 - sp.exp(k * denom)  # 1 - e^{-kappa Delta}",
+                "d1 = 1 - sp.exp(-k * denom)  # 1 - e^{-kappa Delta}",
+                "FAIL G",
+            ),
+            (
+                "cross = 2.0 * b_ss(g1, gd)  # the g1-d cross term of the window",
+                "cross = 1.0 * b_ss(g1, gd)  # the g1-d cross term of the window",
+                "FAIL C",
+            ),
+            (
+                "CBS_POWER = 3  # the X^-3 model",
+                "CBS_POWER = 2  # the X^-3 model",
+                "FAIL H",
+            ),
         ],
     ),
     (
@@ -892,6 +912,16 @@ CASES = [
                 "coeffs_u[obs_idx] = -ls12_u @ c2_u",
                 "coeffs_u[obs_idx] = ls12_u @ c2_u",
                 "FAIL interleaved S_O,R C == 0",
+            ),
+            (
+                "return np.sum(g * (2.0 * h - h.transpose(0, 1, 3, 2)) / d)",
+                "return np.sum(g * (2.0 * h + h.transpose(0, 1, 3, 2)) / d)",
+                "FAIL X == 2 B(s, l)",
+            ),
+            (
+                "coef = np.linalg.solve(v, three)  # V^-1 (Q|ia)",
+                "coef = np.linalg.solve(chi.T @ chi, three)  # V^-1 (Q|ia)",
+                "FAIL (ia|jb) - sum_P B B == (delta_ia|delta_jb)",
             ),
         ],
     ),

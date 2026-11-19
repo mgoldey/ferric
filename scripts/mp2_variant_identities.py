@@ -33,7 +33,9 @@ it. Exits nonzero on the first failure.
      with (ia|jb) = s + l (short + long range) and E[g] = sum g(2g - g^x)/D
      (g^x = (ib|ja)), E[s+l] = E[s] + E[l] + X with the cross term
      X = sum (4 s l - s l^x - l s^x)/D. X != 0, so E[erfc] + E[erf] is not
-     E[Coulomb]. Control: dropping X fails.
+     E[Coulomb]. Control: dropping X fails. With the symmetric bilinear form
+     B(g, h) = sum g(2h - h^x)/D (E[g] = B(g, g)), X = 2 B(s, l).
+     Control: X is not B(s, l).
   5  Z-vector matvec (zvector.rs compute_az_product :460 / :502, used at
      :159 with factor 1/2): the vo block of (4J - K - K^T)[D^z] with
      D^z = sum_ai z_ai (C_a C_i^T + C_i C_a^T) equals
@@ -51,6 +53,14 @@ it. Exits nonzero on the first failure.
      then aux), partitioned by the provenance mask and scattered back.
      Control: the [O | a] rows read as union rows are not orthogonal to OBS.
 
+  8  Density-fitting error (rimp2.rs cholesky_inverse_sqrt, the metric and
+     the three-index integrals in one operator w): in the w inner product,
+     with B = L^-1 (Q|ia), V = L L^T, the fitting error
+     (ia|jb) - sum_P B^P_ia B^P_jb equals (delta_ia|delta_jb) with the
+     residual delta_ia = rho_ia - sum_PQ chi_P V^-1_PQ (Q|ia), the residual
+     is w-orthogonal to every chi_P, and the diagonal error is >= 0. Control:
+     a metric in a second operator (mixed metric) breaks the identity.
+
 Mutations (each turns the script red with the named failing check):
   * claim 1, same-spin numerator (ia|jb) - (ib|ja) -> (ia|jb) + (ib|ja)
     ("FAIL E_SS spatial").
@@ -61,6 +71,9 @@ Mutations (each turns the script red with the named failing check):
   * claim 5, (4J - K - K^T) -> (4J - K) in the matvec ("FAIL (4J-K-K^T)").
   * claim 7, the OBS rows scattered without the minus sign
     ("FAIL interleaved S_O,R C == 0").
+  * claim 4, the bilinear form with h^x added ("FAIL X == 2 B(s, l)").
+  * claim 8, the residual built with the overlap metric chi^T chi in place
+    of V ("FAIL (ia|jb) - sum_P B B == (delta_ia|delta_jb)").
 
 Run: python3 scripts/mp2_variant_identities.py  (needs numpy, scipy)
 """
@@ -338,6 +351,13 @@ def claim4():
     check("E[s+l] == E[s] + E[l] + X", e(gs + gl), e(gs) + e(gl) + x)
     check_differs("E[s] + E[l] as E[s+l] (X = 0)", e(gs) + e(gl), e(gs + gl))
 
+    def bilinear(g, h):
+        return np.sum(g * (2.0 * h - h.transpose(0, 1, 3, 2)) / d)
+
+    check("B(s, l) == B(l, s)", bilinear(gs, gl), bilinear(gl, gs))
+    check("X == 2 B(s, l)", x, 2.0 * bilinear(gs, gl))
+    check_differs("X as B(s, l) (factor 2 dropped)", bilinear(gs, gl), x)
+
 
 # ---------------------------------------------------------------- claim 5
 def claim5():
@@ -465,8 +485,51 @@ def claim7():
     )
 
 
+# ---------------------------------------------------------------- claim 8
+def claim8():
+    print("claim 8: the density-fitting error is the residuals' self-interaction")
+    # Functions live in R^n with the positive definite operator w as the inner
+    # product, (f|g) = f^T w g. The "exact" products rho_ia are columns of rho,
+    # the auxiliary functions chi_P columns of chi (naux < n, so the fit is
+    # inexact). The three-index integrals and the metric use the same w.
+    n, naux, npair = 30, 8, 6
+    a = RNG.standard_normal((n, n))
+    w = a @ a.T + n * np.eye(n)
+    a2 = RNG.standard_normal((n, n))
+    w_other = a2 @ a2.T + n * np.eye(n)  # a second operator, for the control
+    chi = RNG.standard_normal((n, naux))
+    rho = RNG.standard_normal((n, npair))
+
+    def fitted(w_metric):
+        three = chi.T @ w @ rho  # (Q|ia)
+        v = chi.T @ w_metric @ chi  # (P|Q) in the metric operator
+        l_inv = np.linalg.inv(np.linalg.cholesky(v))  # M = L^-1, M^T M = V^-1
+        b = l_inv @ three  # B^P_ia
+        return b.T @ b, three, v  # sum_P B^P_ia B^P_jb
+
+    exact = rho.T @ w @ rho  # (ia|jb)
+    approx, three, v = fitted(w)
+    coef = np.linalg.solve(v, three)  # V^-1 (Q|ia)
+    delta = rho - chi @ coef  # residual delta_ia
+    check_arrays(
+        "(ia|jb) - sum_P B B == (delta_ia|delta_jb)",
+        exact - approx,
+        delta.T @ w @ delta,
+    )
+    check_arrays("(chi_P|delta_ia) == 0", chi.T @ w @ delta, np.zeros((naux, npair)))
+    check_arrays(
+        "diagonal error >= 0", np.minimum(np.diag(exact - approx), 0.0), np.zeros(npair)
+    )
+    mixed, _, _ = fitted(w_other)  # metric operator != integral operator
+    check_differs(
+        "mixed-metric error as the residual self-interaction",
+        np.max(np.abs(exact - mixed - delta.T @ w @ delta)) + 1.0,
+        1.0,
+    )
+
+
 def main():
-    for claim in (claim1, claim2, claim3, claim4, claim5, claim6, claim7):
+    for claim in (claim1, claim2, claim3, claim4, claim5, claim6, claim7, claim8):
         claim()
     if FAILED:
         print(f"FAILED: {FAILED}")
