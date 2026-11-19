@@ -34,8 +34,8 @@ without them. Details:
 [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html#building-from-the-sdist).
 
 Starting with 0.1.0rc8, each [GitHub release](https://github.com/mgoldey/ferric/releases)
-also carries a large-libint wheel per CPython
-(`ferric-<version>-1largeam-cp3NN-...whl`): the same version and commit,
+also carries a large-libint wheel (per CPython, `ferric-<version>-1largeam-cp3NN-...whl`,
+up to 0.1.0rc12; one stable-ABI `...-1largeam-cp310-abi3-...whl` after): the same version and commit,
 built against conda-forge's libint2 2.13.1 (l = 7 shells, analytic 3- and
 2-centre second derivatives, G12/F12 integrals) instead of the PyPI wheel's
 smaller libint2. It is not a strict superset (the PyPI wheel goes higher in

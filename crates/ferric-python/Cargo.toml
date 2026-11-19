@@ -60,6 +60,14 @@ ctrlc = { workspace = true }
 
 [features]
 default = []
+# One wheel for every CPython >= 3.10 (the stable ABI, PEP 384), built by the
+# release workflows with `maturin build --features abi3` -> a
+# `cp310-abi3-<platform>` wheel. OFF by default, so `maturin develop`,
+# `cargo build` and the sdist build against the running interpreter's full
+# API as before. Everything in src/ compiles under the limited API (checked
+# 2026-11-19, pyo3 0.23.5 / numpy 0.23.0: no PyBuffer, no #[pyclass(dict)]
+# or weakref, no builtin subclass, no raw pyo3::ffi). See wheels.yml.
+abi3 = ["pyo3/abi3-py310"]
 # Opt-in MPI build of the Python extension, used ONLY by the separate
 # `ferric-mpi` wheel variant (.github/workflows/wheels.yml). The default
 # `pip install ferric` wheel does NOT enable this and links no MPI at all.

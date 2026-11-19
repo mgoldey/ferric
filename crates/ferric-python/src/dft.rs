@@ -1,7 +1,6 @@
 //! KS-DFT and double-hybrid bindings: moved verbatim from `lib.rs`.
 
 use super::*;
-
 use ferric_scf::options::{df_k_aux_or_default, AuxBasis, ScfOptions};
 
 /// A Kohn-Sham `df_j_aux` / `df_k_aux` kwarg: the parsed spelling (opt-outs

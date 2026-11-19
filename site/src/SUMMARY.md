@@ -18,6 +18,7 @@
 - [Export: cube, Molden and NPZ](./using/export.md)
 - [Avogadro plugin](./using/avogadro.md)
 - [ASE calculator](./using/ase.md)
+- [Training data for ML potentials](./using/mlip.md)
 - [QCSchema input and output](./using/qcschema.md)
 - [End-to-end applications](./using/applications.md)
 - [For automated agents](./using/agents.md)

@@ -2,6 +2,14 @@
 
 Anchors:
 
+* ``driver="properties"``: H2O RHF/STO-3G dipole, quadrupole, Mulliken
+  charges and orbital energies equal values pinned from PySCF 2.15.1 on the
+  same Bohr geometry (``PYSCF_REF``; the live PySCF cross-check below skips
+  without PySCF). Bar 2e-6 (atomic units): ferric and PySCF energies differ
+  by 2.4e-8 Ha at this geometry (basis-set normalisation constants), which
+  moves the properties by ~1e-7. The dipole and quadrupole also equal the
+  direct ``AoIntegrals`` contraction, and a neutral molecule's dipole is
+  origin independent.
 * Energy and gradient through ``run`` equal the direct ferric call with the same
   settings bit for bit (same code path, no arithmetic in between).
 * Units: the geometry is Bohr and the gradient Hartree/Bohr. The nuclear
@@ -152,7 +160,7 @@ def test_uhf_dft_and_mp2_equal_the_direct_call_bitwise():
     assert p["return_energy"] == dm.total_energy == p["mp2_total_energy"]
     assert p["scf_total_energy"] == dm.rhf_energy
     assert p["mp2_correlation_energy"] == dm.mp2_corr
-    assert "calcinfo_nbasis" not in p
+    assert p["calcinfo_nbasis"] == 24  # BasisSet.n_functions: the MP2 result has none
 
 
 def test_units_bohr_in_and_hartree_per_bohr_out():
@@ -228,7 +236,6 @@ def test_refusals_have_stable_error_types():
         "input_error",
         "diis_size",
     )
-    _failed(qcs.run(_inp(driver="properties")), "unsupported_error", "properties")
     # No analytic Hessian: mp2, CC, open-shell Kohn-Sham.
     _failed(
         qcs.run(_inp(method="mp2", basis="cc-pvdz", driver="hessian")),
@@ -321,13 +328,16 @@ def test_qcelemental_round_trip():
     assert np.asarray(res.return_result).tolist() == direct.gradient().tolist()
     assert res.properties.calcinfo_natom == 3
 
-    failed = qcs.run(
-        AtomicInput(
-            molecule=mol, driver="properties", model={"method": "hf", "basis": "sto-3g"}
-        ).dict()
-    )
     from qcelemental.models import FailedOperation
 
+    failed = qcs.run(
+        AtomicInput(
+            molecule=mol,
+            driver="energy",
+            model={"method": "hf", "basis": "sto-3g"},
+            protocols={"wavefunction": "orbitals_and_eigenvalues"},
+        ).dict()
+    )
     assert FailedOperation(**failed).error.error_type == "unsupported_error"
 
 
@@ -496,3 +506,325 @@ def test_molecule_to_qcschema_defaults_from_molecule():
     d = qcs.molecule_to_qcschema(mol, multiplicity=1)
     assert d["molecular_multiplicity"] == 1
     assert qcs.molecule_from_qcschema(qcs.molecule_to_qcschema(mol)).multiplicity == 3
+
+
+# --- driver="properties" -----------------------------------------------------
+
+# PySCF 2.15.1, RHF/STO-3G on WATER_BOHR (Bohr), conv_tol 1e-13. Dipole from
+# mf.dip_moment, quadrupole = sum_A Z_A R_A R_A - sum D <r r> (int1e_rr),
+# charges from mulliken_pop. Atomic units.
+PYSCF_REF = {
+    "energy": -74.9608150151019,
+    "dipole": [-0.008988962, -0.0085026227, -0.6810971914],
+    "quadrupole": [
+        [-4.523341837252105, 0.04077703083564668, -0.00530357266728226],
+        [0.04077703083564668, -3.2230589921674007, -0.028023757356413492],
+        [-0.00530357266728226, -0.028023757356413492, -4.022555284843273],
+    ],
+    "mulliken": [-0.3765122433672996, 0.19247378651981017, 0.18403845684748776],
+    "eps": [
+        -20.2394378155177,
+        -1.2720474127429209,
+        -0.6241503232850868,
+        -0.4518636118713014,
+        -0.3911920562591011,
+        0.6121760921186646,
+        0.7567260323174061,
+    ],
+}
+PROP_BAR = 2e-6
+
+
+def _props(out):
+    assert out["success"] is True, out
+    return out["return_result"]
+
+
+def test_properties_h2o_hf_match_the_pinned_pyscf_reference():
+    out = qcs.run(_inp(driver="properties", keywords={"energy_conv": 1e-11}))
+    rr = _props(out)
+    np.testing.assert_allclose(
+        rr["scf_dipole_moment"], PYSCF_REF["dipole"], atol=PROP_BAR
+    )
+    np.testing.assert_allclose(
+        rr["scf_quadrupole_moment"], PYSCF_REF["quadrupole"], atol=PROP_BAR
+    )
+    np.testing.assert_allclose(
+        rr["mulliken_charges"], PYSCF_REF["mulliken"], atol=PROP_BAR
+    )
+    np.testing.assert_allclose(
+        rr["orbital_energies_alpha"], PYSCF_REF["eps"], atol=PROP_BAR
+    )
+    assert rr["homo_energy"] == rr["orbital_energies_alpha"][4]
+    assert rr["lumo_energy"] == rr["orbital_energies_alpha"][5]
+    assert "orbital_energies_beta" not in rr  # restricted: beta equals alpha
+    assert sum(rr["lowdin_charges"]) == pytest.approx(0.0, abs=1e-9)
+    assert sum(rr["mulliken_charges"]) == pytest.approx(0.0, abs=1e-9)
+    # Schema-named entries are mirrored in `properties`; the rest are not.
+    p = out["properties"]
+    assert p["scf_dipole_moment"] == rr["scf_dipole_moment"]
+    assert p["scf_quadrupole_moment"] == rr["scf_quadrupole_moment"]
+    assert p["return_energy"] == p["scf_total_energy"]
+    assert not {"homo_energy", "mulliken_charges"} & set(p)
+    assert out["properties"]["calcinfo_nbasis"] == 7
+
+
+def test_properties_h2o_hf_match_live_pyscf():
+    pyscf = pytest.importorskip("pyscf", reason="PySCF is optional")
+    from pyscf import gto, scf
+
+    xyz = np.asarray(WATER_BOHR).reshape(3, 3)
+    m = gto.M(atom=list(zip(SYMBOLS, xyz)), unit="Bohr", basis="sto-3g", verbose=0)
+    mf = scf.RHF(m).run(conv_tol=1e-12)
+    rr = _props(qcs.run(_inp(driver="properties", keywords={"energy_conv": 1e-11})))
+    np.testing.assert_allclose(
+        rr["scf_dipole_moment"], mf.dip_moment(unit="au", verbose=0), atol=PROP_BAR
+    )
+    rr_int = m.intor("int1e_rr").reshape(3, 3, 7, 7)
+    quad = np.einsum("a,ai,aj->ij", m.atom_charges(), xyz, xyz) - np.einsum(
+        "ijpq,pq->ij", rr_int, mf.make_rdm1()
+    )
+    np.testing.assert_allclose(rr["scf_quadrupole_moment"], quad, atol=PROP_BAR)
+    np.testing.assert_allclose(
+        rr["mulliken_charges"], mf.mulliken_pop(verbose=0)[1], atol=PROP_BAR
+    )
+    np.testing.assert_allclose(
+        rr["orbital_energies_alpha"], mf.mo_energy, atol=PROP_BAR
+    )
+    assert pyscf.__version__  # the pinned numbers above came from 2.15.1
+
+
+def test_properties_equal_the_direct_contraction_and_are_origin_independent():
+    out = qcs.run(_inp(driver="properties"))
+    rr = _props(out)
+    mol, basis = _mol(), _bs("sto-3g")
+    res = ferric.run_rhf(mol, basis)
+    ints = ferric.AoIntegrals(mol, basis)
+    z = np.array([8.0, 1.0, 1.0])
+    dip = z @ np.asarray(WATER_BOHR).reshape(3, 3) - np.einsum(
+        "xij,ij->x", np.asarray(ints.dipole()), np.asarray(res.density())
+    )
+    assert rr["scf_dipole_moment"] == dip.tolist()
+    assert rr["mulliken_charges"] == list(ferric.mulliken_charges(mol, basis, res))
+    assert rr["lowdin_charges"] == list(ferric.lowdin_charges(mol, basis, res))
+    shifted = qcs.run(
+        _inp(
+            driver="properties",
+            geometry=(np.asarray(WATER_BOHR).reshape(3, 3) + [1.3, -0.7, 2.1])
+            .ravel()
+            .tolist(),
+        )
+    )
+    np.testing.assert_allclose(
+        _props(shifted)["scf_dipole_moment"], rr["scf_dipole_moment"], atol=1e-8
+    )
+
+
+def test_properties_open_shell_and_kohn_sham():
+    # UHF cation: both spins, frontier orbitals over both, charges refused.
+    uhf = qcs.run(
+        _inp(driver="properties", molecular_charge=1, keywords={"energy_conv": 1e-10})
+    )
+    rr = _props(uhf)
+    assert len(rr["orbital_energies_alpha"]) == len(rr["orbital_energies_beta"]) == 7
+    assert uhf["properties"]["calcinfo_nalpha"] == 5
+    assert uhf["properties"]["calcinfo_nbeta"] == 4
+    assert rr["homo_energy"] == max(
+        rr["orbital_energies_alpha"][4], rr["orbital_energies_beta"][3]
+    )
+    assert rr["lumo_energy"] == min(
+        rr["orbital_energies_alpha"][5], rr["orbital_energies_beta"][4]
+    )
+    assert not {"mulliken_charges", "scf_quadrupole_moment"} & set(
+        rr
+    )  # closed shell only
+    _failed(
+        qcs.run(
+            _inp(
+                driver="properties",
+                molecular_charge=1,
+                keywords={"properties": ["scf_quadrupole_moment"]},
+            )
+        ),
+        "unsupported_error",
+        "RHF or RKS",
+    )
+    _failed(
+        qcs.run(
+            _inp(
+                driver="properties",
+                molecular_charge=1,
+                keywords={"properties": ["mulliken_charges"]},
+            )
+        ),
+        "unsupported_error",
+        "closed-shell",
+    )
+    # RKS: the dipole equals the direct contraction with the KS density.
+    ks = qcs.run(_inp(method="pbe", basis="6-31g", driver="properties"))
+    mol, basis = _mol(), _bs("6-31g")
+    res = ferric.run_dft(mol, basis, functional="pbe")
+    ints = ferric.AoIntegrals(mol, basis)
+    dip = np.array([8.0, 1.0, 1.0]) @ np.asarray(WATER_BOHR).reshape(3, 3) - np.einsum(
+        "xij,ij->x", np.asarray(ints.dipole()), np.asarray(res.density())
+    )
+    assert _props(ks)["scf_dipole_moment"] == dip.tolist()
+
+
+def test_properties_keyword_selects_and_refuses():
+    sel = qcs.run(
+        _inp(
+            driver="properties",
+            keywords={"properties": ["homo_energy", "scf_total_energy"]},
+        )
+    )
+    assert list(_props(sel)) == ["homo_energy", "scf_total_energy"]
+    # Opt-in charges are computed only when named, and sum to the charge.
+    opt = _props(
+        qcs.run(
+            _inp(
+                driver="properties",
+                keywords={"properties": ["hirshfeld_charges", "chelpg_charges"]},
+            )
+        )
+    )
+    assert sum(opt["hirshfeld_charges"]) == pytest.approx(0.0, abs=1e-6)
+    assert sum(opt["chelpg_charges"]) == pytest.approx(0.0, abs=1e-6)
+
+    def props(**kw):
+        return qcs.run(_inp(driver="properties", **kw))
+
+    _failed(
+        props(keywords={"properties": ["polarizability"]}),
+        "input_error",
+        "polarizability",
+    )
+    _failed(props(keywords={"properties": "scf_dipole_moment"}), "input_error", "list")
+    _failed(
+        props(keywords={"properties": ["orbital_energies_beta"]}),
+        "unsupported_error",
+        "restricted",
+    )
+    _failed(
+        props(keywords={"properties": ["mp2_total_energy"]}),
+        "unsupported_error",
+        "not produced",
+    )
+    # Any other keyword is checked against the method's allowlist as before.
+    _failed(props(keywords={"scf_type": "df"}), "input_error", "scf_type")
+    # `properties` is a keyword of this driver only.
+    _failed(
+        qcs.run(_inp(keywords={"properties": ["homo_energy"]})),
+        "input_error",
+        "properties",
+    )
+    # No occupied / virtual orbital: a one-function H+ has no occupied one.
+    _failed(
+        qcs.run(
+            {
+                "schema_name": "qcschema_input",
+                "schema_version": 1,
+                "molecule": {
+                    "symbols": ["He"],
+                    "geometry": [0, 0, 0],
+                    "molecular_charge": 0,
+                },
+                "driver": "properties",
+                "model": {"method": "hf", "basis": "sto-3g"},
+                "keywords": {"properties": ["lumo_energy"]},
+            }
+        ),
+        "unsupported_error",
+        "virtual",
+    )
+
+
+def test_properties_refused_for_mp2_and_cc_which_expose_no_density():
+    aux = {"auxbasis": "cc-pvdz-ri"}
+    for method in ("mp2", "ccsd", "ccsd(t)"):
+        for name in ("scf_dipole_moment", "mp2_dipole_moment", "mulliken_charges"):
+            _failed(
+                qcs.run(
+                    _inp(
+                        method=method,
+                        basis="cc-pvdz",
+                        driver="properties",
+                        keywords={**aux, "properties": [name]},
+                    )
+                ),
+                "unsupported_error",
+                "density",
+            )
+    # Without a request, MP2 returns its energies (no faked dipole).
+    out = qcs.run(_inp(method="mp2", basis="cc-pvdz", driver="properties"))
+    rr = _props(out)
+    assert rr["mp2_total_energy"] == out["properties"]["mp2_total_energy"]
+    assert not {"scf_dipole_moment", "scf_quadrupole_moment"} & set(rr)
+    assert out["return_result"] is rr
+
+
+def test_protocols_wavefunction_and_native_files():
+    ok = _inp(driver="properties")
+    ok["protocols"] = {"wavefunction": "none", "native_files": "none", "stdout": True}
+    assert qcs.run(ok)["success"] is True
+    # ferric writes no orbitals: QCSchema v1 has no AO order/normalisation field.
+    for mode in (
+        "orbitals_and_eigenvalues",
+        "occupations_and_eigenvalues",
+        "all",
+        "return_results",
+    ):
+        bad = _inp(driver="properties")
+        bad["protocols"] = {"wavefunction": mode}
+        _failed(qcs.run(bad), "unsupported_error", "wavefunction")
+    files = _inp()
+    files["protocols"] = {"native_files": "all"}
+    _failed(qcs.run(files), "unsupported_error", "native_files")
+
+
+def test_calcinfo_nbasis_for_mp2_and_hessian():
+    kw = {"auxbasis": "cc-pvdz-ri"}
+    mp2 = qcs.run(_inp(method="mp2", basis="cc-pvdz", keywords=kw))
+    assert mp2["success"] is True, mp2
+    # Independent of the run: water cc-pVDZ is 24 functions (O 14 + 2 x H 5).
+    assert mp2["properties"]["calcinfo_nbasis"] == 24
+    assert mp2["properties"]["calcinfo_nbasis"] == _bs("cc-pvdz").n_functions(_mol())
+    assert "calcinfo_nmo" not in mp2["properties"]  # the MP2 result has no MO count
+    grad = qcs.run(_inp(method="mp2", basis="cc-pvdz", driver="gradient", keywords=kw))
+    assert grad["properties"]["calcinfo_nbasis"] == 24
+    hess = qcs.run(_inp(driver="hessian"))
+    assert hess["properties"]["calcinfo_nbasis"] == 7
+    cc = qcs.run(_inp(method="ccsd", basis="cc-pvdz", keywords=kw))
+    assert cc["properties"]["calcinfo_nbasis"] == 24
+
+
+def test_qcelemental_validates_the_properties_driver():
+    qcel = pytest.importorskip("qcelemental", reason="QCElemental is optional")
+    from qcelemental.models import AtomicInput, AtomicResult
+
+    mol = qcel.models.Molecule.from_data(
+        "O 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467"
+    )
+    ai = AtomicInput(
+        molecule=mol, driver="properties", model={"method": "hf", "basis": "sto-3g"}
+    )
+    out = qcs.run(ai.dict())
+    assert out["success"] is True, out
+    res = AtomicResult(**out)  # properties forbids unknown fields: mirrors are valid
+    assert isinstance(res.return_result, dict)
+    assert np.asarray(res.properties.scf_dipole_moment).shape == (3,)
+    assert np.asarray(res.properties.scf_quadrupole_moment).shape == (3, 3)
+    assert res.properties.calcinfo_nbasis == 7
+    assert res.return_result["homo_energy"] == pytest.approx(
+        res.return_result["orbital_energies_alpha"][4]
+    )
+    # MP2 with its energies and nbasis validates too.
+    mp2 = qcs.run(
+        AtomicInput(
+            molecule=mol,
+            driver="energy",
+            model={"method": "mp2", "basis": "cc-pvdz"},
+            keywords={"auxbasis": "cc-pvdz-ri"},
+        ).dict()
+    )
+    assert AtomicResult(**mp2).properties.calcinfo_nbasis == 24

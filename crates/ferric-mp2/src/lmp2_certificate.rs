@@ -24,7 +24,7 @@ use crate::lmp2_amplitude::{
 use crate::lmp2_direct::{DirectConfig, DirectStats};
 
 /// Largest ε whose MEASURED recovery is comparable to ORCA DLPNO-MP2
-/// NormalPNO (C4/cc-pVDZ: 99.992% at 1e-5 vs NormalPNO's 99.96-99.98%).
+/// NormalPNO (C4/cc-pVDZ: 99.999% at 1e-5 vs NormalPNO's 99.96-99.98%).
 /// One system, one basis, no independent finite-ε reference: a comparison
 /// point, NOT a validated range (the name is kept for API stability).
 pub const VALIDATED_EPS_MAX: f64 = 1e-5;
@@ -41,22 +41,26 @@ pub const ONE_D_RATIO_MAX: f64 = 0.5;
 pub const DIFFUSE_EXPONENT_MIN: f64 = 0.08;
 
 /// The measured C4/cc-pVDZ recovery of the canonical DF-MP2 correlation
-/// energy (all electrons, in core, λ-Boys λ = 10, the default), as (ε,
-/// percent as recorded). Plain Boys (λ = 0) recorded 99.980 / 99.671 /
-/// 94.99 on the same system.
+/// energy (all electrons, in core, the defaults: λ-Boys λ = 10 and the
+/// Fock-propagated screen κ = 1), as (ε, percent as recorded; measured
+/// 2026-11-18). The integral-direct path at its default maps agrees to
+/// 0.0007 points. Without the screen the in-core path recorded 99.992 /
+/// 99.735 / 95.20, and with plain Boys too 99.980 / 99.671 / 94.99.
 pub const MEASURED_RECOVERY_C4: [(f64, &str); 3] =
-    [(1e-5, "99.992"), (1e-4, "99.735"), (1e-3, "95.20")];
+    [(1e-5, "99.99903"), (1e-4, "99.8930"), (1e-3, "96.5805")];
 
 /// The measured C8 recovery at ε = 1e-3 (the size trend: it LOSES more
-/// than C4 at the same ε), as (ε, percent as recorded). λ = 10; plain
-/// Boys recorded 93.81.
-pub const MEASURED_RECOVERY_C8: (f64, &str) = (1e-3, "94.00");
+/// than C4 at the same ε), as (ε, percent as recorded). In core, λ = 10,
+/// Fock screen κ = 1; without the screen 94.00, with plain Boys too 93.81.
+pub const MEASURED_RECOVERY_C8: (f64, &str) = (1e-3, "95.57");
 
 /// Log-log slope of the C4 lost fraction per decade of ε, from
-/// [`MEASURED_RECOVERY_C4`]: 0.008% -> 0.265% -> 4.80% lost gives 1.52 and
-/// 1.26, i.e. ~1.4 (superlinear; plain Boys gave 1.22 and 1.18). The 1.2-1.8 range sometimes quoted is the
-/// octane local-dRPA record, not MP2.
-pub const MEASURED_SLOPE_C4: &str = "~1.4 (1.52, 1.26)";
+/// [`MEASURED_RECOVERY_C4`]: 0.00097% -> 0.1070% -> 3.4195% lost gives
+/// 2.04 and 1.50, i.e. ~1.8 (superlinear; without the Fock screen 1.52 and
+/// 1.26, with plain Boys too 1.22 and 1.18). The screen removes more of the
+/// small-ε error, so the slope steepens. The 1.2-1.8 range sometimes quoted
+/// is the octane local-dRPA record, not MP2.
+pub const MEASURED_SLOPE_C4: &str = "~1.8 (2.04, 1.50)";
 
 /// Short label of the two-electron operator, for the certificate.
 pub fn operator_label(op: &Operator) -> String {
@@ -617,12 +621,15 @@ mod tests {
         assert!(validation_grade(1e-6).contains("not validated"));
         assert!(eps_trust(0.0, true).contains("exact"));
         let t = eps_trust(1e-4, true);
-        assert!(t.contains("99.735% at 1e-4") && t.contains("inside"), "{t}");
         assert!(
-            t.contains("slope ~1.4") && t.contains("94.00% at 1e-3"),
+            t.contains("99.8930% at 1e-4") && t.contains("inside"),
             "{t}"
         );
-        assert!(!t.contains("1.8") && !t.contains("CAVEAT"), "{t}");
+        assert!(
+            t.contains("slope ~1.8") && t.contains("95.57% at 1e-3"),
+            "{t}"
+        );
+        assert!(!t.contains("1.2-1.8") && !t.contains("CAVEAT"), "{t}");
         assert!(eps_trust(1e-6, true).contains("outside"));
         assert!(eps_trust(1e-4, false).contains("CAVEAT"));
         assert!(!eps_trust(0.0, false).contains("CAVEAT"));
@@ -639,10 +646,10 @@ mod tests {
         let s1 = (lost[1] / lost[0]).log10();
         let s2 = (lost[2] / lost[1]).log10();
         assert!(
-            (s1 - 1.52).abs() < 0.01 && (s2 - 1.26).abs() < 0.01,
+            (s1 - 2.04).abs() < 0.01 && (s2 - 1.50).abs() < 0.01,
             "{s1} {s2}"
         );
-        assert!(MEASURED_SLOPE_C4.contains("1.52") && MEASURED_SLOPE_C4.contains("1.26"));
+        assert!(MEASURED_SLOPE_C4.contains("2.04") && MEASURED_SLOPE_C4.contains("1.50"));
     }
 
     fn cert(eps: f64) -> Lmp2Certificate {
