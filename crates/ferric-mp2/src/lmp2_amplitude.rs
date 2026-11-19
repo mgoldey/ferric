@@ -951,8 +951,20 @@ pub(crate) fn column_expectations(m: &Array2<f64>, c: &Array2<f64>) -> Vec<f64> 
     column_dots(c, &m.dot(c))
 }
 
+/// `a.max(b)` that PROPAGATES NaN. `f64::max` returns the non-NaN operand,
+/// so a deviation reduced with it hides a NaN element and a construction
+/// check fed a NaN space reports a finite (passing) deviation.
+fn max_or_nan(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 /// Orthonormality + span check against the canonical virtuals (the
-/// construction half of the exactness anchor). Returns (dev_orth, dev_span).
+/// construction half of the exactness anchor). Returns (dev_orth, dev_span);
+/// a NaN element anywhere makes the deviation NaN (which the bar rejects).
 pub fn check_vvhv(
     obs: &PreparedBasis,
     rhf: &ScfResult,
@@ -966,7 +978,7 @@ pub fn check_vvhv(
     for r in 0..n {
         for c in 0..n {
             let target = if r == c { 1.0 } else { 0.0 };
-            dev_orth = dev_orth.max((o[(r, c)] - target).abs());
+            dev_orth = max_or_nan(dev_orth, (o[(r, c)] - target).abs());
         }
     }
     let c_vcan = rhf.mos_r().slice(s![.., nocc_total..]).to_owned();
@@ -978,7 +990,7 @@ pub fn check_vvhv(
         for r in 0..dim {
             for c in 0..dim {
                 let target = if r == c { 1.0 } else { 0.0 };
-                dev_span = dev_span.max((m[(r, c)] - target).abs());
+                dev_span = max_or_nan(dev_span, (m[(r, c)] - target).abs());
             }
         }
     }
@@ -1036,7 +1048,7 @@ fn max_column_ratio(y: &Array2<f64>, z: &Array2<f64>) -> f64 {
     yy.iter()
         .zip(&zz)
         .map(|(a, b)| (a / b).sqrt())
-        .fold(0.0f64, f64::max)
+        .fold(0.0f64, max_or_nan)
 }
 
 /// Randomized form of [`check_vvhv`]: applies `O − I` (`O = Cᵀ S C`) and
@@ -1073,7 +1085,7 @@ pub fn probe_vvhv(
     let utz2 = c_vloc.t().dot(&s.dot(&c_vcan.dot(&z2)));
     let uutz2 = c_vcan.t().dot(&s.dot(&c_vloc.dot(&utz2)));
     let d2 = max_column_ratio(&(uutz2 - &z2), &z2);
-    (dev_orth, d1.max(d2))
+    (dev_orth, max_or_nan(d1, d2))
 }
 
 /// Env knob selecting the FULL [`check_vvhv`] inside [`checked_vvhv`]:

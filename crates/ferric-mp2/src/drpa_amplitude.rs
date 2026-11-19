@@ -51,8 +51,8 @@ use ferric_scf::diis::Diis;
 use ferric_scf::result::ScfResult;
 
 use crate::lmp2_amplitude::{
-    assemble_basis, assemble_localized, assemble_ragged_direct, build_vvhv, check_vvhv,
-    localized_spaces, AmplitudeLmp2Config, VvHv,
+    assemble_basis, assemble_localized, assemble_ragged_direct, checked_vvhv, localized_spaces,
+    AmplitudeLmp2Config, VvHv,
 };
 use crate::lmp2_direct::{assemble_ragged_direct_local, DirectConfig, DirectStats};
 use crate::ragged::{
@@ -270,14 +270,7 @@ pub fn amplitude_drpa(
     rhf: &ScfResult,
     cfg: &AmplitudeDrpaConfig,
 ) -> Result<AmplitudeDrpaResult, FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude")?;
     amplitude_drpa_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)
 }
 
@@ -323,14 +316,7 @@ pub fn amplitude_drpa_scan(
     base_cfg: &AmplitudeDrpaConfig,
     eps_list: &[f64],
 ) -> Result<Vec<AmplitudeDrpaResult>, FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude")?;
     // assemble_basis takes no `eps` — it is exactly the eps-independent
     // prefix (RHF is already solved by the caller; this pays localization +
     // Fock blocks + unwhitened RI B once). Built with eps=0 in the local
@@ -376,14 +362,7 @@ pub fn amplitude_drpa_scan_timed(
 ) -> Result<(Vec<AmplitudeDrpaResult>, f64, Vec<f64>), FerricError> {
     use std::time::Instant;
     let t_prefix = Instant::now();
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude")?;
     let lcfg = AmplitudeLmp2Config {
         eps: 0.0,
         frozen_core: base_cfg.frozen_core,
@@ -688,14 +667,7 @@ pub fn amplitude_drpa_direct(
     cfg: &AmplitudeDrpaConfig,
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeDrpaResult, DirectStats), FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "drpa_amplitude(direct): VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude(direct)")?;
     amplitude_drpa_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, &vvhv)
 }
 

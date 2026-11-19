@@ -59,8 +59,8 @@ use ferric_scf::ScfResult;
 
 use crate::linlccd::LadderVariant;
 use ferric_mp2::lmp2_amplitude::{
-    assemble_basis, assemble_ragged_direct, build_vvhv, check_vvhv, localized_spaces,
-    AmplitudeLmp2Config, VvHv,
+    assemble_basis, assemble_ragged_direct, checked_vvhv, localized_spaces, AmplitudeLmp2Config,
+    VvHv,
 };
 use ferric_mp2::lmp2_direct::{
     assemble_boo_direct, assemble_pp_fitted_direct, assemble_ragged_direct_local, DirectConfig,
@@ -138,14 +138,7 @@ pub fn amplitude_linlccd(
     cfg: &AmplitudeLinLccdConfig,
     variant: LadderVariant,
 ) -> Result<AmplitudeLinLccdResult, FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "linlccd_amplitude: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "linlccd_amplitude")?;
     amplitude_linlccd_with_virtuals(mol, obs, dfbs, op, rhf, cfg, variant, &vvhv)
 }
 
@@ -451,14 +444,7 @@ pub fn amplitude_linlccd_direct(
     dcfg: &DirectConfig,
     variant: LadderVariant,
 ) -> Result<(AmplitudeLinLccdResult, DirectStats), FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "linlccd_amplitude(direct): VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "linlccd_amplitude(direct)")?;
     amplitude_linlccd_direct_with_virtuals(mol, obs, dfbs, op, rhf, cfg, dcfg, variant, &vvhv)
 }
 
