@@ -194,3 +194,13 @@ def test_double_hybrid_reference_is_run_dft_or_run_uks():
     assert abs(dh.e_ks - ferric.run_dft(hi(), bs, "B2PLYP").energy) < EREF
     udh = ferric.run_double_hybrid(hi(1, 2), bs, aux)
     assert abs(udh.e_ks - ferric.run_uks(hi(1, 2), bs, "B2PLYP").energy) < EREF
+
+
+def test_linlccd_reference_is_run_rhf_and_drpa_refuses_the_ecp():
+    bs, aux = bases()
+    r = ferric.run_linlccd(hi(), bs, aux)
+    assert abs(r["rhf_energy"] - rhf().energy) < EREF
+    # The dRPA amplitude solver counts valence virtuals in a localized
+    # basis, which ECP atoms break: it refuses rather than mis-count.
+    with pytest.raises(RuntimeError, match="ECP atoms"):
+        ferric.run_drpa(hi(), bs, aux)

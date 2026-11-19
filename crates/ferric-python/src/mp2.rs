@@ -9,7 +9,7 @@ pub(crate) const MP2_ECP: EcpPolicy = EcpPolicy::Apply;
 
 /// ECP policy of the dRPA / LinLCCD drivers in this file (`run_drpa`,
 /// `run_drpa_scan`, `run_linlccd`).
-pub(crate) const DRPA_ECP: EcpPolicy = EcpPolicy::Skip;
+pub(crate) const DRPA_ECP: EcpPolicy = EcpPolicy::Apply;
 
 /// Result of a `run_rimp2` calculation.
 #[pyclass]
