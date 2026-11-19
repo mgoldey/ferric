@@ -155,6 +155,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `level-shift-mom-smearing` | Level shift, MOM and smearing | none | `ferric-scf/src/mom.rs::mom_reorder`, `ferric-scf/src/smearing.rs::{fermi_dirac,solve_fermi_level}` | ready |
 | `second-order` | Second-order steps: Newton, augmented Hessian, trust region | none | `ferric-scf/src/rhf_newton.rs::{rhf_newton_step,hessian_matvec}`, `ferric-scf/src/uhf_newton.rs::uhf_newton_step`, `ferric-scf/src/rohf_newton.rs::rohf_newton_step`, `ferric-scf/src/rohf_ah.rs::rohf_ah_step`, `ferric-scf/src/trah.rs::{solve_trust_region,rhf_trah_step}`, `ferric-scf/src/cayley.rs::cayley_unitary` | ready |
 | `stability` | Stability analysis | none | `ferric-scf/src/stability.rs::{rhf_internal_stability,rhf_external_stability,uhf_internal_stability}` | ready |
+| `scf-exits` | Exits, the ladder and opt-in solvers | none | `ferric-scf/src/rhf.rs::{scf_converged,veto_stalled_energy_diis,stall_detected}`, `ferric-scf/src/ladder.rs::{solve_rhf_ladder,default_ladder_from,ksdft_ladder}`, `ferric-scf/src/symmetric.rs::solve_rhf_symmetric` | edit |
 
 ### Part IV. Density functional theory
 
@@ -446,7 +447,7 @@ registry row and are the largest block of `gap` sections.
 | 0. Front matter | 1 | 1 | 0 | 0 | 2 |
 | I. Foundations | 0 | 7 | 0 | 0 | 7 |
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
-| III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
+| III. Self-consistent field | 8 | 3 | 0 | 0 | 11 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
 | V. The MP2 family | 18 | 3 | 1 | 5 | 27 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
@@ -461,9 +462,9 @@ registry row and are the largest block of `gap` sections.
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | XVI. Dynamics | 0 | 1 | 0 | 0 | 1 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **100** | **49** | **8** | **6** | **163** |
+| **Total** | **100** | **50** | **8** | **6** | **164** |
 
-163 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
+164 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

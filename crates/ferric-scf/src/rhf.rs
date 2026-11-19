@@ -120,7 +120,10 @@ pub struct RhfConfig {
     /// Level shift (Ha) applied to the virtual–virtual block of the Fock
     /// matrix in MO basis. Defaults to 0 (no shift). Used to damp oscillations
     /// in open-shell SCF (ROHF/UHF/ROKS) where DIIS plateaus near a near-
-    /// degenerate transition. A shift of 0.1–0.5 Ha is typical.
+    /// degenerate transition. A shift of 0.1–0.5 Ha is typical. The shift is
+    /// ramped off with `e`, the largest element of the DIIS error, by a different
+    /// formula per solver: RHF/RKS `level_shift · min(e / 0.1, 1)`, UHF/UKS and
+    /// ROHF/ROKS `level_shift · e / (e + 1e-3)`.
     pub level_shift: f64,
     /// Whether a meta-GGA functional with `level_shift == 0` gets the automatic
     /// 0.5 Ha virtual-block shift (`driver::effective_level_shift`). `true` (the
@@ -129,10 +132,12 @@ pub struct RhfConfig {
     /// know whether the caller wrote a `level_shift` (CLI `[scf] level_shift`,
     /// the Python `level_shift=` kwarg) set it to `false` when the caller did.
     pub meta_gga_auto_level_shift: bool,
-    /// If > 0 in ROHF/ROKS: switch from DIIS to a damped-Newton step once the
-    /// DIIS error (err_max) drops below this trigger. Setting `1e-2` is a
-    /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
-    /// disables Newton entirely (DIIS-only).
+    /// If > 0 (RHF/RKS, UHF/UKS, ROHF/ROKS): replace the DIIS step by a PCG
+    /// Newton step once the DIIS error (err_max) drops below this trigger.
+    /// RHF/RKS additionally requires iteration > 3 and a functional without
+    /// range separation (ω = 0). Setting `1e-2` is a reasonable value for
+    /// OH-doublet LDA/PBE plateaus; `[scf] soscf = true` sets 1e-3. A value
+    /// of 0 disables Newton entirely (DIIS-only).
     pub newton_trigger: f64,
 
     /// AURORA auxiliary-curvature accelerator (arXiv:2608.07354).
@@ -169,7 +174,7 @@ pub struct RhfConfig {
     /// Trust-region parameters, read only when `trah_trigger` is `Some`.
     pub trah: crate::trah::TrahConfig,
     /// If > 0 (RHF/UHF/ROHF/ROKS): activate Maximum-Overlap Method
-    /// reordering after this many DIIS iters. From iter `mom_after_iter + 1`
+    /// reordering after this many SCF iterations. From iter `mom_after_iter + 1`
     /// onward, the occupied MO set is picked by AO-overlap with the
     /// previous-iter accepted set (rather than by ε). Default 0 = disabled.
     /// MOM pins whatever basin DIIS holds at arming — it breaks occupied-set
@@ -436,7 +441,9 @@ pub struct RhfConfig {
     /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
     ///
     /// Honoured by `solve_rhf`/`solve_rks` (RHF-internal, singlet channel) and
-    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations).
+    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations). On an
+    /// RHF (not KS) reference it also runs the external RHF→UHF (triplet)
+    /// analysis into [`crate::result::ScfResult::stability_external`].
     /// `solve_rohf`/`solve_roks` SKIP it with a printed reason — the Roothaan
     /// Hessian is a third operator, and analysing a UHF or RHF one there would
     /// be a wrong-operator verdict. VV10 functionals are likewise skipped with

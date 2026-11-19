@@ -38,6 +38,11 @@ n = 6, 2 doubly occupied orbitals):
       virtual eigenvalues by mu and leaves the density unchanged.
   F1  Fermi-Dirac smearing (smearing.rs): the bisected Fermi level holds
       N/2 orbital pairs at several sigma; sigma -> 0 gives aufbau occupations.
+  E1  EDIIS interpolant: for idempotent occupation-2 D_i and F_i = F(D_i),
+      E(sum_i c_i D_i) = g^T c + 1/4 c^T H c on sum_i c_i = 1, with g_i = E_i
+      and H_ij = -<D_i - D_j, F_i - F_j>; the occupation-1 form P_i = D_i/2
+      carries 1/2; the factor 1/2 on the occupation-2 H (diis.rs
+      EnergyDiis today) does not reproduce E.
 
 B_ij is the elementwise (Frobenius) product of the AO error matrices, as in
 diis.rs; UHF stacks the two spins in one Gram matrix and applies one
@@ -49,6 +54,8 @@ one-occurrence substitutions):
   diis_solve: border column +1 -> -1                 (N3 fails)
   uhf_error: per-spin D_s -> total D                 (N5 fails)
   mo_gradient: 4 f_ai -> 2 f_ai                      (N1 fails)
+  ediis: EDIIS_QUAD 0.25 -> 0.5                      (E1 fails)
+  fermi_level: bisection branch > -> <               (F1 fails)
 Exits nonzero if any check fails; prints "FAIL [<claim>] ...".
 """
 
@@ -87,6 +94,14 @@ def diis_solve(bmat):
 def gram(e1, e2):
     """B_ij = sum of the elementwise product of two AO error matrices (diis.rs dot)."""
     return np.sum(e1 * e2)
+
+
+EDIIS_QUAD = 0.25
+
+
+def ediis_model(g, h, c):
+    """Exact EDIIS interpolant for occupation-2 densities: g.c + 1/4 c^T H c."""
+    return g @ c + EDIIS_QUAD * c @ h @ c
 
 
 def level_shift(f, s, c_prev, nocc, mu):
@@ -385,6 +400,45 @@ def numerical_checks():
     occ = fermi_dirac(eps, solve_fermi_level(eps, 3, 1e-4), 1e-4)
     ok = ok and np.abs(occ - np.array([1.0] * 3 + [0.0] * 7)).max() < 1e-6
     check("[F1] Fermi level holds N/2 pairs; sigma -> 0 is aufbau", ok)
+
+    # E1 EDIIS interpolant. For idempotent D_i (occupation 2) and F_i = F(D_i),
+    # E(sum_i c_i D_i) = g^T c + EDIIS_QUAD c^T H c exactly on sum_i c_i = 1,
+    # with g_i = E_i and H_ij = -<D_i - D_j, F_i - F_j> (the diis.rs table).
+    # Occupation-1 densities P_i = D_i / 2 with F = h + 2J[P] - K[P] give the
+    # literature form, coefficient 1/2 on -sum c_i c_j <P_i - P_j, F_i - F_j>.
+    dens = []
+    for _ in range(4):
+        q, _r = np.linalg.qr(rng.normal(size=(N, N)))
+        dens.append(density(X @ q))  # X q is S-orthonormal: D S D = 2 D
+    focks = [fock_rhf(d) for d in dens]
+    g = np.array([energy_rhf(d) for d in dens])
+    m = len(dens)
+    h = np.array(
+        [
+            [-np.sum((dens[i] - dens[j]) * (focks[i] - focks[j])) for j in range(m)]
+            for i in range(m)
+        ]
+    )
+    ok = all(np.abs(d @ S @ d - 2.0 * d).max() < 1e-10 for d in dens)
+    for _ in range(5):
+        c = rng.random(m)
+        c /= c.sum()
+        exact = energy_rhf(sum(ci * di for ci, di in zip(c, dens)))
+        ok = ok and abs(ediis_model(g, h, c) - exact) < 1e-10
+        # occupation-1 form: P_i = D_i / 2, -1/2 sum c_i c_j <P_i - P_j, F_i - F_j>
+        hp = np.array(
+            [
+                [
+                    -np.sum((dens[i] - dens[j]) / 2.0 * (focks[i] - focks[j]))
+                    for j in range(m)
+                ]
+                for i in range(m)
+            ]
+        )
+        ok = ok and abs(g @ c + 0.5 * c @ hp @ c - exact) < 1e-10
+        # diis.rs puts 1/2 on the occupation-2 H: it misses by 1/4 c^T H c
+        ok = ok and abs(g @ c + 0.5 * c @ h @ c - exact) > 1e-6
+    check("[E1] EDIIS: E(sum c D) = g.c + 1/4 c^T H c (occupation-2 D)", ok)
 
 
 symbolic_checks()

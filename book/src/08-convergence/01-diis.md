@@ -79,8 +79,8 @@ Roothaan effective Fock matrix.
 
 > **Verified equation {#eq:scf-diis-error}** · the error vector is the orbital gradient
 >
-> $e = FDS - SDF$ is antisymmetric; in the MO basis its occupied–virtual block
-> is $2f_{ia}$, half of $\partial E/\partial\kappa_{ai} = 4f_{ai}$, so $e = 0$
+> $e = FDS - SDF$ is antisymmetric; in the MO basis its virtual–occupied block
+> is $2f_{ai}$, half of $\partial E/\partial\kappa_{ai} = 4f_{ai}$, so $e = 0$
 > exactly at a stationary point. The UHF error is the same per spin.
 >
 > | | |
@@ -257,8 +257,12 @@ Four points about it:
 | Flavor | What it minimizes | Who reads it |
 |---|---|---|
 | Pulay (`diis = "pulay"`, the default) | $\lvert\sum_ic_ie_i\rvert^2$, $\sum c_i = 1$ | RHF, UHF, ROHF |
-| `"ediis"`: EDIIS, then Pulay | an energy model on the simplex while $\max\lvert e\rvert \ge$ `diis_switch_thresh` (0.1), Pulay below | RHF only |
-| `"adiis"`: ADIIS, then Pulay | the ADIIS model on the simplex, same switch | RHF only |
+| `"ediis"`: EDIIS, then Pulay | an energy model on the simplex while $\max\lvert e\rvert \ge$ `diis_switch_thresh` (0.1), Pulay below | RHF and RKS only |
+| `"adiis"`: ADIIS, then Pulay | the ADIIS model on the simplex, same switch | RHF and RKS only |
+
+Only the closed-shell solver reads `RhfConfig::diis_flavor`. UHF and ROHF
+always run Pulay, and the CLI refuses a non-Pulay `[scf] diis` on an
+open-shell reference (`Config::validate_open_shell_scf_keys`).
 
 Far from convergence the linear error model of section @sec:diis-error-vector-extrapolation does not hold.
 EDIIS and ADIIS
@@ -271,6 +275,27 @@ $c_i \ge 0$, $\sum_ic_i = 1$:
 | EDIIS | $E_i$ | $-\langle D_i - D_j, F_i - F_j\rangle$ |
 | ADIIS | $2\langle D_i - D_n, F_n\rangle$ | $2\langle D_i - D_n, F_j - F_n\rangle$ |
 
+For idempotent densities with occupation 2 (ferric's $D = 2C_oC_o^{\mathsf T}$)
+and $F_i = F(D_i)$, the energy of the mixed density is exactly quadratic in
+$c$. Write $E(D) = \operatorname{tr}[Dh] + \tfrac12\operatorname{tr}[DG(D)]$
+with $G$ linear and $F = h + G(D)$; on $\sum_ic_i = 1$,
+
+$$ E\Big(\sum_ic_iD_i\Big) = \sum_ic_iE_i - \tfrac14\sum_{ij}c_ic_j\langle D_i - D_j, F_i - F_j\rangle = g^{\mathsf T}c + \tfrac14c^{\mathsf T}Hc $$
+
+with the EDIIS $g$ and $H$ of the table. The literature form, with
+$-\tfrac12$ in front of the double sum, is the same identity written for
+occupation-1 densities $P_i = D_i/2$. `EnergyDiis` minimizes
+$g^{\mathsf T}c + \tfrac12c^{\mathsf T}Hc$ with the occupation-2 $H$, so its
+model counts the density-spread term twice. That moves the minimizer on the
+simplex, not the converged energy: the model only steers the iterations until
+$\max\lvert e\rvert$ falls below `diis_switch_thresh`, and Pulay finishes.
+Claim E1 of
+`scripts/scf_diis_sympy.py` checks the $\tfrac14$ form against
+$E(\sum_ic_iD_i)$ to $10^{-10}$ on random idempotent densities, the
+occupation-1 form with $\tfrac12$, and that $\tfrac12$ on the occupation-2 $H$
+misses. For ADIIS the factor 2 in $g$ and $H$ multiplies the whole model and
+does not move its minimizer.
+
 Here $n$ is the newest entry. The code removes the inequality constraints by
 the substitution $c_i = t_i^2/\sum_kt_k^2$, which satisfies both for any real
 $t$, and runs backtracking gradient descent in $t$ from the uniform point
@@ -281,7 +306,9 @@ current at the switch.
 
 The energy model is meaningful only for idempotent densities, whose energy
 is bounded below by the ground state. A guess density (MINAO, SAD or a
-user-supplied one) is not idempotent, so the RHF loop checks the first
+user-supplied one) need not be idempotent
+(`ferric-scf/src/diis.rs::is_idempotent_closed_shell` tests
+$\max\lvert DSD - 2D\rvert$), so the RHF loop checks the first
 density and keeps a non-idempotent one out of the energy history
 (`DiisDriver::step_checked`).
 
@@ -293,66 +320,29 @@ than two vectors, so the step is plain Roothaan iteration.
 
 ## When the SCF stops {#diis-scf-stops}
 
-The exit test is `ferric-scf/src/rhf.rs::scf_converged`, shown whole:
-
-```rust
-let dp_rms_ok = sig.dp_rms < density_conv;          // Delta D_rms < density_conv
-let dp_max_ok = sig.dp_max < 10.0 * density_conv;   // Delta D_max < 10 density_conv
-let energy_not_descending = sig.de < energy_conv;   // |Delta E| < energy_conv
-if dp_rms_ok && dp_max_ok && energy_not_descending {
-    Some(crate::result::ScfExit::Converged)
-} else {
-    None
-}
-```
-
-| Test | Default |
-|---|---|
-| $\Delta D_{\rm rms}$ between successive densities | `density_conv` $= 10^{-6}$ |
-| $\Delta D_{\max}$ | $10 \times$ `density_conv` |
-| $\lvert\Delta E\rvert$ | `energy_conv` $= 10^{-3}$, a sanity bound, not the target |
-| exit veto | an exit with $\max\lvert X^{\mathsf T}eX\rvert > \max(\sqrt{\texttt{density\_conv}}, 10^{-3})$ is refused and DIIS restarts (`ferric-scf/src/rhf.rs::veto_nonstationary_rhf_exit`) |
-
-The test runs from iteration 2 on, and the exit diagonalizes the
-unextrapolated, unshifted $F$.
-
-Why is the density the gate and not the commutator? With density fitting
-the commutator stops falling at a floor set by the fit, while the density
-change keeps draining to zero at the fitted fixed point. The $\Delta D_{\max}$
-companion catches a single density element that is still moving while the
-root-mean-square change is small.
-
-The density test alone can accept a point that is not stationary. A stagnated extrapolation can return
-the same density on every step without that density being stationary: the
-doc comment of `GradientVeto` records OH UKS-LDA/STO-3G frozen at a
-non-aufbau state 0.586 Ha above the stationary ground state. The veto
-catches this by evaluating the gradient once the density test has passed.
-It uses $X^{\mathsf T}eX$, the error in the orthonormal basis $X$
-($X^{\mathsf T}SX = 1$), which has the same Frobenius norm as
-$C^{\mathsf T}eC$ and the same $2f_{ai}$ block (claim N6 of
-`scripts/scf_diis_sympy.py`). At the default `density_conv` the bound is
-$\max(10^{-3}, 10^{-3}) = 10^{-3}$. A refused exit clears the DIIS history.
+The stopping test, the exit reasons and the two vetoes that refuse an exit
+apply to every SCF, not only to DIIS; section @sec:scf-exits states them. The
+one that concerns the energy-based variants above: under ADIIS or EDIIS a
+density-settled exit whose commutator is still above `diis_switch_thresh` is
+refused, and the run restarts on Pulay from a clean history.
 
 ## Numerical anchors {#diis-numerical-anchors}
 
 The convergence machinery is tested by the energies it converges to (the
 anchors of section @sec:energy-functionals) and by the convergence-ladder row of
 `site/src/reference/validation.md`: on N2 at 1.60 Å / def2-SVP the plain-DIIS
-rung of `solve_rhf_ladder` lands on a saddle 1.906e-2 Ha above the minimum
+rung of `solve_rhf_ladder` (section @sec:scf-exits-ladder) lands on a saddle 1.906e-2 Ha above the minimum
 that the stability descent of section @sec:stability then reaches.
 
 <!-- figures: site/src/reference/validation.md "SCF convergence ladder with RHF internal stability descent" -->
-
-## Doc fixes needed {#diis-doc-fixes-needed}
-
-| Text | Code |
-|---|---|
-| `[scf] diis` reads as an option of every SCF | only the RHF solver reads `RhfConfig::diis_flavor`; UHF and ROHF always run Pulay |
 
 ## Sources
 
 | Source | Used for |
 |---|---|
-| `scripts/scf_diis_sympy.py` | verified equations @eq:scf-diis-error and @eq:scf-diis-system |
+| `scripts/scf_diis_sympy.py` | verified equations @eq:scf-diis-error and @eq:scf-diis-system; claim E1 for the EDIIS interpolant |
 | `crates/ferric-scf/src/diis.rs` | the system and its shrink rule |
 | `site/src/reference/validation.md` | the ladder anchor |
+| P. Pulay, Chem. Phys. Lett. 73, 393 (1980); P. Pulay, J. Comput. Chem. 3, 556 (1982) | DIIS |
+| K. N. Kudin, G. E. Scuseria and E. Cancès, J. Chem. Phys. 116, 8255 (2002) | EDIIS |
+| X. Hu and W. Yang, J. Chem. Phys. 132, 054109 (2010) | ADIIS |

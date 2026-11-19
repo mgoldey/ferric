@@ -1,6 +1,7 @@
 //! Augmented-Hessian Newton step for ROHF / ROKS.
 //!
-//! Reformulates H κ = −g as a (n+1)×(n+1) generalized eigenvalue problem:
+//! Reformulates H κ = −g as a (n+1)×(n+1) standard symmetric eigenvalue
+//! problem (the augmented Hessian at α = 1):
 //!
 //!   ⎡ 0    g^T ⎤ ⎡ 1 ⎤        ⎡ 1 ⎤
 //!   ⎢          ⎥ ⎢   ⎥  =  λ  ⎢   ⎥

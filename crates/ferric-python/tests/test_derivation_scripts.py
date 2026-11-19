@@ -322,6 +322,12 @@ CASES = [
                 "FAIL N4 dE/dkappa",
             ),
             ("return h + jm - km_s", "return h + jm - 0.5 * km_s", "FAIL N6 E_ROHF"),
+            (
+                "return u[:, kept] / np.sqrt(lam[kept])",
+                "return u[:, kept] / lam[kept]",
+                "FAIL [O1]",
+            ),
+            ("return x @ x.T @ s_bs", "return s_bs", "FAIL [O2]"),
         ],
     ),
     (
@@ -1861,6 +1867,11 @@ CASES = [
                 "qk = k_tilde",
                 "FAIL [C2]",
             ),
+            (
+                "return -0.25 * np.sum(d * k)",
+                "return 0.25 * np.sum(d * k)",
+                "FAIL [N10]",
+            ),
         ],
     ),
     (
@@ -1888,6 +1899,12 @@ CASES = [
                 "return f + mu * scv @ scv.T @ s",
                 "FAIL [L1]",
             ),
+            ("EDIIS_QUAD = 0.25", "EDIIS_QUAD = 0.5", "FAIL [E1]"),
+            (
+                "if fermi_dirac(eps, mid, sigma).sum() > n_pairs:",
+                "if fermi_dirac(eps, mid, sigma).sum() < n_pairs:",
+                "FAIL [F1]",
+            ),
         ],
     ),
     (
@@ -1910,6 +1927,11 @@ CASES = [
                 "g += 0.5 * dn * a + 0.5 * b + dn * dfm",
                 "g += 0.5 * dn * a + 1.0 * b + dn * dfm",
                 "FAIL [H5]",
+            ),
+            (
+                "cheap = 0.5 * (gv @ kv + mu * kv @ kv)",
+                "cheap = 0.5 * (gv @ kv - mu * kv @ kv)",
+                "FAIL [T1]",
             ),
         ],
     ),

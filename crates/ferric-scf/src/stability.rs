@@ -172,8 +172,9 @@ impl StabilityKind {
 pub struct StabilityResult {
     /// Which rotation space this verdict covers.
     pub kind: StabilityKind,
-    /// Lowest eigenvalue of the electronic orbital Hessian, in Hartree per
-    /// (radian²) of orbital rotation. Negative ⇒ a downhill rotation exists.
+    /// Lowest eigenvalue of the code's Newton operator (Hartree): a quarter of
+    /// the curvature per radian² of orbital rotation for RHF, half for UHF.
+    /// Negative ⇒ a downhill rotation exists.
     pub lowest_eigenvalue: f64,
     /// **NOT-PROVEN-UNSTABLE**, i.e. `lowest_eigenvalue > -noise_floor`.
     ///

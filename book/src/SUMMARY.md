@@ -45,6 +45,7 @@
   - [8.2 Level shift, MOM and smearing](08-convergence/02-level-shift-mom-smearing.md)
   - [8.3 Second-order steps: Newton, augmented Hessian, trust region](08-convergence/03-second-order.md)
   - [8.4 Stability analysis](08-convergence/04-stability.md)
+  - [8.5 Exits, the ladder and opt-in solvers](08-convergence/05-exits-ladder.md)
 - [9. Kohn–Sham density functional theory](09-kohn-sham/index.md)
   - [9.1 The Kohn–Sham equations and functional families](09-kohn-sham/01-ks-equations.md)
   - [9.2 Radial and angular grids, the Becke partition, pruning](09-kohn-sham/02-grids.md)

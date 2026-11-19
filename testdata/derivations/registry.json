@@ -867,7 +867,8 @@
         "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
         "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
         "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
-        "book/src/08-convergence/04-stability.md#stability-stability-operators"
+        "book/src/08-convergence/04-stability.md#stability-stability-operators",
+        "book/src/08-convergence/05-exits-ladder.md#scf-exits-stopping-test"
       ],
       "scripts": [
         "scripts/hf_energy_sympy.py",
@@ -904,7 +905,8 @@
         "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
         "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
         "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
-        "book/src/08-convergence/04-stability.md#stability-stability-operators"
+        "book/src/08-convergence/04-stability.md#stability-stability-operators",
+        "book/src/08-convergence/05-exits-ladder.md#scf-exits-stopping-test"
       ],
       "scripts": [
         "scripts/hf_energy_sympy.py",
@@ -1039,7 +1041,8 @@
         "book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation",
         "book/src/08-convergence/02-level-shift-mom-smearing.md#level-shift-mom-smearing-level-shift-damps-step",
         "book/src/08-convergence/03-second-order.md#second-order-orbital-gradient-hessian",
-        "book/src/08-convergence/04-stability.md#stability-stability-operators"
+        "book/src/08-convergence/04-stability.md#stability-stability-operators",
+        "book/src/08-convergence/05-exits-ladder.md#scf-exits-stopping-test"
       ],
       "scripts": [
         "scripts/hf_energy_sympy.py",
