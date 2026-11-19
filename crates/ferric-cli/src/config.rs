@@ -4934,52 +4934,42 @@ impl Config {
     /// validated terfc parameter box of the Schwarz cut (the angular-momentum
     /// limit needs the molecule's basis and is reported when the run starts).
     fn validate_local_direct(&self, kind: &str, model: &LocalModel) -> Result<(), String> {
-        if self
-            .local
-            .as_ref()
-            .and_then(|l| l.integral_direct)
-            .is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] integral_direct is the integral-direct local MP2 and applies to \
-                 method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\")"
-            ));
-        }
-        if self
-            .local
-            .as_ref()
-            .and_then(|l| l.virtual_space.as_ref())
-            .is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] virtual_space selects the VV-HV build of the local MP2 and applies \
-                 to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", which \
-                 always uses the dense build)"
-            ));
-        }
-        if self.local.as_ref().and_then(|l| l.fock_screen).is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] fock_screen sets the Fock-propagated mask screen of the local MP2 \
-                 and applies to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", \
-                 which runs the plain amplitude mask)"
-            ));
-        }
-        if self.local.as_ref().and_then(|l| l.lambda_boys).is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] lambda_boys sets the λ-Boys occupied localization of the local MP2 \
-                 and applies to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", \
-                 which localizes with plain Boys)"
-            ));
+        if kind != "rimp2" && kind != "att-rimp2" {
+            if let Some(l) = self.local.as_ref() {
+                // (key set?, key, what it selects, what the other kinds do instead)
+                let mp2_only: [(bool, &str, &str, &str); 4] = [
+                    (
+                        l.integral_direct.is_some(),
+                        "integral_direct",
+                        "is the integral-direct local MP2",
+                        "",
+                    ),
+                    (
+                        l.virtual_space.is_some(),
+                        "virtual_space",
+                        "selects the VV-HV build of the local MP2",
+                        ", which always uses the dense build",
+                    ),
+                    (
+                        l.fock_screen.is_some(),
+                        "fock_screen",
+                        "sets the Fock-propagated mask screen of the local MP2",
+                        ", which runs the plain amplitude mask",
+                    ),
+                    (
+                        l.lambda_boys.is_some(),
+                        "lambda_boys",
+                        "sets the λ-Boys occupied localization of the local MP2",
+                        ", which localizes with plain Boys",
+                    ),
+                ];
+                if let Some((_, key, what, instead)) = mp2_only.iter().find(|r| r.0) {
+                    return Err(format!(
+                        "[local] {key} {what} and applies to method.kind = \"rimp2\" or \
+                         \"att-rimp2\" only (got \"{kind}\"{instead})"
+                    ));
+                }
+            }
         }
         if kind == "att-rimp2"
             && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
