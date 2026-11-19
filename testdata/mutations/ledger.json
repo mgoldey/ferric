@@ -326,6 +326,86 @@
         "baseline_run": true,
         "date": "2026-11-19"
       }
+    },
+    {
+      "anchor": "RHF gradient",
+      "patch": "testdata/mutations/rhf-gradient.patch",
+      "mutation": "gradient.rs: the closed-shell two-particle density weights exchange by -1/2 (the UHF per-spin weight) instead of -1/4.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "closed_shell_h2o_optimization_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "UHF gradient",
+      "patch": "testdata/mutations/uhf-gradient.patch",
+      "mutation": "gradient.rs: the beta exchange term of the UHF two-particle density pairs D_alpha with D_beta instead of D_beta with D_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "open_shell_nh2_optimization_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "ROHF gradient",
+      "patch": "testdata/mutations/rohf-gradient.patch",
+      "mutation": "gradient.rs: the ROHF energy-weighted density uses D_alpha F_alpha D_beta for its second term instead of D_alpha F_beta D_beta.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "open_shell_nh2_optimization_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "KS gradient",
+      "patch": "testdata/mutations/rks-gradient.patch",
+      "mutation": "gradient/screened.rs: the closed-shell GGA gradient weight is w v_sigma instead of 2 w v_sigma.",
+      "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
+      "test": "closed_shell_h2o_optimization_vs_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "RI-MP2 gradient",
+      "patch": "testdata/mutations/rimp2-gradient.patch",
+      "mutation": "ferric-mp2 gradient.rs: the virtual-occupied block of the energy-weighted correlation density takes the virtual orbital energy instead of the occupied one.",
+      "evidence": "crates/ferric-mp2/tests/validation_rimp2_gradient.rs",
+      "test": "rimp2_gradient_h2o_ccpvdz_vs_orca_and_pyscf",
+      "result": null
+    },
+    {
+      "anchor": "PDEP-RPA gradient",
+      "patch": "testdata/mutations/pdep-rpa-gradient.patch",
+      "mutation": "gradient_analytic.rs: the occupied-occupied RPA density P_oo is accumulated with +w/4pi instead of -w/4pi.",
+      "evidence": "crates/ferric-rpa/tests/rpa_analytic_gradient.rs",
+      "test": "h2o_matches_fd5_of_the_same_quadrature",
+      "result": null
+    },
+    {
+      "anchor": "RHF Hessian",
+      "patch": "testdata/mutations/rhf-hessian.patch",
+      "mutation": "hessian.rs: exchange enters the closed-shell first-order Fock matrix with 1/4 instead of 1/2.",
+      "evidence": "crates/ferric-scf/tests/validation_rhf_hessian.rs",
+      "test": "h2o_ccpvdz",
+      "result": null
+    },
+    {
+      "anchor": "UHF Hessian",
+      "patch": "testdata/mutations/uhf-hessian.patch",
+      "mutation": "hessian/uhf_df.rs: both spins' first-order Fock matrices take their exchange from D_alpha.",
+      "evidence": "crates/ferric-scf/tests/validation_uhf_hessian.rs",
+      "test": "oh_ccpvdz",
+      "result": null
+    },
+    {
+      "anchor": "ROHF Hessian",
+      "patch": "testdata/mutations/rohf-hessian.patch",
+      "mutation": "hessian/rohf.rs: exchange enters the per-spin first-order Fock matrices with 1/2 instead of 1.",
+      "evidence": "crates/ferric-scf/tests/validation_rohf_hessian.rs",
+      "test": "rohf_hessian_nh2_matches_pyscf_fd_of_analytic_gradient",
+      "result": null
+    },
+    {
+      "anchor": "RKS Hessian",
+      "patch": "testdata/mutations/rks-hessian.patch",
+      "mutation": "ks_fixed_grid.rs: the moving-grid XC skeleton adds the weight-derivative cross term W' (df)^T without its transpose.",
+      "evidence": "crates/ferric-scf/tests/ks_moving_grid_hessian.rs",
+      "test": "moving_grid_hessian_matches_difference_of_the_production_gradient",
+      "result": null
     }
   ]
 }
