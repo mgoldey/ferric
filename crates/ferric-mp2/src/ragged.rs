@@ -61,6 +61,18 @@ impl PairBlock {
 }
 
 impl Ragged {
+    /// The ragged system of `pairs`, in that order, with the `by_i` / `by_j`
+    /// maps listing each occupied index's pairs in ascending position.
+    pub fn from_pairs(pairs: Vec<PairBlock>) -> Self {
+        let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (p, pb) in pairs.iter().enumerate() {
+            by_i.entry(pb.i).or_default().push(p);
+            by_j.entry(pb.j).or_default().push(p);
+        }
+        Ragged { pairs, by_i, by_j }
+    }
+
     /// Heap bytes the ragged system holds: every block's storage, the
     /// `pairs` vector, and the two index maps (bucket entries plus their
     /// index vectors; the hash table's control bytes are approximated as

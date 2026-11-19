@@ -1167,16 +1167,15 @@ pub fn checked_vvhv(
     rhf: &ScfResult,
     who: &str,
 ) -> Result<(VvHv, f64), FerricError> {
-    let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
-        Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
-        Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
-        Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
-    };
-    let t0 = std::time::Instant::now();
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    verify_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc, full, who)?;
-    Ok((vvhv, t0.elapsed().as_secs_f64()))
+    checked_vvhv_with(
+        mol,
+        obs,
+        obs_bs,
+        rhf,
+        who,
+        &crate::vvhv_local::VirtualSpace::Dense,
+    )
+    .map(|(v, t, _)| (v, t))
 }
 
 /// [`checked_vvhv`] with the build selected by `vs`: the dense default or
@@ -1191,29 +1190,47 @@ pub fn checked_vvhv_with(
     who: &str,
     vs: &crate::vvhv_local::VirtualSpace,
 ) -> Result<(VvHv, f64, crate::vvhv_local::VirtualSpaceReport), FerricError> {
-    use crate::vvhv_local::{build_vvhv_local, VirtualSpace, VirtualSpaceReport};
-    match vs {
-        VirtualSpace::Dense => {
-            let (v, t) = checked_vvhv(mol, obs, obs_bs, rhf, who)?;
-            Ok((v, t, VirtualSpaceReport::Dense))
-        }
+    checked_vvhv_with_fock(mol, obs, obs_bs, rhf, rhf.fock_r(), who, vs)
+}
+
+/// [`checked_vvhv_with`] with the AO Fock matrix `f_ao` that
+/// pseudo-canonicalizes the hard virtuals supplied by the caller
+/// ([`build_vvhv_with_fock`], [`crate::vvhv_local::build_vvhv_local_with_fock`]):
+/// the seam for a reference whose Fock operator is not `rhf.fock_r()`.
+/// The construction check is the same.
+pub fn checked_vvhv_with_fock(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    f_ao: &Array2<f64>,
+    who: &str,
+    vs: &crate::vvhv_local::VirtualSpace,
+) -> Result<(VvHv, f64, crate::vvhv_local::VirtualSpaceReport), FerricError> {
+    use crate::vvhv_local::{build_vvhv_local_with_fock, VirtualSpace, VirtualSpaceReport};
+    let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
+        Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
+        Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
+        Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
+    };
+    let t0 = std::time::Instant::now();
+    let (vv, report) = match vs {
+        VirtualSpace::Dense => (
+            build_vvhv_with_fock(mol, obs, obs_bs, rhf, f_ao)?,
+            VirtualSpaceReport::Dense,
+        ),
         VirtualSpace::Local(lc) => {
-            let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
-                Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
-                Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
-                Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
-            };
-            let t0 = std::time::Instant::now();
-            let loc = build_vvhv_local(mol, obs, obs_bs, rhf, lc)?;
-            let nocc_total = (mol.nelec() as usize) / 2;
-            verify_vvhv(obs, rhf, nocc_total, &loc.vv.c_vloc, full, who)?;
+            let loc = build_vvhv_local_with_fock(mol, obs, obs_bs, rhf, f_ao, lc)?;
             let report = VirtualSpaceReport::Local {
                 config: lc.clone(),
                 stats: loc.stats,
             };
-            Ok((loc.vv, t0.elapsed().as_secs_f64(), report))
+            (loc.vv, report)
         }
-    }
+    };
+    let nocc_total = (mol.nelec() as usize) / 2;
+    verify_vvhv(obs, rhf, nocc_total, &vv.c_vloc, full, who)?;
+    Ok((vv, t0.elapsed().as_secs_f64(), report))
 }
 
 /// The pass/fail half of [`checked_vvhv`]: the full check (`full`) or the
@@ -2291,12 +2308,6 @@ pub fn assemble_ragged_direct_aux(
         }
         pairs.extend(blocks);
     }
-    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (pidx, pb) in pairs.iter().enumerate() {
-        by_i.entry(pb.i).or_default().push(pidx);
-        by_j.entry(pb.j).or_default().push(pidx);
-    }
     let aux_dom_mean = if aux_sizes.is_empty() {
         0.0
     } else {
@@ -2304,7 +2315,7 @@ pub fn assemble_ragged_direct_aux(
     };
     let aux_dom_max = aux_sizes.iter().copied().max().unwrap_or(0);
     Ok((
-        Ragged { pairs, by_i, by_j },
+        Ragged::from_pairs(pairs),
         n_pairs_gated,
         aux_dom_mean,
         aux_dom_max,

@@ -2861,13 +2861,7 @@ fn ragged_from_groups(
             ))
         })?);
     }
-    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (pidx, pb) in pairs.iter().enumerate() {
-        by_i.entry(pb.i).or_default().push(pidx);
-        by_j.entry(pb.j).or_default().push(pidx);
-    }
-    Ok(Ragged { pairs, by_i, by_j })
+    Ok(Ragged::from_pairs(pairs))
 }
 
 /// Compact whitened occ-occ Gram `(ik|jl)` for the LinLCCD hh ladder —

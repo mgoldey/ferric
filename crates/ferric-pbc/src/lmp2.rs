@@ -1777,13 +1777,7 @@ pub fn gamma_lmp2_with_spaces(
             }
         }
     }
-    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (p, pb) in pairs.iter().enumerate() {
-        by_i.entry(pb.i).or_default().push(p);
-        by_j.entry(pb.j).or_default().push(p);
-    }
-    let rg = Ragged { pairs, by_i, by_j };
+    let rg = Ragged::from_pairs(pairs);
     let t_assembly_s = t0.elapsed().as_secs_f64();
 
     // CG working set: t, r, z, p, A·p per retained block.
