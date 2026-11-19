@@ -255,6 +255,50 @@ def test_ase_atoms_with_ferric_calculator_composes():
         mlip.frames(atoms)
 
 
+def _cached_water():
+    from ase import Atoms
+    from ferric.ase import FerricCalculator
+
+    atoms = Atoms(
+        "OH2", positions=[(0, 0, 0.117), (0, 0.757, -0.467), (0, -0.757, -0.467)]
+    )
+    calc = FerricCalculator(method="hf", basis="sto-3g")
+    atoms.calc = calc
+    forces = np.array([[0.0, 0.0, 0.3], [0.0, -0.1, -0.15], [0.0, 0.1, -0.15]])
+    calc.atoms = atoms.copy()
+    calc.results = {"energy": -2000.0, "free_energy": -2000.0, "forces": forces}
+    return atoms, calc, forces
+
+
+def test_atoms_export_keeps_raw_labels_under_constraints():
+    """FixAtoms must not zero a training label: export the calculator's raw forces."""
+    pytest.importorskip("ase", reason="ASE is an optional dependency")
+    from ase.constraints import FixAtoms
+
+    atoms, _, forces = _cached_water()
+    atoms.set_constraint(FixAtoms(indices=[0]))
+    (f,) = mlip.frames(atoms)
+    np.testing.assert_array_equal(f.forces, forces)
+    assert f.forces[0, 2] == 0.3
+
+
+@pytest.mark.parametrize("missing", ["forces", "stale"])
+def test_atoms_export_never_starts_a_calculation(missing, monkeypatch):
+    pytest.importorskip("ase", reason="ASE is an optional dependency")
+    atoms, calc, _ = _cached_water()
+    if missing == "forces":
+        del calc.results["forces"]
+    else:
+        atoms.positions[0, 2] += 0.01  # the cache no longer describes these Atoms
+
+    def boom(*a, **k):
+        raise AssertionError("export started a calculation")
+
+    monkeypatch.setattr(calc, "calculate", boom)
+    with pytest.raises(ValueError, match="never computes"):
+        mlip.frames(atoms)
+
+
 def test_real_qcschema_gradient_converts_exactly():
     """End to end on the real driver: forces are exactly -gradient in eV/Angstrom."""
     import ferric.qcschema as qcs

@@ -238,9 +238,19 @@ def _from_atoms(atoms: Any) -> Frame:
             "the Atoms' calculator is not a FerricCalculator, so its level of theory "
             "cannot be recorded"
         )
-    # ASE returns eV and eV/Angstrom already; both raise if not computed.
-    energy = float(atoms.get_potential_energy())
-    forces = np.array(atoms.get_forces(), dtype=float)
+    # Read the calculator's own cached labels (eV, eV/Angstrom). Never let ASE
+    # recompute (an export must not start a calculation) and never go through
+    # atoms.get_forces(), which applies constraints such as FixAtoms and would
+    # silently zero a training label.
+    energy = calc.get_property("energy", atoms, allow_calculation=False)
+    forces = calc.get_property("forces", atoms, allow_calculation=False)
+    if energy is None or forces is None:
+        raise ValueError(
+            "the FerricCalculator has no current cached energy and forces for these "
+            "Atoms; run the calculation first (an export never computes)"
+        )
+    energy = float(energy)
+    forces = np.array(forces, dtype=float)
     p = calc.parameters
     charge, multiplicity = calc._charge_multiplicity(atoms)
     options = p.options or {}
