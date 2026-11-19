@@ -45,10 +45,7 @@ pub(crate) struct PyGwResult {
 
 #[pymethods]
 impl PyGwResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -390,10 +387,7 @@ pub(crate) struct PyUGwResult {
 
 #[pymethods]
 impl PyUGwResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -689,10 +683,7 @@ pub(crate) struct PyBseResult {
 
 #[pymethods]
 impl PyBseResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -856,10 +847,7 @@ pub(crate) struct PyTdhfStaticPolarizabilityResult {
 
 #[pymethods]
 impl PyTdhfStaticPolarizabilityResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)

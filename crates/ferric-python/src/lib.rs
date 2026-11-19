@@ -54,6 +54,17 @@ use ndarray::{Array2, Array3};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 
+/// The docstring shared by the `certificate` getters of the post-SCF method
+/// results, written once so the Python-visible text cannot drift.
+macro_rules! method_certificate_doc {
+    () => {
+        "Validation certificate of this result (see `RhfResult.certificate`):\n\
+         the method's grade from the validation page capped by the reference\n\
+         SCF's, its settings as `approximations`, the reference's as\n\
+         `scf <name>`, and its warnings."
+    };
+}
+
 mod blocks;
 mod cc;
 mod cdft;
