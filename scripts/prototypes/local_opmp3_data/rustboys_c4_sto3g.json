@@ -1,0 +1,46 @@
+[
+ {
+  "xyz": "alkane_4.xyz",
+  "basis": "sto-3g",
+  "rust_boys_probe": {
+   "mono_converged": true,
+   "mono_sweeps": 10,
+   "mono_occ_converged": true,
+   "mono_occ_sweeps": 9,
+   "mono_vv_random_start_F": [
+    311.8318401344409,
+    311.83184013444037,
+    311.8318401344402
+   ],
+   "mono_occ_random_start_F": [
+    397.58849715030584,
+    397.5884971503052,
+    397.5884971503056
+   ],
+   "dimer_converged": true,
+   "dimer_sweeps": 10,
+   "dimer_occ_converged": true,
+   "dimer_occ_sweeps": 9,
+   "vv": {
+    "n_mono": 13,
+    "n_copy0": 13,
+    "copy_weight_max_dev": 2.55351295663786e-15,
+    "subspace_dev": 1.859424458849901e-08,
+    "boys_F_mono": 311.8318401344395,
+    "boys_F_copy0": 311.83184214160684,
+    "overlap_min_of_max": 0.9999999999999976,
+    "injective": true
+   },
+   "occ": {
+    "n_mono": 17,
+    "n_copy0": 17,
+    "copy_weight_max_dev": 4.884981308350689e-15,
+    "subspace_dev": 3.8109631450566894e-08,
+    "boys_F_mono": 397.58849715030567,
+    "boys_F_copy0": 397.5884951405936,
+    "overlap_min_of_max": 0.9999999999999963,
+    "injective": true
+   }
+  }
+ }
+]
