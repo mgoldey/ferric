@@ -19,7 +19,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedSystem, ScfResult};
 
 /// Convergence settings of the RHF start; `None` keeps the [`RhfConfig`]
 /// default.
@@ -46,6 +46,22 @@ pub fn rhf_start(
 ) -> Result<ScfResult, FerricError> {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep)?;
+    let cfg = start_config(start, memory_budget_bytes);
+    converged(solve_rhf(ctx, mol, prep, op, &bounds, &cfg)?)
+}
+
+/// [`rhf_start`] on a [`PreparedSystem`], reusing its Schwarz bounds.
+pub fn rhf_start_prepared(
+    sys: &PreparedSystem,
+    start: ScfStart,
+    memory_budget_bytes: Option<usize>,
+) -> Result<ScfResult, FerricError> {
+    let cfg = start_config(start, memory_budget_bytes);
+    converged(sys.solve_rhf(&cfg)?)
+}
+
+/// The [`RhfConfig`] of the RHF start.
+fn start_config(start: ScfStart, memory_budget_bytes: Option<usize>) -> RhfConfig {
     let mut cfg = RhfConfig {
         three_index_budget_bytes: memory_budget_bytes.unwrap_or(0),
         ..Default::default()
@@ -53,7 +69,11 @@ pub fn rhf_start(
     cfg.max_iter = start.max_iter.unwrap_or(cfg.max_iter);
     cfg.energy_conv = start.energy_conv.unwrap_or(cfg.energy_conv);
     cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
-    let rhf = solve_rhf(ctx, mol, prep, op, &bounds, &cfg)?;
+    cfg
+}
+
+/// `rhf`, or [`FerricError::ScfConvergence`] when it did not converge.
+fn converged(rhf: ScfResult) -> Result<ScfResult, FerricError> {
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
             iterations: rhf.iterations,
