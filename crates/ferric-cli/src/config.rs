@@ -1500,7 +1500,8 @@ pub struct LocalCfg {
     /// gate off (every pair kept).
     pub gate_cal: Option<f64>,
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
-    /// Omitted = off.
+    /// Omitted = off. It bounds the plain Eq-8 mask only, so it needs
+    /// `fock_screen = false` (an error otherwise).
     pub virt_schwarz_kappa: Option<f64>,
     /// `kind = "rimp2"` / `"att-rimp2"` (in-core and integral-direct) and
     /// `"opmp3"` only: the Fock-propagated screen of the amplitude mask (book
@@ -1555,6 +1556,24 @@ pub struct LocalDirectKnobs {
     /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
     /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
+}
+
+/// `virt_schwarz_kappa` bounds the bare integrals (the plain Eq-8 mask) and
+/// can drop virtuals the Fock screen keeps, so the two are refused together
+/// (book §amplitude-lmp2-fock-screen-candidates).
+fn refuse_kappa_under_fock_screen(
+    fock_on: bool,
+    direct: Option<&LocalDirectKnobs>,
+) -> Result<(), String> {
+    if fock_on && direct.is_some_and(|d| d.virt_schwarz_kappa.is_some()) {
+        return Err(
+            "[local] virt_schwarz_kappa bounds the bare integrals (the plain Eq-8 \
+                    mask) and can drop virtuals the Fock screen keeps; set \
+                    fock_screen = false to use it"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
@@ -1858,6 +1877,8 @@ impl LocalCfg {
             .lambda_boys
             .unwrap_or(ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
+        let fock_on = self.fock_screen.unwrap_or(true);
+        refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
@@ -1865,10 +1886,7 @@ impl LocalCfg {
             direct,
             virtual_space,
             lambda_boys,
-            fock_screen: self
-                .fock_screen
-                .unwrap_or(true)
-                .then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
+            fock_screen: fock_on.then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
         }))
     }
 }
@@ -6909,6 +6927,16 @@ mod compat_guard_tests {
             .unwrap();
             assert_eq!(off.fock_screen, None, "{direct:?}");
         }
+        // virt_schwarz_kappa bounds the plain mask only: refused under the
+        // Fock screen, accepted with it off
+        let base = "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n\
+                    virt_schwarz_kappa = 1.0\n";
+        let e = model(base).unwrap_err();
+        assert!(e.contains("fock_screen = false"), "{e}");
+        let off = model(&format!("{base}fock_screen = false"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(off.direct.unwrap().virt_schwarz_kappa, Some(1.0));
         for bad in ["fock_screen = 1.0", "fock_screen = \"off\""] {
             let src = format!(
                 "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\

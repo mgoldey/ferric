@@ -314,6 +314,149 @@ pub fn fock_dressed_gate(
     })
 }
 
+/// [`fock_dressed_gate`] on the candidate square with the Fock sums over
+/// the FULL virtual space: `g_cf = g[cand, :]` (|C| × nv) and
+/// `g_fc = g[:, cand]` (nv × |C|) of the same pair, so
+///
+/// `g̃_rs = g_rs + Σ_{c ≠ a_r} F_{a_r c} t⁰_{c s} + Σ_{c ≠ b_s} t⁰_{r c} F_{c b_s}`
+///
+/// runs `c` over every virtual, not just the candidates. This is the
+/// full-square gate restricted to `cand × cand` (equal to it up to the
+/// GEMM summation order), which a candidate pre-filter must reproduce: a
+/// virtual can sit outside every retained element and still carry a
+/// dressed contribution into one.
+#[allow(clippy::too_many_arguments)]
+pub fn fock_dressed_gate_rect(
+    g_cf: &Array2<f64>,
+    g_fc: &Array2<f64>,
+    cand: &[usize],
+    f_vv: &Array2<f64>,
+    fo_i: f64,
+    fo_j: f64,
+    fv: &[f64],
+    kappa: f64,
+) -> Array2<f64> {
+    let (nc, nv) = (cand.len(), fv.len());
+    assert_eq!(
+        g_cf.dim(),
+        (nc, nv),
+        "fock_dressed_gate_rect: g_cf is not |cand|×nv"
+    );
+    assert_eq!(
+        g_fc.dim(),
+        (nv, nc),
+        "fock_dressed_gate_rect: g_fc is not nv×|cand|"
+    );
+    assert!(
+        kappa > 0.0,
+        "fock_dressed_gate_rect: kappa must be positive"
+    );
+    let oo = fo_i + fo_j;
+    let f_cf = Array2::from_shape_fn((nc, nv), |(r, c)| {
+        if c == cand[r] {
+            0.0
+        } else {
+            f_vv[(cand[r], c)]
+        }
+    });
+    let f_fc = Array2::from_shape_fn((nv, nc), |(c, s)| {
+        if c == cand[s] {
+            0.0
+        } else {
+            f_vv[(c, cand[s])]
+        }
+    });
+    let t_fc = Array2::from_shape_fn((nv, nc), |(c, s)| {
+        -g_fc[(c, s)] / (fv[c] + fv[cand[s]] - oo)
+    });
+    let t_cf = Array2::from_shape_fn((nc, nv), |(r, c)| {
+        -g_cf[(r, c)] / (fv[cand[r]] + fv[c] - oo)
+    });
+    let g_cc = Array2::from_shape_fn((nc, nc), |(r, s)| g_cf[(r, cand[s])]);
+    let mut gt = f_cf.dot(&t_fc);
+    gt += &t_cf.dot(&f_fc);
+    gt += &g_cc;
+    let inv = 1.0 / kappa;
+    Array2::from_shape_fn((nc, nc), |(r, s)| {
+        g_cc[(r, s)].abs().max(gt[(r, s)].abs() * inv)
+    })
+}
+
+/// Per-occupied weights of the Fock-aware Schwarz bound on the dressed gate
+/// (book ch. 13, §amplitude-lmp2-fock-screen-candidates). With `q` the
+/// (no × nv, row-major) Schwarz factors, `|g_ab| ≤ q_ia q_jb`, and
+/// `D_c = f_cc + min_b f_bb − 2 max_k f_kk`, a lower bound on every
+/// denominator `Δ_cb` and `Δ_ac` of any pair,
+///
+/// `w_ia = Σ_{c ≠ a} |F_ac| q_ic / D_c`,
+///
+/// so `|g̃_ab| ≤ q_ia q_jb + q_jb w_ia + q_ia w_jb`. Returns `(w, wmax)`
+/// with `wmax_i = max_a w_ia`, or `None` when some `D_c ≤ 0` (no bound:
+/// the caller keeps every virtual).
+pub fn fock_bound_weights(
+    q: &[f64],
+    no: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    let nv = fv.len();
+    assert_eq!(q.len(), no * nv, "fock_bound_weights: q is not no·nv");
+    let fv_min = fv.iter().cloned().fold(f64::INFINITY, f64::min);
+    let fo_max = fo.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let d: Vec<f64> = fv.iter().map(|&f| f + fv_min - 2.0 * fo_max).collect();
+    if d.iter().any(|&x| !(x > 0.0)) {
+        return None;
+    }
+    let fabs = Array2::from_shape_fn((nv, nv), |(a, c)| {
+        if a == c {
+            0.0
+        } else {
+            // max of the two orientations: valid even if F_vv is not
+            // symmetric to the last bit (the second term reads |F_cb|)
+            f_vv[(a, c)].abs().max(f_vv[(c, a)].abs())
+        }
+    });
+    // (nv × no) of q_ic / D_c, then |F'| · that
+    let qd = Array2::from_shape_fn((nv, no), |(c, i)| q[i * nv + c] / d[c]);
+    let wt = fabs.dot(&qd);
+    let mut w = vec![0.0f64; no * nv];
+    let mut wmax = vec![0.0f64; no];
+    for i in 0..no {
+        for a in 0..nv {
+            let x = wt[(a, i)];
+            w[i * nv + a] = x;
+            wmax[i] = wmax[i].max(x);
+        }
+    }
+    Some((w, wmax))
+}
+
+/// Whether virtual `a` can index a retained element of pair (i, j) under
+/// the Fock-dressed gate at threshold `eps` (either orientation, either
+/// mirror): the max over `b` of the bound in [`fock_bound_weights`], with
+/// the gate's `max(|g|, |g̃|/κ)`. A `false` here is a proof that the full-
+/// space gate keeps nothing in row or column `a`.
+#[allow(clippy::too_many_arguments)]
+pub fn fock_bound_keeps(
+    q: &[f64],
+    qmax: &[f64],
+    w: &[f64],
+    wmax: &[f64],
+    nv: usize,
+    i: usize,
+    j: usize,
+    a: usize,
+    eps: f64,
+    kappa: f64,
+) -> bool {
+    let (qia, qja) = (q[i * nv + a], q[j * nv + a]);
+    let plain = (qia * qmax[j]).max(qja * qmax[i]);
+    let m1 = qia * qmax[j] + qmax[j] * w[i * nv + a] + qia * wmax[j];
+    let m2 = qja * qmax[i] + qmax[i] * w[j * nv + a] + qja * wmax[i];
+    plain >= eps || m1.max(m2) / kappa >= eps
+}
+
 /// [`pair_block_from_g_cand`] for pair (i, j) AND, when `i ≠ j`, its mirror
 /// (j, i) from `gᵀ`, with the optional Fock-propagated gate
 /// ([`fock_dressed_gate`], `fock_screen = Some(κ)`). `None` is exactly the
@@ -332,12 +475,32 @@ pub fn pair_blocks_screened(
     eps: f64,
     fock_screen: Option<f64>,
 ) -> Vec<PairBlock> {
-    let mut out = Vec::with_capacity(2);
     let gate = match fock_screen {
         Some(kappa) if eps > 0.0 => Some(fock_dressed_gate(g, cand, f_vv, fo[i], fo[j], fv, kappa)),
         _ => None,
     };
-    let gate_ij = gate.as_ref().unwrap_or(g);
+    pair_blocks_with_gate(i, j, g, gate.as_ref(), cand, nv_full, f_vv, fo, fv, eps)
+}
+
+/// [`pair_blocks_screened`] with the gate already evaluated (`None`: the
+/// plain Eq-8 mask on `g`). The caller that pre-filters the candidate set
+/// forms the dressed gate with the full-space intermediate sums
+/// ([`fock_dressed_gate_rect`]) and hands it in here.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_blocks_with_gate(
+    i: usize,
+    j: usize,
+    g: &Array2<f64>,
+    gate: Option<&Array2<f64>>,
+    cand: &[usize],
+    nv_full: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+    eps: f64,
+) -> Vec<PairBlock> {
+    let mut out = Vec::with_capacity(2);
+    let gate_ij = gate.unwrap_or(g);
     if let Some(pb) =
         pair_block_from_g_cand_gated(i, j, g, gate_ij, cand, nv_full, f_vv, fo, fv, eps)
     {
@@ -345,7 +508,7 @@ pub fn pair_blocks_screened(
     }
     if i != j {
         let gt = g.t().to_owned();
-        let gate_t = gate.as_ref().map(|x| x.t().to_owned());
+        let gate_t = gate.map(|x| x.t().to_owned());
         let gate_ji = gate_t.as_ref().unwrap_or(&gt);
         if let Some(pb) =
             pair_block_from_g_cand_gated(j, i, &gt, gate_ji, cand, nv_full, f_vv, fo, fv, eps)
@@ -1579,6 +1742,7 @@ pub fn ring_product(rg: &Ragged, x: &[Array2<f64>], y: &[Array2<f64>]) -> Vec<Ar
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray::{s, Axis};
 
     /// One (1 × m) pair block with a full pattern and the given denominators.
     fn diag_block(denom: &[f64]) -> Ragged {
@@ -1839,6 +2003,164 @@ mod tests {
             .iter()
             .fold(0.0f64, |m, x| m.max(x.abs()));
         assert!(dev < 1e-18, "transpose covariance: {dev:.2e}");
+    }
+
+    /// Factorized pair data g = B_iᵀ B_j (so |g_ab| ≤ q_ia q_jb holds
+    /// exactly), a dense symmetric F_vv with diagonal fv, and fo < 0.
+    #[allow(clippy::type_complexity)]
+    fn factorized_pair(
+        nv: usize,
+        naux: usize,
+        seed: u64,
+    ) -> (Array2<f64>, Vec<f64>, Array2<f64>, Vec<f64>, Vec<f64>) {
+        let mut st = seed;
+        let mut rnd = || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((st >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        // two occupieds; decaying columns so the Schwarz factors spread
+        let mut b = Array2::<f64>::zeros((naux, 2 * nv));
+        for k in 0..2 {
+            for a in 0..nv {
+                let amp = (-(a as f64) * 0.35 * (1.0 + k as f64)).exp();
+                for p in 0..naux {
+                    b[(p, k * nv + a)] = amp * rnd();
+                }
+            }
+        }
+        let g = b.slice(s![.., 0..nv]).t().dot(&b.slice(s![.., nv..2 * nv]));
+        let q: Vec<f64> = (0..2 * nv)
+            .map(|c| b.column(c).dot(&b.column(c)).sqrt())
+            .collect();
+        let mut f = Array2::<f64>::zeros((nv, nv));
+        let fv: Vec<f64> = (0..nv).map(|a| 0.6 + 0.1 * a as f64).collect();
+        for a in 0..nv {
+            f[(a, a)] = fv[a];
+            for c in 0..a {
+                let x = 0.3 * rnd();
+                f[(a, c)] = x;
+                f[(c, a)] = x;
+            }
+        }
+        (g, q, f, fv, vec![-0.5, -0.4])
+    }
+
+    /// The rectangular gate (Fock sums over every virtual) is the full-square
+    /// gate restricted to the candidates, and NOT the candidate-square gate
+    /// (whose sums run over the candidates only — the pre-2026-11-19 bug).
+    #[test]
+    fn rect_gate_is_the_full_square_gate_restricted() {
+        let nv = 12;
+        let (g, _, f, fv, fo) = factorized_pair(nv, 20, 7);
+        let all: Vec<usize> = (0..nv).collect();
+        let cand = vec![0usize, 2, 3, 7, 11];
+        let full = fock_dressed_gate(&g, &all, &f, fo[0], fo[1], &fv, 0.5);
+        let g_cf = g.select(Axis(0), &cand);
+        let g_fc = g.select(Axis(1), &cand);
+        let rect = fock_dressed_gate_rect(&g_cf, &g_fc, &cand, &f, fo[0], fo[1], &fv, 0.5);
+        let g_cc = g_cf.select(Axis(1), &cand);
+        let sq = fock_dressed_gate(&g_cc, &cand, &f, fo[0], fo[1], &fv, 0.5);
+        let (mut dev, mut dsq) = (0.0f64, 0.0f64);
+        for (r, &a) in cand.iter().enumerate() {
+            for (c, &b) in cand.iter().enumerate() {
+                dev = dev.max((rect[(r, c)] - full[(a, b)]).abs());
+                dsq = dsq.max((sq[(r, c)] - full[(a, b)]).abs());
+            }
+        }
+        assert!(dev < 1e-14, "rect vs full-square gate: {dev:.2e}");
+        assert!(
+            dsq > 1e-6,
+            "test cannot see a candidate-only Fock sum: {dsq:.2e}"
+        );
+    }
+
+    /// The Fock-aware bound dominates the full-square gate elementwise, so a
+    /// virtual it rejects has no retained element in either orientation; and
+    /// the plain Eq-8 Schwarz filter does NOT (it misses some virtual on this
+    /// data), which is what made the bound necessary.
+    #[test]
+    fn fock_bound_dominates_the_dressed_gate() {
+        let nv = 14;
+        let kappa = 1.0;
+        let mut plain_misses = 0usize;
+        for seed in 1..40u64 {
+            let (g, q, f, fv, fo) = factorized_pair(nv, 16, seed);
+            let all: Vec<usize> = (0..nv).collect();
+            let gate = fock_dressed_gate(&g, &all, &f, fo[0], fo[1], &fv, kappa);
+            let (w, wmax) = fock_bound_weights(&q, 2, &f, &fo, &fv).unwrap();
+            let qmax: Vec<f64> = (0..2)
+                .map(|k| q[k * nv..(k + 1) * nv].iter().cloned().fold(0.0, f64::max))
+                .collect();
+            for a in 0..nv {
+                for b in 0..nv {
+                    let beta = q[a] * q[nv + b] + q[nv + b] * w[a] + q[a] * w[nv + b];
+                    assert!(
+                        gate[(a, b)] <= (q[a] * q[nv + b]).max(beta / kappa) * (1.0 + 1e-12),
+                        "bound violated at seed {seed} ({a},{b})"
+                    );
+                }
+                // the row/column of a: the largest gate entry anywhere in it
+                let reach = (0..nv).fold(0.0f64, |m, b| m.max(gate[(a, b)]).max(gate[(b, a)]));
+                // just below that, the gate keeps something in row/col a
+                let eps = 0.999 * reach;
+                assert!(
+                    fock_bound_keeps(&q, &qmax, &w, &wmax, nv, 0, 1, a, eps, kappa),
+                    "bound rejected a retained virtual (seed {seed}, a={a})"
+                );
+                if !(q[a] * qmax[1] >= eps || q[nv + a] * qmax[0] >= eps) {
+                    plain_misses += 1;
+                }
+            }
+        }
+        assert!(
+            plain_misses > 0,
+            "plain Schwarz filter never misses: test is vacuous"
+        );
+    }
+
+    /// No bound without a positive denominator floor: `D_c ≤ 0` for some
+    /// `c` returns `None`, and the in-core assembly then keeps every virtual.
+    #[test]
+    fn fock_bound_weights_refuses_a_nonpositive_denominator() {
+        let f = Array2::from_shape_vec((2, 2), vec![0.1, 0.05, 0.05, 0.3]).unwrap();
+        let q = vec![1.0, 1.0];
+        assert!(fock_bound_weights(&q, 1, &f, &[-0.5], &[0.1, 0.3]).is_some());
+        assert!(fock_bound_weights(&q, 1, &f, &[0.2], &[0.1, 0.3]).is_none());
+    }
+
+    /// CodeRabbit's toy (PR #671 review): one occupied, whitened row
+    /// [1e-6, 1], f_oo = −1, f_vv = [[2, 0.5], [0.5, 2]], ε = 1e-4. The plain
+    /// filter keeps only virtual 1; the dressed gate of (0, 1) clears ε, so
+    /// the Fock-aware bound must keep virtual 0.
+    #[test]
+    fn fock_bound_keeps_the_review_toy() {
+        let b = Array2::from_shape_vec((1, 2), vec![1e-6, 1.0]).unwrap();
+        let g = b.t().dot(&b);
+        let f = Array2::from_shape_vec((2, 2), vec![2.0, 0.5, 0.5, 2.0]).unwrap();
+        let (fv, fo) = (vec![2.0, 2.0], vec![-1.0]);
+        let q = vec![1e-6, 1.0];
+        let eps = 1e-4;
+        let gate = fock_dressed_gate(&g, &[0, 1], &f, fo[0], fo[0], &fv, 1.0);
+        assert!(gate[(0, 1)] > eps, "toy gate {:.3e}", gate[(0, 1)]);
+        assert!(
+            q[0] * 1.0 < eps,
+            "plain filter keeps virtual 0: toy is vacuous"
+        );
+        let (w, wmax) = fock_bound_weights(&q, 1, &f, &fo, &fv).unwrap();
+        assert!(fock_bound_keeps(
+            &q,
+            &[1.0],
+            &w,
+            &wmax,
+            2,
+            0,
+            0,
+            0,
+            eps,
+            1.0
+        ));
     }
 
     /// `fock_screen = None` is the two plain builder calls, bitwise; `Some`

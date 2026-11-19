@@ -5353,7 +5353,8 @@ def run_rimp2(
     amplitude-threshold local MP2 (closed-shell; eps=0 reproduces the exact
     RI-MP2); `integral_direct=True` its integral-direct variant with the
     locality maps aux_radius/virt_radius (Bohr), ao_tail, schwarz_skip,
-    batch_merge, gate_cal and virt_schwarz_kappa. On both paths
+    batch_merge, gate_cal and virt_schwarz_kappa (which needs
+    fock_screen=False; it bounds the plain integral mask only). On both paths
     `fock_screen` (default True) runs the Fock-propagated mask screen,
     kappa = 1; False keeps the plain integral mask. Same rules as the CLI
     `[local]` section: every local kwarg is a ValueError on the exact method,

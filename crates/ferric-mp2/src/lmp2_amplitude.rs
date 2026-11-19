@@ -2112,6 +2112,72 @@ pub fn assemble_ragged_direct(
     .map(|(rg, g, _, _)| (rg, g))
 }
 
+/// Candidate virtuals of pair (i, j) for the in-core assembly. With the
+/// Fock screen off (`fock_kappa = None`): the plain Eq-8 Schwarz pre-filter
+/// `q_ia·max_b q_jb ≥ ε` (either orientation). With it on and the bound
+/// weights `fock_w = (w, wmax)`: the Fock-aware bound
+/// [`crate::ragged::fock_bound_keeps`]. No Schwarz factors, ε = 0, or the
+/// screen on with no valid bound (`fock_w = None`): every virtual.
+fn incore_candidates(
+    q: Option<&(Vec<f64>, Vec<f64>)>,
+    fock_kappa: Option<f64>,
+    fock_w: Option<&(Vec<f64>, Vec<f64>)>,
+    nv: usize,
+    i: usize,
+    j: usize,
+    eps: f64,
+) -> Vec<usize> {
+    use crate::ragged::fock_bound_keeps;
+    match (q, eps > 0.0, fock_kappa, fock_w) {
+        (Some((qv, qmax)), true, None, _) => (0..nv)
+            .filter(|&a| qv[i * nv + a] * qmax[j] >= eps || qv[j * nv + a] * qmax[i] >= eps)
+            .collect(),
+        (Some((qv, qmax)), true, Some(kappa), Some((w, wmax))) => (0..nv)
+            .filter(|&a| fock_bound_keeps(qv, qmax, w, wmax, nv, i, j, a, eps, kappa))
+            .collect(),
+        _ => (0..nv).collect(),
+    }
+}
+
+/// The Fock-screen inputs of [`fock_rect_blocks`].
+struct FockRectCtx<'a> {
+    f_vv: &'a Array2<f64>,
+    fo: &'a [f64],
+    fv: &'a [f64],
+    eps: f64,
+    kappa: f64,
+    scale: f64,
+}
+
+/// Pair blocks of (i, j) under the Fock screen on a proper candidate subset:
+/// `g[cand, :]` and `g[:, cand]` over the aux rows `rows`, the dressed gate
+/// with its Fock sums over every virtual
+/// ([`crate::ragged::fock_dressed_gate_rect`]), and the kept values from
+/// `g[cand, cand]`.
+fn fock_rect_blocks(
+    bt: &Array2<f64>,
+    i: usize,
+    j: usize,
+    cand: &[usize],
+    rows: &[usize],
+    c: &FockRectCtx<'_>,
+) -> Vec<PairBlock> {
+    let nv = c.fv.len();
+    let bi = bt.slice(s![.., i * nv..(i + 1) * nv]).select(Axis(0), rows);
+    let bj = bt.slice(s![.., j * nv..(j + 1) * nv]).select(Axis(0), rows);
+    let mut g_cf = bi.select(Axis(1), cand).t().dot(&bj);
+    let mut g_fc = bi.t().dot(&bj.select(Axis(1), cand));
+    if c.scale != 1.0 {
+        g_cf.mapv_inplace(|x| c.scale * x);
+        g_fc.mapv_inplace(|x| c.scale * x);
+    }
+    let g = g_cf.select(Axis(1), cand);
+    let gate = crate::ragged::fock_dressed_gate_rect(
+        &g_cf, &g_fc, cand, c.f_vv, c.fo[i], c.fo[j], c.fv, c.kappa,
+    );
+    crate::ragged::pair_blocks_with_gate(i, j, &g, Some(&gate), cand, nv, c.f_vv, c.fo, c.fv, c.eps)
+}
+
 /// [`assemble_ragged_direct`] with the ε-linked per-pair AUX truncation
 /// (see `AmplitudeLmp2Config::aux_tail_frac`) and the optional
 /// Fock-propagated gate (`AmplitudeLmp2Config::fock_screen`). Returns
@@ -2176,6 +2242,14 @@ pub fn assemble_ragged_direct_aux(
             .collect();
         (qv, qmax)
     });
+    // Fock-aware candidate bound (only with the screen on): the plain
+    // Schwarz pre-filter is a bound on the Eq-8 mask only. `fock_w = None`
+    // with the screen on and no valid bound means "keep every virtual".
+    let fock_kappa = fock_screen.filter(|_| eps > 0.0);
+    let fock_w: Option<(Vec<f64>, Vec<f64>)> = match (&q, fock_kappa) {
+        (Some((qv, _)), Some(_)) => crate::ragged::fock_bound_weights(qv, no, f_vv, &fo, &fv),
+        _ => None,
+    };
     // per-(P, i) row weights for the aux tail bound: n[P, i] = max_a |B̃_Pia|
     let n_block: Option<Array2<f64>> = match (&btilde, aux_tail_frac, eps > 0.0) {
         (Some(bt), Some(f), true) if f > 0.0 => {
@@ -2204,12 +2278,7 @@ pub fn assemble_ragged_direct_aux(
     let per_pair: Vec<Result<PairOut, FerricError>> = unique
         .par_iter()
         .map(|&(i, j)| {
-            let cand: Vec<usize> = match (&q, eps > 0.0) {
-                (Some((qv, qmax)), true) => (0..nv)
-                    .filter(|&a| qv[i * nv + a] * qmax[j] >= eps || qv[j * nv + a] * qmax[i] >= eps)
-                    .collect(),
-                _ => (0..nv).collect(),
-            };
+            let cand = incore_candidates(q.as_ref(), fock_kappa, fock_w.as_ref(), nv, i, j, eps);
             if cand.is_empty() {
                 return Ok((Vec::new(), 0));
             }
@@ -2241,6 +2310,18 @@ pub fn assemble_ragged_direct_aux(
                         _ => None,
                     };
                     let nc = cand.len();
+                    if let (Some(kappa), true) = (fock_kappa, nc < nv) {
+                        let rows: Vec<usize> = aux_sel.unwrap_or_else(|| (0..naux).collect());
+                        let ctx = FockRectCtx {
+                            f_vv,
+                            fo: &fo,
+                            fv: &fv,
+                            eps,
+                            kappa,
+                            scale,
+                        };
+                        return Ok((fock_rect_blocks(bt, i, j, &cand, &rows, &ctx), rows.len()));
+                    }
                     match aux_sel {
                         None => {
                             aux_used = naux;

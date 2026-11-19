@@ -44,7 +44,17 @@ crates/ferric-python/tests/test_derivation_scripts.py):
   - drop the Fock term from the one-step estimate, t_est = -J/Delta
     (marker "claim 2: first order");
   - drop the right Fock product t0 F' from the gate transcription
-    (marker "claim 3: transpose").
+    (marker "claim 3: transpose");
+  - drop the Fock weights w from the claim-4 bound (marker "claim 4: bound").
+
+Claim 4 (the candidate pre-filter under the screen; ragged.rs
+`fock_bound_weights` / `fock_bound_keeps`). With |g_ab| <= q_ia q_jb and
+D_c = f_cc + min_b f_bb - 2 max_k f_kk > 0 a lower bound on every Delta,
+    |g~_ab| <= q_ia q_jb + q_jb w_ia + q_ia w_jb,
+    w_ia = sum_{c != a} |F_ac| q_ic / D_c.
+Term-wise slack proved in symbols; the bound checked in exact arithmetic on
+random factorized pairs (where the plain q_ia q_jb bound fails), and on the
+PR #671 review toy.
 
 Run: python scripts/lmp2_fock_screen_sympy.py
 """
@@ -203,4 +213,79 @@ assert 3.0 < ratio < 5.0, (
     f"claim 2: first order FAILED (residual ratio {ratio:.2f}, want ~4)"
 )
 print(f"|t* - t_est| at lambda=0.1 / 0.05 = {ratio:.2f} (second order: ~4)")
+
+# ---------------------------------------------------------------------------
+# Claim 4: the Fock-aware Schwarz bound on the dressed gate
+# ---------------------------------------------------------------------------
+section("claim 4: |g~_ab| <= q_ia q_jb + q_jb w_ia + q_ia w_jb")
+# Term by term: with |g_cb| <= q_ic q_jb (Cauchy-Schwarz on g = B_i^T B_j) and
+# Delta_cb >= D_c = f_cc + min f_vv - 2 max f_oo > 0, each Fock term of g~ obeys
+# |F_ac g_cb / Delta_cb| <= |F_ac| q_ic q_jb / D_c. Symbolically, the slack
+# of one term is a product of non-negative factors:
+Fac, qic, qjb, Dc, x = sp.symbols("F_ac q_ic q_jb D_c x", positive=True)
+# g_cb = s q_ic q_jb with |s| <= 1, Delta_cb = D_c + x with x >= 0
+sg = sp.symbols("s", real=True)
+term = Fac * sg * qic * qjb / (Dc + x)
+slack = Fac * qic * qjb / Dc - term  # for 0 <= s <= 1 (s < 0 is the mirror)
+assert (
+    sp.simplify(slack - Fac * qic * qjb * (Dc * (1 - sg) + x) / (Dc * (Dc + x))) == 0
+), "claim 4: term slack algebra FAILED"
+print("one Fock term: slack = |F| q q (D(1-s) + x) / (D (D + x)) >= 0")
+
+
+def bound_check(rng4, nv4, naux4, with_w):
+    """Exact rationals: g = B_i^T B_j, q^2 = column norms^2; compare squared."""
+    R = lambda: sp.Rational(rng4.randint(-999, 999), 1000)  # noqa: E731
+    Bi = sp.Matrix(naux4, nv4, lambda p_, a: R() / (1 + a))
+    Bj = sp.Matrix(naux4, nv4, lambda p_, a: R() / (1 + 2 * a))
+    g = Bi.T * Bj
+    qi = [sp.sqrt((Bi[:, a].T * Bi[:, a])[0, 0]) for a in range(nv4)]
+    qj = [sp.sqrt((Bj[:, a].T * Bj[:, a])[0, 0]) for a in range(nv4)]
+    f = [sp.Rational(3, 5) + sp.Rational(a, 10) for a in range(nv4)]
+    oi, oj = sp.Rational(-1, 2), sp.Rational(-2, 5)
+    F = sp.zeros(nv4, nv4)
+    for r in range(nv4):
+        for c in range(r):
+            F[r, c] = F[c, r] = R() * sp.Rational(3, 10)
+    t0 = sp.Matrix(nv4, nv4, lambda a, b: -g[a, b] / (f[a] + f[b] - oi - oj))
+    gt = g + F * t0 + t0 * F
+    D = [f[c] + min(f) - 2 * max(oi, oj) for c in range(nv4)]
+    wi = [sum(abs(F[a, c]) * qi[c] / D[c] for c in range(nv4)) for a in range(nv4)]
+    wj = [sum(abs(F[a, c]) * qj[c] / D[c] for c in range(nv4)) for a in range(nv4)]
+    worst = None
+    for a in range(nv4):
+        for b in range(nv4):
+            beta = qi[a] * qj[b]
+            if with_w:
+                beta += qj[b] * wi[a] + qi[a] * wj[b]
+            margin = float(beta - abs(gt[a, b]))
+            worst = margin if worst is None else min(worst, margin)
+    return worst
+
+
+rng4 = random.Random(20261119)
+worst = min(bound_check(rng4, 4, 3, with_w=True) for _ in range(6))
+assert worst >= 0, f"claim 4: bound FAILED (margin {worst:.3e})"  # claim 4: bound
+print(f"bound holds on 6 random factorized 4-virtual pairs, min margin {worst:.3e}")
+rng4 = random.Random(20261119)
+plain = min(bound_check(rng4, 4, 3, with_w=False) for _ in range(6))
+assert plain < 0, "the plain Schwarz bound never fails here: the check is vacuous"
+print(f"plain Schwarz bound q_ia q_jb fails on the same data (margin {plain:.3e})")
+
+# The review toy (PR #671): one occupied, B = [1e-6, 1], f_oo = -1,
+# F_vv = [[2, 1/2], [1/2, 2]], eps = 1e-4. Plain filter drops virtual 0; the
+# dressed (0, 1) element clears eps, and the bound keeps virtual 0.
+b_t = [sp.Rational(1, 10**6), sp.Integer(1)]
+g_t = sp.Matrix(2, 2, lambda a, b: b_t[a] * b_t[b])
+F_t = sp.Matrix([[0, sp.Rational(1, 2)], [sp.Rational(1, 2), 0]])
+t_t = sp.Matrix(2, 2, lambda a, b: -g_t[a, b] / (4 + 2))
+gt_t = g_t + F_t * t_t + t_t * F_t
+eps_t = sp.Rational(1, 10**4)
+assert b_t[0] * max(b_t) < eps_t and abs(gt_t[0, 1]) > eps_t, "toy: premise FAILED"
+w_t = [sum(abs(F_t[a, c]) * b_t[c] / (2 + 2 + 2) for c in range(2)) for a in range(2)]
+keep0 = b_t[0] * max(b_t) + max(b_t) * w_t[0] + b_t[0] * max(w_t)
+assert keep0 >= eps_t, "claim 4: toy not kept"
+print(
+    f"toy: g~_01 = {float(gt_t[0, 1]):.4f} > eps; bound for virtual 0 = {float(keep0):.4f}"
+)
 print("\nALL CLAIMS PASS")

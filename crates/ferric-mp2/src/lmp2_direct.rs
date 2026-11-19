@@ -2673,6 +2673,18 @@ fn fit_pairs(
         Some(k) if eps > 0.0 => Some(k * eps),
         _ => None,
     };
+    if kappa_eps.is_some() && fock_screen.is_some() {
+        // The κ candidate screen bounds the BARE integrals (the Eq-8 mask);
+        // the Fock-dressed gate can keep a virtual it drops, and its Fock
+        // sums would run over the screened set only (book ch. 13,
+        // §amplitude-lmp2-fock-screen-candidates).
+        return Err(FerricError::General(
+            "lmp2_direct: virt_schwarz_kappa is a Schwarz bound on the plain Eq-8 mask and \
+             can drop virtuals the Fock screen keeps; set fock_screen = false to use it, \
+             or leave virt_schwarz_kappa unset"
+                .into(),
+        ));
+    }
     let (qvirt, own_w) = match kappa_eps {
         None => (None, None),
         Some(_) => schwarz_screen(pre, dfbs, no, scale, dcfg, path, stats)?,

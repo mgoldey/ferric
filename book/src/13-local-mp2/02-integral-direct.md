@@ -162,7 +162,10 @@ leaves every kept $J$ value alone, or it changes the $J$ values.
     Cauchy–Schwarz screen of @sec:amplitude-lmp2-algorithm for $\kappa \le 1$. On the domain-local fit
     it is not a proven bound; the `DirectConfig` documentation records it as
     measured escape-free at $\kappa \le 1$, both operators, on C8. A
-    $\kappa$ above 1 drops elements that would pass the Eq-8 test.
+    $\kappa$ above 1 drops elements that would pass the Eq-8 test. It
+    bounds the bare integrals only, so it is refused with the Fock screen on
+    (section @sec:amplitude-lmp2-fock-screen-candidates); set
+    `fock_screen = false` to use it.
 - *Value maps* change the integrals, and their energy error has no proven
   sign.
   - The auxiliary domains (`aux_radius`), @sec:integral-direct-domain-local-fit.
