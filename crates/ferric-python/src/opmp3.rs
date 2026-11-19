@@ -115,6 +115,10 @@ impl PyOpmp3Result {
 /// on the HF Fock of the reference density with non-Brillouin singles.
 /// `x_ss=None` uses the paper's printed same-spin damping for the reference;
 /// `auxbasis=None` runs exact four-centre integrals (the paper's choice).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` / `run_rohf` (`run_dft` / `run_roks` for a functional reference) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, reference="hf", x_ss=None, auxbasis=None, frozen_core=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]

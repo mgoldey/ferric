@@ -85,6 +85,9 @@ fn to_3x3(py: Python<'_>, a: [[f64; 3]; 3]) -> Bound<'_, PyArray2<f64>> {
 /// `basis_set`), with `auxbasis` the RI fitting basis. `omega` is an imaginary
 /// frequency in Hartree (0 = static). Each mode is a charge density in the aux
 /// basis; see `ResponseModes`.
+///
+/// With an ECP basis set the occupied count is the valence one, as in a `result` from `run_rhf` /
+/// `run_dft` on that basis.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, result, n_modes=10, omega=0.0, memory_budget_gb=None))]
 #[allow(clippy::too_many_arguments)]

@@ -138,6 +138,9 @@ impl PyTddftResult {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` / `run_uhf` (`run_dft` / `run_uks` with `functional`) solves.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda",
