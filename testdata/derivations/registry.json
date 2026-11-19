@@ -446,6 +446,15 @@
     ],
     "py:run_opmp3": [
       "opmp3"
+    ],
+    "py:run_aimd": [
+      "hf-gradient",
+      "ks-gradient",
+      "molecular-dynamics"
+    ],
+    "py:run_ffmd": [
+      "mm",
+      "molecular-dynamics"
     ]
   },
   "methods": {
@@ -1214,6 +1223,16 @@
       ],
       "scripts": [
         "scripts/scs_2terfc_gradient_sympy.py"
+      ]
+    },
+    "molecular-dynamics": {
+      "book": [
+        "book/src/28-molecular-dynamics/01-integrators-and-thermostats.md#molecular-dynamics-velocity-verlet",
+        "book/src/28-molecular-dynamics/01-integrators-and-thermostats.md#molecular-dynamics-berendsen",
+        "book/src/28-molecular-dynamics/01-integrators-and-thermostats.md#molecular-dynamics-baoab"
+      ],
+      "scripts": [
+        "scripts/md_integrators_sympy.py"
       ]
     }
   },

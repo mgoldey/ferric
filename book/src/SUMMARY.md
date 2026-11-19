@@ -184,6 +184,8 @@
   - [27.5 Reproducibility and validation grades](27-ml/05-reproducibility-and-grades.md)
   - [27.6 Energies, gradients, Hessians and response as labels](27-ml/06-training-labels.md)
   - [27.7 A worked consumer: esp-conditioning](27-ml/07-esp-conditioning.md)
+- [28. Molecular dynamics](28-molecular-dynamics/index.md)
+  - [28.1 Integrators and thermostats: velocity Verlet, Berendsen, Langevin BAOAB](28-molecular-dynamics/01-integrators-and-thermostats.md)
 
 [Appendix A: Verified equations and proof scripts](appendix-a-equations.md)
 [Appendix B: Functions cited](appendix-b-functions.md)

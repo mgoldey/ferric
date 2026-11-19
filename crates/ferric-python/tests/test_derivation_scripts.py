@@ -940,6 +940,42 @@ CASES = [
         ],
     ),
     (
+        "md_integrators_sympy.py",
+        10,
+        [
+            (
+                "    pn = ph - dt / 2 * g(xn)  # second kick at the NEW position",
+                "    pn = ph - dt / 2 * g(xx)  # second kick at the NEW position",
+                "FAIL [verlet-symplectic]",
+            ),
+            (
+                "def vv_step_numeric(xx, pp, h, mm, g):\n    ph = pp - h / 2 * g(xx)",
+                "def vv_step_numeric(xx, pp, h, mm, g):\n    ph = pp - h * g(xx)",
+                "FAIL [verlet-time-reversal]",
+            ),
+            (
+                "k * xx**2 / 2 * (1 - w2 * dt**2 / 4)\n    d =",
+                "k * xx**2 / 2 * (1 - w2 * dt**2 / 2)\n    d =",
+                "FAIL [verlet-shadow-energy]",
+            ),
+            (
+                "amp2 = (1 - cc**2) * kT / m",
+                "amp2 = (1 - cc) * kT / m",
+                "FAIL [baoab-ou-variance]",
+            ),
+            (
+                "O = sp.Matrix([[1, 0], [0, c]])",
+                "O = sp.Matrix([[1, 0], [0, c**2]])",
+                "FAIL [baoab-harmonic-config]",
+            ),
+            (
+                "lam2 = 1 + dt / tau * (T0 / T - 1)",
+                "lam2 = 1 + dt / tau * (T / T0 - 1)",
+                "FAIL [berendsen-rate]",
+            ),
+        ],
+    ),
+    (
         "d3_hessian_sympy.py",
         10,
         [
