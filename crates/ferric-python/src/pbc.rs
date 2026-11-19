@@ -581,6 +581,17 @@ impl ScfKw<'_, '_> {
     }
 }
 
+/// The SCF bindings pass `closed_shell` to [`pbc_args!`] by hand (MP2/dRPA
+/// have no [`PbcKind`], so the flag stays); it must agree with the kind.
+fn debug_assert_closed_shell_agrees(a: &PbcArgs<'_, '_>, kind: PbcKind<'_>) {
+    debug_assert_eq!(
+        a.closed_shell,
+        kind.closed_shell(),
+        "{}: pbc_args! closed_shell disagrees with PbcKind::closed_shell()",
+        a.fname
+    );
+}
+
 /// The shared prologue of the Gamma SCF bindings (`run_rhf_gamma` lives in
 /// `gamma.rs`): setup, the functional / derivative gate, the SR knobs, then
 /// `ewald_start` and the grid, in that order (the first refusal wins).
@@ -591,6 +602,7 @@ fn gamma_scf_prep(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<ScfPrep> {
     let fname = a.fname;
+    debug_assert_closed_shell_agrees(a, kind);
     let mut s = kw.setup(a)?;
     match kind {
         // Before any integral is built: the meta-GGA allowlist (SCAN / r2SCAN /
@@ -659,6 +671,7 @@ fn kpoint_scf_prep(
     k: &KpointKw<'_>,
 ) -> PyResult<KScfPrep> {
     let fname = a.fname;
+    debug_assert_closed_shell_agrees(a, kind);
     let mut s = kw.setup(a)?;
     if let Some(f) = kind.functional() {
         check_kpoint_ks_support(fname, f, kind.ks_kind(), &s)?;
