@@ -107,8 +107,12 @@ fn response_modes(
             "omega must be a finite imaginary frequency >= 0 (Hartree), got {omega}"
         )));
     }
-    let obs = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    // The occupied count comes from the molecule, so it must carry the ECP
+    // core counts of `basis_set`, as the molecule `result` was solved on did.
+    let mut mol = mol.inner.clone();
+    mol.apply_ecp(&basis_set.inner);
+    let obs = PreparedBasis::new(&mol, &basis_set.inner).map_err(make_err)?;
+    let dfbs = PreparedBasis::new(&mol, &auxbasis.inner).map_err(make_err)?;
     let scf = result.scf();
     if scf.mos_r().nrows() != obs.nbasis() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -118,7 +122,7 @@ fn response_modes(
         )));
     }
     let inner = ferric_rpa::response_modes::response_modes(
-        &mol.inner,
+        &mol,
         &obs,
         &dfbs,
         scf,

@@ -235,6 +235,19 @@ def test_opmp3_reference_is_run_rhf_or_run_rohf():
     assert abs(ferric.run_opmp3(hi(1, 2), bs).e_scf - rohf) < EREF
 
 
+def test_response_modes_occupied_space_is_run_rhfs():
+    # alpha_bare(0) = 4 sum_ia mu_ia^2 / (e_a - e_i) over run_rhf's occupied
+    # and virtual orbitals: an occupied count read from the all-electron
+    # molecule (27 instead of 13) changes it.
+    bs, aux = bases()
+    c, eps, n = rhf_channel()
+    dip = ferric.AoIntegrals(hi(), bs).dipole()
+    mu = np.einsum("dmn,mi,na->dia", dip, c[:, :n], c[:, n:])
+    alpha = 4 * np.einsum("dia,eia->de", mu / (eps[None, n:] - eps[:n, None]), mu)
+    modes = ferric.response_modes(hi(), bs, aux, rhf(), n_modes=1)
+    assert np.allclose(modes.alpha_bare, alpha, rtol=1e-8, atol=1e-10)
+
+
 def test_a_molecule_reused_from_an_ecp_run_is_all_electron_in_sto3g():
     # run_aimd returns its molecule with def2-SVP's ECP counts on I; run in
     # STO-3G (no ECP) it must be the all-electron HI a fresh parse gives.
