@@ -22,7 +22,8 @@ eigenvectors (@sec:polarizability-pdep-c6-pdep-eigenvectors) and the checks (@se
 | $i$ / $a$ | occupied / virtual spatial orbitals of the closed-shell reference | `nocc`, `nvir`; frozen core is 0 on this path |
 | $P$ | auxiliary functions | `naux` |
 | $A, B$ | atoms | `natoms` |
-| $c, d, j$ | Cartesian directions | `0..3` |
+| $c, d, e$ | Cartesian directions | `0..3` |
+| $p$ | grid points $\mathbf r_p$ with weights $w_p$ | grid arrays |
 | $u_k$, $w_k$ | imaginary-frequency nodes and weights | `c6_freqs`, `c6_weights` |
 | $\xi$ | PDEP modes | columns of `pdep_eigenvectors` |
 
@@ -39,14 +40,14 @@ eigenvectors (@sec:polarizability-pdep-c6-pdep-eigenvectors) and the checks (@se
 
 Section @sec:polarizabilities-from-dielectric-modes-dielectric-form builds the polarizability from the dielectric matrix; here is
 the result in the form the code evaluates. Let
-$\mu^j_{ia} = \langle\phi_i\lvert r_j\rvert\phi_a\rangle$, let
+$\mu^c_{ia} = \langle\phi_i\lvert r_c\rvert\phi_a\rangle$, let
 $\Delta_{ia} = \varepsilon_a - \varepsilon_i > 0$, and let $\tilde B_{P,ia}$
 be the density-fitted three-index factor of the auxiliary basis. The
 frequency enters only through
 $g_{ia}(u) = \Delta_{ia}/(u^2 + \Delta_{ia}^2)$, which is $1/\Delta_{ia}$ at
 $u = 0$ and falls off as $1/u^2$ at large $u$:
 
-$$ \alpha_{cj}(iu) = 4\,\mu^{c\,\mathsf T}(g\circ\mu^j) - 16\,\big(\tilde B(g\circ\mu^c)\big)^{\mathsf T}\,\tilde\varepsilon(u)^{-1}\,\big(\tilde B(g\circ\mu^j)\big), \qquad \tilde\varepsilon(u) = I + 4\,\tilde B\,\mathrm{diag}(g)\,\tilde B^{\mathsf T} . \label{eq:polarizability-pdep-c6-1} $$
+$$ \alpha_{cd}(iu) = 4\,\mu^{c\,\mathsf T}(g\circ\mu^d) - 16\,\big(\tilde B(g\circ\mu^c)\big)^{\mathsf T}\,\tilde\varepsilon(u)^{-1}\,\big(\tilde B(g\circ\mu^d)\big), \qquad \tilde\varepsilon(u) = I + 4\,\tilde B\,\mathrm{diag}(g)\,\tilde B^{\mathsf T} . \label{eq:polarizability-pdep-c6-1} $$
 
 Read it in two parts. The first term is the uncoupled sum over orbital pairs:
 each excitation $i \to a$ responds to the field on its own. The second term
@@ -79,11 +80,11 @@ Krishtal, Senet and Van Alsenoy (J. Chem. Phys. 125, 034312 (2006))
 therefore replaces the molecular dipole on the other side of (@eq:polarizability-pdep-c6-1) by an
 atom-centred, partition-weighted dipole (section @sec:atomic-partitions-partition-unity-buys-polarizability derives it):
 
-$$ m^{A,d}_{ia} = \sum_{g\in A} w_g\,(\mathbf r_g-\mathbf R_A)_d\,\phi_i(\mathbf r_g)\phi_a(\mathbf r_g), \qquad \alpha^A_{dj}(iu) = 4\,m^{A,d\,\mathsf T}(g\circ\mu^j) - 16\,\big(\tilde B(g\circ m^{A,d})\big)^{\mathsf T}\tilde\varepsilon^{-1}\big(\tilde B(g\circ\mu^j)\big) . \label{eq:ml-alpha-per-atom-kernel} $$
+$$ m^{A,d}_{ia} = \sum_{p\in A} w_p\,(\mathbf r_p-\mathbf R_A)_d\,\phi_i(\mathbf r_p)\phi_a(\mathbf r_p), \qquad \alpha^A_{de}(iu) = 4\,m^{A,d\,\mathsf T}(g\circ\mu^e) - 16\,\big(\tilde B(g\circ m^{A,d})\big)^{\mathsf T}\tilde\varepsilon^{-1}\big(\tilde B(g\circ\mu^e)\big) . \label{eq:ml-alpha-per-atom-kernel} $$
 
 For the Becke partition, the sum runs over the points of the flat 75 × 110
 Becke–Lebedev grid whose home atom is $A$, with the Becke weight folded into
-$w_g$. For the Hirshfeld partition, $w_g$ is the Hirshfeld weight on a cubic
+$w_p$. For the Hirshfeld partition, $w_p$ is the Hirshfeld weight on a cubic
 lattice of 0.20 Bohr spacing and 6 Bohr margin
 (`FERRIC_HIRSHFELD_SPACING`, `FERRIC_HIRSHFELD_MARGIN`). Each $\alpha^A$ is
 symmetrized.
@@ -95,6 +96,11 @@ the dipole of charge that has moved from one atom's cell to another's, which
 no atom-centred dipole sees. The code keeps that part as a separate array:
 
 $$ \alpha_{\mathrm{CT}} = \alpha - \sum_A \alpha^A . \label{eq:ml-alpha-ct-sum-rule} $$
+
+In the second box below, $\langle a\lvert R\rvert b\rangle$ is the
+bilinear form of (@eq:polarizability-pdep-c6-1) between two dipole vectors
+$a$ and $b$: $4\,a^{\mathsf T}(g\circ b) - 16\,\big(\tilde B(g\circ a)\big)^{\mathsf T}\tilde\varepsilon^{-1}\big(\tilde B(g\circ b)\big)$,
+so that $\alpha_{cd} = \langle\mu^c\lvert R\rvert\mu^d\rangle$.
 
 > **Verified equation @eq:ml-alpha-per-atom-kernel** · the per-atom kernel equals a sum over excitations
 >
@@ -137,8 +143,10 @@ $\alpha_{\mathrm{CT}}(0)$ is 27.0% of $\alpha_{\mathrm{iso}}$ for H2O and
 22.7% for N2 at aug-cc-pVDZ (`site/src/reference/validation.md`, row "Dynamic
 α(iω) and Casimir–Polder C6"). A model that predicts per-atom α and sums them
 therefore misses about a quarter of the molecular polarizability, unless it
-also predicts $\alpha_{\mathrm{CT}}$ or predicts $\alpha$ directly. Figure
-27.1(b) shows the split for water/cc-pVDZ.
+also predicts $\alpha_{\mathrm{CT}}$ or predicts $\alpha$ directly. Panel
+(b) of the figure in section
+@sec:electrostatics-and-charges-five-charge-schemes shows the split for
+water/cc-pVDZ.
 
 **Frame behaviour.** $\alpha$ is a rank-2 tensor and origin-independent. Each
 $\alpha^A$ is centred on its own nucleus, so it is translation-invariant; the
@@ -168,7 +176,7 @@ The `ts` model, for atom $A$ with free-atom values $\alpha^{\mathrm{free}}$ and
 $C_6^{\mathrm{free}}$ and Hirshfeld volume ratio $v = V_A/V_A^{\mathrm{free}}$,
 is
 
-$$ \bar\alpha_A = v\,\alpha^{\mathrm{free}},\quad C_{6,A} = v^2 C_6^{\mathrm{free}},\quad \omega_A = \frac{4}{3}\frac{C_{6,A}}{\bar\alpha_A^2},\qquad \alpha^A_{ij}(iu) = \frac{\bar\alpha_A}{1+(u/\omega_A)^2}\,\frac{\alpha^{A,\mathrm{static}}_{ij}}{\tfrac13\mathrm{tr}\,\alpha^{A,\mathrm{static}}} . \label{eq:ml-c6-ts-pole} $$
+$$ \bar\alpha_A = v\,\alpha^{\mathrm{free}},\quad C_{6,A} = v^2 C_6^{\mathrm{free}},\quad \omega_A = \frac{4}{3}\frac{C_{6,A}}{\bar\alpha_A^2},\qquad \alpha^A_{cd}(iu) = \frac{\bar\alpha_A}{1+(u/\omega_A)^2}\,\frac{\alpha^{A,\mathrm{static}}_{cd}}{\tfrac13\mathrm{tr}\,\alpha^{A,\mathrm{static}}} . \label{eq:ml-c6-ts-pole} $$
 
 The magnitude $\bar\alpha_A$ and the pole $\omega_A$ come from the free atom
 scaled by the volume ratio; the computed static per-atom tensor contributes
@@ -177,7 +185,8 @@ over three of $\alpha^A$ is therefore $\bar\alpha_A$, not the computed
 static value.
 
 Four rules govern the inputs. The volume ratios always come from Hirshfeld
-volumes, whatever `c6_partition` says. The free-atom volume comes from a live
+volumes, whatever `c6_partition` says; under `ts` the partition controls
+only the shape tensor $\alpha^{A,\mathrm{static}}$. The free-atom volume comes from a live
 free-atom SCF, and if that SCF fails the C6 block is skipped with a warning.
 Elements beyond Z = 54 have no TS reference and are an error. TS has no
 charge transfer, so `alpha_ct_dynamic` is written only for `pdep`.
@@ -239,7 +248,7 @@ Three things about these arrays matter to a consumer.
    from the molecular value for water
    (`ferric-rpa/tests/s9_per_atom_c6_consistency.rs::bounded_divergence_pair_sum_vs_molecular_c6_water`).
 2. **`c6_aniso` is a convention, not a tensor.** The entry
-   $\tfrac3\pi\sum_k w_k\alpha^A_{ij}\alpha^B_{ij}$ is an element-wise product.
+   $\tfrac3\pi\sum_k w_k\alpha^A_{cd}\alpha^B_{cd}$ is an element-wise product.
    It does not transform as a rank-2 tensor under rotation, so an equivariant
    model should be fed the dynamic tensors `alpha_atomic_dynamic` instead.
 3. **Pair $C_6$ depends on the partition.** Becke and Hirshfeld give

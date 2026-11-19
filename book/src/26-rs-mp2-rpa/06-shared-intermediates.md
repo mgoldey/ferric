@@ -60,7 +60,10 @@ are built from one $\tilde{\mathbf B}[v]$.
 Each tensor lives in its own block and is dropped before the next is
 built, so at most one $\tilde{\mathbf B}$ is resident at a time, for any
 number of $\omega$ points (two with terf: the held Coulomb tensor and the
-current terfc one). Each operator's set runs three phases on top
+current terfc one). With an open-shell reference each operator's tensor is a
+pair, one per spin, and both are resident together; the pre-flight charges
+both (`ferric-rpa/src/budget.rs::scan_charge_unrestricted`, section
+@sec:two-formulations-open-shell). Each operator's set runs three phases on top
 of the planes it keeps throughout, the metric buffers and one
 $\tilde{\mathbf B}$:
 
@@ -118,8 +121,12 @@ stops the run.
 
 ## Known limits (2026-11-17)
 
-- The fusion test covers `coupled-rings` on H2 only; `delta-lr` has no
-  separate-call comparison.
+- The fusion test covers `coupled-rings` on H2 only. The scan tests compare
+  both formulations with separate single-$\omega$ calls bit for bit, and
+  `crates/ferric-rpa/tests/validation_rs_mp2_rpa.rs` compares every B
+  component with a numpy assembly, but no test compares B's shared path with
+  independent `ri_mp2_spin_components` and `run_pdep_rpa` calls inside
+  ferric.
 - With erf, `delta-lr` builds the short-range tensor only for the reported
   `e_sr_mp2` and `e_corr_naive`, and `coupled-rings` builds the long-range
   one only for `e_lr_mp2` and `e_dmp2_lr`. Neither enters the returned

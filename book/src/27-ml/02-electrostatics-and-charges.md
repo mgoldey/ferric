@@ -1,6 +1,6 @@
 # Electrostatic features and atomic charges {#electrostatics-and-charges}
 
-<!-- status: gap; registry: none -->
+<!-- status: gap; registry: atomic-charges -->
 
 What does a neighbouring molecule, or a model of one, need to know about this
 molecule's electrons? At long range, mostly the electrostatics: the potential
@@ -11,9 +11,12 @@ the inputs of ESP-conditioned models such as the one in section @sec:esp-conditi
 
 All of them are functions of the reference density $D = 2C_oC_o^{\mathsf T}$
 and of nothing else. This section states them as read from the loops in
-`crates/ferric-scf/src/properties.rs`; no proof script covers them.
-Section @sec:atomic-partitions derives the charge schemes; this section states what each
-exported number is and how far it is checked.
+`crates/ferric-scf/src/properties.rs`. The charge schemes are derived and
+proved in section @sec:atomic-partitions (`scripts/atomic_charges_sympy.py`);
+this section states what each exported number is and how far it is checked.
+No proof script covers the potential, the field or the multipoles; they are
+checked against PySCF integrals
+(@sec:electrostatics-and-charges-well-these-checked).
 
 The plan: the potential and field at the nuclei (@sec:electrostatics-and-charges-potential-field-nuclei), the potential at
 other points (@sec:electrostatics-and-charges-potential-arbitrary-points-surface), multipoles (@sec:electrostatics-and-charges-multipoles-orbital-moments), the five charge schemes (@sec:electrostatics-and-charges-five-charge-schemes),
@@ -140,7 +143,7 @@ This table is the consumer's summary.
 |---|---|---|
 | Mulliken | $q_A = Z_A - \sum_{\mu\in A}(DS)_{\mu\mu}$ ({#eq:electrostatics-and-charges-mulliken}) | basis; unstable with diffuse functions |
 | Löwdin | $q_A = Z_A - \sum_{\mu\in A}(S^{1/2}DS^{1/2})_{\mu\mu}$ ({#eq:electrostatics-and-charges-l-wdin}) | basis, less strongly |
-| Hirshfeld | $q_A = Z_A - s\!\int w_A\rho$, $w_A = \rho^0_A/(\sum_B\rho^0_B + 10^{-12})$ ({#eq:electrostatics-and-charges-hirshfeld}) | proatoms, grid |
+| Hirshfeld | $q_A = Z_A - s\!\int w_A\rho$ ($s$ the electron-count rescaling below), $w_A = \rho^0_A/(\sum_B\rho^0_B + 10^{-12})$ ({#eq:electrostatics-and-charges-hirshfeld}) | proatoms, grid |
 | CHELPG | least-squares fit of point charges to $V(\mathbf r_g)$, $\sum_A q_A = $ molecular charge (@eq:electrostatics-and-charges-4) | point lattice |
 | RESP | CHELPG plus a hyperbolic restraint on non-H charges | point lattice, restraint |
 
@@ -268,7 +271,7 @@ a reference value for them.
   `esp_at_points`, `becke_charges`, `lowdin_charges`, `mulliken_charges`,
   `hirshfeld_charges` and `hirshfeld_i_charges` pair the density with
   $Z^{\mathrm{eff}}_A$ (@eq:molecule-1): the valence charge on an ECP atom and zero on a
-  ghost, so $Z_A$ in (@eq:electrostatics-and-charges-3)–(@eq:electrostatics-and-charges-hirshfeld) reads as $Z^{\mathrm{eff}}_A$. Checked
+  ghost, so $Z_A$ in every equation of this section reads as $Z^{\mathrm{eff}}_A$. Checked
   against PySCF RHF with ECPs on HI and CH3I / def2-SVP (max |d| 1.8e-9;
   `crates/ferric-scf/tests/properties_effective_z.rs`, and through the Python
   bindings, which apply the basis's ECP first). Hirshfeld on an ECP atom still
@@ -280,10 +283,11 @@ a reference value for them.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/src/properties.rs` | eqs. @eq:electrostatics-and-charges-1–@eq:electrostatics-and-charges-mulliken, @eq:electrostatics-and-charges-4, the lattice and restraint parameters, the effective-$Z$ pairing, the excerpt in @sec:electrostatics-and-charges-potential-field-nuclei |
-| `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | eq. @eq:electrostatics-and-charges-hirshfeld, the grid, the proatoms and the rescaling |
+| `crates/ferric-scf/src/properties.rs` | (@eq:electrostatics-and-charges-1)–(@eq:electrostatics-and-charges-mulliken), (@eq:electrostatics-and-charges-4), the lattice and restraint parameters, the effective-$Z$ pairing, the excerpt in @sec:electrostatics-and-charges-potential-field-nuclei |
+| `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | (@eq:electrostatics-and-charges-hirshfeld), the grid, the proatoms and the rescaling |
 | `crates/ferric-pcm/src/radii.rs` | the Bondi radii |
 | `crates/ferric-python/ferric.pyi` | the Python names, `esp_on_surface` and argument units |
 | `site/src/reference/validation.md` | the agreement figures in @sec:electrostatics-and-charges-well-these-checked |
 
-Changes from the sources: none; there is no theory text to change.
+Changes from the sources: none. The derivations of the charge schemes are
+in section @sec:atomic-partitions, which this section does not restate.
