@@ -1006,7 +1006,9 @@ pub fn run(args: Vec<String>) {
             serde_json::json!({
                 "path": cfg.molecule.xyz,
                 "n_atoms": mol.atoms.len(),
-                "formula": molecular_formula(&mol),
+                "formula": mol
+                    .formula(ferric_core::mol::FormulaStyle::RunLog)
+                    .unwrap_or_default(),
                 "charge": cfg.molecule.charge,
                 "multiplicity": cfg.molecule.multiplicity,
                 "n_electrons": mol.nelec(),
@@ -1563,34 +1565,6 @@ fn resolve_polarizable(
 ) -> Option<ferric_scf::polarizable::PolarizableSites> {
     let (q, sys) = cfg.qmmm.as_ref().zip(sys)?;
     q.polarizable_embedding(sys).or_exit()
-}
-
-/// Hill-notation molecular formula (C first, then H, then the rest
-/// alphabetically), for the run log's molecule record.
-///
-/// A count of atoms alone does not identify a molecule; a formula plus the
-/// input path does, well enough to tell two runs apart in a directory of logs.
-fn molecular_formula(mol: &Molecule) -> String {
-    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
-    for a in &mol.atoms {
-        *counts.entry(a.symbol.as_str()).or_insert(0) += 1;
-    }
-    let mut out = String::new();
-    let mut push = |sym: &str, n: usize| {
-        out.push_str(sym);
-        if n > 1 {
-            out.push_str(&n.to_string());
-        }
-    };
-    for sym in ["C", "H"] {
-        if let Some(n) = counts.remove(sym) {
-            push(sym, n);
-        }
-    }
-    for (sym, n) in counts {
-        push(sym, n);
-    }
-    out
 }
 
 /// `method.kind = "rhf"`. Extracted verbatim from the former `main()`
