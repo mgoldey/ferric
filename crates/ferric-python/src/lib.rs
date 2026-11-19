@@ -439,6 +439,22 @@ fn make_ferric_err(e: ferric_core::FerricError) -> PyErr {
     }
 }
 
+/// `?`-friendly conversion of a method-crate `Result` into a `PyResult`
+/// with exactly the exception class and message of [`make_ferric_err`]
+/// (`NotImplementedError` for `FerricError::Unsupported`, `RuntimeError`
+/// otherwise). A crate-local extension trait because `From<FerricError> for
+/// PyErr` would break the orphan rule.
+pub(crate) trait IntoPyResult<T> {
+    /// Convert, mapping the error through [`make_ferric_err`].
+    fn py(self) -> PyResult<T>;
+}
+
+impl<T> IntoPyResult<T> for Result<T, ferric_core::FerricError> {
+    fn py(self) -> PyResult<T> {
+        self.map_err(make_ferric_err)
+    }
+}
+
 /// Convert an optional `memory_budget_gb` kwarg (GiB) to the explicit
 /// `Option<usize>` bytes expected by the method configs / the unified resolver.
 /// `None` (unset) stays `None` → the resolver auto-detects. A non-positive value

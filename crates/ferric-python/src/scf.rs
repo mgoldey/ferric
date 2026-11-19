@@ -687,7 +687,7 @@ pub(crate) fn run_rhf(
         aurora,
         trah_trigger,
     };
-    let mut config = options.into_rhf_config().map_err(make_ferric_err)?;
+    let mut config = options.into_rhf_config().py()?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
         if fock_hook.is_some() && hook_grad.is_none() {
@@ -1513,7 +1513,7 @@ pub(crate) fn run_uhf(
         aurora: None,
         trah_trigger,
     };
-    let config: UhfConfig = options.into_rhf_config().map_err(make_ferric_err)?;
+    let config: UhfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Uhf,
@@ -1644,7 +1644,7 @@ pub(crate) fn run_rohf(
         aurora: None,
         trah_trigger: None,
     };
-    let config: RohfConfig = options.into_rhf_config().map_err(make_ferric_err)?;
+    let config: RohfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Rohf,
