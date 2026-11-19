@@ -485,6 +485,37 @@ CASES = [
         ],
     ),
     (
+        "df_jk_hessian_sympy.py",
+        30,
+        [
+            (
+                "metric_second = -0.5 * c @ fit.v2(lam, k, ll) @ c",
+                "metric_second = -1.0 * c @ fit.v2(lam, k, ll) @ c",
+                "FAIL N1 RI-J E_xy",
+            ),
+            (
+                "skel[k, ll] += 2.0 * alpha * np.sum(z[k] * gx[ll])",
+                "skel[k, ll] += alpha * np.sum(z[k] * gx[ll])",
+                "FAIL N2 RI-K E_xy",
+            ),
+            (
+                'j = j + np.einsum("P,Pmn->mn", y[k], a)',
+                "j = j",
+                "FAIL N3 J^x, K^x",
+            ),
+            (
+                'kx = kx - np.einsum("PQ,Pmj,Qlj->ml", vx[k], chat, chat)',
+                "kx = kx",
+                "FAIL H1 fitted RHF Hessian (RI-K)",
+            ),
+            (
+                "STENCIL = [(-2.0, 1.0), (-1.0, -8.0), (1.0, 8.0), (2.0, -1.0)]",
+                "STENCIL = [(-2.0, 0.0), (-1.0, -6.0), (1.0, 6.0), (2.0, 0.0)]",
+                "FAIL ST1 fourth-order stencil",
+            ),
+        ],
+    ),
+    (
         "df_jk_gradient_sympy.py",
         10,
         [

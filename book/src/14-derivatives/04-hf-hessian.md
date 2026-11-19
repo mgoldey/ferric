@@ -345,6 +345,358 @@ F5 fail), building the $\beta$ exchange from the $\alpha$ occupied block (F2
 fails), and the ROHF factor from $U^{\mathsf T}$ instead of $U$ (F3, F4
 fail). It runs under `crates/ferric-python/tests/test_derivation_scripts.py`.
 
+### Fitted Coulomb and exchange {#hf-hessian-fitted-jk}
+
+A density-fitted SCF reports a different energy from the four-centre one,
+and section @sec:df-jk-gradient derives its gradient. Its Hessian is the
+derivative of that gradient. Exact second-derivative integrals paired with a
+fitted reference would give the curvature of neither surface, and the
+frequencies would not match the minimum the fitted optimizer found. The
+fitted energy also moves in a way the four-centre one does not: the
+auxiliary functions sit on atoms, so the fit coefficients change when a
+nucleus moves, and that change is a response of its own.
+
+The CPHF derivation of section @sec:hf-hessian-equations used three facts:
+the Fock matrix is $F = \partial E/\partial D$ and satisfies $FC = SC\varepsilon$,
+the orbitals stay orthonormal, and $D_1 \mapsto G(D_1)$ is linear. All three
+hold for the fitted energy. $F_{\mu\nu} = \sum_P(P\vert\mu\nu)\,c_P$ is the
+Coulomb matrix `DfJ` builds, and $G(D_1) = J_{\mathrm{fit}}(D_1) - \tfrac12K_{\mathrm{fit}}(D_1)$
+is linear in $D_1$. So the nuclear, one-electron and overlap skeletons, the
+solver and the response assembly are the exact-integral ones. Three pieces
+change, separately for J and for K: the two-electron skeleton, the
+two-electron part of $F^x$, and the matching part of $G$ in the CPHF.
+
+| Symbol | Meaning | Code name |
+|---|---|---|
+| $(P\vert\mu\nu)$, $V_{PQ}$ | raw three-index integral and metric $(P\vert Q)$ | `ThreeIndexSource` blocks, `coulomb_metric_2c` |
+| $M$ | $V^{-1}$, full rank | Cholesky solve (RI-J), `Fit::m_for` (RI-K) |
+| $d^x$, $d^{xy}$ | $\sum_{\mu\nu}D_{\mu\nu}\,\partial_x(P\vert\mu\nu)$ and its second derivative, at fixed $D$ | `RijFirst::dx` |
+| $V^x$, $V^{xy}$ | metric derivatives; the auxiliary centres move with their atoms | `vx`, the 2c stencil |
+| $Z^x$ | $d^x - V^xc$ (RI-J), $L^x - V^x\Gamma$ (RI-K) | `z` |
+| $L$, $\Gamma$, $\alpha$ | fitted exchange integrals, $\Gamma = ML$, channel weight | `core.lx`, `gamma`, `RikChannel::alpha` |
+| $J^x$, $K^x$ | fixed-density derivatives of the fitted $J[D]$ and $K[D]$ | `RijTerms::first_order_j`, `RikChannelFock::first_order_k` |
+
+**RI-J skeleton.** Start from the gradient (@eq:df-jk-gradient-1), with
+$c = Md$:
+
+$$ E^x = d^{x\,\mathsf T}c - \tfrac12 c^{\mathsf T}V^xc . $$
+
+Differentiate along $y$. The fit vector changes through $d$ and through
+$M$; with $\partial_yM = -MV^yM$,
+
+$$ \partial_y c = Md^y - MV^yMd = M(d^y - V^yc) = MZ^y . $$
+
+Apply the product rule to both terms of $E^x$, using $M^{\mathsf T} = M$:
+
+$$ \partial_y(d^{x\,\mathsf T}c) = d^{xy\,\mathsf T}c + d^{x\,\mathsf T}MZ^y, \qquad
+\partial_y(\tfrac12c^{\mathsf T}V^xc) = \tfrac12c^{\mathsf T}V^{xy}c + c^{\mathsf T}V^xMZ^y . $$
+
+Subtract and collect the two terms that end in $MZ^y$; their left factors
+combine to $(d^x - V^xc)^{\mathsf T} = Z^{x\,\mathsf T}$:
+
+$$ E^{xy}_J = d^{xy\,\mathsf T}c - \tfrac12c^{\mathsf T}V^{xy}c + Z^{x\,\mathsf T}MZ^y . \label{eq:hf-hessian-fitted-j} $$
+
+Check it with one auxiliary function, $E_J = d^2/(2V)$. Differentiate the
+quotient twice:
+$E'' = dd''/V + d'^2/V - 2dd'V'/V^2 - \tfrac12d^2V''/V^2 + d^2V'^2/V^3$.
+Expand (@eq:hf-hessian-fitted-j) with $c = d/V$: $d''c - \tfrac12c^2V'' + (d' - V'c)^2/V$
+gives the same five terms.
+
+The first two terms are the skeleton at fixed $c$. The third is the
+response of $c$, and it has the form of the orbital response for a reason:
+$E_J = \max_c\,[c^{\mathsf T}d - \tfrac12c^{\mathsf T}Vc]$, stationary at
+$c = Md$ with curvature $-V$ in $c$. The gradient of a stationary functional
+needs no $\partial c$; its second derivative needs $\partial c$ once, and the
+mixed derivative $\partial^2/\partial c\,\partial x$ of the bracket is $Z^x$.
+The cross term is a Gram matrix of $M$, symmetric in $x \leftrightarrow y$
+and positive semidefinite.
+
+**RI-K skeleton.** The exchange energy of one channel is
+$E_K = \alpha\sum_{ij}L_{ij}^{\mathsf T}ML_{ij}$, with
+$L_{P,ij} = \sum_{\mu\nu}X_{\mu i}(P\vert\mu\nu)X_{\nu j}$ at fixed $X$. Write
+$\langle a,b\rangle = \sum_{P,ij}a_{P,ij}b_{P,ij}$. With every mode kept, the
+gradient (@eq:df-jk-gradient-2) is $E^x = \alpha[2\langle L^x,\Gamma\rangle - \langle\Gamma,V^x\Gamma\rangle]$.
+The same steps, with $\partial_y\Gamma = MZ^y$ and $Z^y = L^y - V^y\Gamma$, give
+
+$$ E^{xy}_K = \alpha\big[2\langle L^{xy},\Gamma\rangle - \langle\Gamma,V^{xy}\Gamma\rangle + 2\langle Z^x,MZ^y\rangle\big] . $$
+
+This is (@eq:hf-hessian-fitted-j) with $d \to L$ and $\tfrac12 \to \alpha$. With one
+occupied column $L_P = d_P$ for $D = XX^{\mathsf T}$, so $E_K = 2\alpha E_J$ and
+every piece is $2\alpha$ times the RI-J piece. The closed-shell channel is
+$X = \sqrt2\,C_o$, $\alpha = -\tfrac14$. UHF has one channel per spin,
+$X_\sigma = C_{\sigma,o}$ and $\alpha_\sigma = -\tfrac12$, over the shared
+$M$, and no $\alpha\beta$ term. Its closed-shell limit, $X_\sigma = X/\sqrt2$
+and $L^\sigma = L/2$, gives $2\cdot(-\tfrac12)\cdot\tfrac14 = -\tfrac14$, the
+closed-shell weight. A global hybrid uses $\alpha = -a/4$ (section @sec:ks-hessian).
+
+**First-order Fock matrices.** At fixed $D$, $J_{\mu\nu} = \sum_P(P\vert\mu\nu)c_P$
+changes through the integrals and through $c$:
+
+$$ J^x_{\mu\nu} = \sum_P \partial_x(P\vert\mu\nu)\,c_P + \sum_P(P\vert\mu\nu)\,(MZ^x)_P . $$
+
+The second term is the auxiliary-fit response: the derivative of $c$
+through $V$ and through the motion of $P$. It is a `DfJ` contraction with
+the vector $MZ^x$ in place of $c$. For exchange,
+$K[D]_{\mu\lambda} = \sum_{\nu\sigma}D_{\nu\sigma}(\mu\nu\vert P)M_{PQ}(Q\vert\lambda\sigma)$.
+Differentiate at fixed $D = XX^{\mathsf T}$. The derivative of the left
+integral gives $K^1$, that of the right integral its transpose, and
+$\partial M = -MV^xM$ the third term:
+
+$$ K^x = K^1 + K^{1\,\mathsf T} - \sum_{PQ}V^x_{PQ}\,\hat C_P\hat C_Q^{\mathsf T}, \qquad
+K^1_{\mu\lambda} = \sum_{P,\nu}\partial_x(P\vert\mu\nu)\,T_{P,\nu\lambda}, $$
+
+with $\hat C_P = [MB]_P$, $B_{P,\lambda j} = \sum_\sigma(P\vert\lambda\sigma)X_{\sigma j}$
+($n\times m$), and $T_{P,\nu\lambda} = \sum_jX_{\nu j}\hat C_{P,\lambda j}$.
+The Fock contribution is $2\alpha K^x$: $-\tfrac12K^x$ for RHF, $-K^x[D_\sigma]$
+for each UHF spin. Drop the response terms and you get the derivative at a
+frozen fit, which is the wrong function: in the proof below it misses by
+$0.4$ against agreement of $4\times10^{-9}$.
+
+**The CPHF.** The kernel is the SCF's own builders: `DfJ` on the (total)
+response density and `DfK` on each spin's response density, through the
+factored route of section @sec:hf-hessian-factored-ri-k. Nothing else in the
+CPHF changes.
+
+**Exactness anchor.** Take a fit that reproduces the exact integrals:
+$(P\vert\mu\nu) = \sum_QR_{PQ}B_{Q,\mu\nu}$ and $V = RR^{\mathsf T}$ for any
+invertible $R(\mathbf R)$, so $(\mu\nu\vert P)M_{PQ}(Q\vert\lambda\sigma) = \sum_QB_{Q,\mu\nu}B_{Q,\lambda\sigma}$
+at every geometry. The three skeleton pieces each differ from the
+four-centre $\sum\Gamma\,(\mu\nu\vert\lambda\sigma)^{xy}$, but their sum
+equals it, and the fitted Hessian equals the exact one. The RI-J code has
+the same anchor on molecules (`exact_span_fit_stays_exact_at_extreme_conditioning`
+in `crates/ferric-scf/tests/df_hessian_rij.rs`). Exchange has none there:
+pair densities of orbitals on different atoms are two-centre products, so
+no atom-centred auxiliary set spans them.
+
+**Only a full-rank metric.** Section @sec:df-jk-gradient-truncated-exchange-metric
+shows that `DfK` applies a truncated inverse $V^{+}$, and the gradient
+differentiates it with the Daleckii–Krein kernel of (@eq:df-jk-gradient-4). Every step
+above uses $\partial M = -MV^xM$, the kept-kept entry of that kernel's table.
+That is the whole kernel only when no mode is dropped. With a dropped mode
+the energy is a spectral function of $V$, its second derivative needs the
+Daleckii–Krein formula to second order, and that is not implemented. The
+proof's toy metric shows what would go wrong: with one mode dropped (cut in
+a gap) the full-rank formula misses the mixed difference of the truncated
+energy by 3.4, against $2.8\times10^{-7}$ with nothing dropped. So both fits
+refuse such a metric with a typed error that counts the modes
+(`ferric-scf/src/hessian_df.rs::check_metric_spectrum`, cut by
+`ferric-scf/src/df_k.rs::metric_lindep_cut`). RI-K also refuses a kept
+mode in $[\text{cut}, 10^{-7})$, because the gradient's
+`DFK_GRADIENT_NOISE_FLOOR` treats it as dropped and the Hessian would
+differentiate a different function
+(`ferric-scf/src/hessian_df.rs::exchange_spectrum_conditioning`). RI-J warns
+below `RIJ_METRIC_WARN` ($10^{-8}$). The RI-K roundoff follows
+$1/\lambda_{\min}^2$ (a perturbation $\delta V$ enters as $-M\,\delta V M$);
+`hessian = "auto"` takes the analytic route only when
+`RIK_ROUNDOFF_COEFF`$/\lambda_{\min}^2 \le$ `FD_ROUTE_ERROR`
+($10^{-19}/\lambda_{\min}^2 \le 6.8\times10^{-6}$, so
+$\lambda_{\min} \ge 1.21\times10^{-7}$) and differences the gradient
+otherwise (`ferric-scf/src/hessian_df.rs::probe_exchange_metric`).
+
+> **Verified equation {#eq:scf-hess-fitted-jk-terms}** · the fitted J and K skeletons and first-order Fock matrices
+>
+> On models whose three-index integrals and metric are polynomials in two
+> parameters: (@eq:hf-hessian-fitted-j) equals the exact sympy second derivative of
+> $\tfrac12d^{\mathsf T}V^{-1}d$ in rational arithmetic (claim S1); the RI-K
+> form with two occupied columns equals that of $E_K$ (claim S2); $J^x$ and
+> $K^x$, as the code builds them, equal the fixed-density derivatives of the
+> fitted $J[D]$ and $K[D]$ (claims S3, S4). Numerically, both skeletons equal
+> the fourth-order difference of the analytic $E^x$ (claims N1, N2, to
+> $4\times10^{-13}$), and $J^x$, $K^x$ that of $J[D]$, $K[D]$ (claim N3).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/df_jk_hessian_sympy.py`, claims S1 to S4 and N1 to N3 |
+> | Negative control | the runner doubles the $-\tfrac12c^{\mathsf T}V^{xy}c$ term (N1 fails), halves the RI-K cross term (N2 fails), drops the auxiliary-fit response of $J^x$ (N3 fails) and the metric term of $K^x$ (H1 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/hessian_df.rs::rij_terms_with_aux_at_precision`, `ferric-scf/src/hessian_df_k.rs::rik_channel_terms_with_aux` |
+> | Code test | `skeleton_pieces_match_fd_631g` in `crates/ferric-scf/tests/df_hessian_rij.rs` |
+>
+> <!-- verified: id=scf.hess.fitted-jk-terms; script=scripts/df_jk_hessian_sympy.py; claim=S1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/hessian_df.rs::rij_terms_with_aux_at_precision,ferric-scf/src/hessian_df_k.rs::rik_channel_terms_with_aux; rust_test=ferric-scf/tests/df_hessian_rij.rs::skeleton_pieces_match_fd_631g; registry=hf-hessian -->
+
+**Second derivatives of the fitting integrals.** The libint2 export in the
+wheel has first derivatives of the three- and two-centre integrals only.
+`ferric-scf/src/hessian_df_stencil.rs::eri3_deriv2_block` builds the second
+derivative from them. Displace atom $b$ along $y$ by $oh$ for
+$o \in \{-2,-1,1,2\}$ and combine the first-derivative blocks with weights
+$(1,-8,8,-1)/(12h)$, at $h$ = `STEP` = $2\times10^{-3}$ Bohr. Each block is
+the gradient with respect to the triple's three centres, so one stencil
+gives $\partial^2/\partial R_{b,y}\partial R_{k,x}$ for every centre $k$. The
+fourth-order central difference has error $O(h^4)$.
+
+The displacement is rigid per atom. Every shell of the triple on atom $b$
+moves, the auxiliary shell included, because moving one shell of a
+same-atom pair is not a nuclear displacement. Each centre's derivative is
+then folded onto its atom, so the result is a block over the distinct atoms
+of the triple. A triple with every centre on one atom is skipped:
+
+<!-- excerpt: ferric-scf/src/hessian_df_stencil.rs::eri3_deriv2_block -->
+```rust
+let dist = distinct(&atoms);
+if dist.len() == 1 {
+    return Ok(None);
+}
+```
+
+The skip is exact, not a screen. An integral over shells on one atom
+depends only on differences of their centres, so it is unchanged when the
+atom moves, and its atom second derivative is zero by translation
+invariance. A triple that does not touch $b$ has no column for it.
+
+The second derivatives enter only through two contractions, never as
+stored tensors (`ferric-scf/src/hessian_df_stencil.rs::{eri3_deriv2_contract,eri2_deriv2_contract}`).
+The three-centre weight is $c_PD_{\mu\nu}$ for RI-J and
+$W_P = \sum_s2\alpha_sX_s\Gamma_{s,P}X_s^{\mathsf T}$ for RI-K, summed over
+channels. The two-centre weight is $-\tfrac12cc^{\mathsf T}$ for RI-J and
+$-\sum_s\alpha_s\Gamma_s\Gamma_s^{\mathsf T}$ for RI-K. Each (shell triple,
+displaced atom, axis) costs four first-derivative block evaluations.
+
+> **Verified equation {#eq:scf-hess-fitted-jk-stencil}** · the per-atom stencil of first derivatives
+>
+> On a three-centre model function of the centre differences, with two
+> centres on one atom: the rigid, atom-folded fourth-order stencil of its
+> exact first derivatives equals the atom second derivative with error ratio
+> 15.90 on halving the step and $4\times10^{-12}$ at the production step
+> (claim ST1); a triple on one atom has a zero atom block, and moving only one
+> shell of the same-atom pair misses by $0.38$ (claim ST2).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/df_jk_hessian_sympy.py`, claims ST1 and ST2 |
+> | Negative control | the runner replaces the weights by the second-order $(0,-6,6,0)/(12h)$ (ST1 fails); the one-shell displacement is the script's own control |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/hessian_df_stencil.rs::{eri3_deriv2_block,eri2_deriv2_block}` |
+> | Code test | `step_scaling_is_fourth_order` in `crates/ferric-scf/tests/df_hessian_stencil.rs` |
+>
+> <!-- verified: id=scf.hess.fitted-jk-stencil; script=scripts/df_jk_hessian_sympy.py; claim=ST1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/hessian_df_stencil.rs::{eri3_deriv2_block,eri2_deriv2_block}; rust_test=ferric-scf/tests/df_hessian_stencil.rs::step_scaling_is_fourth_order; registry=hf-hessian -->
+
+**How the driver combines them.** `ferric-scf/src/hessian.rs::rhf_hessian_parts_with`
+keeps the four-centre skeleton only for the part of $\Gamma$ that stayed
+exact:
+
+<!-- excerpt: ferric-scf/src/hessian.rs::rhf_hessian_parts_with -->
+```rust
+let mut two_electron = match (&rij, &rik) {
+    (None, None) => {
+        let gam = |mu, nu, la, sg| gamma(d, mu, nu, la, sg);
+        skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam)?
+    }
+    (Some(_), None) => {
+        let gam_k = |mu, nu, la, sg| -0.25 * d[(mu, la)] * d[(nu, sg)];
+        skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_k)?
+    }
+    (None, Some(_)) => {
+        let gam_j = |mu, nu, la, sg| 0.5 * d[(mu, nu)] * d[(la, sg)];
+        skeleton_hess_2e(prep, op, bounds, natoms, max_abs(d), &gam_j)?
+    }
+    (Some(_), Some(_)) => Array2::<f64>::zeros((3 * natoms, 3 * natoms)),
+};
+```
+
+| Arm | What stays four-centre |
+|---|---|
+| `(None, None)` | the whole $\Gamma$ (no fit) |
+| `(Some(_), None)` | RI-J: the exchange part $\Gamma_K = -\tfrac14D_{\mu\lambda}D_{\nu\sigma}$ |
+| `(None, Some(_))` | RI-K: the Coulomb part $\Gamma_J = \tfrac12D_{\mu\nu}D_{\lambda\sigma}$ |
+| `(Some(_), Some(_))` | nothing |
+
+The fitted skeletons `RijTerms::skeleton` and `RikTerms::skeleton` are added
+to it. The first-order Fock pass then builds $F^x$ with a zero density for
+each fitted part and adds `first_order_j` and $2\alpha K^x$, and the CPHF
+gets the SCF's `DfJ` and `DfK`. The RI-J $J^x$ is the frozen-fit term plus
+the response:
+
+<!-- excerpt: ferric-scf/src/hessian_df.rs::rij_terms_with_aux_at_precision -->
+```rust
+let mut first_order_j = Vec::with_capacity(n3);
+for x in 0..n3 {
+    let mut jx = j1.row(x).to_owned();
+    if !mutants.omit_aux_jx {
+        jx += &j2.row(x);
+    }
+```
+
+`j1` holds $\sum_Pc_P\,\partial_x(P\vert\mu\nu)$ and `j2` holds
+$\sum_P(P\vert\mu\nu)(MZ^x)_P$. With both fits no four-centre integral is
+differentiated, but the one-electron and overlap second derivatives still
+need a libint2 with second derivatives. UHF (`ferric-scf/src/hessian/uhf_df.rs::uhf_hessian_parts_with`)
+uses the RI-J terms with $D = D_\alpha + D_\beta$, adds the one $J^x$ to both
+spin Fock derivatives and gives each spin its RI-K channel. ROHF uses the
+same functional with $X_\alpha = C_{:,<n_\alpha}$ and $X_\beta = C_{:,<n_\beta}$
+of its single orbital set.
+
+> **Verified equation {#eq:scf-hess-fitted-jk-assembled}** · the fitted Hessian equals the difference of the fitted gradient
+>
+> On a toy model with a non-orthogonal overlap, fitted integrals
+> $(\mu\nu\vert P)M(Q\vert\lambda\sigma)$ from a raw tensor and metric
+> quadratic in two parameters, and the SCF on the fitted functional: the
+> analytic Hessian (fitted skeletons, fitted $F^x$, CPHF with the fitted $G$)
+> equals the fourth-order difference of the fitted analytic gradient with
+> the SCF re-solved, for RHF with RI-J only, RI-K only and both (claim H1, at
+> most $3.8\times10^{-9}$) and UHF with both (claim H2, $2.7\times10^{-10}$).
+> With a fit that reproduces the exact integrals the fitted Hessian equals
+> the exact four-centre one to $2\times10^{-16}$ (claim A1). Dropping
+> $Z^{x\,\mathsf T}MZ^y$ or the auxiliary-fit part of $J^x$ misses by 0.29 and
+> 0.42 (claim C1).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/df_jk_hessian_sympy.py`, claims H1, H2, A1, C1 and T1 |
+> | Negative control | C1 is the script's own; every runner mutation of equation @eq:scf-hess-fitted-jk-terms also fails H1 and H2 |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/hessian.rs::rhf_hessian_parts_with`, `ferric-scf/src/hessian/uhf_df.rs::uhf_hessian_parts_with` |
+> | Code test | `full_hessian_with_ri_j_and_ri_k_matches_fd_631g` in `crates/ferric-scf/tests/df_hessian_rik.rs` |
+>
+> <!-- verified: id=scf.hess.fitted-jk-assembled; script=scripts/df_jk_hessian_sympy.py; claim=H1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/hessian.rs::rhf_hessian_parts_with,ferric-scf/src/hessian/uhf_df.rs::uhf_hessian_parts_with; rust_test=ferric-scf/tests/df_hessian_rik.rs::full_hessian_with_ri_j_and_ri_k_matches_fd_631g; registry=hf-hessian -->
+
+Water in cc-pVDZ with RI-J and RI-K over def2-universal-jkfit, from the
+`3f612e0b3` build. The analytic Hessian passes the two checks of
+section @sec:hf-hessian-equations at $10^{-11}$. The central-difference route
+misses it by $8\times10^{-6}$ Ha/Bohr², which is that route's own truncation
+error: `FD_ROUTE_ERROR` ($6.8\times10^{-6}$) records it at its best, and it
+moves the frequencies by under 0.06 cm⁻¹.
+
+```python
+import numpy as np
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")  # HF/cc-pVDZ minimum
+fit = dict(reference="rhf", df_j_aux="def2-universal-jkfit", df_k_aux="def2-universal-jkfit")
+an = ferric.run_frequencies(mol, "cc-pvdz", hessian="analytic", **fit)
+fd = ferric.run_frequencies(mol, "cc-pvdz", hessian="fd", **fit)
+H, H_fd = np.asarray(an.cartesian_hessian), np.asarray(fd.cartesian_hessian)
+rowsum = np.array([[H[i, b::3].sum() for b in range(3)] for i in range(H.shape[0])])
+print("hessian_source:", an.hessian_source, " asymmetry:", an.asymmetry)
+print("max |sum over atoms B of H[(A,a),(B,b)]|:", np.abs(rowsum).max())
+print("max |H_analytic - H_fd|:", np.abs(H - H_fd).max())
+print("analytic (cm^-1):", an.frequencies)
+print("fd       (cm^-1):", fd.frequencies)
+```
+
+```text
+hessian_source: analytic  asymmetry: 9.531403444285047e-12
+max |sum over atoms B of H[(A,a),(B,b)]|: 5.4126148008037944e-12
+max |H_analytic - H_fd|: 7.989890846160641e-06
+analytic (cm^-1): [1808.6749545771356, 3953.6225657066593, 4047.317991517345]
+fd       (cm^-1): [1808.6153598331366, 3953.6479968160584, 4047.341700901662]
+```
+
+**Design choices.** $M$ is never formed for RI-J. Every $Mv$ is a
+back-substitution against the Cholesky factor of $V$ that `DfJ` uses, the
+factorization the SCF's $c$ came from. RI-K builds $M = WW$ with
+$W = U\Lambda^{-1/2}U^{\mathsf T}$, the construction of `DfK`. When the SCF
+stored its RI-J tensor in f32, the two contractions of undifferentiated
+integrals ($d_P$ and the response $\sum_P(MZ^x)_P(P\vert\mu\nu)$) read each
+integral rounded to f32 as the SCF did; derivative integrals and the metric
+stay f64. The stencil replaces a libint2 build with three-centre second
+derivatives: it reuses the first-derivative engines the gradient already
+needs, at about four first-derivative evaluations per (triple, atom, axis).
+
+**What the proof does not cover.** The proof differentiates exact model
+integrals; the integral code, the stencil on real shells and the
+f32 path are covered by the Rust tests named in the boxes. The ROHF and
+Kohn–Sham fitted routes reuse these pieces but are not in the script.
+
 ### Effective core potentials, fields and external charges {#hf-hessian-one-electron-operators}
 
 Four extra pieces of physics can sit in the core Hamiltonian $h$ besides
@@ -838,7 +1190,7 @@ as `asymmetry`. The Hessian uses the symmetrized $R$.
 
 | Option | Effect | Where |
 |---|---|---|
-| density-fitted J, K | fitted skeletons, fitted $J^y$ and $K^y$ in $F^y$, the SCF's own `DfJ`/`DfK` in the CPHF kernel; nothing else changes | `ferric-scf/src/hessian_df.rs`, `ferric-scf/src/hessian_df_k.rs` |
+| density-fitted J, K | fitted skeletons, fitted $J^y$ and $K^y$ in $F^y$, the SCF's own `DfJ`/`DfK` in the CPHF kernel; nothing else changes (section @sec:hf-hessian-fitted-jk) | `ferric-scf/src/hessian_df.rs`, `ferric-scf/src/hessian_df_k.rs` |
 | ECPs | skeleton $\sum D\,\partial^2V_{\mathrm{ECP}}$ by a masked fourth-order stencil of first-derivative ECP blocks, and $\partial V_{\mathrm{ECP}}/\partial x$ in $F^y$ (section @sec:hf-hessian-one-electron-operators) | `ferric-scf/src/hessian_ecp.rs` |
 | external point charges | QM-QM block, charges fixed; analytic libint2 second derivatives and the charge–nucleus block; RHF and UHF with exact J and K | `ferric-scf/src/hessian.rs::{contract_external_deriv2,deriv1_1e_matrices}`, section @sec:hf-hessian-one-electron-operators |
 | smeared charges | as point charges, with a stencil of three-centre first-derivative blocks | `ferric-scf/src/hessian_smeared.rs`, section @sec:hf-hessian-one-electron-operators |
@@ -855,9 +1207,9 @@ as `asymmetry`. The Hessian uses the symmetrized $R$.
 
 <!-- figures: site/src/reference/validation.md "Analytic RHF Hessian (skeleton one- and two-electron, overlap/W and CPHF response terms)"; site/src/reference/validation.md "Analytic UHF Hessian (skeleton one- and two-electron"; site/src/reference/validation.md "Analytic ROHF Hessian (skeleton with the ROHF energy-weighted density" -->
 
-Fitted-J/K, ECP, charge and field Hessians (the latter three in section
-@sec:hf-hessian-one-electron-operators) have their own rows on the
-validation page; their agreement with finite differences of the matching
+Fitted-J/K (section @sec:hf-hessian-fitted-jk), ECP, charge and field
+Hessians (section @sec:hf-hessian-one-electron-operators) have their own
+rows on the validation page; their agreement with finite differences of the matching
 gradient is at the $10^{-10}$ to $10^{-7}$ Ha/Bohr² level quoted there.
 
 **Known limits.** RHF, UHF and ROHF references (Kohn–Sham: section
@@ -874,6 +1226,7 @@ embedding.
 |---|---|
 | `scripts/hf_hessian_sympy.py`, claims H1 to H4, S1, S2 | verified equations @eq:scf-hess-assembled and @eq:scf-hess-occ-occ-rotation |
 | `scripts/hessian_factored_k_sympy.py`, claims F1 to F5 and its mutation list | the factored RI-K of section @sec:hf-hessian-factored-ri-k |
+| `scripts/df_jk_hessian_sympy.py`, claims S1 to S4, N1 to N3, H1, H2, A1, C1, T1, ST1, ST2 | section @sec:hf-hessian-fitted-jk |
 | `scripts/hessian_one_electron_ops_sympy.py`, claims O0 to O6 | section @sec:hf-hessian-one-electron-operators |
 | `crates/ferric-scf/src/hessian.rs` module documentation | the term table, the solver, the refusals |
 | `site/src/reference/validation.md` | the anchor rows and the known limits |

@@ -632,12 +632,14 @@
       "book": [
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations",
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k",
-        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-one-electron-operators"
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-one-electron-operators",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-fitted-jk"
       ],
       "scripts": [
         "scripts/hf_hessian_sympy.py",
         "scripts/hessian_factored_k_sympy.py",
-        "scripts/hessian_one_electron_ops_sympy.py"
+        "scripts/hessian_one_electron_ops_sympy.py",
+        "scripts/df_jk_hessian_sympy.py"
       ]
     },
     "ks-gradient": {
@@ -667,7 +669,8 @@
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations",
         "book/src/09-kohn-sham/06-fxc.md#fxc-linearized-potential",
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k",
-        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-one-electron-operators"
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-one-electron-operators",
+        "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-fitted-jk"
       ],
       "scripts": [
         "scripts/ks_fixed_grid_hessian_sympy.py",
@@ -675,7 +678,8 @@
         "scripts/hf_hessian_sympy.py",
         "scripts/dft_fxc_kernel_sympy.py",
         "scripts/hessian_factored_k_sympy.py",
-        "scripts/hessian_one_electron_ops_sympy.py"
+        "scripts/hessian_one_electron_ops_sympy.py",
+        "scripts/df_jk_hessian_sympy.py"
       ]
     },
     "ks-hybrid-rsh": {
