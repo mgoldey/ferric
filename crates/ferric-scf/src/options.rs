@@ -24,6 +24,9 @@ use ndarray::Array2;
 
 use crate::rhf::RhfConfig;
 
+mod ext;
+pub use ext::ScfOptionsExt;
+
 /// Default SCF iteration cap ([`RhfConfig::max_iter`]).
 pub const DEFAULT_SCF_MAX_ITER: usize = 200;
 /// Default loose `|ΔE|` gate in Hartree ([`RhfConfig::energy_conv`]).

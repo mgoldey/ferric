@@ -18,7 +18,7 @@ mod periodic;
 mod polarization;
 mod thermo_ir;
 
-use crate::error::OrExit;
+use crate::error::{CliError, OrExit};
 use config::{load_config, Config};
 /// The `[local]` model types, re-exported for the Python bindings, which
 /// apply the SAME rules to their `local=`/`eps=` kwargs.
@@ -363,13 +363,6 @@ fn scf_jk_route_line(cfg: &Config, jk: &ferric_scf::scf_jk::ScfJk) -> String {
 /// extra element away, since `sys.argv` is the shape Python itself commits
 /// to being stable, not an implementation detail of how CPython's runtime
 /// happens to report process argv on this platform/version.
-/// `[scf] guess_basis` / `guess_projection`, resolved strictly. They were
-/// already validated when the config loaded, so an error here is a bug; it
-/// still exits rather than silently dropping the guess.
-fn guess_basis_or_exit(cfg: &Config) -> Option<ferric_scf::basis2::GuessBasis> {
-    cfg.scf.guess_basis_config().or_exit()
-}
-
 /// One stderr line saying what the DF-guess stage actually did.
 fn print_df_guess_outcome(
     dfg: &ferric_scf::ladder::DfGuessResult,
@@ -445,16 +438,219 @@ fn resolve_grid_prune(cfg: &Config) -> Option<ferric_dft::prune::PruneScheme> {
     grid_prune
 }
 
-/// `[scf] eri`, strictly parsed; an unknown value exits with an error.
-fn scf_eri_mode(eri: Option<&str>) -> ferric_scf::incore_jk::EriMode {
-    match eri.map(ferric_scf::incore_jk::EriMode::parse_config_str) {
-        None => ferric_scf::incore_jk::EriMode::Auto,
-        Some(Ok(m)) => m,
-        Some(Err(e)) => {
-            eprintln!("error: [scf] eri: {e}");
-            std::process::exit(1);
-        }
-    }
+/// What [`try_scf_config`] needs from outside the `[scf]` section: the
+/// task-dependent policy inputs and the other sections `run` has already
+/// resolved. Passed in, never read from globals, so the lowering is a function
+/// of its arguments.
+struct ScfConfigInputs<'a> {
+    /// `method.task`: selects the RI-J precision default ([`ri_j_task_for`]).
+    task: &'a str,
+    /// The `[gpu]` side of the COSX fp64 router: `precision = "mixed"` with
+    /// `cosx-kern` allowed (`GpuSettings::mixed_allows(MixedKernel::CosxKern)`).
+    cosx_router_allowed: bool,
+    /// The SCF functional ([`Config::scf_xc_and_aux_defaults`]).
+    xc: Option<String>,
+    /// The kind's RI-J aux default, used when `[scf] df_j_aux` is unset.
+    df_j_default: Option<String>,
+    /// The kind's RI-K aux default, used when `[scf] df_k_aux` is unset and
+    /// `k_builder` is not `"cosx"`.
+    df_k_default: Option<String>,
+    /// `[dft] grid_prune`, already parsed.
+    grid_prune: Option<ferric_dft::prune::PruneScheme>,
+    /// The resolved `[memory]` budget (`None` = auto-detect).
+    budget_bytes: Option<usize>,
+    /// `[scf] screening`, parsed once in `run` (it also selects the bounds).
+    screening: ferric_scf::screening::ScreeningKind,
+    /// The QM/MM system when `[qmmm]` is set.
+    qmmm_system: Option<&'a ferric_scf::qmmm::QmmmSystem>,
+}
+
+/// The run's base `RhfConfig`: the `[scf]` section lowered through
+/// `ferric_scf::options` (`ScfOptionsExt::into_rhf_config`), plus the fields
+/// other sections own (`[dft]` grid and functional, `[cosmo]`, `[qmmm]`
+/// polarizable sites).
+///
+/// The CLI policy is in which options fields are set: every `[scf]` key the
+/// CLI always resolves (convergence, DIIS, guess, MOM, ...) is set, so the
+/// TOML defaults stand; `df_j_aux` / `df_k_aux` fall back to the kind's
+/// defaults (no RI-K default under COSX); `check_stability` and
+/// `stability_descent` become one [`ferric_scf::options::Stability`].
+///
+/// The fallible resolutions run in the order the former struct literal
+/// evaluated them, so a config with several bad keys reports the same first
+/// error. Most were already validated by `load_config`; an error here still
+/// fails the run rather than dropping the key.
+fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig, CliError> {
+    use ferric_scf::options::{AuxBasis, Guess, ScfOptions, ScfOptionsExt, TrahTrigger};
+    let ScfConfigInputs {
+        task,
+        cosx_router_allowed,
+        xc,
+        df_j_default,
+        df_k_default,
+        grid_prune,
+        budget_bytes,
+        screening,
+        qmmm_system,
+    } = inputs;
+    let s = &cfg.scf;
+    let guess_basis = s.guess_basis_config()?;
+    let diis_flavor = s.diis_flavor()?;
+    let cosx = s.cosx_config(cosx_router_allowed)?;
+    // Validated in `load_config`; `None` = the default for `ri_j_task`.
+    let ri_j_precision = s.ri_j_precision_resolved()?;
+    // Validated in `load_config`; `None` = the library default.
+    let ri_k_precision = s.ri_k_precision_resolved()?;
+    // `None` is the production grid (`AtomicGridConfig::production`:
+    // 75x110, nwchem-radial, 1e-14 weight cutoff), which every KS path
+    // resolves `None` to. A `[dft]` grid key materialises an explicit config,
+    // and it touches the MAIN grid only: `nlc_grid` stays `None` so the
+    // VV10/NLC grid keeps its flat 50x50 default, where pruning has no valid
+    // table. `[dft] grid_radial`/`grid_angular` size the same main grid (unset
+    // sizes keep the 75x110 default); all keys unset is `None`, except on a
+    // meta-GGA `tda`/`tddft` run, which defaults to the finer response grid
+    // (`Config::main_dft_grid`).
+    let dft_grid = cfg.main_dft_grid(grid_prune)?;
+    // `"initial"` holds the configured guess's occupied block (the CLI has no
+    // dm0 input).
+    let mom_reference = s.mom_reference_resolved()?;
+    // Already validated (same rule, same message) by
+    // `ScfCfg::validate_accelerators`.
+    let trah_trigger = s
+        .trah_trigger
+        .map(TrahTrigger::new)
+        .transpose()
+        .map_err(|e| format!("[scf] {e}"))?;
+    let guess = if s.use_density_guess()? {
+        Guess::Sad
+    } else {
+        Guess::Core
+    };
+    // A `[qmmm]` MM region and an explicit `[external_potential]` are two
+    // sources for the same field. Combining them silently would double a
+    // contribution nobody asked for, so the QM/MM one wins and the clash is
+    // refused in `resolve_geometry`.
+    let external_potential = match qmmm_system {
+        Some(sys) => sys.to_external_potential(),
+        None => cfg.external_potential.to_external_potential(),
+    };
+    // `[pcm]`: IEF-PCM. Values were validated at load time and the kind/task
+    // scope by `Config::validate_cli_wired_keys`.
+    let pcm = cfg
+        .pcm
+        .as_ref()
+        .map(config::PcmCfg::to_pcm_config)
+        .transpose()?;
+    // Thole polarizable embedding: `[qmmm] polarizabilities_angstrom3` /
+    // `thole_a`; `None` (the plain embedding, bit for bit) without them.
+    let polarizable = match cfg.qmmm.as_ref().zip(qmmm_system) {
+        Some((q, sys)) => q.polarizable_embedding(sys)?,
+        None => None,
+    };
+    let eri = s
+        .eri
+        .as_deref()
+        .map(ferric_scf::incore_jk::EriMode::parse_config_str)
+        .transpose()
+        .map_err(|e| format!("[scf] eri: {e}"))?
+        .unwrap_or(ferric_scf::incore_jk::EriMode::Auto);
+    // Parsed at load time and its kind/task scope checked by
+    // `Config::validate_cli_wired_keys`.
+    let relativistic = s.relativistic_resolved()?;
+
+    // A kind default is a basis name, taken verbatim; a written key goes
+    // through the shared spelling parser ("exact"/"none"/"off"/... mean no
+    // density fitting, as in the Python bindings).
+    let kind_default = |d: Option<String>| d.map(AuxBasis::Named);
+    // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default is not
+    // applied under it (an explicit `df_k_aux` next to COSX is refused by the
+    // SCF as a conflict).
+    let df_k_default = if s.k_builder.as_deref() == Some("cosx") {
+        None
+    } else {
+        df_k_default
+    };
+    let options = ScfOptionsExt {
+        base: ScfOptions {
+            max_iter: Some(s.max_iter),
+            energy_conv: Some(s.energy_conv),
+            density_conv: Some(s.density_conv),
+            diis_size: Some(s.diis_size),
+            diis_flavor: Some(diis_flavor),
+            integral_thresh: Some(s.integral_thresh),
+            k_builder: s.k_builder.clone(),
+            cosx: Some(cosx),
+            df_j_aux: s
+                .df_j_aux
+                .as_deref()
+                .map(AuxBasis::parse)
+                .or_else(|| kind_default(df_j_default)),
+            df_k_aux: s
+                .df_k_aux
+                .as_deref()
+                .map(AuxBasis::parse)
+                .or_else(|| kind_default(df_k_default)),
+            ri_j_precision,
+            ri_k_precision,
+            // A written `level_shift`, 0 included, turns off the automatic
+            // meta-GGA shift (the lowering's rule).
+            level_shift: s.level_shift,
+            mom_after_iter: Some(s.mom_after_iter),
+            mom_reference: Some(mom_reference),
+            smearing_sigma: s.smearing_sigma,
+            soscf: Some(s.soscf),
+            guess: Some(guess),
+            guess_basis,
+            init_guess_density: None,
+            external_potential,
+            pcm,
+            // `None` = "unset" -> the SCF resolver auto-detects (0.8 x RAM).
+            // An explicit [memory] budget is passed through and honored.
+            three_index_budget_bytes: budget_bytes,
+            // `[scf] check_stability` / `stability_descent` (the descent acts
+            // on the verdict, so it implies the check).
+            stability: Some(s.stability()),
+            symmetry: Some(s.symmetry),
+            irrep_nelec: s.irrep_nelec.as_ref().map(|m| {
+                m.iter()
+                    .map(|(label, n)| (label.clone(), *n))
+                    .collect::<Vec<_>>()
+            }),
+            eri: Some(eri),
+            relativistic,
+            // SCF accelerators, both opt-in and OFF unless `[scf]` asks.
+            //
+            // AURORA is measured to win on closed-shell RHF (-24.2% J/K
+            // builds, growing with size) but is NOT defaulted on: its evidence
+            // is closed-shell RHF only, pure functionals are known-weak, open
+            // shell is unimplemented, and the paper's D_k^xc term -- the
+            // reason pure functionals fail -- is named but never defined.
+            //
+            // TRAH wins ITERATIONS everywhere measured but loses WALL TIME
+            // everywhere (45x DIIS on benzene/cc-pVDZ), because each step pays
+            // a Davidson of Fock builds. Its value is convergence RESCUE, not
+            // throughput.
+            aurora: Some(s.aurora),
+            trah_trigger,
+        },
+        diis_switch_thresh: s.diis_switch_thresh,
+        // The one place the CLI picks the RI-J default by task: optimize and
+        // frequencies resolve an unset precision to f64 (the f32 surface is
+        // jagged), an energy run to f32; an explicit value always wins.
+        ri_j_task: Some(ri_j_task_for(task)),
+        // Same resolved kind that selected `bounds` in `run`.
+        screening: Some(screening),
+        verbose: Some(s.verbose),
+    };
+    let mut config = options.into_rhf_config()?;
+    // Fields owned by other sections. `[cdft]` fills the constraint fields in
+    // `cdft::run` (it starts from this config), and the geometry drivers
+    // install their own `raw_handoff`; both keep the defaults here.
+    config.xc = xc;
+    config.dft_grid = dft_grid;
+    config.cosmo = cfg.cosmo.clone();
+    config.polarizable = polarizable;
+    Ok(config)
 }
 
 /// Run one CLI invocation. `args` has the shape of a process argv
@@ -793,150 +989,24 @@ pub fn run(args: Vec<String>) {
     // the installed settings are the TOML-aware ones. Printed next to the
     // memory audit so every run states where its GEMMs go.
     install_gpu_or_exit(&cfg, cli_gpu);
-    let mut rhf_config = RhfConfig {
-        guess_basis: guess_basis_or_exit(&cfg),
-        xc_omega: None,
-        max_iter: cfg.scf.max_iter,
-        energy_conv: cfg.scf.energy_conv,
-        density_conv: cfg.scf.density_conv,
-        diis_size: cfg.scf.diis_size,
-        diis_flavor: cfg.scf.diis_flavor().or_exit(),
-        diis_switch_thresh: cfg.scf.diis_switch_thresh.unwrap_or(1e-1),
-        smearing_sigma: cfg.scf.smearing_sigma,
-        integral_thresh: cfg.scf.integral_thresh,
-        k_builder: cfg.scf.k_builder.clone(),
-        cosx: cfg
-            .scf
-            .cosx_config(
-                ferric_core::gpu::settings().mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
-            )
-            .or_exit(),
-        // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
-        // the same "" (no density fitting) as in the Python bindings.
-        df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
-        // Validated in `load_config`; `None` = the default for `ri_j_task`.
-        ri_j_precision: cfg.scf.ri_j_precision_resolved().or_exit(),
-        // The one place the CLI picks the RI-J default by task: optimize and
-        // frequencies resolve an unset precision to f64 (the f32 surface is
-        // jagged), an energy run to f32; an explicit value always wins.
-        ri_j_task: ri_j_task_for(task),
-        // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default
-        // is not applied under it (an explicit `df_k_aux` next to COSX is
-        // refused by the SCF as a conflict).
-        // Validated in `load_config`; `None` = the library default.
-        ri_k_precision: cfg.scf.ri_k_precision_resolved().or_exit(),
-        df_k_aux: cfg
-            .scf
-            .df_k_aux_resolved()
-            .or(if cfg.scf.k_builder.as_deref() == Some("cosx") {
-                None
-            } else {
-                df_k_default
-            }),
-        xc,
-        // `None` is the production grid (`AtomicGridConfig::production`:
-        // 75x110, nwchem-radial, 1e-14 weight cutoff), which every KS path
-        // resolves `None` to. A `[dft]` grid key materialises an explicit
-        // config, and it touches the MAIN grid only: `nlc_grid` stays `None` so
-        // the VV10/NLC grid keeps its flat 50x50 default, where pruning has no
-        // valid table.
-        // `[dft] grid_radial`/`grid_angular` size the same main grid (unset
-        // sizes keep the 75x110 default); all keys unset is `None`, except on
-        // a meta-GGA `tda`/`tddft` run, which defaults to the finer response
-        // grid (`Config::main_dft_grid`).
-        dft_grid: cfg.main_dft_grid(grid_prune).or_exit(),
-        nlc_grid: None,
-        level_shift: cfg.scf.level_shift.unwrap_or(0.0),
-        // A written `[scf] level_shift`, 0 included, turns off the automatic
-        // meta-GGA shift.
-        meta_gga_auto_level_shift: cfg.scf.level_shift.is_none(),
-        newton_trigger: if cfg.scf.soscf { 1e-3 } else { 0.0 },
-        ah_trigger: 0.0,
-        mom_after_iter: cfg.scf.mom_after_iter,
-        // `[scf] mom_reference`, validated at load; `"initial"` holds the
-        // configured guess's occupied block (the CLI has no dm0 input).
-        mom_reference: cfg.scf.mom_reference_resolved().or_exit(),
-        // ROHF/ROKS F6 occupation guard (ferric_scf::rohf_occupation): ON, as
-        // in the Default impl. Not a TOML key; listed because this literal is
-        // exhaustive.
-        rohf_occupation_guard: true,
-        // `[cdft]` fills the constraint fields in `cdft::run` (it starts from
-        // this config); every other run is unconstrained.
-        constraints: Vec::new(),
-        cdft_lambda_tol: 1e-5,
-        cdft_max_outer: 30,
-        cdft_lambda_init: None,
-        // SCF accelerators, both opt-in and OFF unless `[scf]` asks.
-        //
-        // AURORA is measured to win on closed-shell RHF (-24.2% J/K builds,
-        // growing with size) but is NOT defaulted on: its evidence is
-        // closed-shell RHF only, pure functionals are known-weak, open shell
-        // is unimplemented, and the paper's D_k^xc term -- the reason pure
-        // functionals fail -- is named but never defined.
-        //
-        // TRAH wins ITERATIONS everywhere measured but loses WALL TIME
-        // everywhere (45x DIIS on benzene/cc-pVDZ), because each step pays a
-        // Davidson of Fock builds. Its value is convergence RESCUE, not
-        // throughput.
-        aurora: ferric_scf::aurora::AuroraConfig {
-            enabled: cfg.scf.aurora,
-            ..Default::default()
+    // `[scf]` lowered through `ferric_scf::options`; the one exit for its
+    // errors (`error: {e}`, status 1).
+    let mut rhf_config = try_scf_config(
+        &cfg,
+        ScfConfigInputs {
+            task,
+            cosx_router_allowed: ferric_core::gpu::settings()
+                .mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
+            xc,
+            df_j_default,
+            df_k_default,
+            grid_prune,
+            budget_bytes,
+            screening: screening_kind,
+            qmmm_system: qmmm_system.as_ref(),
         },
-        trah: Default::default(),
-        trah_trigger: cfg.scf.trah_trigger,
-        // Set by `cdft::run` for a `[cdft]` run; inert otherwise. Spelled out
-        // rather than left to a `..default()` that this literal does not use —
-        // a struct literal that lists every field is how a new knob gets
-        // noticed here instead of silently acquiring whatever the Default
-        // impl says.
-        cdft_stability_descent: true,
-        // `[scf] stability_descent` (rhf, uhf and ksdft; other kinds were
-        // refused by `Config::validate_cli_wired_keys`). It needs the
-        // stability verdict, so it turns `check_stability` on too, exactly as
-        // the Python `run_uhf(stability_descent=True)` does.
-        scf_stability_descent: cfg.scf.stability_descent,
-        fractional_occ: false,
-        // 0 = "unset" → the SCF resolver auto-detects (0.8×RAM). An explicit
-        // [memory] budget (incl. a deliberate 2 GiB) is passed through and honored.
-        three_index_budget_bytes: budget_bytes.unwrap_or(0),
-        init_guess_density: None,
-        use_sad_guess: cfg.scf.use_density_guess().or_exit(),
-        stall_window: None,
-        divergence_tol: None,
-        // A `[qmmm]` MM region and an explicit `[external_potential]` are two
-        // sources for the same field. Combining them silently would double a
-        // contribution nobody asked for, so the QM/MM one wins and the clash
-        // is refused above.
-        external_potential: match &qmmm_system {
-            Some(sys) => sys.to_external_potential(),
-            None => cfg.external_potential.to_external_potential(),
-        },
-        cosmo: cfg.cosmo.clone(),
-        // `[pcm]`: IEF-PCM. Values were validated at load time and the
-        // kind/task scope by `Config::validate_cli_wired_keys`.
-        pcm: resolve_pcm(&cfg),
-        // Thole polarizable embedding: `[qmmm] polarizabilities_angstrom3` /
-        // `thole_a`; `None` (the plain embedding, bit for bit) without them.
-        polarizable: resolve_polarizable(&cfg, qmmm_system.as_ref()),
-        verbose: cfg.scf.verbose,
-        check_stability: cfg.scf.runs_stability_check(),
-        // Same resolved kind that already selected `bounds`'s CSB table
-        // above; see the comment there for why it is parsed once.
-        screening: screening_kind,
-        irrep_nelec: cfg.scf.irrep_nelec.as_ref().map(|m| {
-            m.iter()
-                .map(|(label, n)| (label.clone(), *n))
-                .collect::<Vec<_>>()
-        }),
-        symmetry: cfg.scf.symmetry,
-        // The geometry drivers install their own per-evaluation hand-off.
-        raw_handoff: None,
-        eri: scf_eri_mode(cfg.scf.eri.as_deref()),
-        eri_route: Default::default(),
-        // `[scf] relativistic`: parsed at load time and its kind/task scope
-        // checked by `Config::validate_cli_wired_keys`.
-        relativistic: cfg.scf.relativistic_resolved().or_exit(),
-    };
+    )
+    .or_exit();
     // A fitted reference (`[scf] jk`, or rs-mp2-rpa's RI-JK default) skips
     // the DF-guess pre-stage below: a density-fitted pre-stage in front of a
     // density-fitted SCF only repeats it.
@@ -1510,20 +1580,6 @@ fn cosx_final_json(f: &ferric_scf::cosx_k::CosxFinalPass) -> serde_json::Value {
     })
 }
 
-/// `RhfConfig::pcm` from `[pcm]` (`None` when the section is absent). The
-/// values were already validated when the file was loaded, so the error arm
-/// is a backstop. A named function rather than a closure in `run()`'s struct
-/// literal, which is already at the project's complexity ceiling.
-fn resolve_pcm(cfg: &Config) -> Option<ferric_pcm::PcmConfig> {
-    match cfg.pcm.as_ref()?.to_pcm_config() {
-        Ok(p) => Some(p),
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        }
-    }
-}
-
 /// Resolve the molecule to solve, and the QM/MM system behind it if `[qmmm]`
 /// is set.
 ///
@@ -1562,17 +1618,6 @@ fn resolve_geometry(cfg: &Config) -> (Option<ferric_scf::qmmm::QmmmSystem>, Mole
         q.pqr
     );
     (Some(sys), mol)
-}
-
-/// `RhfConfig::polarizable` from `[qmmm] polarizabilities_angstrom3` /
-/// `thole_a` (`None`, the plain embedding, without them). Split out of `run`
-/// for the complexity ceiling, like [`resolve_geometry`].
-fn resolve_polarizable(
-    cfg: &Config,
-    sys: Option<&ferric_scf::qmmm::QmmmSystem>,
-) -> Option<ferric_scf::polarizable::PolarizableSites> {
-    let (q, sys) = cfg.qmmm.as_ref().zip(sys)?;
-    q.polarizable_embedding(sys).or_exit()
 }
 
 /// `method.kind = "rhf"`. Extracted verbatim from the former `main()`
@@ -9005,5 +9050,551 @@ mod energy_conv_advisory_tests {
                 "{kind}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod scf_config_lowering_tests {
+    //! [`try_scf_config`] must reproduce, field by field, the `RhfConfig`
+    //! literal `run` built before the `[scf]` section went through
+    //! `ferric_scf::options`. [`old_literal`] is that literal, copied verbatim
+    //! (with the helpers it called), except that the one global it read, the
+    //! installed `[gpu]` settings, is the `router_allowed` argument both sides
+    //! receive. Configs are compared through their `Debug` text, except
+    //! `guess_basis`, whose `BasisSet` keeps shells in a `HashMap` (its `Debug`
+    //! order differs between equal values) and is compared with `PartialEq`.
+    use super::*;
+    use crate::config::Config;
+    use crate::error::CliError;
+
+    // ── the oracle: the pre-refactor literal and the helpers it called ──
+
+    fn guess_basis_or_exit(cfg: &Config) -> Option<ferric_scf::basis2::GuessBasis> {
+        cfg.scf.guess_basis_config().or_exit()
+    }
+
+    fn resolve_pcm(cfg: &Config) -> Option<ferric_pcm::PcmConfig> {
+        match cfg.pcm.as_ref()?.to_pcm_config() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    fn resolve_polarizable(
+        cfg: &Config,
+        sys: Option<&ferric_scf::qmmm::QmmmSystem>,
+    ) -> Option<ferric_scf::polarizable::PolarizableSites> {
+        let (q, sys) = cfg.qmmm.as_ref().zip(sys)?;
+        q.polarizable_embedding(sys).or_exit()
+    }
+
+    fn scf_eri_mode(eri: Option<&str>) -> ferric_scf::incore_jk::EriMode {
+        match eri.map(ferric_scf::incore_jk::EriMode::parse_config_str) {
+            None => ferric_scf::incore_jk::EriMode::Auto,
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                eprintln!("error: [scf] eri: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    /// The inputs `run` computes before the literal, computed the same way.
+    struct Pre {
+        xc: Option<String>,
+        df_j_default: Option<String>,
+        df_k_default: Option<String>,
+        grid_prune: Option<ferric_dft::prune::PruneScheme>,
+        screening_kind: ferric_scf::screening::ScreeningKind,
+        budget_bytes: Option<usize>,
+    }
+
+    /// `None` when `run` would have exited before reaching the literal (a
+    /// bad `[scf] screening`); such a case has nothing to compare.
+    fn pre(cfg: &Config) -> Option<Pre> {
+        let screening_kind = cfg
+            .scf
+            .screening
+            .as_deref()
+            .map_or(Ok(ferric_scf::screening::ScreeningKind::default()), |s| {
+                ferric_scf::screening::ScreeningKind::parse_config_str(s)
+            })
+            .ok()?;
+        let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
+        Some(Pre {
+            xc,
+            df_j_default,
+            df_k_default,
+            grid_prune: resolve_grid_prune(cfg),
+            screening_kind,
+            budget_bytes: cfg.memory.budget_bytes(),
+        })
+    }
+
+    fn old_literal(cfg: &Config, task: &str, router_allowed: bool) -> RhfConfig {
+        let Pre {
+            xc,
+            df_j_default,
+            df_k_default,
+            grid_prune,
+            screening_kind,
+            budget_bytes,
+        } = pre(cfg).unwrap();
+        let qmmm_system: Option<ferric_scf::qmmm::QmmmSystem> = None;
+        RhfConfig {
+            guess_basis: guess_basis_or_exit(cfg),
+            xc_omega: None,
+            max_iter: cfg.scf.max_iter,
+            energy_conv: cfg.scf.energy_conv,
+            density_conv: cfg.scf.density_conv,
+            diis_size: cfg.scf.diis_size,
+            diis_flavor: cfg.scf.diis_flavor().or_exit(),
+            diis_switch_thresh: cfg.scf.diis_switch_thresh.unwrap_or(1e-1),
+            smearing_sigma: cfg.scf.smearing_sigma,
+            integral_thresh: cfg.scf.integral_thresh,
+            k_builder: cfg.scf.k_builder.clone(),
+            cosx: cfg.scf.cosx_config(router_allowed).or_exit(),
+            df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
+            ri_j_precision: cfg.scf.ri_j_precision_resolved().or_exit(),
+            ri_j_task: ri_j_task_for(task),
+            ri_k_precision: cfg.scf.ri_k_precision_resolved().or_exit(),
+            df_k_aux: cfg.scf.df_k_aux_resolved().or(
+                if cfg.scf.k_builder.as_deref() == Some("cosx") {
+                    None
+                } else {
+                    df_k_default
+                },
+            ),
+            xc,
+            dft_grid: cfg.main_dft_grid(grid_prune).or_exit(),
+            nlc_grid: None,
+            level_shift: cfg.scf.level_shift.unwrap_or(0.0),
+            meta_gga_auto_level_shift: cfg.scf.level_shift.is_none(),
+            newton_trigger: if cfg.scf.soscf { 1e-3 } else { 0.0 },
+            ah_trigger: 0.0,
+            mom_after_iter: cfg.scf.mom_after_iter,
+            mom_reference: cfg.scf.mom_reference_resolved().or_exit(),
+            rohf_occupation_guard: true,
+            constraints: Vec::new(),
+            cdft_lambda_tol: 1e-5,
+            cdft_max_outer: 30,
+            cdft_lambda_init: None,
+            aurora: ferric_scf::aurora::AuroraConfig {
+                enabled: cfg.scf.aurora,
+                ..Default::default()
+            },
+            trah: Default::default(),
+            trah_trigger: cfg.scf.trah_trigger,
+            cdft_stability_descent: true,
+            scf_stability_descent: cfg.scf.stability_descent,
+            fractional_occ: false,
+            three_index_budget_bytes: budget_bytes.unwrap_or(0),
+            init_guess_density: None,
+            use_sad_guess: cfg.scf.use_density_guess().or_exit(),
+            stall_window: None,
+            divergence_tol: None,
+            external_potential: match &qmmm_system {
+                Some(sys) => sys.to_external_potential(),
+                None => cfg.external_potential.to_external_potential(),
+            },
+            cosmo: cfg.cosmo.clone(),
+            pcm: resolve_pcm(cfg),
+            polarizable: resolve_polarizable(cfg, qmmm_system.as_ref()),
+            verbose: cfg.scf.verbose,
+            check_stability: cfg.scf.runs_stability_check(),
+            screening: screening_kind,
+            irrep_nelec: cfg.scf.irrep_nelec.as_ref().map(|m| {
+                m.iter()
+                    .map(|(label, n)| (label.clone(), *n))
+                    .collect::<Vec<_>>()
+            }),
+            symmetry: cfg.scf.symmetry,
+            raw_handoff: None,
+            eri: scf_eri_mode(cfg.scf.eri.as_deref()),
+            eri_route: Default::default(),
+            relativistic: cfg.scf.relativistic_resolved().or_exit(),
+        }
+    }
+
+    // ── the new path, fed exactly what `run` now passes ──
+
+    fn new_lowering(
+        cfg: &Config,
+        task: &str,
+        router_allowed: bool,
+    ) -> Option<Result<RhfConfig, CliError>> {
+        let Pre {
+            xc,
+            df_j_default,
+            df_k_default,
+            grid_prune,
+            screening_kind,
+            budget_bytes,
+        } = pre(cfg)?;
+        Some(try_scf_config(
+            cfg,
+            ScfConfigInputs {
+                task,
+                cosx_router_allowed: router_allowed,
+                xc,
+                df_j_default,
+                df_k_default,
+                grid_prune,
+                budget_bytes,
+                screening: screening_kind,
+                qmmm_system: None,
+            },
+        ))
+    }
+
+    fn same(a: &RhfConfig, b: &RhfConfig, msg: &str) {
+        assert_eq!(a.guess_basis, b.guess_basis, "{msg}: guess_basis");
+        let (mut a, mut b) = (a.clone(), b.clone());
+        a.guess_basis = None;
+        b.guess_basis = None;
+        assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{msg}");
+    }
+
+    /// The task / `[gpu]` combinations that change the CLI policy: the RI-J
+    /// task class (energy vs the geometry tasks) and the COSX fp64 router.
+    const TASKS: &[&str] = &["energy", "optimize", "frequencies", "md"];
+
+    fn parse(toml_text: &str) -> Config {
+        toml::from_str(toml_text).unwrap_or_else(|e| panic!("{e}\n{toml_text}"))
+    }
+
+    fn header(kind: &str, extra: &str) -> String {
+        format!(
+            "[molecule]\nxyz = \"unused.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"{kind}\"\n{extra}"
+        )
+    }
+
+    /// Assert old == new for every task and router state; returns how many
+    /// combinations the new lowering accepted.
+    fn check_all(toml_text: &str, label: &str) -> usize {
+        let cfg = parse(toml_text);
+        let mut ok = 0;
+        for task in TASKS {
+            for router in [false, true] {
+                let msg = format!("{label}, task = {task}, router = {router}\n{toml_text}");
+                let Some(new) = new_lowering(&cfg, task, router) else {
+                    continue;
+                };
+                // An error is where the old literal would have exited; there
+                // is no config to compare (the stderr text is checked by
+                // the binary comparison).
+                if let Ok(new) = new {
+                    same(&old_literal(&cfg, task, router), &new, &msg);
+                    ok += 1;
+                }
+            }
+        }
+        ok
+    }
+
+    const KINDS: &[(&str, &str)] = &[
+        ("rhf", ""),
+        ("uhf", ""),
+        ("ksdft", "[dft]\nfunctional = \"pbe0\"\n"),
+        ("rimp2", ""),
+        (
+            "rhf",
+            "[dft]\nfunctional = \"b3lyp\"\ngrid_radial = 50\ngrid_angular = 110\n",
+        ),
+    ];
+
+    #[test]
+    fn default_toml_matches_old_literal() {
+        for (kind, extra) in KINDS {
+            let ok = check_all(&header(kind, extra), &format!("default {kind}"));
+            assert_eq!(ok, 2 * TASKS.len(), "{kind}");
+        }
+    }
+
+    /// Every `[scf]` key the literal read, with values valid together, plus
+    /// the other sections it read (`[memory]`, `[pcm]`, `[dft]` grid).
+    const ALL_KEYS: &str = "\
+[scf]
+max_iter = 77
+energy_conv = 1e-7
+density_conv = 3e-9
+diis_size = 5
+diis = \"adiis\"
+diis_switch_thresh = 0.05
+smearing_sigma = 0.01
+guess = \"hcore\"
+guess_basis = \"sto-3g\"
+guess_projection = \"overlap\"
+soscf = true
+aurora = true
+trah_trigger = 1e-4
+integral_thresh = 1e-11
+ri_j_precision = \"f64\"
+ri_k_precision = \"f32\"
+k_builder = \"cosx\"
+screening = \"csb\"
+eri = \"direct\"
+relativistic = \"x2c1e\"
+cosx_grid = { radial = 35, angular = 194, prune = \"sgx\" }
+cosx_final_pass = true
+cosx_final_grid = { radial = 50, angular = 302 }
+cosx_grid_schedule = true
+cosx_overlap_fit = false
+cosx_backend = \"md3c1e\"
+cosx_screen_thresh = 1e-8
+cosx_half_transform = \"dense\"
+cosx_fp64_multiplier = 1e4
+df_j_aux = \" def2-universal-jkfit \"
+df_k_aux = \"Exact\"
+level_shift = 0.0
+mom_after_iter = 4
+mom_reference = \"previous\"
+verbose = true
+check_stability = true
+stability_descent = true
+symmetry = true
+irrep_nelec = { A1 = 6, B2 = 2 }
+[memory]
+budget_gb = 2
+[pcm]
+solvent = \"water\"
+";
+
+    #[test]
+    fn all_keys_toml_matches_old_literal() {
+        for (kind, extra) in KINDS {
+            let text = header(kind, &format!("{extra}{ALL_KEYS}"));
+            // `cosx_fp64_multiplier` is only accepted with the router on.
+            let ok = check_all(&text, &format!("all keys {kind}"));
+            assert_eq!(ok, TASKS.len(), "{kind}");
+        }
+    }
+
+    /// With the installed `[gpu]` settings of this (no-`gpu`-feature) test
+    /// build as the router input, as `run` reads it.
+    #[test]
+    fn installed_gpu_settings_router_matches_old_literal() {
+        let router =
+            ferric_core::gpu::settings().mixed_allows(ferric_core::gpu::MixedKernel::CosxKern);
+        let cfg = parse(&header(
+            "rhf",
+            "[scf]\nk_builder = \"cosx\"\ncosx_screen_thresh = 1e-7\n",
+        ));
+        for task in TASKS {
+            let new = new_lowering(&cfg, task, router).unwrap().unwrap();
+            same(&old_literal(&cfg, task, router), &new, task);
+        }
+    }
+
+    /// splitmix64, as in `ferric_scf::options`' tests (no rand dependency).
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+        fn coin(&mut self) -> bool {
+            self.next() & 1 == 1
+        }
+        /// True with probability 1/n.
+        fn one_in(&mut self, n: u64) -> bool {
+            self.next().is_multiple_of(n)
+        }
+        fn pick<T: Clone>(&mut self, xs: &[T]) -> T {
+            xs[(self.next() % xs.len() as u64) as usize].clone()
+        }
+        /// A positive finite f64 spanning many decades, as TOML.
+        fn pos(&mut self) -> String {
+            let mantissa = 1.0 + (self.next() % 1000) as f64 / 1000.0;
+            format!(
+                "{:e}",
+                mantissa * 10f64.powi((self.next() % 16) as i32 - 13)
+            )
+        }
+        fn string(&mut self, xs: &[&str]) -> String {
+            format!("{:?}", self.pick(xs))
+        }
+    }
+
+    /// One random `[scf]` table (each key independently present, values
+    /// mostly valid with an occasional bad one) plus optional `[memory]` /
+    /// `[pcm]` / `[dft]` grid sections.
+    fn random_toml(r: &mut Rng) -> String {
+        const AUX: &[&str] = &[
+            "def2-universal-jkfit",
+            "  def2-svp-jkfit ",
+            "Exact",
+            "none",
+            " OFF ",
+            "",
+            "conventional",
+        ];
+        let cosx = r.one_in(3);
+        let mut keys: Vec<(&'static str, String)> = Vec::new();
+        fn put(
+            r: &mut Rng,
+            keys: &mut Vec<(&'static str, String)>,
+            key: &'static str,
+            value: impl FnOnce(&mut Rng) -> String,
+        ) {
+            if r.coin() {
+                let v = value(r);
+                keys.push((key, v));
+            }
+        }
+        put(r, &mut keys, "max_iter", |r| {
+            (r.next() % 300 + 1).to_string()
+        });
+        put(r, &mut keys, "energy_conv", |r| r.pos());
+        put(r, &mut keys, "density_conv", |r| r.pos());
+        put(r, &mut keys, "diis_size", |r| {
+            (r.next() % 20 + 1).to_string()
+        });
+        put(r, &mut keys, "diis", |r| {
+            r.string(&["pulay", "adiis", "ediis", "pulay", "nope"])
+        });
+        put(r, &mut keys, "diis_switch_thresh", |r| r.pos());
+        put(r, &mut keys, "smearing_sigma", |r| r.pos());
+        put(r, &mut keys, "guess", |r| {
+            r.string(&["minao", "sad", "hcore", "minao", "nope"])
+        });
+        put(r, &mut keys, "soscf", |r| r.coin().to_string());
+        put(r, &mut keys, "aurora", |r| r.coin().to_string());
+        put(r, &mut keys, "trah_trigger", |r| {
+            if r.one_in(8) {
+                "-1.0".into()
+            } else {
+                r.pos()
+            }
+        });
+        put(r, &mut keys, "integral_thresh", |r| r.pos());
+        put(r, &mut keys, "ri_j_precision", |r| {
+            r.string(&["f32", "f64", "f32", "f16"])
+        });
+        put(r, &mut keys, "ri_k_precision", |r| {
+            r.string(&["f32", "f64", "f64", "f16"])
+        });
+        put(r, &mut keys, "screening", |r| {
+            r.string(&["schwarz", "csb", "csam", "csb", "nope"])
+        });
+        put(r, &mut keys, "eri", |r| {
+            r.string(&["auto", "direct", "incore", "auto", "nope"])
+        });
+        put(r, &mut keys, "relativistic", |r| {
+            r.string(&["x2c1e", "x2c1e", "x2c1e", "nope"])
+        });
+        put(r, &mut keys, "df_j_aux", |r| r.string(AUX));
+        put(r, &mut keys, "df_k_aux", |r| r.string(AUX));
+        put(r, &mut keys, "level_shift", |r| {
+            if r.coin() {
+                "0.0".into()
+            } else {
+                r.pos()
+            }
+        });
+        put(r, &mut keys, "mom_after_iter", |r| {
+            (r.next() % 10).to_string()
+        });
+        put(r, &mut keys, "mom_reference", |r| {
+            r.string(&["previous", "initial", "previous", "nope"])
+        });
+        put(r, &mut keys, "verbose", |r| r.coin().to_string());
+        put(r, &mut keys, "check_stability", |r| r.coin().to_string());
+        put(r, &mut keys, "stability_descent", |r| r.coin().to_string());
+        put(r, &mut keys, "symmetry", |r| r.coin().to_string());
+        put(r, &mut keys, "irrep_nelec", |r| {
+            format!("{{ A1 = {}, B2 = {} }}", r.next() % 9, r.next() % 3)
+        });
+        if r.coin() {
+            put(r, &mut keys, "guess_basis", |r| {
+                r.string(&["sto-3g", "6-31g"])
+            });
+        }
+        if r.one_in(4) {
+            put(r, &mut keys, "guess_projection", |r| {
+                r.string(&["fock", "overlap", "fock", "nope"])
+            });
+        }
+        // The COSX knobs are an error without `k_builder = "cosx"` (or
+        // `jk = "rijcosx"`), so they mostly come together.
+        if cosx || r.one_in(8) {
+            if cosx {
+                keys.push(("k_builder", "\"cosx\"".into()));
+            } else {
+                keys.push(("k_builder", r.string(&["direct", "link"])));
+            }
+            put(r, &mut keys, "cosx_grid", |r| {
+                let angular = r.pick(&[110, 194, 302, 195]);
+                if r.coin() {
+                    format!("{{ radial = 35, angular = {angular}, prune = \"sgx\" }}")
+                } else {
+                    format!("{{ radial = 35, angular = {angular} }}")
+                }
+            });
+            put(r, &mut keys, "cosx_final_pass", |r| r.coin().to_string());
+            if r.one_in(3) {
+                put(r, &mut keys, "cosx_final_grid", |_| {
+                    "{ radial = 50, angular = 302 }".into()
+                });
+            }
+            put(r, &mut keys, "cosx_grid_schedule", |r| r.coin().to_string());
+            put(r, &mut keys, "cosx_overlap_fit", |r| r.coin().to_string());
+            put(r, &mut keys, "cosx_backend", |r| {
+                r.string(&["md3c1e", "cosx-a", "md3c1e", "nope"])
+            });
+            put(r, &mut keys, "cosx_screen_thresh", |r| {
+                r.pick(&["0.0", "1e-7", "1e-9", "-1.0"]).into()
+            });
+            put(r, &mut keys, "cosx_half_transform", |r| {
+                r.string(&["sparse", "dense", "nope"])
+            });
+            if r.one_in(3) {
+                put(r, &mut keys, "cosx_fp64_multiplier", |r| {
+                    r.pick(&["0.0", "1e5"]).into()
+                });
+            }
+        } else if r.coin() {
+            keys.push(("k_builder", r.string(&["direct", "link"])));
+        }
+        let mut text = String::from("[scf]\n");
+        for (k, v) in keys {
+            text.push_str(&format!("{k} = {v}\n"));
+        }
+        if r.one_in(3) {
+            text.push_str(&format!("[memory]\nbudget_gb = {}\n", r.next() % 8 + 1));
+        }
+        if r.one_in(4) {
+            text.push_str("[pcm]\nsolvent = \"water\"\n");
+        }
+        text
+    }
+
+    /// Seeded random `[scf]` tables across kinds, tasks and router states:
+    /// wherever the new lowering accepts the config, it equals the old
+    /// literal.
+    #[test]
+    fn random_scf_tables_match_old_literal() {
+        let mut r = Rng(0x5eed_0c11_0007);
+        let mut ok = 0;
+        let cases = 192;
+        for case in 0..cases {
+            let (kind, extra) = r.pick(KINDS);
+            let text = header(kind, &format!("{extra}{}", random_toml(&mut r)));
+            ok += check_all(&text, &format!("case {case}"));
+        }
+        // Most cases must reach the comparison, or the test proves little.
+        let total = cases * TASKS.len() * 2;
+        assert!(
+            ok * 4 >= total,
+            "only {ok} of {total} combinations compared"
+        );
     }
 }

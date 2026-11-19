@@ -4273,11 +4273,26 @@ impl LadderRungCfg {
 }
 
 impl ScfCfg {
-    /// `RhfConfig::check_stability` for this run: `check_stability`, or
-    /// `stability_descent`, which acts on the stability verdict and so needs it
-    /// computed (the Python `run_uhf(stability_descent=True)` sets both).
+    /// The run's stability handling from the two independent keys:
+    /// `stability_descent` is [`Stability::Descend`](ferric_scf::options::Stability)
+    /// (it acts on the stability verdict, so it implies the check, as the
+    /// Python `run_uhf(stability_descent=True)` does), else `check_stability`
+    /// is `Check`, else `Off`.
+    pub fn stability(&self) -> ferric_scf::options::Stability {
+        use ferric_scf::options::Stability;
+        if self.stability_descent {
+            Stability::Descend
+        } else if self.check_stability {
+            Stability::Check
+        } else {
+            Stability::Off
+        }
+    }
+
+    /// Whether this run computes the stability verdict (`check_stability`
+    /// or `stability_descent`; see [`ScfCfg::stability`]).
     pub fn runs_stability_check(&self) -> bool {
-        self.check_stability || self.stability_descent
+        self.stability() != ferric_scf::options::Stability::Off
     }
 
     /// Build the SCF convergence ladder. If no `[[scf.ladder]]` rungs are
