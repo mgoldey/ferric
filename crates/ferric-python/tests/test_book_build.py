@@ -678,8 +678,23 @@ def test_appendix_a_lists_boxes_scripts_registry_and_todos(tree):
     assert "| toy | 1.1 |" in text and "| toy2 | - |" in text
     assert "| holey | no proof |" in text
     a4 = text.split("{#appendix-a-unverified}")[1]
-    assert "| `toy.b` | 1.1 | add a claim |" in a4 and "toy.a" not in a4
+    assert "| `toy.b` | 1.1 |" in a4 and "toy.a" not in a4
+    assert "add a claim" not in a4  # the to-do stays in the box, not the appendix
     assert "1 verified equations and 1 unverified" in text
+
+
+def test_appendix_a_sections_skip_a_gap_page(tree):
+    write(
+        tree,
+        {
+            "book/src/11-x/index.md": "# X {#x}\n",
+            "book/src/11-x/01-y.md": "# Y {#y}\n\n<!-- status: gap; registry: toy -->\n",
+        },
+    )
+    resummarize(tree)
+    assert check(tree).errors == []
+    text = (tree / APP["A"]).read_text()
+    assert "| toy | 1.1 |" in text  # 2.1, the stub, is not offered as the derivation
 
 
 def test_appendix_b_lists_each_function_once_with_its_sections(tree):
@@ -697,11 +712,18 @@ def test_appendix_b_lists_each_function_once_with_its_sections(tree):
     resummarize(tree)
     assert check(tree).errors == []
     text = (tree / APP["B"]).read_text()
-    assert "## B.ferric-toy" in text
-    assert "| `ferric-toy/src/lib.rs::pair_energy` | 1.1, 2.1 |" in text
+    assert "## ferric-toy {#appendix-b-ferric-toy}" in text
+    assert (
+        "| `ferric-toy/src/lib.rs::pair_energy` | function | "
+        "[1.1](10-mp2/01-toy.md), [2.1](11-x/01-y.md) |" in text
+    )
     assert text.count("`ferric-toy/src/lib.rs::pair_energy`") == 1
-    assert "| `ferric-toy/src/lib.rs::other_fn` | 1.1 |" in text
-    assert "ferric-toy/src/lib.rs::toy_test` | 1.1 |" in text  # a rust_test field
+    assert (
+        "| `ferric-toy/src/lib.rs::other_fn` | function | [1.1](10-mp2/01-toy.md) |"
+        in text
+    )
+    # a rust_test field, and its kind from the #[test] attribute
+    assert "ferric-toy/src/lib.rs::toy_test` | test | [1.1](10-mp2/01-toy.md) |" in text
     # the generated appendices do not index themselves
     assert "App. " not in text
 
@@ -716,12 +738,36 @@ def test_appendix_c_is_generated_from_the_validation_page(tree):
     assert check(tree).errors == []
     text = (tree / APP["C"]).read_text()
     assert "| Proven | Agrees with an independent reference. |" in text
-    assert "| `toyscf` | SCF | `run_toy` | Proven |" in text
-    assert "| `toymp2` | MP2 | `run_toy2` | Smoke |" in text
+    # no registry route: the family name; no certificate rows: tasks not graded
+    assert "| `toyscf` | SCF | `run_toy` | Proven | not graded | not graded |" in text
+    assert "| `toymp2` | MP2 | `run_toy2` | Smoke | not graded | not graded |" in text
     assert "2 kinds: 1 Proven, 1 Smoke." in text
     sub(tree, "site/src/reference/validation.md", "| Smoke |", "| Spike |")
     assert check(tree).errors == []
     assert "2 kinds: 1 Proven, 1 Spike." in (tree / APP["C"]).read_text()
+
+
+TOY_CERTIFICATE = """
+pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
+    ("optimize", "toyscf"),
+    ("frequencies", "toyscf"),
+    ("optimize", "toymp2"),
+];
+
+pub const TASK_KIND_GRADE_CAPS: &[(&str, &str, Grade)] = &[
+    ("frequencies", "toyscf", Grade::ProvenNarrow),
+];
+"""
+
+
+def test_appendix_c_grades_tasks_from_the_certificate(tree):
+    write(tree, {"crates/ferric-core/src/certificate.rs": TOY_CERTIFICATE})
+    assert check(tree).errors == []
+    text = (tree / APP["C"]).read_text()
+    # a ceiling lowers the task below the kind; a task never rises above it
+    assert "| `run_toy` | Proven | Proven | Proven (narrow) |" in text
+    assert "| `run_toy2` | Smoke | Smoke | not graded |" in text
+    assert bb.task_grade("Proven (narrow)", "Proven") == "Proven (narrow)"
 
 
 def test_appendix_c_goes_stale_when_a_grade_changes(tree):
@@ -740,7 +786,8 @@ def test_handwritten_appendix_is_checked_indexed_and_listed_last(tree):
     resummarize(tree)
     assert check(tree).errors == []
     assert (
-        "| `ferric-toy/src/lib.rs::other_fn` | 1.1, App. D |"
+        "| `ferric-toy/src/lib.rs::other_fn` | function | "
+        "[1.1](10-mp2/01-toy.md), [App. D](appendix-d-toy.md) |"
         in (tree / APP["B"]).read_text()
     )
     lines = (tree / "book/src/SUMMARY.md").read_text().splitlines()

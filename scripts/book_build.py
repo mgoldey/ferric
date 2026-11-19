@@ -1254,12 +1254,23 @@ def scan_boxes(root: Path) -> list[tuple[str, str, dict]]:
     return out
 
 
-def scan_code_refs(root: Path) -> dict[tuple[str, str], set[str]]:
-    """{(path under crates/, item): page labels} over every ``file.rs::item`` reference."""
-    refs: dict[tuple[str, str], set[str]] = {}
+def page_link(root: Path, p: Path, nb: Numbering | None = None) -> tuple[str, str]:
+    """(page label, Markdown link to the page from a page at the top of book/src)."""
+    lab = page_label(root, p, nb)
+    return lab, f"[{lab}]({p.relative_to(book_src(root)).as_posix()})"
+
+
+def links(pairs: set[tuple[str, str]]) -> str:
+    """The links of (label, link) pairs, in label order."""
+    return ", ".join(link for _, link in sorted(pairs, key=lambda t: label_key(t[0])))
+
+
+def scan_code_refs(root: Path) -> dict[tuple[str, str], set[tuple[str, str]]]:
+    """{(path under crates/, item): (page label, link)} over every ``file.rs::item`` reference."""
+    refs: dict[tuple[str, str], set[tuple[str, str]]] = {}
     nb = numbering(root)
     for p in source_pages(root):
-        lab = page_label(root, p, nb)
+        lab = page_link(root, p, nb)
         text = re.sub(
             r"<!--\s*unverified:.*?-->", "", strip_fences(p.read_text()), flags=re.S
         )
@@ -1267,6 +1278,53 @@ def scan_code_refs(root: Path) -> dict[tuple[str, str], set[str]]:
             path = path.removeprefix("crates/")
             refs.setdefault((path, item), set()).add(lab)
     return refs
+
+
+TEST_ATTR_RE = re.compile(r"#\[(?:[\w:]*::)?(?:test|rstest|test_case)\b")
+
+
+def item_kind(root: Path, path: str, item: str) -> str:
+    """'test', 'function', 'type', 'constant' or 'module' for a cited Rust item."""
+    hit = resolve_item(root, path, item)
+    if hit is None:
+        return "-"
+    f, start = hit
+    text = read(f)
+    line = text[start : text.find("\n", start)]
+    word = re.search(r"\b(fn|struct|enum|trait|union|type|const|static|mod)\b", line)
+    kw = word.group(1) if word else ""
+    if kw == "fn":
+        # The attribute and doc-comment lines directly above the declaration.
+        above = []
+        for ln in reversed(text[:start].split("\n")[:-1]):
+            if not ln.strip().startswith(("#[", "//")):
+                break
+            above.append(ln)
+        in_tests = "/tests/" in f.as_posix() or "/benches/" in f.as_posix()
+        is_test = any(TEST_ATTR_RE.search(ln) for ln in above)
+        return "test" if is_test or in_tests else "function"
+    return {
+        "struct": "type",
+        "enum": "type",
+        "trait": "type",
+        "union": "type",
+        "type": "type",
+        "const": "constant",
+        "static": "constant",
+        "mod": "module",
+    }.get(kw, "-")
+
+
+BARE_NAME_RE = re.compile(r"`([a-z][a-z0-9]*_[a-z0-9_]*)(?:\(\))?`")
+
+
+def bare_names(root: Path) -> set[str]:
+    """Backticked snake_case names in running text that are not a checked reference."""
+    out: set[str] = set()
+    for p in source_pages(root):
+        text = re.sub(r"<!--.*?-->", "", strip_fences(p.read_text()), flags=re.DOTALL)
+        out.update(BARE_NAME_RE.findall(text))
+    return out
 
 
 def load_registry(root: Path) -> dict:
@@ -1292,6 +1350,13 @@ def appendix_a(root: Path) -> str:
         "one of them.",
         "",
         "## Verified equations {#appendix-a-verified}",
+        "",
+        (
+            "The Claim column is the one claim of the script that the box binds and "
+            "the checker resolves. A box's Proof row may name further checks of the "
+            "same script; the runner runs them, but the build does not bind them to "
+            "the box."
+        ),
         "",
         "| Box | Section | Proof script | Claim | Registry |",
         "|---|---|---|---|---|",
@@ -1321,7 +1386,10 @@ def appendix_a(root: Path) -> str:
     for p in section_files(root):
         m = HEADER_RE.match(p.read_text())
         if m:
-            for rid in split_ids(parse_fields(m.group(1)).get("registry", "")):
+            fields = parse_fields(m.group(1))
+            if fields.get("status", "") == "gap":
+                continue  # a stub holds no derivation to send the reader to
+            for rid in split_ids(fields.get("registry", "")):
                 covered.setdefault(rid, set()).add(page_label(root, p, nb))
     out += [
         "",
@@ -1347,13 +1415,16 @@ def appendix_a(root: Path) -> str:
         "",
         "## Unverified equations {#appendix-a-unverified}",
         "",
-        "Equations stated with no machine check yet.",
+        (
+            "Equations stated with no machine check yet. What each still needs is "
+            "recorded in the box's `todo` field on its page."
+        ),
         "",
-        "| Box | Section | To do |",
-        "|---|---|---|",
+        "| Box | Section |",
+        "|---|---|",
     ]
     for _, lab, f in unverified:
-        out.append(f"| `{cell(f.get('id', ''))}` | {lab} | {cell(f.get('todo', ''))} |")
+        out.append(f"| `{cell(f.get('id', ''))}` | {lab} |")
     return "\n".join(out) + "\n"
 
 
@@ -1362,6 +1433,7 @@ def appendix_b(root: Path) -> str:
     crates: dict[str, list[tuple[str, str]]] = {}
     for path, item in refs:
         crates.setdefault(path.split("/")[0], []).append((path, item))
+    bare = bare_names(root)
     out = [
         "# Appendix B: Functions cited {#appendix-b}",
         "",
@@ -1372,13 +1444,28 @@ def appendix_b(root: Path) -> str:
         f"{len(refs)} items in {len(crates)} crates are named in the book as "
         "a Rust file path and an item name joined by two colons, in the text, in a verified equation's `code` or "
         "`rust_test` field, or in an excerpt header. The checker resolves each to "
-        "a declaration. Each row lists the sections that name the item.",
+        "a declaration. Each row gives the kind of the declaration (function, "
+        "test, type, constant or module) and links the sections that name the item.",
+        "",
+        (
+            f"The text also has {len(bare)} distinct backticked snake_case names that are "
+            "not in this checked form: functions named without their file, and "
+            "configuration keys and variables. The checker does not resolve those."
+        ),
     ]
     for crate in sorted(crates):
-        out += ["", f"## B.{crate}", "", "| Item | Sections |", "|---|---|"]
+        out += [
+            "",
+            f"## {crate} {{#appendix-b-{re.sub(r'[^a-z0-9]+', '-', crate.lower()).strip('-')}}}",
+            "",
+            "| Item | Kind | Sections |",
+            "|---|---|---|",
+        ]
         for path, item in sorted(crates[crate]):
-            labs = sorted(refs[(path, item)], key=label_key)
-            out.append(f"| `{path}::{item}` | {', '.join(labs)} |")
+            out.append(
+                f"| `{path}::{item}` | {item_kind(root, path, item)} | "
+                f"{links(refs[(path, item)])} |"
+            )
     return "\n".join(out) + "\n"
 
 
@@ -1411,6 +1498,67 @@ def plain(s: str) -> str:
     return s.replace("**", "")
 
 
+GRADE_ORDER = ["Smoke", "Proven (narrow)", "Proven"]
+GRADE_VARIANT = {
+    "Smoke": "Smoke",
+    "ProvenNarrow": "Proven (narrow)",
+    "Proven": "Proven",
+}
+
+
+def rust_const_block(text: str, name: str) -> str:
+    """The body of ``pub const NAME: ... = &[ ... ];`` in a Rust source, or ''."""
+    m = re.search(rf"pub const {name}\b[^=]*=\s*&\[(.*?)\n\];", text, re.DOTALL)
+    return m.group(1) if m else ""
+
+
+def task_grades(root: Path) -> dict[tuple[str, str], str | None]:
+    """{(task, kind): cap or None} for every graded task row of the certificate."""
+    cp = root / "crates/ferric-core/src/certificate.rs"
+    text = cp.read_text() if cp.is_file() else ""
+    rows = re.findall(
+        r'\("(\w+)",\s*"([^"]+)"\)', rust_const_block(text, "TASK_KIND_ROWS")
+    )
+    caps = {
+        (t, k): GRADE_VARIANT.get(g)
+        for t, k, g in re.findall(
+            r'\("(\w+)",\s*"([^"]+)",\s*Grade::(\w+)\)',
+            rust_const_block(text, "TASK_KIND_GRADE_CAPS"),
+        )
+    }
+    return {(t, k): caps.get((t, k)) for t, k in rows}
+
+
+def task_grade(kind_grade: str, cap: str | None) -> str:
+    """The lower of a kind's grade and a task ceiling."""
+    if cap is None or kind_grade not in GRADE_ORDER or cap not in GRADE_ORDER:
+        return kind_grade
+    return min(kind_grade, cap, key=GRADE_ORDER.index)
+
+
+def kind_chapters(root: Path, reg: dict) -> dict[str, str]:
+    """{kind: links to the chapters} from the registry's ``cli:<kind>`` routes."""
+    nb = numbering(root)
+    src = book_src(root)
+    out: dict[str, str] = {}
+    for route, mids in reg.get("routes", {}).items():
+        if not route.startswith("cli:"):
+            continue
+        chapters: set[tuple[str, str]] = set()
+        for mid in mids:
+            for ref in reg.get("methods", {}).get(mid, {}).get("book", []):
+                page = Path(ref.split("#")[0]).relative_to("book/src")
+                num = nb.page_number.get(page)
+                if not num:
+                    continue
+                ch = num.split(".")[0]
+                index = page.parent / "index.md"
+                if (src / index).is_file():
+                    chapters.add((f"ch. {ch}", f"[{ch}]({index.as_posix()})"))
+        out[route[4:]] = links(chapters)
+    return out
+
+
 def appendix_c(root: Path) -> str:
     vp = root / "site/src/reference/validation.md"
     text = vp.read_text() if vp.is_file() else ""
@@ -1424,7 +1572,9 @@ def appendix_c(root: Path) -> str:
         GEN_NOTE,
         "",
         "The grades are those of `site/src/reference/validation.md`, which is the "
-        "authority; the certificate every graded run prints carries the same word. "
+        "authority. The certificate block a graded run prints carries the same word; "
+        "the JSON certificate spells it `proven`, `proven_narrow` or `smoke` (and "
+        "`ungraded` for a run with no grade). "
         "A grade is for the exact method named; the Caveat column of the source "
         "page says what each grade does and does not cover, and the Anchors table "
         "there holds the numbers.",
@@ -1437,7 +1587,23 @@ def appendix_c(root: Path) -> str:
     for r in grades[1:]:
         if len(r) >= 2:
             out.append(f"| {cell(plain(r[0]))} | {cell(plain(r[1]))} |")
-    out += ["", "## Grade of each CLI method kind {#appendix-c-kinds}", ""]
+    out += [
+        "",
+        "## Grade of each CLI method kind {#appendix-c-kinds}",
+        "",
+        (
+            'The Energy column is the kind\'s grade. `task = "optimize"` and '
+            '`task = "frequencies"` are graded separately by the certificate '
+            "(`TASK_KIND_ROWS` and `TASK_KIND_GRADE_CAPS` in the `ferric-core` "
+            "certificate module): a task row takes the lower of "
+            "the kind's grade and its ceiling, and a task with no row is not graded. "
+            '`task = "md"` is not graded. The Chapters column comes from the '
+            "registry's routes for the kind; a kind with no route shows its family name."
+        ),
+        "",
+    ]
+    tasks = task_grades(root)
+    chapters = kind_chapters(root, load_registry(root))
     if matrix:
         head = matrix[0]
         want = {
@@ -1454,16 +1620,25 @@ def appendix_c(root: Path) -> str:
                 continue
             g = cell(plain(r[ix["grade"]]))
             tally[g] = tally.get(g, 0) + 1
+            kind = plain(r[ix["kind"]]).strip("`")
+            per_task = [
+                task_grade(g, tasks[(t, kind)]) if (t, kind) in tasks else "not graded"
+                for t in ("optimize", "frequencies")
+            ]
             rows.append(
-                f"| {cell(r[ix['kind']])} | {cell(plain(r[ix['family']]))} | "
-                f"{cell(r[ix['py']])} | {g} |"
+                f"| {cell(r[ix['kind']])} | {chapters.get(kind) or cell(plain(r[ix['family']]))} | "
+                f"{cell(r[ix['py']])} | {g} | {per_task[0]} | {per_task[1]} |"
             )
         out.append(
             f"{len(rows)} kinds: "
             + ", ".join(f"{n} {g}" for g, n in sorted(tally.items()))
             + "."
         )
-        out += ["", "| `method.kind` | Family | Python | Grade |", "|---|---|---|---|"]
+        out += [
+            "",
+            "| `method.kind` | Chapters | Python | Energy | `optimize` | `frequencies` |",
+            "|---|---|---|---|---|---|",
+        ]
         out += rows
     else:
         out.append("The validation page has no method matrix.")
