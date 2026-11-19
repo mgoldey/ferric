@@ -1,6 +1,7 @@
 //! Amplitude-threshold LinLCCD in the localized basis — the ladder member
 //! of the single-threshold family (MP2: `ferric_mp2::lmp2_amplitude`;
-//! rings/dRPA: `ferric_mp2::drpa_amplitude`; ladders: here).
+//! rings/dRPA: `ferric_mp2::drpa_amplitude`; ladders: here, applied by
+//! `ferric_mp2::ladders`).
 //!
 //! Built AFTER the proof notebook
 //! `wiki/notebooks/13-amplitude-threshold-linlccd.ipynb`, which establishes
@@ -58,6 +59,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
 
 use crate::linlccd::LadderVariant;
+use ferric_mp2::ladders::{apply_ladders_into, PpSource};
 use ferric_mp2::lmp2_amplitude::{
     assemble_basis, assemble_ragged_direct, checked_vvhv, localized_spaces, AmplitudeLmp2Config,
     VvHv,
@@ -67,9 +69,7 @@ use ferric_mp2::lmp2_direct::{
     DirectStats, OoGram, PpFitted,
 };
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_vv};
-use ferric_mp2::ragged::{
-    apply_pattern, gather_into, kept_fraction, matvec_indexed, solve_ragged_with, Ragged,
-};
+use ferric_mp2::ragged::{kept_fraction, matvec_indexed, solve_ragged_with, Ragged};
 use ferric_mp2::rimp2::metric_inverse_sqrt;
 
 /// Configuration for amplitude-threshold LinLCCD.
@@ -263,34 +263,6 @@ pub fn amplitude_linlccd_with_virtuals(
     })
 }
 
-/// pp-ladder source for the shared solver.
-enum PpSource<'a> {
-    /// No pp ladder (DriversOnly / Hh tiers).
-    None,
-    /// Licensed consistent Gram: per-pair gathers from ONE whitened global
-    /// Bvv (naux, nv²) — provably-structured, the original path.
-    GlobalWhitened { bvv_t: &'a Array2<f64>, nv: usize },
-    /// Integral-direct per-pair domain-FITTED factors — the PSD contract
-    /// here is the MEASURED one (see [`PpFitted`]'s doc for the license).
-    Fitted(&'a [PpFitted]),
-}
-
-/// pp block application shared by both pp sources: given the pair's block
-/// `m` (rows (a,c), cols (b,d)), accumulate `out[a,b] += Σ_cd m T[c,d]`.
-fn apply_pp_block(rp: &mut Array2<f64>, m: &Array2<f64>, nda: usize, ndb: usize, tp: &Array2<f64>) {
-    for ra in 0..nda {
-        for cb in 0..ndb {
-            let mut acc = 0.0;
-            for rc in 0..nda {
-                for cd in 0..ndb {
-                    acc += m[(ra * nda + rc, cb * ndb + cd)] * tp[(rc, cd)];
-                }
-            }
-            rp[(ra, cb)] += acc;
-        }
-    }
-}
-
 /// Masked ragged CG on the LinLCCD linear system, the solver
 /// shared by the global-B path ([`amplitude_linlccd_with_virtuals`]) and
 /// the integral-direct path ([`amplitude_linlccd_direct_with_virtuals`]),
@@ -309,75 +281,10 @@ fn linlccd_masked_solve(
     cfg: &AmplitudeLinLccdConfig,
 ) -> Result<(f64, usize, f64), FerricError> {
     let matvec = |t: &[Array2<f64>], flops: &mut u64| -> Vec<Array2<f64>> {
-        use rayon::prelude::*;
-        // F(t) is already rayon-parallel-over-output and deterministic
-        // (matvec_indexed); the hh/pp ladder terms below are added to each
-        // r[p] wholly inside ONE task keyed by the OUTPUT pair p, so every
-        // write targets a distinct r[p] slot — deterministic under any
-        // schedule, and the same per-block arithmetic order as the serial
-        // loop (see the "deterministic is not bit-identical" convention:
-        // disjoint writes only). Each task returns its own flop tally,
-        // summed after the parallel region.
-        let mut r = matvec_indexed(rg, f_oo, t, flops); // F(t), pattern-projected
-        let ladder: Vec<(Array2<f64>, u64)> = rg
-            .pairs
-            .par_iter()
-            .enumerate()
-            .map(|(p, pb)| {
-                let mut rp = Array2::<f64>::zeros((pb.da.len(), pb.db.len()));
-                let mut fl = 0u64;
-                // hh: out_ij += Σ_(k,l) (ik|jl) · gather(T_kl). For a FIXED
-                // output (i,j), sum over source pairs (k,l) = (p_src.i,
-                // p_src.j) with a nonzero OOOO coefficient. Iterate the
-                // source pairs (same set the serial loop scanned) but write
-                // only into THIS output's rp.
-                if let Some(oo) = oo {
-                    for (p_src, pb_src) in rg.pairs.iter().enumerate() {
-                        let coeff = oo.coeff(pb.i, pb_src.i, pb.j, pb_src.j);
-                        if coeff == 0.0 {
-                            continue;
-                        }
-                        gather_into(&mut rp, pb_src, pb, coeff, &t[p_src], &mut fl);
-                    }
-                }
-                match &pp {
-                    PpSource::None => {}
-                    PpSource::GlobalWhitened { bvv_t: bvv, nv } => {
-                        let naux = bvv.nrows();
-                        let (da, db) = (&pb.da, &pb.db);
-                        let (nda, ndb) = (da.len(), db.len());
-                        let mut ba = Array2::<f64>::zeros((naux, nda * nda));
-                        for (ra, &a) in da.iter().enumerate() {
-                            for (rc, &c) in da.iter().enumerate() {
-                                ba.column_mut(ra * nda + rc).assign(&bvv.column(a * nv + c));
-                            }
-                        }
-                        let mut bb = Array2::<f64>::zeros((naux, ndb * ndb));
-                        for (cb, &b) in db.iter().enumerate() {
-                            for (cd, &d) in db.iter().enumerate() {
-                                bb.column_mut(cb * ndb + cd).assign(&bvv.column(b * nv + d));
-                            }
-                        }
-                        let m = ba.t().dot(&bb); // rows (a,c), cols (b,d)
-                        fl += (nda * nda * ndb * ndb * naux) as u64;
-                        apply_pp_block(&mut rp, &m, nda, ndb, &t[p]);
-                    }
-                    PpSource::Fitted(factors) => {
-                        let (nda, ndb) = (pb.da.len(), pb.db.len());
-                        let f = &factors[p];
-                        let m = f.a_rows.dot(&f.gb); // rows (a,c), cols (b,d)
-                        fl += (nda * nda * ndb * ndb * f.gb.nrows()) as u64;
-                        apply_pp_block(&mut rp, &m, nda, ndb, &t[p]);
-                    }
-                }
-                (rp, fl)
-            })
-            .collect();
-        for (p, (contrib, fl)) in ladder.into_iter().enumerate() {
-            r[p] += &contrib;
-            *flops += fl;
-            apply_pattern(&mut r[p], &rg.pairs[p].pat, rg.pairs[p].db.len());
-        }
+        // F(t) (rayon-parallel, deterministic), then the hh/pp ladders
+        // (ferric_mp2::ladders: per-output-pair tasks, pattern-projected).
+        let mut r = matvec_indexed(rg, f_oo, t, flops);
+        apply_ladders_into(rg, t, oo, &pp, &mut r, flops);
         r
     };
 
