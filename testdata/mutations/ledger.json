@@ -333,7 +333,15 @@
       "mutation": "gradient.rs: the closed-shell two-particle density weights exchange by -1/2 (the UHF per-spin weight) instead of -1/4.",
       "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
       "test": "closed_shell_h2o_optimization_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "928e4d648f004ce89fd99cba1746b3a6c4844498bbd453badab14b463cd05f90",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "closed_shell_h2o_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "h2o/6-31g/rhf: the reference minimum is not stationary on ferric's surface: max|g| 4.01e-1",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "UHF gradient",
@@ -341,7 +349,15 @@
       "mutation": "gradient.rs: the beta exchange term of the UHF two-particle density pairs D_alpha with D_beta instead of D_beta with D_beta.",
       "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
       "test": "open_shell_nh2_optimization_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "f5a0918c66e2e8a344a284acef6ae53d50308286289381fafca57bc8374263ba",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "open_shell_nh2_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "nh2/6-31g/uhf: the reference minimum is not stationary on ferric's surface: max|g| 1.74e-3",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "ROHF gradient",
@@ -349,7 +365,15 @@
       "mutation": "gradient.rs: the ROHF energy-weighted density uses D_alpha F_alpha D_beta for its second term instead of D_alpha F_beta D_beta.",
       "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
       "test": "open_shell_nh2_optimization_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "f4d7cc4619412cbd3e7681a7de87e9040cae725ba29c8e7e62078b69117a2a0a",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "open_shell_nh2_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "nh2/6-31g/rohf: the reference minimum is not stationary on ferric's surface: max|g| 7.06e-3",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "KS gradient",
@@ -357,7 +381,15 @@
       "mutation": "gradient/screened.rs: the closed-shell GGA gradient weight is w v_sigma instead of 2 w v_sigma.",
       "evidence": "crates/ferric-scf/tests/validation_geometry_optimization.rs",
       "test": "closed_shell_h2o_optimization_vs_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "03df92383efa5e9874f189fbd241a9ada5e46ad7eb495734f4ed56a79be1a6e5",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "closed_shell_h2o_optimization_vs_pyscf",
+        "assertion": "crates/ferric-scf/tests/validation_geometry_optimization.rs:545",
+        "message": "h2o/6-31g/rks_b3lyp: the reference minimum is not stationary on ferric's surface: max|g| 1.90e-2",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "RI-MP2 gradient",
@@ -365,7 +397,15 @@
       "mutation": "ferric-mp2 gradient.rs: the virtual-occupied block of the energy-weighted correlation density takes the virtual orbital energy instead of the occupied one.",
       "evidence": "crates/ferric-mp2/tests/validation_rimp2_gradient.rs",
       "test": "rimp2_gradient_h2o_ccpvdz_vs_orca_and_pyscf",
-      "result": null
+      "result": {
+        "patch_sha256": "dcd9d5c8306341964b4aa06d383d84c20d928ca1ce068e5828d2a9bab610bda3",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "rimp2_gradient_h2o_ccpvdz_vs_orca_and_pyscf",
+        "assertion": "crates/ferric-mp2/tests/validation_rimp2_gradient.rs:220",
+        "message": "h2o_distorted/cc-pvdz: MP2 grad vs PySCF FD max |d| 2.57e-2 >= 2e-8",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "PDEP-RPA gradient",
@@ -373,7 +413,15 @@
       "mutation": "gradient_analytic.rs: the occupied-occupied RPA density P_oo is accumulated with +w/4pi instead of -w/4pi.",
       "evidence": "crates/ferric-rpa/tests/rpa_analytic_gradient.rs",
       "test": "h2o_matches_fd5_of_the_same_quadrature",
-      "result": null
+      "result": {
+        "patch_sha256": "1e3121992d133474a85aaa094dfe23c898d2a7bd1a981f6849ff282b3a4bd09d",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "h2o_matches_fd5_of_the_same_quadrature",
+        "assertion": "crates/ferric-rpa/tests/rpa_analytic_gradient.rs:180",
+        "message": "h2o_distorted n=40: |g - FD5| 1.7323023025343345e-2 > 2e-8",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "RHF Hessian",
@@ -381,7 +429,15 @@
       "mutation": "hessian.rs: exchange enters the closed-shell first-order Fock matrix with 1/4 instead of 1/2.",
       "evidence": "crates/ferric-scf/tests/validation_rhf_hessian.rs",
       "test": "h2o_ccpvdz",
-      "result": null
+      "result": {
+        "patch_sha256": "304d34bba506a0e2e6b46b6b426088b2e658f0678fed6c5191f22228f536a351",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "h2o_ccpvdz",
+        "assertion": "crates/ferric-scf/tests/validation_rhf_hessian.rs:206",
+        "message": "h2o/cc-pvdz: Hessian vs analytic: max|d| 1.457e0 >= 1e-6",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "UHF Hessian",
@@ -389,7 +445,15 @@
       "mutation": "hessian/uhf_df.rs: both spins' first-order Fock matrices take their exchange from D_alpha.",
       "evidence": "crates/ferric-scf/tests/validation_uhf_hessian.rs",
       "test": "oh_ccpvdz",
-      "result": null
+      "result": {
+        "patch_sha256": "09d6f362a764cf846bfed689500fd155f6eaf344e5e9ab266119b16839e54367",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "oh_ccpvdz",
+        "assertion": "crates/ferric-scf/tests/validation_uhf_hessian.rs:222",
+        "message": "oh/cc-pvdz: Hessian vs analytic: max|d| 1.536e-1 >= 2e-6",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "ROHF Hessian",
@@ -397,7 +461,15 @@
       "mutation": "hessian/rohf.rs: exchange enters the per-spin first-order Fock matrices with 1/2 instead of 1.",
       "evidence": "crates/ferric-scf/tests/validation_rohf_hessian.rs",
       "test": "rohf_hessian_nh2_matches_pyscf_fd_of_analytic_gradient",
-      "result": null
+      "result": {
+        "patch_sha256": "2ca7192525c447add8afbe62201a8933c948a35c39ce7409cbacc723c0190c6a",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "rohf_hessian_nh2_matches_pyscf_fd_of_analytic_gradient",
+        "assertion": "crates/ferric-scf/tests/validation_rohf_hessian.rs:245",
+        "message": "nh2/cc-pvdz: Hessian vs PySCF FD 1.126e0",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     },
     {
       "anchor": "RKS Hessian",
@@ -405,7 +477,15 @@
       "mutation": "ks_fixed_grid.rs: the moving-grid XC skeleton adds the weight-derivative cross term W' (df)^T without its transpose.",
       "evidence": "crates/ferric-scf/tests/ks_moving_grid_hessian.rs",
       "test": "moving_grid_hessian_matches_difference_of_the_production_gradient",
-      "result": null
+      "result": {
+        "patch_sha256": "843337aae1353ed43af6d1a907fb6ab880b5bf4fa2b55fab8a0e60f6fc7e4629",
+        "base_commit": "b6000e209ff112679199ff7ab34814998cf0806f",
+        "failing_test": "moving_grid_hessian_matches_difference_of_the_production_gradient",
+        "assertion": "crates/ferric-scf/tests/ks_moving_grid_common/mod.rs:366",
+        "message": "LDA sto-3g: 1.061e0",
+        "baseline_run": true,
+        "date": "2026-11-19"
+      }
     }
   ]
 }

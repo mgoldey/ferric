@@ -1262,18 +1262,7 @@ mod tests {
 
     /// Anchors whose mutation has no recorded result yet. Each one is printed
     /// by `mutation_ledger_matches_the_registry`.
-    const PENDING_MUTATIONS: &[&str] = &[
-        "RHF gradient",
-        "UHF gradient",
-        "ROHF gradient",
-        "KS gradient",
-        "RI-MP2 gradient",
-        "PDEP-RPA gradient",
-        "RHF Hessian",
-        "UHF Hessian",
-        "ROHF Hessian",
-        "RKS Hessian",
-    ];
+    const PENDING_MUTATIONS: &[&str] = &[];
 
     /// SHA-256 of `data` as lower-case hex (FIPS 180-4).
     fn sha256_hex(data: &[u8]) -> String {
@@ -1497,27 +1486,7 @@ mod tests {
     /// [`proven_capabilities`] spells it) and why it is still graded Proven.
     /// An entry here is a debt, not a waiver: it is reported on every run and
     /// fails as soon as the capability earns its row or stops being Proven.
-    const UNEARNED_PROVEN: &[(&str, &str)] = &[
-        ("optimize:rhf", "task anchor added; mutation not yet run"),
-        ("optimize:uhf", "task anchor added; mutation not yet run"),
-        ("optimize:rohf", "task anchor added; mutation not yet run"),
-        ("optimize:ksdft", "task anchor added; mutation not yet run"),
-        ("optimize:rimp2", "task anchor added; mutation not yet run"),
-        (
-            "optimize:pdep-rpa",
-            "task anchor added; mutation not yet run",
-        ),
-        ("frequencies:rhf", "task anchor added; mutation not yet run"),
-        ("frequencies:uhf", "task anchor added; mutation not yet run"),
-        (
-            "frequencies:rohf",
-            "task anchor added; mutation not yet run",
-        ),
-        (
-            "frequencies:ksdft",
-            "task anchor added; mutation not yet run",
-        ),
-    ];
+    const UNEARNED_PROVEN: &[(&str, &str)] = &[];
 
     /// Every disagreement between the Proven capabilities, the capabilities
     /// a recorded mutation earns, and the allowlist of unearned ones.
