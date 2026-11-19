@@ -1,6 +1,9 @@
 //! KS-DFT and double-hybrid bindings: moved verbatim from `lib.rs`.
 
 use super::*;
+
+/// ECP policy of `run_double_hybrid`.
+pub(crate) const DH_ECP: EcpPolicy = EcpPolicy::Skip;
 use ferric_scf::options::{df_k_aux_or_default, AuxBasis, ScfOptions};
 
 /// A Kohn-Sham `df_j_aux` / `df_k_aux` kwarg: the parsed spelling (opt-outs
@@ -372,11 +375,8 @@ pub(crate) fn run_double_hybrid(
     };
     let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, DH_ECP)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
 
     let cfg = rhf_config_conv(
         k_builder,
@@ -386,10 +386,9 @@ pub(crate) fn run_double_hybrid(
     let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
 
     let (ks, cfg) = if open_shell {
-        let ks = solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
-        (converged(ks)?, cfg)
+        (uhf_reference(&sys, &cfg).map_err(make_err)?, cfg)
     } else {
-        ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?
+        ks_ladder_reference(&sys, cfg)?
     };
 
     let mut mp2_cfg = dh_kind.mp2_config();
@@ -399,19 +398,19 @@ pub(crate) fn run_double_hybrid(
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
     let r = if open_shell {
-        u_mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+        u_mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
     } else {
-        mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+        mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
     }
     .map_err(make_err)?;
     let e_dispersion = match dh_kind.d3bj_functional() {
         Some(f) => {
             let params = ferric_d3::d3bj_params_for_functional(f).map_err(make_err)?;
-            Some(ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)?)
+            Some(ferric_d3::d3bj_energy_for_molecule(mol, &params).map_err(make_err)?)
         }
         None => None,
     };
-    let mut reference = reference_certificate(&mol.inner, &ks, &cfg, &basis_set.inner);
+    let mut reference = reference_certificate(mol, &ks, &cfg, &basis_set.inner);
     if let Some(f) = dh_kind.d3bj_functional() {
         reference =
             reference.with_approximation("dispersion", format!("D3(BJ) with {f} parameters"));

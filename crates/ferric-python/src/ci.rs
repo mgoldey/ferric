@@ -5,14 +5,17 @@
 //! `run_casscf` and `run_nevpt2` run `ferric_ci::driver`, as the CLI kinds
 //! `casscf` and `nevpt2` do, and carry those kinds' certificates.
 
-use crate::{budget_bytes_from_gb, certificate_dict, make_err, PyBasisSet, PyMolecule};
-use ferric_ci::driver::{rhf_start, ScfStart};
+use crate::{budget_bytes_from_gb, certificate_dict, make_err, prepare, PyBasisSet, PyMolecule};
+use ferric_ci::driver::{rhf_start_prepared, ScfStart};
 use ferric_core::certificate::{BuildStamp, Certificate};
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_scf::EcpPolicy;
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray4};
 use pyo3::prelude::*;
+
+/// ECP policy of the CAS drivers in this file: the valence count and V_ECP
+/// of an ECP basis, as the SCF bindings use.
+const CI_ECP: EcpPolicy = EcpPolicy::Apply;
 
 /// Library capability name on the certificate (no CLI `method.kind`).
 const CAPABILITY: &str = "casci";
@@ -127,10 +130,8 @@ fn run_casci(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCasCiResult> {
-    // The valence count and V_ECP of an ECP basis, as the SCF bindings use.
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let mol = &emol;
+    let sys = prepare(mol, basis_set, CI_ECP)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let nelec = mol.nelec() as usize;
     let n_act_el = n_elec_active.0 + n_elec_active.1;
     let active_start = match active_start {
@@ -146,14 +147,13 @@ fn run_casci(
         }
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
     let start = ScfStart {
         max_iter: scf_max_iter,
         energy_conv: scf_energy_conv,
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start(&ParallelContext::default(), mol, &prep, start, budget))
+        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasCiConfig {
         n_active,
@@ -166,7 +166,7 @@ fn run_casci(
         compute_rdms,
     };
     let r = py
-        .allow_threads(|| ferric_ci::run_cas_ci(mol, &prep, &rhf, cfg))
+        .allow_threads(|| ferric_ci::run_cas_ci(mol, prep, &rhf, cfg))
         .map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CAPABILITY).with_build(build_stamp());
@@ -342,10 +342,8 @@ fn run_casscf(
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     let stability = ferric_ci::CasScfStabilityMode::parse_config_str(casscf_stability)
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
-    // The valence count and V_ECP of an ECP basis, as the SCF bindings use.
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let mol = &emol;
+    let sys = prepare(mol, basis_set, CI_ECP)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let n_core = match n_core {
         Some(s) => s,
         None => {
@@ -354,14 +352,13 @@ fn run_casscf(
         }
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
     let start = ScfStart {
         max_iter: scf_max_iter,
         energy_conv: scf_energy_conv,
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start(&ParallelContext::default(), mol, &prep, start, budget))
+        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasScfConfig {
         n_active,
@@ -382,7 +379,7 @@ fn run_casscf(
         ..Default::default()
     };
     let r = py
-        .allow_threads(|| ferric_ci::run_casscf(mol, &prep, &rhf, &cfg))
+        .allow_threads(|| ferric_ci::run_casscf(mol, prep, &rhf, &cfg))
         .map_err(make_err)?;
 
     let cert = ferric_mp2::certificate::with_anchor_envelope(
@@ -565,9 +562,8 @@ fn run_nevpt2(
         .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let on = ferric_ci::driver::Nevpt2On::parse_config_str(reference)
         .map_err(|e| make_err(format!("run_nevpt2: {e}")))?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let mol = &emol;
+    let sys = prepare(mol, basis_set, CI_ECP)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let n_core = match n_core {
         Some(s) => s,
         None => {
@@ -576,14 +572,13 @@ fn run_nevpt2(
         }
     };
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let prep = PreparedBasis::new(mol, &basis_set.inner).map_err(make_err)?;
     let start = ScfStart {
         max_iter: scf_max_iter,
         energy_conv: scf_energy_conv,
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start(&ParallelContext::default(), mol, &prep, start, budget))
+        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasScfConfig {
         n_active,
@@ -603,7 +598,7 @@ fn run_nevpt2(
         ..Default::default()
     };
     let run = py
-        .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(mol, &prep, &rhf, on, &cfg))
+        .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(mol, prep, &rhf, on, &cfg))
         .map_err(make_err)?;
     let cert = ferric_mp2::certificate::with_anchor_envelope(
         ferric_ci::certificate::nevpt2_certificate(on, &cfg, run.reference_stability.as_ref())

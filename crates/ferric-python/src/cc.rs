@@ -4,6 +4,9 @@ use super::*;
 
 // ── CC (stub) ──
 
+/// ECP policy of the coupled-cluster drivers in this file.
+pub(crate) const CC_ECP: EcpPolicy = EcpPolicy::Skip;
+
 #[pyclass]
 #[pyo3(name = "CcResult")]
 pub(crate) struct PyCcResult {
@@ -52,27 +55,25 @@ impl CcLevel {
 /// of the open-shell `mol` (the open-shell branch of `run_ccsd` /
 /// `run_ccsd_t`). Returns the result for Python, built without the GIL.
 fn run_u_ccsd_inner(
-    mol: &Molecule,
+    mol: Molecule,
     basis: &ferric_core::basis::BasisSet,
     aux: &ferric_core::basis::BasisSet,
     scf_config: &RhfConfig,
     cfg: &CcConfig,
     level: CcLevel,
 ) -> Result<PyCcResult, ferric_core::FerricError> {
-    let prep = PreparedBasis::new(mol, basis)?;
-    let dfbs = PreparedBasis::new(mol, aux)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep)?;
-    let ctx = ParallelContext::default();
-    let uhf = require_converged(solve_uhf(&ctx, mol, &prep, &bounds, scf_config)?)?;
-    let cc = ferric_cc::u_ccsd::u_ccsd(mol, &prep, &dfbs, op, &uhf, cfg)?;
+    let sys = PreparedSystem::new(mol, basis, CC_ECP)?;
+    let dfbs = sys.with_aux(aux)?;
+    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let uhf = uhf_reference(&sys, scf_config)?;
+    let cc = ferric_cc::u_ccsd::u_ccsd(mol, prep, &dfbs, op, &uhf, cfg)?;
     let mut comps = std::collections::HashMap::from([
         ("e_aa".to_string(), cc.e_aa),
         ("e_ab".to_string(), cc.e_ab),
         ("e_bb".to_string(), cc.e_bb),
     ]);
     let t_correction = if level == CcLevel::CcsdT {
-        let t = ferric_cc::u_ccsd_t::u_ccsd_t(mol, &prep, &dfbs, op, &uhf, &cc, cfg)?;
+        let t = ferric_cc::u_ccsd_t::u_ccsd_t(mol, prep, &dfbs, op, &uhf, &cc, cfg)?;
         comps.extend([
             ("t_aaa".to_string(), t.aaa),
             ("t_aab".to_string(), t.aab),
@@ -177,17 +178,17 @@ pub(crate) fn run_ccd(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config, CC_ECP)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         ..Default::default()
     };
-    let r = run_ccd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    let r = run_ccd_inner(mol, prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_cc::certificate::cc_certificate(
         "ccd",
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+        &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
         &r,
@@ -246,7 +247,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     refuse_open_shell_ladder(&emol, a.ladder)?;
     if emol.multiplicity > 1 {
         return py
-            .allow_threads(|| run_u_ccsd_inner(&emol, &ebasis, &eaux, &rhf_config, &cfg, level))
+            .allow_threads(|| run_u_ccsd_inner(emol, &ebasis, &eaux, &rhf_config, &cfg, level))
             .map_err(make_err);
     }
     // Release the GIL for the SCF + CCSD (+ (T)) compute. All captured values
@@ -267,35 +268,38 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     // 1.82 GB -> 0.48 GB; (T) 1.87 -> 0.14 s. The two (T) implementations
     // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
     // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
-    let (r, t_correction, reference) = py
+    let (r, t_correction, certificate_data) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (prep, aux, rhf) = rhf_with_aux(&emol, &ebasis, &eaux, &rhf_config)?;
-            let op = Operator::coulomb();
-            let r = run_ccsd_cs_inner(&emol, &prep, &aux, op, &rhf, &cfg)?;
+            let (sys, aux, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config, CC_ECP)?;
+            let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+            let r = run_ccsd_cs_inner(mol, prep, &aux, op, &rhf, &cfg)?;
             let e_t = match level {
                 CcLevel::Ccsd => None,
-                CcLevel::CcsdT => {
-                    Some(run_ccsd_t_cs_inner(&emol, &prep, &aux, op, &rhf, &r, &cfg)?)
-                }
+                CcLevel::CcsdT => Some(run_ccsd_t_cs_inner(mol, prep, &aux, op, &rhf, &r, &cfg)?),
             };
-            let reference = reference_certificate(&emol, &rhf, &rhf_config, &ebasis);
-            Ok((r, e_t, reference))
+            let reference = reference_certificate(mol, &rhf, &rhf_config, &ebasis);
+            let certificate = ferric_cc::certificate::cc_certificate(
+                level.kind(),
+                &reference,
+                &eaux.name,
+                &cfg,
+                &r,
+            );
+            let certificate_data = match level {
+                CcLevel::Ccsd => ferric_mp2::certificate::with_anchor_envelope(
+                    certificate,
+                    "CCSD",
+                    mol,
+                    &ebasis,
+                    Some(&eaux),
+                ),
+                // `run_ccsd_t` has never carried the anchor envelope.
+                CcLevel::CcsdT => certificate,
+            };
+            Ok((r, e_t, certificate_data))
         })
         .map_err(make_err)?;
     let (ladder_route, ladder_block) = py_ladder_route(&r);
-    let certificate =
-        ferric_cc::certificate::cc_certificate(level.kind(), &reference, &eaux.name, &cfg, &r);
-    let certificate_data = match level {
-        CcLevel::Ccsd => ferric_mp2::certificate::with_anchor_envelope(
-            certificate,
-            "CCSD",
-            &emol,
-            &ebasis,
-            Some(&eaux),
-        ),
-        // `run_ccsd_t` has never carried the anchor envelope.
-        CcLevel::CcsdT => certificate,
-    };
     Ok(PyCcResult {
         correlation_energy: r.correlation_energy,
         t_correction,
@@ -489,12 +493,12 @@ pub(crate) fn run_eom_ccsd(
     };
     let (rhf_energy, cc, eom, reference) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (prep, dfbs, rhf) = rhf_with_aux(&emol, &ebasis, &eaux, &rhf_config)?;
-            let op = Operator::coulomb();
-            let cc = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
+            let (sys, dfbs, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config, CC_ECP)?;
+            let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+            let cc = run_ccsd_cs_inner(mol, prep, &dfbs, op, &rhf, &cfg)?;
             let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
-                &emol,
-                &prep,
+                mol,
+                prep,
                 &dfbs,
                 op,
                 &rhf,
@@ -502,7 +506,7 @@ pub(crate) fn run_eom_ccsd(
                 cfg.frozen_core,
                 &eom_cfg,
             )?;
-            let reference = reference_certificate(&emol, &rhf, &rhf_config, &ebasis);
+            let reference = reference_certificate(mol, &rhf, &rhf_config, &ebasis);
             Ok((rhf.energy, cc, eom, reference))
         })
         .map_err(make_err)?;
