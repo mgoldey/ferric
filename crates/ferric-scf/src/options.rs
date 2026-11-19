@@ -79,6 +79,9 @@ impl AuxBasis {
 pub enum Stability {
     /// No stability check (the `RhfConfig` default).
     Off,
+    /// Run the stability analysis and report the verdict, but do not act on
+    /// it: sets [`RhfConfig::check_stability`] only.
+    Check,
     /// Check stability and, on a saddle, descend and re-converge: sets both
     /// [`RhfConfig::check_stability`] and [`RhfConfig::scf_stability_descent`]
     /// (the descent needs a verdict to act on).
@@ -330,11 +333,12 @@ impl ScfOptions {
             c.three_index_budget_bytes = v;
         }
         if let Some(st) = stability {
-            let descend = match st {
-                Stability::Off => false,
-                Stability::Descend => true,
+            let (check, descend) = match st {
+                Stability::Off => (false, false),
+                Stability::Check => (true, false),
+                Stability::Descend => (true, true),
             };
-            c.check_stability = descend;
+            c.check_stability = check;
             c.scf_stability_descent = descend;
         }
         if let Some(v) = symmetry {
@@ -909,6 +913,24 @@ mod tests {
             );
         }
         assert_eq!(TrahTrigger::new(1e-4).unwrap().get(), 1e-4);
+    }
+
+    #[test]
+    fn stability_lowers_to_check_and_descent_flags() {
+        let lower = |st| {
+            let c = ScfOptions {
+                stability: Some(st),
+                ..Default::default()
+            }
+            .into_rhf_config()
+            .unwrap();
+            (c.check_stability, c.scf_stability_descent)
+        };
+        assert_eq!(lower(Stability::Off), (false, false));
+        assert_eq!(lower(Stability::Check), (true, false));
+        assert_eq!(lower(Stability::Descend), (true, true));
+        let d = RhfConfig::default();
+        assert_eq!((d.check_stability, d.scf_stability_descent), (false, false));
     }
 
     /// Exhaustive destructure of `RhfConfig`: adding a field fails to compile
