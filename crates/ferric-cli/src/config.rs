@@ -1484,10 +1484,10 @@ pub struct LocalCfg {
     /// Integral-direct only: aux fit-domain radius, Bohr. Default 10.0.
     pub aux_radius: Option<f64>,
     /// Integral-direct only: virtual domain radius on dipole centroids, Bohr.
-    /// Default 12.0.
+    /// Default 20.0.
     pub virt_radius: Option<f64>,
     /// Integral-direct only: AO-support shell threshold on max |C|. Default
-    /// 1e-3; 0 keeps every shell.
+    /// 1e-4; 0 keeps every shell.
     pub ao_tail: Option<f64>,
     /// Integral-direct only: Cauchy–Schwarz triple cut on the batch integral
     /// stream. Default 1e-5.
@@ -1501,9 +1501,10 @@ pub struct LocalCfg {
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
     /// Omitted = off.
     pub virt_schwarz_kappa: Option<f64>,
-    /// Integral-direct only: the Fock-propagated screen of the amplitude mask
-    /// (book §amplitude-lmp2-fock-screen), κ =
-    /// `ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA`. Default true;
+    /// `kind = "rimp2"` / `"att-rimp2"` only, in-core and integral-direct:
+    /// the Fock-propagated screen of the amplitude mask (book
+    /// §amplitude-lmp2-fock-screen), κ =
+    /// `ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT`. Default true;
     /// `false` keeps the plain Eq-8 mask.
     pub fock_screen: Option<bool>,
     /// `kind = "rimp2"` / `"att-rimp2"` only: which VV-HV virtual-space build
@@ -1530,16 +1531,16 @@ pub struct LocalCfg {
 
 /// The integral-direct locality knobs of a local MP2 run, with their
 /// defaults applied (every one is a controlled approximation; the run prints
-/// them).
+/// them). The defaults are `ferric_mp2::lmp2_direct::DirectConfig::production`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalDirectKnobs {
     /// `[local] aux_radius`: aux fit-domain radius (Bohr), > 0. Default 10.0.
     pub aux_radius: f64,
     /// `[local] virt_radius`: virtual domain radius on dipole centroids
-    /// (Bohr), > 0. Default 12.0.
+    /// (Bohr), > 0. Default 20.0.
     pub virt_radius: f64,
     /// `[local] ao_tail`: AO-support shell threshold on max |C|, >= 0.
-    /// Default 1e-3.
+    /// Default 1e-4.
     pub ao_tail: f64,
     /// `[local] schwarz_skip`: Cauchy–Schwarz triple cut on the batch
     /// integral stream, >= 0. Default 1e-5.
@@ -1553,9 +1554,6 @@ pub struct LocalDirectKnobs {
     /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
     /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
-    /// `[local] fock_screen`: the Fock-propagated mask screen's κ, `Some(
-    /// DIRECT_FOCK_SCREEN_KAPPA)` by default, `None` with `fock_screen = false`.
-    pub fock_screen: Option<f64>,
 }
 
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
@@ -1576,6 +1574,55 @@ pub struct LocalModel {
     /// `[local] lambda_boys`, default applied (local MP2 only; the dRPA and
     /// LinLCCD paths refuse the key and localize with plain Boys).
     pub lambda_boys: f64,
+    /// `[local] fock_screen`: the Fock-propagated mask screen's κ, on both
+    /// the in-core and the integral-direct path. `Some(
+    /// ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT)` by default,
+    /// `None` with `fock_screen = false` (local MP2 only; the dRPA and
+    /// LinLCCD paths refuse the key and run the plain mask).
+    pub fock_screen: Option<f64>,
+}
+
+impl LocalModel {
+    /// The library configs of a local RI-MP2 run (`kind = "rimp2"` /
+    /// `"att-rimp2"` with `scheme = "amplitude-threshold"`, Python
+    /// `run_rimp2(local=...)`): the amplitude config at the first ε, and the
+    /// integral-direct maps when `integral_direct = true`. The CLI and the
+    /// Python binding both build their configs HERE, so a default cannot
+    /// drift between the two entry points
+    /// (`local_rimp2_configs_are_the_production_defaults` pins them).
+    pub fn rimp2_configs(
+        &self,
+        frozen_core: usize,
+        eri3_budget_bytes: Option<usize>,
+    ) -> (
+        ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config,
+        Option<ferric_mp2::lmp2_direct::DirectConfig>,
+    ) {
+        let lcfg = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
+            eps: self.eps[0],
+            frozen_core,
+            eri3_budget_bytes,
+            compute_reference: self.reference,
+            pair_gate_cal: self.direct.as_ref().and_then(|d| d.gate_cal),
+            fock_screen: self.fock_screen,
+            virtual_space: self.virtual_space.clone(),
+            lambda_boys: self.lambda_boys,
+            ..Default::default()
+        };
+        let dcfg = self
+            .direct
+            .as_ref()
+            .map(|d| ferric_mp2::lmp2_direct::DirectConfig {
+                aux_radius_bohr: d.aux_radius,
+                virt_radius_bohr: Some(d.virt_radius),
+                ao_tail: d.ao_tail,
+                schwarz_skip: d.schwarz_skip,
+                batch_merge: d.batch_merge,
+                virt_schwarz_kappa: d.virt_schwarz_kappa,
+                ..ferric_mp2::lmp2_direct::DirectConfig::production()
+            });
+        (lcfg, dcfg)
+    }
 }
 
 impl LocalCfg {
@@ -1587,7 +1634,6 @@ impl LocalCfg {
             || self.batch_merge.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
-            || self.fock_screen.is_some()
     }
 
     fn sets_virtual_thresholds(&self) -> bool {
@@ -1761,24 +1807,28 @@ impl LocalCfg {
             if self.batch_merge == Some(0) {
                 return Err("[local] batch_merge must be >= 1".to_string());
             }
+            // The defaults have one home, shared with every other entry
+            // point: `ferric_mp2::lmp2_direct::DirectConfig::production`.
+            let prod = ferric_mp2::lmp2_direct::DirectConfig::production();
             Some(LocalDirectKnobs {
-                aux_radius: pos("aux_radius", self.aux_radius, 10.0)?,
-                virt_radius: pos("virt_radius", self.virt_radius, 20.0)?,
-                ao_tail: nonneg("ao_tail", self.ao_tail, 1e-4)?,
-                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, 1e-5)?,
-                batch_merge: self.batch_merge.unwrap_or(4),
+                aux_radius: pos("aux_radius", self.aux_radius, prod.aux_radius_bohr)?,
+                virt_radius: pos(
+                    "virt_radius",
+                    self.virt_radius,
+                    prod.virt_radius_bohr
+                        .expect("production maps carry a virtual radius"),
+                )?,
+                ao_tail: nonneg("ao_tail", self.ao_tail, prod.ao_tail)?,
+                schwarz_skip: nonneg("schwarz_skip", self.schwarz_skip, prod.schwarz_skip)?,
+                batch_merge: self.batch_merge.unwrap_or(prod.batch_merge),
                 gate_cal: opt_pos("gate_cal", self.gate_cal)?,
                 virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
-                fock_screen: self
-                    .fock_screen
-                    .unwrap_or(true)
-                    .then_some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         } else {
             if self.sets_direct_knobs() {
                 return Err(
                     "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                            batch_merge / gate_cal / virt_schwarz_kappa / fock_screen are the \
+                            batch_merge / gate_cal / virt_schwarz_kappa are the \
                             integral-direct \
                             locality maps and are read only with integral_direct = true; \
                             without it they would be silently ignored"
@@ -1799,6 +1849,10 @@ impl LocalCfg {
             direct,
             virtual_space,
             lambda_boys,
+            fock_screen: self
+                .fock_screen
+                .unwrap_or(true)
+                .then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
         }))
     }
 }
@@ -5053,42 +5107,42 @@ impl Config {
     /// validated terfc parameter box of the Schwarz cut (the angular-momentum
     /// limit needs the molecule's basis and is reported when the run starts).
     fn validate_local_direct(&self, kind: &str, model: &LocalModel) -> Result<(), String> {
-        if self
-            .local
-            .as_ref()
-            .and_then(|l| l.integral_direct)
-            .is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] integral_direct is the integral-direct local MP2 and applies to \
-                 method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\")"
-            ));
-        }
-        if self
-            .local
-            .as_ref()
-            .and_then(|l| l.virtual_space.as_ref())
-            .is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] virtual_space selects the VV-HV build of the local MP2 and applies \
-                 to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", which \
-                 always uses the dense build)"
-            ));
-        }
-        if self.local.as_ref().and_then(|l| l.lambda_boys).is_some()
-            && kind != "rimp2"
-            && kind != "att-rimp2"
-        {
-            return Err(format!(
-                "[local] lambda_boys sets the λ-Boys occupied localization of the local MP2 \
-                 and applies to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", \
-                 which localizes with plain Boys)"
-            ));
+        if kind != "rimp2" && kind != "att-rimp2" {
+            if let Some(l) = self.local.as_ref() {
+                // (key set?, key, what it selects, what the other kinds do instead)
+                let mp2_only: [(bool, &str, &str, &str); 4] = [
+                    (
+                        l.integral_direct.is_some(),
+                        "integral_direct",
+                        "is the integral-direct local MP2",
+                        "",
+                    ),
+                    (
+                        l.virtual_space.is_some(),
+                        "virtual_space",
+                        "selects the VV-HV build of the local MP2",
+                        ", which always uses the dense build",
+                    ),
+                    (
+                        l.fock_screen.is_some(),
+                        "fock_screen",
+                        "sets the Fock-propagated mask screen of the local MP2",
+                        ", which runs the plain amplitude mask",
+                    ),
+                    (
+                        l.lambda_boys.is_some(),
+                        "lambda_boys",
+                        "sets the λ-Boys occupied localization of the local MP2",
+                        ", which localizes with plain Boys",
+                    ),
+                ];
+                if let Some((_, key, what, instead)) = mp2_only.iter().find(|r| r.0) {
+                    return Err(format!(
+                        "[local] {key} {what} and applies to method.kind = \"rimp2\" or \
+                         \"att-rimp2\" only (got \"{kind}\"{instead})"
+                    ));
+                }
+            }
         }
         if kind == "att-rimp2"
             && model.direct.as_ref().is_some_and(|d| d.schwarz_skip > 0.0)
@@ -6697,6 +6751,82 @@ mod compat_guard_tests {
     /// the sweep is sorted + de-duplicated, and the integral-direct knobs need
     /// `integral_direct = true`. Each refusal is its own case, so dropping
     /// any one check fails exactly the case that names it.
+    /// The configs a local RI-MP2 run hands the library, built by the ONE
+    /// builder the CLI and the Python binding share
+    /// (`LocalModel::rimp2_configs`): with no map key they are the
+    /// production maps of `DirectConfig::production`, the Fock screen at
+    /// `DIRECT_FOCK_SCREEN_KAPPA`, λ-Boys at its default, no pair gate.
+    /// The end-to-end CLI-vs-Python check is
+    /// `crates/ferric-python/tests/test_cli_lmp2_direct_matches_python.py`.
+    #[test]
+    fn local_rimp2_configs_are_the_production_defaults() {
+        use ferric_mp2::lmp2_direct::{DirectConfig, DIRECT_FOCK_SCREEN_KAPPA};
+        let m = cfg(
+            "rimp2",
+            "energy",
+            "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true",
+        )
+        .local_model()
+        .unwrap()
+        .unwrap();
+        let (l, d) = m.rimp2_configs(3, Some(123));
+        let d = d.expect("integral_direct = true builds the direct maps");
+        let p = DirectConfig::production();
+        assert_eq!(
+            (
+                d.aux_radius_bohr,
+                d.virt_radius_bohr,
+                d.ao_tail,
+                d.schwarz_skip,
+                d.batch_merge,
+                d.virt_schwarz_kappa,
+                d.scratch_budget_bytes,
+                d.eri3_pass,
+            ),
+            (
+                p.aux_radius_bohr,
+                p.virt_radius_bohr,
+                p.ao_tail,
+                p.schwarz_skip,
+                p.batch_merge,
+                p.virt_schwarz_kappa,
+                p.scratch_budget_bytes,
+                p.eri3_pass,
+            )
+        );
+        // The production values themselves (a change here is a model change).
+        assert_eq!(
+            (
+                p.aux_radius_bohr,
+                p.virt_radius_bohr,
+                p.ao_tail,
+                p.schwarz_skip,
+                p.batch_merge
+            ),
+            (10.0, Some(20.0), 1e-4, 1e-5, 4)
+        );
+        assert_eq!(l.eps, 1e-4);
+        assert_eq!(l.frozen_core, 3);
+        assert_eq!(l.eri3_budget_bytes, Some(123));
+        assert_eq!(l.fock_screen, Some(DIRECT_FOCK_SCREEN_KAPPA));
+        assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+        assert_eq!(l.pair_gate_cal, None);
+        assert!(!l.compute_reference);
+        // In-core: no maps, the same Fock screen (a model knob, not a map).
+        let m = cfg(
+            "rimp2",
+            "energy",
+            "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4",
+        )
+        .local_model()
+        .unwrap()
+        .unwrap();
+        let (l, d) = m.rimp2_configs(0, None);
+        assert!(d.is_none());
+        assert_eq!(l.fock_screen, Some(DIRECT_FOCK_SCREEN_KAPPA));
+        assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
+    }
+
     #[test]
     fn local_section_values_are_strict() {
         let model = |body: &str| cfg("drpa", "energy", &format!("[local]\n{body}")).local_model();
@@ -6775,8 +6905,6 @@ mod compat_guard_tests {
             ("batch_merge", "4"),
             ("gate_cal", "0.7"),
             ("virt_schwarz_kappa", "1.0"),
-            ("fock_screen", "false"),
-            ("fock_screen", "true"),
         ] {
             for direct in ["", "integral_direct = false\n"] {
                 let e = model(&format!(
@@ -6800,16 +6928,26 @@ mod compat_guard_tests {
                 batch_merge: 4,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
-                fock_screen: Some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         );
-        // fock_screen = false turns the screen off; a non-bool is a type error
-        let off = model(
-            "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\nfock_screen = false",
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(off.direct.unwrap().fock_screen, None);
+        // The Fock screen is on by default on both paths; fock_screen = false
+        // turns it off on either; a non-bool is a type error.
+        let kappa = Some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT);
+        assert_eq!(m.fock_screen, kappa);
+        for direct in ["", "integral_direct = true\n"] {
+            let on = model(&format!(
+                "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(on.fock_screen, kappa, "{direct:?}");
+            let off = model(&format!(
+                "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}fock_screen = false"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(off.fock_screen, None, "{direct:?}");
+        }
         for bad in ["fock_screen = 1.0", "fock_screen = \"off\""] {
             let src = format!(
                 "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -6975,6 +7113,26 @@ mod compat_guard_tests {
         for kind in ["drpa", "linlccd"] {
             let e = ok(kind).expect_err(kind);
             assert!(e.contains("lambda_boys") && e.contains("plain Boys"), "{e}");
+        }
+    }
+
+    /// `[local] fock_screen` is a local-MP2 model knob: accepted in-core and
+    /// integral-direct for rimp2, refused for dRPA and LinLCCD (which run the
+    /// plain mask and would silently ignore it).
+    #[test]
+    fn local_fock_screen_is_mp2_only_on_both_paths() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let ok = |kind: &str, extra: &str| {
+            cfg(kind, "energy", &format!("{at}{extra}fock_screen = false\n")).validate_task_compat()
+        };
+        assert_eq!(ok("rimp2", ""), Ok(()));
+        assert_eq!(ok("rimp2", "integral_direct = true\n"), Ok(()));
+        for kind in ["drpa", "linlccd"] {
+            let e = ok(kind, "").expect_err(kind);
+            assert!(
+                e.contains("fock_screen") && e.contains("plain amplitude mask"),
+                "{e}"
+            );
         }
     }
 

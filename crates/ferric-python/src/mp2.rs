@@ -408,9 +408,10 @@ pub(crate) fn local_correlation_operator(
 /// integral-direct local MP2, which never forms the global 3-index tensor;
 /// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
 /// (Bohr, 20.0), `ao_tail` (1e-4), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
-/// `virt_schwarz_kappa` (off), plus `fock_screen` (default true: the
-/// Fock-propagated mask screen, κ = 1; false keeps the plain integral mask),
-/// the same names and defaults as the CLI's `[local]` keys. The rules are the CLI's: every local kwarg is a
+/// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
+/// `[local]` keys. On both the in-core and the integral-direct path,
+/// `fock_screen` (default true) runs the Fock-propagated mask screen, κ = 1;
+/// false keeps the plain integral mask. The rules are the CLI's: every local kwarg is a
 /// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
 /// local one (it reads only `frozen_core` and `auxbasis`).
 ///
@@ -966,8 +967,8 @@ pub(crate) fn run_rimp2_local(
     model: &ferric_cli::LocalModel,
     att_keys: Option<&ferric_cli::Mp2Cfg>,
 ) -> PyResult<PyRiMp2Result> {
-    use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
-    use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+    use ferric_mp2::lmp2_amplitude::amplitude_lmp2;
+    use ferric_mp2::lmp2_direct::amplitude_lmp2_direct;
     if mol.inner.multiplicity > 1 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "run_rimp2: local=\"amplitude-threshold\" is closed-shell only (it localizes a \
@@ -986,26 +987,11 @@ pub(crate) fn run_rimp2_local(
     let (prep, dfbs, rhf) =
         converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, rhf_config)?;
     let eps = model.eps[0];
-    let lcfg = AmplitudeLmp2Config {
-        eps,
-        frozen_core: frozen_core.unwrap_or(0),
-        eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        pair_gate_cal: model.direct.as_ref().and_then(|d| d.gate_cal),
-        fock_screen: model.direct.as_ref().and_then(|d| d.fock_screen),
-        compute_reference: model.reference,
-        virtual_space: model.virtual_space.clone(),
-        lambda_boys: model.lambda_boys,
-        ..Default::default()
-    };
-    let dcfg = model.direct.as_ref().map(|d| DirectConfig {
-        aux_radius_bohr: d.aux_radius,
-        virt_radius_bohr: Some(d.virt_radius),
-        ao_tail: d.ao_tail,
-        schwarz_skip: d.schwarz_skip,
-        batch_merge: d.batch_merge,
-        virt_schwarz_kappa: d.virt_schwarz_kappa,
-        ..Default::default()
-    });
+    // The same builder as the CLI's `[local]` run (`LocalModel::rimp2_configs`).
+    let (lcfg, dcfg) = model.rimp2_configs(
+        frozen_core.unwrap_or(0),
+        budget_bytes_from_gb(memory_budget_gb),
+    );
     let (r, st) = match &dcfg {
         None => (
             amplitude_lmp2(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)

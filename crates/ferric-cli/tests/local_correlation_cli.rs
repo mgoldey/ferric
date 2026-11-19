@@ -214,29 +214,33 @@ fn rimp2_and_linlccd_state_their_model() {
         assert!(c["e_corr_canonical_ri"].is_null(), "{c}");
         assert_eq!(c["local"]["eps"], 1e-3, "{c}");
         assert_eq!(c["local"]["integral_direct"], !direct.is_empty(), "{c}");
-        // the Fock-propagated screen: on by default integral-direct (κ = 1,
-        // reaching the solver config the certificate is built from), off in core
-        if direct.is_empty() {
-            assert!(c["local"]["fock_screen"].is_null(), "{c}");
-        } else {
-            assert_eq!(c["local"]["fock_screen"], 1.0, "{c}");
-            assert!(lo.stdout.contains("fock_screen kappa 1"), "{}", lo.stdout);
-        }
+        // the Fock-propagated screen: on by default on both paths (κ = 1,
+        // reaching the solver config the certificate is built from)
+        assert_eq!(c["local"]["fock_screen"], 1.0, "{c}");
+        assert!(
+            lo.stdout.contains("Fock screen           = kappa 1"),
+            "{}",
+            lo.stdout
+        );
     }
-    // `fock_screen = false` turns it off on the integral-direct path
-    let off = ok_run(
-        "rimp2_direct_screen_off",
-        "rimp2",
-        &local(
-            "eps = 1e-3
-integral_direct = true
-fock_screen = false
-",
-        ),
-    );
-    let c = &off.results[0]["components"];
-    assert!(c["local"]["fock_screen"].is_null(), "{c}");
-    assert!(off.stdout.contains("fock_screen off"), "{}", off.stdout);
+    // `fock_screen = false` turns it off on either path
+    for (tag, direct) in [
+        ("rimp2_incore_screen_off", ""),
+        ("rimp2_direct_screen_off", "integral_direct = true\n"),
+    ] {
+        let off = ok_run(
+            tag,
+            "rimp2",
+            &local(&format!("eps = 1e-3\n{direct}fock_screen = false\n")),
+        );
+        let c = &off.results[0]["components"];
+        assert!(c["local"]["fock_screen"].is_null(), "{c}");
+        assert!(
+            off.stdout.contains("Fock screen           = off"),
+            "{}",
+            off.stdout
+        );
+    }
 
     let lex = ok_run("linlccd_exact", "linlccd", MP2);
     assert!(lex.stdout.contains("LinLCCD(hh) (exact)"), "{}", lex.stdout);

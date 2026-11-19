@@ -34,6 +34,19 @@ name: Wheels
 # needs every matrix leg. The release-check job (scripts/release-check.py)
 # checks every file once, on every run; publish and github-release need it.
 #
+# ONE STABLE-ABI (abi3) WHEEL PER PLATFORM AND VARIANT, not one per CPython:
+# ferric-python's `abi3` Cargo feature (pyo3 `abi3-py310`, off for local
+# `maturin develop`) is switched on with `--features abi3`, so each build leg
+# compiles the Rust workspace ONCE and produces
+# ferric-<version>-cp310-abi3-<platform>.whl, which pip installs on every
+# CPython >= 3.10. smoke-test still runs on EVERY CPython 3.10-3.13 against
+# that single wheel: that is what proves the stable-ABI claim. A release is
+# 3 PyPI wheels (Linux, macOS arm64, Windows x86_64) + the sdist + 1 largeam
+# wheel; it was 12 + 1 + 4 with per-interpreter wheels. To go back, revert
+# the commit that introduced this paragraph (it touches only the workflows,
+# scripts/release-check.py, its test and the docs; the opt-in Cargo feature
+# can stay).
+#
 # Status: the nightly and workflow_dispatch runs exercise everything except
 # the two upload jobs (release-check runs on the real files every time).
 # This workflow published v0.1.0rc3 through v0.1.0rc7 to PyPI. The largeam
@@ -144,7 +157,7 @@ env:
   # not a credential -- being published is the entire point of it.
   MANYLINUX_DIGEST: "531d7aa844bbb0c131d4ab011d3db741c4abc8d498cd5ccc86121046f62303b4"  # pragma: allowlist secret
   # PEP 427 build tag of the large-libint wheel (must start with a digit):
-  # ferric-<version>-1largeam-cp3NN-cp3NN-manylinux_2_28_x86_64.whl. A build
+  # ferric-<version>-1largeam-cp310-abi3-manylinux_2_28_x86_64.whl. A build
   # tag, not a `+largeam` local version, so the version, __version__ and
   # __build__ stay byte-identical across both variants and the stamp/identity
   # gates hold unchanged; only the file name and the WHEEL file's `Build:`
@@ -157,8 +170,8 @@ env:
 
 jobs:
   # Builds OpenBLAS + libxc + libint2 + Eigen ONCE, inside the SAME
-  # manylinux_2_28 container build-wheels uses, and hands the result to all
-  # four matrix legs as a build artifact instead of each of them building
+  # manylinux_2_28 container build-wheels uses, and hands the result to
+  # every matrix leg as a build artifact instead of each of them building
   # its own copy.
   #
   # This replaced a 4-way actions/cache RACE that made the cache close to
@@ -176,7 +189,7 @@ jobs:
   # four legs, not one in four.
   #
   # actions/upload-artifact + download-artifact SHARES this run's build with
-  # the four build-wheels legs below: a race is structurally impossible when
+  # the build-wheels legs below: a race is structurally impossible when
   # exactly one job writes and N jobs only ever read -- there is no "who
   # gets there first", no restore-vs-save ordering to reason about, and no
   # silent partial-success like the cache save's soft-fail above.
@@ -662,13 +675,14 @@ jobs:
     # build's headroom now lives.
     timeout-minutes: 60
     strategy:
-      # false: a numerics or link failure on one CPython version is likely
-      # present on all of them (same native deps, same shim), so let every
-      # leg finish and report instead of burning runner time four times over
-      # discovering the same root cause serially.
+      # false: let both variants finish and report, so a failure in one does
+      # not hide whether the other builds (same native deps, same shim).
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # No python-version axis: ONE abi3 wheel per variant (see the header).
+        # The per-interpreter build was a `python-version: ["3.10", "3.11",
+        # "3.12", "3.13"]` axis here, `-i python<that version>` in the
+        # maturin args and `-cp<that version>` in the artifact names.
         # pypi: small static libint2 (native-deps-cache), uploaded to PyPI.
         # largeam: conda-forge 2.13.1 shared libint2 (fetch-libint-large),
         # attached to the GitHub release only. ONE matrix, not a copy of this
@@ -830,7 +844,7 @@ jobs:
           echo "--- after"; df -h / | tail -1
 
       # The built OpenBLAS/libxc/libint2/Eigen tree from build-native-deps --
-      # built ONCE for all four legs, see that job for why (was a 4-way
+      # built ONCE for every leg, see that job for why (was a 4-way
       # actions/cache race before this). download-artifact, not cache: this
       # is the ONLY place that reads it, so there is no restore-vs-save
       # ordering to reason about, and a missing artifact is a hard failure
@@ -950,14 +964,17 @@ jobs:
           manylinux: 2_28
           # `--release` for a real optimized wheel; `--out dist` collects
           # every matrix leg's wheel into the same relative path for the
-          # upload step below. `-i` pins the exact interpreter this leg
-          # targets -- manylinux_2_28's image ships several CPythons under
-          # /opt/python, and without `-i` maturin builds abi3/whatever it
-          # finds first rather than the version this matrix leg is for.
+          # upload step below. `--features abi3` turns on ferric-python's
+          # stable-ABI feature (pyo3 abi3-py310): one cp310-abi3 wheel for
+          # every CPython >= 3.10. `-i python3.10` pins the interpreter maturin
+          # reads the build config from (manylinux_2_28's image ships several
+          # CPythons under /opt/python) to the abi3 floor, so the tag cannot
+          # drift; "Wheel size / contents sanity check" fails the leg if the
+          # wheel is not cp310-abi3.
           # `--strip` removes .symtab/.strtab from the extension (13.4 MB raw,
           # about 3 MB of the zipped wheel); only debuggers and symbolised Rust
           # backtraces read them. release-check fails a Linux PyPI wheel that still carries .symtab.
-          args: --release --strip --out dist -i python${{ matrix.python-version }}
+          args: --release --strip --out dist --features abi3 -i python3.10
           # Runs BEFORE the build, INSIDE THE SAME SHELL SCRIPT that then
           # invokes `maturin build` (maturin-action concatenates
           # before-script-linux and the build command into one generated
@@ -1006,6 +1023,13 @@ jobs:
           set -euo pipefail
           ls -lh dist/
           [ "$(ls dist/*.whl | wc -l)" -eq 1 ] || { echo "::error::expected one wheel in dist/"; exit 1; }
+          # The stable-ABI tag (--features abi3): a cp3NN-cp3NN name here
+          # means the feature did not reach pyo3, and the wheel would install
+          # on one CPython only.
+          case "$(basename dist/*.whl)" in
+            ferric-*-cp310-abi3-manylinux_2_28_x86_64.whl) ;;
+            *) echo "::error::$(basename dist/*.whl) is not a cp310-abi3 manylinux_2_28 wheel"; exit 1 ;;
+          esac
           # pypi: PyPI refuses files over 100 MiB (warehouse MAX_FILESIZE)
           # unless the project has an increase. Fail here, not at upload on
           # tag day. largeam: GitHub's 2 GiB per-release-asset limit; it never
@@ -1056,7 +1080,7 @@ jobs:
           [ "$(ls dist-largeam/*.whl | wc -l)" -eq 1 ] || { echo "::error::expected one tagged wheel"; exit 1; }
           tagged="$(ls dist-largeam/*.whl)"
           case "$(basename "$tagged")" in
-            ferric-*-"${LARGE_BUILD_TAG}"-cp*) ;;
+            ferric-*-"${LARGE_BUILD_TAG}"-cp310-abi3-*) ;;
             *) echo "::error::$tagged does not carry the build tag $LARGE_BUILD_TAG"; exit 1 ;;
           esac
           python3 - "$orig" "$tagged" "$LARGE_BUILD_TAG" <<'PY'
@@ -1084,7 +1108,7 @@ jobs:
       # this name is ever "tidied".
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ${{ matrix.variant == 'largeam' && 'gh-largeam-wheels' || 'wheels' }}-cp${{ matrix.python-version }}
+          name: ${{ matrix.variant == 'largeam' && 'gh-largeam-wheels' || 'wheels' }}-cp310-abi3
           path: ${{ matrix.variant == 'largeam' && 'dist-largeam/*.whl' || 'dist/*.whl' }}
           if-no-files-found: error
           # Non-tag runs (nightly, dispatch): 3 days, enough to download and
@@ -1092,8 +1116,9 @@ jobs:
           retention-days: ${{ !startsWith(github.ref, 'refs/tags/') && 3 || 0 }}
 
   # macOS arm64 + Windows x86_64: native deps (cached; a cold libint2 build is
-  # 77-91 min) and then the cp310-cp313 wheels + their smoke tests. The
-  # wheels are uploaded as `wheels-<platform>-cp3.NN`; release-check checks
+  # 77-91 min) and then one cp310-abi3 wheel per platform + its smoke tests
+  # on CPython 3.10-3.13. The wheels are uploaded as
+  # `wheels-<platform>-cp310-abi3`; release-check checks
   # them per platform and publish uploads them with the Linux set.
   native-deps-macwin:
     uses: ./.github/workflows/native-deps-macwin.yml
@@ -1275,6 +1300,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Every CPython the abi3 wheel claims, each installing the SAME
+        # cp310-abi3 wheel: this axis is the evidence for the stable-ABI tag.
         python-version: ["3.10", "3.11", "3.12", "3.13"]
         # Both variants run EVERY step below; "Assert the libint2 variant"
         # is the only one that differs.
@@ -1286,7 +1313,7 @@ jobs:
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ${{ matrix.variant == 'largeam' && 'gh-largeam-wheels' || 'wheels' }}-cp${{ matrix.python-version }}
+          name: ${{ matrix.variant == 'largeam' && 'gh-largeam-wheels' || 'wheels' }}-cp310-abi3
           path: dist
 
       - name: Install wheel into a fresh venv
@@ -1311,6 +1338,9 @@ jobs:
           # instead of silently invoking a compiler in a test job.
           pip install --only-binary=:all: dist/*.whl
           pip show ferric
+          # The abi3 wheel's extension is ferric.abi3.so on every interpreter
+          # (a per-interpreter build would be ferric.cpython-3NN-*.so).
+          python3 -c "import ferric.ferric as m, sys; print(sys.version.split()[0], m.__file__); assert m.__file__.endswith('.abi3.so'), m.__file__"
 
       # Gate 3: the built wheel must identify itself as THIS commit, clean,
       # and (on a tag) as the tagged version. publish needs smoke-test, so a
@@ -1648,9 +1678,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ONE interpreter, not the four build-wheels covers. This artifact is
-        # not published, so a full matrix would quadruple runner time for a
-        # build nobody installs from an index. 3.11 matches the version the
+        # ONE interpreter. This artifact is not published, so a full matrix
+        # would quadruple runner time for a build nobody installs from an
+        # index. It is deliberately NOT abi3 (no `abi3` in its features): it
+        # stays a cp311-cp311 wheel, outside the release set. 3.11 matches the version the
         # repo develops against (see CLAUDE.md's pytest invocation).
         python-version: ["3.11"]
     steps:
@@ -2006,9 +2037,9 @@ jobs:
       contents: read
       id-token: write  # OIDC trusted publishing -- no PYPI_API_TOKEN secret
     steps:
-      # pattern + merge-multiple: pulls all twelve wheels-* artifacts (Linux
-      # wheels-cp3.NN, plus wheels-macos-arm64-cp3.NN and
-      # wheels-windows-x86_64-cp3.NN from wheels-macwin) into one flat dist/
+      # pattern + merge-multiple: pulls all three wheels-* artifacts (Linux
+      # wheels-cp310-abi3, plus wheels-macos-arm64-cp310-abi3 and
+      # wheels-windows-x86_64-cp310-abi3 from wheels-macwin) into one flat dist/
       # -- gh-action-pypi-publish uploads everything it finds there in one go.
       # `wheels-*` does NOT match `gh-largeam-wheels-*` (or `mpi-wheels-*`):
       # artifact patterns match the whole name.
@@ -2030,8 +2061,8 @@ jobs:
           echo "-- publishing from ref: ${GITHUB_REF} --"
           ls -lh dist/
           # Every wheel filename must carry the same version as the tag
-          # (v0.1.0 -> ferric-0.1.0-*), and there must be exactly one wheel
-          # per supported CPython tag. build-wheels' "Stamp the version from
+          # (v0.1.0 -> ferric-0.1.0-*), and there must be exactly one
+          # cp310-abi3 wheel per platform. build-wheels' "Stamp the version from
           # the tag" step makes this true in the normal case, so a
           # mismatch here is defence in depth. Fail before PyPI ever sees it, since a bad upload to a
           # version that already exists cannot be overwritten or deleted,
@@ -2051,14 +2082,14 @@ jobs:
             exit 1
           fi
           count=$(ls dist/*.whl | wc -l)
-          echo "wheel count: $count (expect 12: cp310-cp313 x manylinux_2_28_x86_64, macosx arm64, win_amd64)"
-          if [[ "$count" -ne 12 ]]; then
-            echo "::error::expected 12 wheels, found $count -- refusing to publish a partial release"
+          echo "wheel count: $count (expect 3: cp310-abi3 x manylinux_2_28_x86_64, macosx arm64, win_amd64)"
+          if [[ "$count" -ne 3 ]]; then
+            echo "::error::expected 3 wheels, found $count -- refusing to publish a partial release"
             exit 1
           fi
           for plat in manylinux_2_28_x86_64 macosx_11_0_arm64 win_amd64; do
-            n="$(ls dist/*.whl | grep -c "$plat" || true)"
-            [ "$n" -eq 4 ] || { echo "::error::expected 4 $plat wheels, found $n"; exit 1; }
+            n="$(ls dist/*.whl | grep -c -- "-cp310-abi3-$plat" || true)"
+            [ "$n" -eq 1 ] || { echo "::error::expected 1 cp310-abi3 $plat wheel, found $n"; exit 1; }
           done
           # Exactly one sdist, named for the tag.
           if [[ ! -f "dist/ferric-${tag_version}.tar.gz" || "$(ls dist/*.tar.gz | wc -l)" -ne 1 ]]; then
@@ -2101,8 +2132,8 @@ jobs:
           done
 
 
-      # The fuller checks (METADATA/WHEEL/PKG-INFO contents, one wheel per
-      # CPython, no bundled libint2, ...) ran in the release-check job, which
+      # The fuller checks (METADATA/WHEEL/PKG-INFO contents, one cp310-abi3
+      # wheel per platform, no bundled libint2, ...) ran in the release-check job, which
       # this job needs. Its SHA256SUMS is the record of exactly what it
       # checked: every file about to go to PyPI must be listed there with the
       # same hash, so PyPI gets those bytes and no others.
@@ -2138,10 +2169,11 @@ jobs:
   # is uploaded unless it passed); on nightly/dispatch runs with the
   # pyproject.toml placeholder version, as a dry run of the same checks on
   # real files. scripts/release-check.py (stdlib only) does the checking:
-  # names, METADATA/WHEEL/PKG-INFO, one wheel per CPython per variant, the
+  # names, METADATA/WHEEL/PKG-INFO, one cp310-abi3 wheel per variant, the
   # bundled-libint2 rule per variant, size limits, the two libint2 licence
   # texts, the macOS arm64 and Windows x86_64 sets (--platform-dir), and that
-  # SHA256SUMS covers exactly these 19 files.
+  # SHA256SUMS covers exactly these 7 files (3 PyPI wheels, the sdist, the
+  # largeam wheel, 2 licence texts; 19 with per-interpreter wheels).
   #
   # Its outputs, as the `release-meta` artifact: SHA256SUMS (publish refuses
   # any file not listed in it with the same hash), notes.md and the licence
@@ -2166,9 +2198,9 @@ jobs:
             scripts/release-check.py
           sparse-checkout-cone-mode: false
 
-      # `wheels-cp*`: the Linux PyPI set only (wheels-cp3.NN). It does NOT
+      # `wheels-cp*`: the Linux PyPI set only (wheels-cp310-abi3). It does NOT
       # match `gh-largeam-wheels-*`, `mpi-wheels-*` or the macOS/Windows
-      # `wheels-<platform>-cp3.NN` sets (downloaded per platform below):
+      # `wheels-<platform>-cp310-abi3` sets (downloaded per platform below):
       # artifact patterns match the whole name.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -2254,10 +2286,10 @@ jobs:
           echo "pip ($(python3 --version)) picked: $picked"
           echo "pip picked \`$picked\` when both variants were on one index." >> "$GITHUB_STEP_SUMMARY"
 
-  # Attaches the release's files to a GitHub release for the tag: the twelve
-  # PyPI wheels (Linux, macOS arm64, Windows x86_64) and the sdist (the same
-  # bytes PyPI got), the four large-libint wheels, the two libint2 licence
-  # texts (LGPL-3.0-only) and SHA256SUMS over those 19 files: 20 assets.
+  # Attaches the release's files to a GitHub release for the tag: the three
+  # cp310-abi3 PyPI wheels (Linux, macOS arm64, Windows x86_64) and the sdist
+  # (the same bytes PyPI got), the large-libint wheel, the two libint2
+  # licence texts (LGPL-3.0-only) and SHA256SUMS over those 7 files: 8 assets.
   #
   # needs: [publish, release-check], so the release page never lists a
   # version PyPI does not have, and a failed largeam build (which publish
@@ -2322,8 +2354,8 @@ jobs:
           set -euo pipefail
           cp release-meta/libint2-LICENSE.txt release-meta/libint2-COPYING.LESSER.txt release/
           n="$(ls release | wc -l)"
-          [ "$n" -eq 19 ] || { echo "::error::expected 19 release files (12 + 1 + 4 + 2 licence texts), found $n"; ls -l release; exit 1; }
-          [ "$(wc -l < release-meta/SHA256SUMS)" -eq 19 ] || { echo "::error::SHA256SUMS does not list 19 files"; cat release-meta/SHA256SUMS; exit 1; }
+          [ "$n" -eq 7 ] || { echo "::error::expected 7 release files (3 abi3 wheels + 1 sdist + 1 largeam wheel + 2 licence texts), found $n"; ls -l release; exit 1; }
+          [ "$(wc -l < release-meta/SHA256SUMS)" -eq 7 ] || { echo "::error::SHA256SUMS does not list 7 files"; cat release-meta/SHA256SUMS; exit 1; }
           (cd release && sha256sum -c ../release-meta/SHA256SUMS)
           cp release-meta/SHA256SUMS release/
           ls -l release

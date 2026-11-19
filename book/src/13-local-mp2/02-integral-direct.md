@@ -302,12 +302,12 @@ to the CG tolerance. The test has one mutation arm per map, so each map is
 shown to change the energy when it is broken.
 
 n-Butane in cc-pVDZ shows the trivial limit and then the default maps
-(the `76ffd5a79` build, λ-Boys λ = 10). Python has no way to pass `virt_radius = None`, so
+(re-run 2026-11-18 at the current defaults: λ-Boys λ = 10, Fock screen κ = 1 on both paths). Python has no way to pass `virt_radius = None`, so
 the first run keeps the 20 Bohr default; butane is 10.5 Bohr between its
 farthest atoms, so that radius drops nothing. The trivial run matches exact
 RI-MP2 to $2.71\times10^{-13}$ Ha. With the default maps (`virt_radius` 20,
 `ao_tail` $10^{-4}$) the direct recovery agrees with the in-core one to
-$10^{-4}$ percentage points at each $\varepsilon$:
+$7\times10^{-4}$ percentage points at each $\varepsilon$:
 
 ```python
 import ferric
@@ -330,9 +330,9 @@ for eps in (1e-5, 1e-4, 1e-3):
 
 ```text
 exact -0.599645225098  direct trivial maps -0.599645225098  diff +2.71e-13 Ha
-eps=  1e-05  in-core  99.9921%  direct (default maps)  99.9922%
-eps=  1e-04  in-core  99.7348%  direct (default maps)  99.7349%
-eps=  1e-03  in-core  95.2024%  direct (default maps)  95.2025%
+eps=  1e-05  in-core  99.9990%  direct (default maps)  99.9991%
+eps=  1e-04  in-core  99.8929%  direct (default maps)  99.8931%
+eps=  1e-03  in-core  96.5805%  direct (default maps)  96.5812%
 ```
 
 **Artifact hypothesis.** The two outcomes of a size sweep are predicted in
@@ -379,7 +379,10 @@ The two predictions differ, so the sweep can tell them apart.
 The Rust `DirectConfig` defaults are the trivial limits for every option in
 the table except `aux_radius_bohr`, which defaults to 10.0 Bohr as in the
 CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
-`schwarz_skip` and `batch_merge`. The CLI defaults are in
+`schwarz_skip` and `batch_merge`. `DirectConfig::production()` holds the
+CLI defaults, and the CLI `[local]` section and Python
+`run_rimp2(integral_direct=True)` both build their configs from it, so the
+two entry points cannot drift apart. The CLI defaults are in
 `site/src/reference/input.md`, section `[local]`.
 
 ## What is measured {#integral-direct-measured}
@@ -387,21 +390,30 @@ CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, trivial maps, integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri) | PySCF `DFMP2`, same auxiliary basis | at most $1.38\times10^{-11}$ Ha over the 24 comparisons of the validation page, bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `crates/ferric-mp2/tests/lmp2_direct.rs` |
-| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.98%, 99.72%, 95.2% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps, against 99.99%, 99.73%, 95.2% in core (λ-Boys, λ = 10) <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> | same |
+| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.999%, 99.89%, 96.6% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ at the default maps (virtual radius 20 Bohr, AO tail 1e-4, no pair gate, Fock screen κ = 1), against 99.999%, 99.89%, 96.6% in core (λ-Boys, λ = 10, Fock screen κ = 1 on both). At the old maps (virtual radius 12 Bohr, AO tail 1e-3, gate 0.7, Fock screen off) direct recovered 99.98%, 99.72%, 95.2% | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
-<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> On this molecule the integral-direct maps change the recovery by 0.02
-percentage points at $\varepsilon = 10^{-4}$, and not at the reported
-precision at the other two thresholds.
+On this molecule the integral-direct defaults and the in-core path, both
+with the Fock screen, agree to 0.001 percentage points at $\varepsilon =
+10^{-5}$, $10^{-4}$, $10^{-3}$ (all electrons; 2026-11-18). Before the
+in-core path ran the screen, direct exceeded it by 0.007, 0.16 and 1.38
+points; at the old maps, with the screen off on both, the difference was
+0.01 to 0.02 points.
 
-**Cost and scaling (provisional).** <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> On n-alkanes C20 to C48 (6-31G with
-cc-pVDZ-RI, $\varepsilon = 10^{-4}$, frozen carbon cores, a calibrated pair
-gate), the correlation stage grew as about $N^{1.24}$ with the erfc kernel
-and $N^{1.4}$ with the Coulomb kernel, fitted to the last three sizes. The
-integral-direct path was about at parity with canonical RI-MP2 at C20
-(about 1.1 times slower) and about 6 times faster at C32 (5.7 to 6.3
-times).
+**Cost and scaling (provisional).** On n-alkanes C20, C32 and C48 (6-31G
+with cc-pVDZ-RI, frozen carbon cores, a calibrated pair gate of 0.7 for
+Coulomb and 0.02 for erfc with $\omega = 1.0$, every other map at its
+default, Fock screen $\kappa = 1$ and λ-Boys $\lambda = 10$; 2026-11-18),
+the correlation stage (assembly and solve) grew as about $N^{1.45}$ with
+the Coulomb kernel and $N^{1.35}$ with the erfc kernel at $\varepsilon =
+10^{-4}$, and as $N^{1.61}$ and $N^{1.55}$ at $\varepsilon = 10^{-3}$,
+fitted to the three sizes. The slope falls from the first size interval to
+the second (Coulomb at $10^{-4}$: 1.56 from C20 to C32, 1.31 from C32 to
+C48), so the large-$N$ exponent is not settled. With the Fock screen and
+λ-Boys both off, the time is 0 to 10% lower at each size, with no trend in
+$N$; one repeat per point resolves the exponent to about $\pm 0.1$, and
+the two settings do not differ by more than that.
 
 The limits of that measurement:
 
@@ -412,8 +424,8 @@ The limits of that measurement:
   whose cost the fitted exponents do not cover.
 
 Local MP2 without `integral_direct` still builds the global tensor and
-makes no scaling claim. The measurement is `bench_direct_alkane_series` in
-`crates/ferric-mp2/tests/lmp2_direct.rs`.
+makes no scaling claim. The measurement runs the CLI (`rimp2` and
+`att-rimp2` with `[local] integral_direct = true`).
 
 ## Sources
 
