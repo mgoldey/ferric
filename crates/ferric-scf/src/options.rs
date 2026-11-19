@@ -1,8 +1,8 @@
 //! Frontend-neutral SCF options and their lowering to [`RhfConfig`](crate::rhf::RhfConfig).
 //!
 //! Frontends (the Python `run_rhf` / `run_uhf` / `run_rohf` and the Kohn-Sham
-//! `run_dft` / `run_uks` / `run_roks` today; the CLI `[scf]` section is a
-//! follow-up) parse their own
+//! `run_dft` / `run_uks` / `run_roks`, and the CLI `[scf]` section through
+//! [`ScfOptionsExt`](crate::options::ScfOptionsExt)) parse their own
 //! surface syntax (strings, PyO3 objects, TOML) into an [`ScfOptions`](crate::options::ScfOptions), then
 //! call [`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config). The lowering is pure: no I/O, no
 //! environment reads, no process exit, no printing. It owns the defaults (the

@@ -481,7 +481,9 @@ struct ScfConfigInputs<'a> {
 /// error. Most were already validated by `load_config`; an error here still
 /// fails the run rather than dropping the key.
 fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig, CliError> {
-    use ferric_scf::options::{AuxBasis, Guess, ScfOptions, ScfOptionsExt, TrahTrigger};
+    use ferric_scf::options::{
+        df_k_aux_or_default, AuxBasis, Guess, ScfOptions, ScfOptionsExt, TrahTrigger,
+    };
     let ScfConfigInputs {
         task,
         cosx_router_allowed,
@@ -562,14 +564,19 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // through the shared spelling parser ("exact"/"none"/"off"/... mean no
     // density fitting, as in the Python bindings).
     let kind_default = |d: Option<String>| d.map(AuxBasis::Named);
+    let df_j_aux = s
+        .df_j_aux
+        .as_deref()
+        .map(AuxBasis::parse)
+        .or_else(|| kind_default(df_j_default));
     // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default is not
-    // applied under it (an explicit `df_k_aux` next to COSX is refused by the
-    // SCF as a conflict).
-    let df_k_default = if s.k_builder.as_deref() == Some("cosx") {
-        None
-    } else {
-        df_k_default
-    };
+    // applied under it (the shared rule; an explicit `df_k_aux` next to COSX
+    // is refused by the SCF as a conflict).
+    let df_k_aux = df_k_aux_or_default(
+        s.k_builder.as_deref(),
+        s.df_k_aux.as_deref().map(AuxBasis::parse),
+        kind_default(df_k_default),
+    );
     let options = ScfOptionsExt {
         base: ScfOptions {
             max_iter: Some(s.max_iter),
@@ -580,16 +587,8 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
             integral_thresh: Some(s.integral_thresh),
             k_builder: s.k_builder.clone(),
             cosx: Some(cosx),
-            df_j_aux: s
-                .df_j_aux
-                .as_deref()
-                .map(AuxBasis::parse)
-                .or_else(|| kind_default(df_j_default)),
-            df_k_aux: s
-                .df_k_aux
-                .as_deref()
-                .map(AuxBasis::parse)
-                .or_else(|| kind_default(df_k_default)),
+            df_j_aux,
+            df_k_aux,
             ri_j_precision,
             ri_k_precision,
             // A written `level_shift`, 0 included, turns off the automatic
@@ -632,6 +631,10 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
             // throughput.
             aurora: Some(s.aurora),
             trah_trigger,
+            // The SCF functional (`Config::scf_xc_and_aux_defaults`) and the
+            // `[dft]` main grid.
+            xc,
+            dft_grid,
         },
         diis_switch_thresh: s.diis_switch_thresh,
         // The one place the CLI picks the RI-J default by task: optimize and
@@ -643,11 +646,10 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
         verbose: Some(s.verbose),
     };
     let mut config = options.into_rhf_config()?;
-    // Fields owned by other sections. `[cdft]` fills the constraint fields in
-    // `cdft::run` (it starts from this config), and the geometry drivers
-    // install their own `raw_handoff`; both keep the defaults here.
-    config.xc = xc;
-    config.dft_grid = dft_grid;
+    // Fields `ScfOptions` does not carry, owned by other sections. `[cdft]`
+    // fills the constraint fields in `cdft::run` (it starts from this config),
+    // and the geometry drivers install their own `raw_handoff`; both keep the
+    // defaults here.
     config.cosmo = cfg.cosmo.clone();
     config.polarizable = polarizable;
     Ok(config)
