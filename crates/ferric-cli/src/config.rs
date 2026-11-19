@@ -13,7 +13,7 @@ pub const DEFAULT_CORRELATION_AUX: &str = "cc-pvdz-ri";
 pub const TDDFT_DEFAULT_AUX: &str = "cc-pvdz-rifit";
 /// JK-fit auxiliary basis the CLI defaults RI-J/RI-K to for KS-DFT and the
 /// RPA/GW/TDDFT references.
-pub const DEFAULT_SCF_JK_AUX: &str = "def2-universal-jkfit";
+pub const DEFAULT_SCF_JK_AUX: &str = ferric_scf::options::DEFAULT_JK_AUX;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -4210,16 +4210,16 @@ fn default_max_iter() -> usize {
 // tight energy_conv is met only by chance once dE reaches its noise floor
 // (see `ferric_scf::noise_floor`), so it costs iterations.
 fn default_energy_conv() -> f64 {
-    1e-3
+    ferric_scf::options::DEFAULT_SCF_ENERGY_CONV
 }
 fn default_density_conv() -> f64 {
-    1e-6
+    ferric_scf::options::DEFAULT_SCF_DENSITY_CONV
 }
 fn default_diis_size() -> usize {
-    8
+    ferric_scf::options::DEFAULT_DIIS_SIZE
 }
 fn default_integral_thresh() -> f64 {
-    1e-12
+    ferric_scf::options::DEFAULT_INTEGRAL_THRESH
 }
 
 /// One `[[scf.ladder]]` rung. Every field is optional and overrides the
