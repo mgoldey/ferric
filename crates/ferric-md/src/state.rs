@@ -68,12 +68,22 @@ pub struct MdResult {
 impl MdResult {
     /// Largest `|conserved - conserved_0|` over the frames (Hartree).
     pub fn max_conserved_drift(&self) -> f64 {
-        todo!()
+        let Some(first) = self.frames.first() else {
+            return 0.0;
+        };
+        self.frames
+            .iter()
+            .map(|f| (f.conserved - first.conserved).abs())
+            .fold(0.0, f64::max)
     }
 
     /// Mean temperature over frames after skipping `skip_frames` (K).
+    /// NaN when no frames remain.
     pub fn mean_temperature(&self, skip_frames: usize) -> f64 {
-        let _ = skip_frames;
-        todo!()
+        let kept = self.frames.get(skip_frames..).unwrap_or(&[]);
+        if kept.is_empty() {
+            return f64::NAN;
+        }
+        kept.iter().map(|f| f.temperature_k).sum::<f64>() / kept.len() as f64
     }
 }

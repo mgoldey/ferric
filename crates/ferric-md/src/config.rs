@@ -27,8 +27,53 @@ impl Thermostat {
         tau_fs: Option<f64>,
         friction_per_ps: Option<f64>,
     ) -> Result<Self, String> {
-        let _ = (kind, tau_fs, friction_per_ps);
-        todo!()
+        let kind = kind.trim().to_ascii_lowercase();
+        let thermostat = match kind.as_str() {
+            "nve" => Self::Nve,
+            "berendsen" => Self::Berendsen {
+                tau_fs: tau_fs.ok_or("thermostat \"berendsen\" requires tau_fs")?,
+            },
+            "langevin" => Self::Langevin {
+                friction_per_ps: friction_per_ps
+                    .ok_or("thermostat \"langevin\" requires friction_per_ps")?,
+            },
+            other => {
+                return Err(format!(
+                    "unknown thermostat \"{other}\"; expected one of nve, berendsen, langevin"
+                ))
+            }
+        };
+        if tau_fs.is_some() && !matches!(thermostat, Self::Berendsen { .. }) {
+            return Err(format!("tau_fs applies only to berendsen, not {kind}"));
+        }
+        if friction_per_ps.is_some() && !matches!(thermostat, Self::Langevin { .. }) {
+            return Err(format!(
+                "friction_per_ps applies only to langevin, not {kind}"
+            ));
+        }
+        thermostat.check_parameters()?;
+        Ok(thermostat)
+    }
+
+    /// Reject non-physical thermostat parameters. `tau_fs` must be positive
+    /// (`+inf` is allowed and reproduces NVE); `friction_per_ps` must be
+    /// finite and non-negative (zero reproduces NVE up to round-off).
+    fn check_parameters(self) -> Result<(), String> {
+        match self {
+            Self::Nve => Ok(()),
+            Self::Berendsen { tau_fs } if tau_fs > 0.0 => Ok(()),
+            Self::Berendsen { tau_fs } => {
+                Err(format!("berendsen tau_fs must be positive, got {tau_fs}"))
+            }
+            Self::Langevin { friction_per_ps }
+                if friction_per_ps.is_finite() && friction_per_ps >= 0.0 =>
+            {
+                Ok(())
+            }
+            Self::Langevin { friction_per_ps } => Err(format!(
+                "langevin friction_per_ps must be finite and non-negative, got {friction_per_ps}"
+            )),
+        }
     }
 
     /// Lowercase config name of the variant.
@@ -86,8 +131,61 @@ impl Default for MdConfig {
 
 impl MdConfig {
     /// Check parameters for consistency with a system of `n_atoms` atoms.
+    ///
+    /// Requires `n_atoms > 0`, a finite positive `dt_fs`, `stride >= 1`,
+    /// valid thermostat parameters, a target temperature for Berendsen and
+    /// Langevin, finite non-negative temperatures, and finite `(n_atoms, 3)`
+    /// initial velocities when given.
     pub fn validate(&self, n_atoms: usize) -> Result<(), FerricError> {
-        let _ = n_atoms;
-        todo!()
+        let err = |m: String| FerricError::General(format!("invalid MD configuration: {m}"));
+        if n_atoms == 0 {
+            return Err(err("the system has no atoms".into()));
+        }
+        if !(self.dt_fs.is_finite() && self.dt_fs > 0.0) {
+            return Err(err(format!(
+                "dt_fs must be finite and positive, got {}",
+                self.dt_fs
+            )));
+        }
+        if self.stride == 0 {
+            return Err(err("stride must be at least 1".into()));
+        }
+        self.thermostat.check_parameters().map_err(err)?;
+        self.validate_temperatures().map_err(err)?;
+        self.validate_initial_velocities(n_atoms).map_err(err)
+    }
+
+    fn validate_temperatures(&self) -> Result<(), String> {
+        if self.thermostat != Thermostat::Nve && self.temperature_k.is_none() {
+            return Err(format!(
+                "thermostat {} requires temperature_k",
+                self.thermostat.as_str()
+            ));
+        }
+        for (name, t) in [
+            ("temperature_k", self.temperature_k),
+            ("init_temperature_k", self.init_temperature_k),
+        ] {
+            if let Some(t) = t.filter(|t| !(t.is_finite() && *t >= 0.0)) {
+                return Err(format!("{name} must be finite and non-negative, got {t}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_initial_velocities(&self, n_atoms: usize) -> Result<(), String> {
+        let Some(v) = &self.initial_velocities else {
+            return Ok(());
+        };
+        if v.dim() != (n_atoms, 3) {
+            return Err(format!(
+                "initial_velocities has shape {:?}, expected ({n_atoms}, 3)",
+                v.dim()
+            ));
+        }
+        if !v.iter().all(|x| x.is_finite()) {
+            return Err("initial_velocities contains non-finite values".into());
+        }
+        Ok(())
     }
 }
