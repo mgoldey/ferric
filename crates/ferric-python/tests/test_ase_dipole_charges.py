@@ -274,3 +274,14 @@ def test_charges_refuse_a_symmetry_frame_result():
     result = ferric.run_rhf(mol, basis, symmetry=True)
     with pytest.raises(PropertyNotImplementedError, match="symmetry-frame"):
         _charges(mol, basis, result, "mulliken")
+
+
+def test_symmetry_option_end_to_end():
+    # options={"symmetry": True} routes through run_rhf(symmetry=True), whose
+    # SymmetricRhfResult has no certificate: the energy must still come out,
+    # equal to the symmetry-free one, and charges are refused.
+    plain = _atoms("OH2", WATER_POS)
+    sym = _atoms("OH2", WATER_POS, options={"symmetry": True})
+    assert abs(sym.get_potential_energy() - plain.get_potential_energy()) < 1e-8
+    with pytest.raises(PropertyNotImplementedError, match="symmetry-frame"):
+        sym.get_charges()
