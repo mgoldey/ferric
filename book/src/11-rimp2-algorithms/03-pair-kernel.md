@@ -186,7 +186,11 @@ is 1, so it covers the `[parallel] blas_threads = 1` case. With the default
 serial BLAS count, the rayon pool size (section
 @sec:determinism-and-memory-blas-thread-counts), the Cholesky factor of the
 metric, and so $B$, moves in the last bits with the pool size, and so does
-the energy.
+the energy. `crates/ferric-cli/tests/thread_count_determinism.rs` checks
+both cases outside `pool.install`, one CLI process per run at 1 and 3
+threads, for water/cc-pVDZ RHF + RI-MP2 and RHF + Laplace SOS-MP2. With
+`blas_threads = 1` every energy is bit-identical. At the default count the
+total energy moves by 1.9e-13 Ha, about 2e-15 relative.
 The device pair fold has its own test (section @sec:device-mixed-precision). The related test
 `ri_mp2_spin_components_consistent_across_blas_thread_counts` in
 `crates/ferric-mp2/tests/blas_raise_identity.rs` varies

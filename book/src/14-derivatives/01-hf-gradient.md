@@ -737,7 +737,7 @@ $-\tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ of the table.
 
 | Option | Effect | Where |
 |---|---|---|
-| ECPs | adds $\sum D V^x_{\mathrm{ECP}}$ and uses $Z_{\mathrm{eff}}$ in $E_{nn}^x$; the ECP derivative blocks are derived in chapter @sec:ecp | `ferric-scf/src/gradient.rs::ecp_gradient` |
+| ECPs | adds $\sum D V^x_{\mathrm{ECP}}$ and uses $Z_{\mathrm{eff}}$ in $E_{nn}^x$; the ECP derivative blocks are derived in section @sec:ecp | `ferric-scf/src/gradient.rs::ecp_gradient` |
 | external point charges and field | folded into the one-electron term; the field-density term is a finite difference of dipole integrals (section @sec:external-potentials-gradient) | `ferric-scf/src/gradient.rs::oneelectron_gradient` |
 | density-fitted J and K | the two-electron term differentiates the fitted energy | section @sec:df-jk-gradient |
 | COSX exchange | exchange differentiated on the COSX grid; the overlap fit adds a Z-vector | section @sec:hf-gradient-cosx |

@@ -434,7 +434,11 @@ let e_os: f64 = per_point.iter().sum();                                      // 
 
 `compute_ao` and `compute_sos_ao` collect the same way. With three to seven
 points the tree of `compute_mo` happens not to split differently in
-practice, so no bit moves today.
+practice, so no bit moves today. The block widths do not depend on
+`RAYON_NUM_THREADS` either, so with `[parallel] blas_threads = 1` the SOS
+energy is bit-identical across thread counts, which
+`crates/ferric-cli/tests/thread_count_determinism.rs` checks in separate
+processes.
 
 Three points about it:
 
