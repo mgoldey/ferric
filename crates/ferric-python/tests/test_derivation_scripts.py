@@ -46,6 +46,11 @@ CASES = [
                 "rhs = B2 + f_t + bt_ + t @ bt_",
                 "FAIL [riccati-vs-definition]",
             ),
+            (
+                "bt_chol = np.linalg.solve(lchol, qia)",
+                "bt_chol = np.linalg.solve(lchol.T, qia)",
+                "FAIL [ri-factor-freedom]",
+            ),
         ],
     ),
     (
@@ -1313,6 +1318,11 @@ CASES = [
             ),
             ("cj + cj.T - coef", "cj + cj - coef", "FAIL [model]"),
             ("Vinv_used = M.T @ M", "Vinv_used = M @ M", "FAIL [collapse]"),
+            (
+                "naive_metric = Vw",
+                "naive_metric = VC",
+                "FAIL [naive-complete]",
+            ),
         ],
     ),
     (

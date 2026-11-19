@@ -23,7 +23,7 @@ and does not change in the numbers.
 | CLI | `[scf] jk_storage`, `[memory] budget_gb` (`site/src/reference/input.md`) |
 | Environment | `FERRIC_JK_STORAGE` |
 
-### The backends
+## The backends {#three-index-sources-backends}
 
 `ThreeIndexSource` holds the raw tensor $(P|\mu\nu)$ for one operator. It is
 chosen at build time against the memory budget, from these backends:
@@ -114,10 +114,15 @@ same policy.
 | `split` | no RI-J tensor; J by Split-RI-J on one rank |
 
 Under `auto` the first memory tier that fits wins. Between spill and
-recompute the choice comes from two timings taken on the machine at build
-time (`crates/ferric-integrals/src/three_index_source/jk_storage.rs`). The
-cost model assumes 30 passes, two J passes per Fock build times the iterations
-a converging SCF typically takes. `site/src/reference/input.md` is the
+recompute the choice comes from two timings taken on the machine when the
+tensor is built (`crates/ferric-integrals/src/three_index_source/jk_storage.rs`).
+The two timings are the integral cost per auxiliary row (four packed
+blocks at the centres of the band's quarters) and the cold write and read
+rates of the spill directory (a file of at most 64 MiB, synced, then read
+with the page cache dropped). Spill costs one build overlapped with the
+write plus $N$ reads; recompute costs $N$ builds; ties go to recompute,
+which needs no scratch disk. The cost model takes $N = 30$ passes, two J
+passes per Fock build times the iterations a converging SCF typically takes. `site/src/reference/input.md` is the
 authority for these rules, including the shared-memory pool and the
 multi-rank cases.
 
@@ -143,8 +148,11 @@ thread count and of the backend.
   is even because an odd split changes the vector lanes of the matrix
   product's accumulation, and with them the last bits.
 - The contracted index $Q$ is summed in blocks of 128 (`DRESS_K_BLOCK`). The
-  partial sums are accumulated in ascending $Q$, which is a coarse pairwise
-  summation.
+  partial sums are added in ascending $Q$. This is blocked summation: each
+  partial sum covers 128 terms, so less magnitude is lost to rounding than in
+  one running sum over all $Q$. Against a compensated reference on
+  benzene / def2-SVP the RMS error is $3.07\times10^{-17}$ blocked and
+  $1.18\times10^{-16}$ with one sum over $Q$.
 
 Here is the $Q$ loop of the in-core fast path,
 `ferric-integrals/src/three_index_source.rs::dress_resident_into_packed`; the
@@ -164,7 +172,12 @@ for qa in (0..naux).step_by(DRESS_K_BLOCK) {                  // Q in blocks of 
 ```
 
 The block boundaries are compile-time constants. Neither the thread count nor
-the budget can move them, so neither can move a bit of $B$.
+the budget can move them. The tile GEMMs run inside the rayon loop over
+column tiles, where BLAS runs single-threaded, so the serial-section
+`[parallel] blas_threads` setting does not reach them either. So no thread
+setting can move a bit of $B$: `dressed_tensor_bitidentical_across_thread_counts`
+(in `three_index_source.rs`) compares 1 thread with 2, 3, 5 and 8 on
+benzene / def2-SVP bit for bit.
 
 **Which tier `auto` picks** depends on the budget and on the free memory in
 the shared pool, so the same input can choose differently on a busier

@@ -52,6 +52,7 @@ Mutations (each turns the named check red):
   - B2 in plasmon_closed, spin-adapted B = 2K, 2.0 -> 1.0     [plasmon-vs-definition]
   - SCALE_U, the per-spin Pi prefactor, 2.0 -> 4.0            [u-freq-vs-definition]
   - riccati_closed residual without its T B ring term         [riccati-vs-definition]
+  - Cholesky factor on the wrong side, solve with L^T for L   [ri-factor-freedom]
 
 Run: python3 scripts/rpa_drpa_pdep_sympy.py  (needs sympy, numpy, scipy)
 """
