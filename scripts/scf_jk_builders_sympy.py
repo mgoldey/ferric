@@ -59,6 +59,12 @@ Numerical checks (random model, n = 6 AOs, R = 21 = n(n+1)/2):
       removes exactly the duplicated modes and K equals the K of the
       non-duplicated set.
 
+  N10 RI-K errs the other way from RI-J. For D = 2 C_o C_o^T,
+      tr[D K] = 4 sum_ij (ij|ij); the fit replaces each (ij|ij) by its
+      Coulomb-metric projection, so tr[D (K - K_RI)] = 4 sum_ij (d_ij|d_ij) >= 0
+      with d_ij the fit residual of phi_i phi_j. The fitted exchange energy
+      -1/4 tr[D K_RI] is therefore higher than the exact one, while the fitted
+      Coulomb energy is lower (N6).
   N9  Incremental build: accumulating J[dD] and K[dD] over iterations, with a
       full rebuild every 8 iterations as solve_rhf does, equals J[D] and K[D]
       of the current density to rounding.
@@ -72,6 +78,12 @@ K~ = X G^T, overlap fit K = sym(S S_num^-1 K~), S_num = X X^T):
   C2  The overlap fit is exact for a constant potential: with A_nl(g) = c S_nl
       on any grid, fitted COSX gives c S D S exactly while the plain K~ gives
       c S_num D S.
+  C3  The plain form is symmetric under the trace pairing,
+      tr[A K(B)] = tr[B K(A)] for symmetric A, B and symmetric A_nl(g), so
+      -1/2 K(D) is the density derivative of -1/4 tr[D K(D)] (central
+      differences). The fitted form multiplies K~ by Q = S S_num^-1 on one side
+      before symmetrizing, and both statements fail: the fitted Fock matrix is
+      not the derivative of the fitted exchange energy.
 
 Mutations (each turns the script red; the runner applies them as exact
 one-occurrence substitutions):
@@ -79,7 +91,8 @@ one-occurrence substitutions):
   rhf_k: caller factor 2 -> 1                            (N4 fails)
   rik_signed: K(X+) - K(X-) -> K(X+) + K(X-)            (N5 fails)
   packed_gamma: off-diagonal weight 2 -> 1               (N7 fails)
-  cosx_fit: S S_num^-1 K~ -> K~                          (C2 fails)
+  exchange_energy: -1/4 -> +1/4                         (N10 fails)
+  cosx_fit: S S_num^-1 K~ -> K~                          (C2 and C3 fail)
 Exits nonzero if any check fails; prints "FAIL [<claim>] ...".
 """
 
@@ -223,6 +236,11 @@ def rik_signed(b, d, rel_cut=1e-11):
     return rik_occupied(b, xp) - rik_occupied(b, xm)
 
 
+def exchange_energy(k, d):
+    """Closed-shell exchange energy -1/4 tr[D K] (occupation-2 D)."""
+    return -0.25 * np.sum(d * k)
+
+
 def packed_gamma(p3, d):
     gamma = np.zeros(p3.shape[0])
     for m in range(N):
@@ -332,6 +350,28 @@ def numerical_checks():
         " ".join(f"{x:.3e}" for x, _ in errs),
     )
 
+    # N10 RI-K errs the other way: for D = 2 C_o C_o^T, tr[D K] = 4 sum_ij (ij|ij)
+    # and the fit replaces each (ij|ij) by its projection, so tr[D (K - K_RI)] =
+    # 4 sum_ij (delta_ij|delta_ij) >= 0 and the fitted exchange energy is HIGHER.
+    k_err = np.sum(d * (k_exact(d) - rik_density(bl, d)))
+    self_e = 0.0
+    for i in range(c_occ.shape[1]):
+        for j in range(c_occ.shape[1]):
+            rho_ij = np.einsum("rmn,m,n->r", t, c_occ[:, i], c_occ[:, j])
+            c_ij = np.linalg.solve(vr, a_red @ w_metric @ rho_ij)
+            delta = rho_ij - a_red.T @ c_ij
+            self_e += delta @ w_metric @ delta
+    de_x = exchange_energy(rik_density(bl, d), d) - exchange_energy(k_exact(d), d)
+    de_j = 0.5 * np.sum(d * (rij(p3r, vr, d) - j_exact(d)))
+    check(
+        "[N10] RI-K: tr[D(K - K_RI)] = 4 sum_ij (d_ij|d_ij) >= 0; E_x errs high, E_J low",
+        abs(k_err - 4.0 * self_e) < 1e-9 * max(1.0, abs(k_err))
+        and k_err > 0
+        and de_x > 0
+        and de_j < 0,
+        f"tr err {k_err:.3e} vs {4.0 * self_e:.3e}; dE_x {de_x:.2e}, dE_J {de_j:.2e}",
+    )
+
     e = rel(packed_gamma(p3r, d), np.einsum("pls,ls->p", p3r, d))
     check(
         "[N7] packed lower triangle, off-diagonal weight 2 == full sum",
@@ -411,6 +451,59 @@ def incremental_and_cosx_checks():
     )
 
 
+def cosx_pairing_checks():
+    """C3: the plain COSX K is symmetric under the trace pairing, the fitted K
+    is not, so the fitted -1/2 K is not the density derivative of the fitted
+    exchange energy -1/4 tr[D K(D)]."""
+    ngrid = 40
+    xmat = rng.normal(size=(N, ngrid))
+    q = rng.normal(size=(N, N))
+    s_exact = q @ q.T / N + np.eye(N)
+    s_num = xmat @ xmat.T
+    a_g = rng.normal(size=(ngrid, N, N))
+    a_g = a_g + a_g.transpose(0, 2, 1)  # A_nl(g) symmetric
+
+    def k_tilde(d):
+        f = d @ xmat  # F_lg
+        g = np.einsum("gnl,lg->ng", a_g, f)  # G_ng
+        return xmat @ g.T
+
+    def plain(d):
+        kt = k_tilde(d)
+        return 0.5 * (kt + kt.T)
+
+    def fitted(d):
+        return cosx_fit(s_exact, s_num, k_tilde(d))
+
+    def sym_rand():
+        x = rng.normal(size=(N, N))
+        return x + x.T
+
+    da, db = sym_rand(), sym_rand()
+
+    def asym(kf):
+        ab, ba = np.sum(da * kf(db)), np.sum(db * kf(da))
+        return abs(ab - ba) / max(abs(ab), abs(ba))
+
+    def grad_gap(kf):
+        # dE/dD of E = -1/4 tr[D K(D)] by central differences vs the Fock term -1/2 K(D)
+        d0, x = sym_rand(), sym_rand()
+        h = 1e-4
+        e = lambda d: -0.25 * np.sum(d * kf(d))
+        fd = (e(d0 + h * x) - e(d0 - h * x)) / (2 * h)
+        an = np.sum(-0.5 * kf(d0) * x)
+        return abs(fd - an) / max(abs(an), 1e-300)
+
+    a_p, a_f = asym(plain), asym(fitted)
+    g_p, g_f = grad_gap(plain), grad_gap(fitted)
+    check(
+        "[C3] COSX: plain K symmetric under tr[A K(B)] = tr[B K(A)] and -1/2 K = dE/dD; "
+        "the overlap-fitted K is neither",
+        a_p < 1e-12 and g_p < 1e-8 and a_f > 1e-3 and g_f > 1e-3,
+        f"pairing plain {a_p:.1e} fitted {a_f:.1e}; dE/dD plain {g_p:.1e} fitted {g_f:.1e}",
+    )
+
+
 def cosx_fit(s_exact, s_num, k_tilde):
     """finalize_fitted: K = sym(S S_num^-1 K~); only the left factor is fitted."""
     qk = s_exact @ np.linalg.solve(s_num, k_tilde)
@@ -420,6 +513,7 @@ def cosx_fit(s_exact, s_num, k_tilde):
 symbolic_checks()
 numerical_checks()
 incremental_and_cosx_checks()
+cosx_pairing_checks()
 if failures:
     print(f"{len(failures)} check(s) failed")
     sys.exit(1)

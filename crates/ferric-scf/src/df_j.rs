@@ -6,8 +6,9 @@
 //!   J_{μν} = Σ_{P,Q} (μν|P) (P|Q)^{-1} (Q|λσ) D_{λσ}
 //!          = Σ_P (μν|P) c_P,    c_P = Σ_Q (P|Q)^{-1} d_Q,    d_Q = Σ_{λσ} (Q|λσ) D_{λσ}
 //!
-//! The 3-center tensor B_{P,μν} = (P|μν) and the inverse Coulomb metric V^{-1}
-//! are precomputed once at construction. Unlike DF-K's rank-2-per-P contraction,
+//! The 3-center tensor B_{P,μν} = (P|μν) and the Cholesky factor of the Coulomb
+//! metric V = L Lᵀ are precomputed once at construction; each build solves
+//! V c = d against L (no explicit inverse is formed). Unlike DF-K's rank-2-per-P contraction,
 //! DF-J's two passes are rank-1-per-P (a GEMV against the flattened density /
 //! flattened accumulator): each block's GEMV already runs the full block width
 //! `b` as its contraction/output dimension in one BLAS-adjacent call, so there
@@ -91,7 +92,10 @@
 //! evaluation of the stored columns; the density, orbitals and Fock matrix
 //! stay those of the f32 SCF (first-order in δB). A full f64 exit (the ladder's
 //! veto, DIIS reset and f64 rebuilds to re-converge) would cost one integral
-//! recompute per extra iteration and is not implemented.
+//! recompute per extra iteration and is not implemented. No production SCF path
+//! calls the energy-only exit either: the reported SCF energy of an f32-stored
+//! RI-J run is the f32 functional's, first order in δB; the exit is exercised by
+//! `tests/dfj_f32_storage.rs` only.
 
 mod many;
 

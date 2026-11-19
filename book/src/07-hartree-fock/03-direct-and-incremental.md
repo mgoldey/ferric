@@ -4,7 +4,8 @@
 
 $J$ and $K$ need the four-centre integrals $(\mu\nu|\lambda\sigma)$, about
 $N^4/8$ distinct ones, which for a few hundred basis functions is already too
-many to store. The default route therefore computes the integrals every
+many to store: at $N = 300$ that is $1.0\times10^9$ integrals, 8.1 GB of
+f64. The default route therefore computes the integrals every
 iteration and contracts each block with the density as soon as it exists:
 a direct build, with nothing fitted, so $J$ and $K$ are exact to the
 screening threshold. Most integrals between functions on distant atoms are
@@ -20,7 +21,7 @@ reproducibility (@sec:direct-and-incremental-incremental-build-runs, @sec:direct
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $s_1 \ge s_2$, $s_3$, $s_4$ | shell indices of a canonical quartet | `s1`, `s2`, `s3`, `s4` |
-| $Q_{PQ}$ | Schwarz factor of a shell pair | `q_table[(s1, s2)]` |
+| $Q_{st}$ | Schwarz factor of the shell pair $(s, t)$ | `q_table[(s1, s2)]` |
 | $d_{\max}$ | density bound for the quartet | `screen.dmax(s1, s2, s3, s4)` |
 | $\tau_{\rm int}$ | `[scf] integral_thresh`, default $10^{-12}$ | `thresh` |
 | $\Delta D$ | change of the density since the last build | `delta_d` |
@@ -86,7 +87,7 @@ integral by two diagonal ones,
 $|(\mu\nu|\lambda\sigma)| \le \sqrt{(\mu\nu|\mu\nu)}\sqrt{(\lambda\sigma|\lambda\sigma)}$.
 Take the largest value over each shell pair,
 
-$$ Q_{PQ} = \max_{a\in P,\,b\in Q}\sqrt{|(ab|ab)|}, $$
+$$ Q_{st} = \max_{a\in s,\,b\in t}\sqrt{|(ab|ab)|}, $$
 
 so that every integral of a quartet is at most $Q_{s_1s_2}Q_{s_3s_4}$. The
 table $Q$ costs $O(N^2)$ diagonal integrals once per geometry (section @sec:schwarz).
@@ -105,8 +106,16 @@ This bounds each dropped term, not their sum: an element of $J$ that collects
 many dropped quartets can be off by more than $\tau_{\rm int}$.
 
 `[scf] screening = "csb"` replaces the bound by
-$\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$, which is never looser than
-the Schwarz product; `"csam"` is not a rigorous bound.
+$\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$, with
+$M_{st} = \max_{a\in s,\,b\in t}(aa|bb)^{1/2}$ the shell-pair maximum of
+the repulsion between the densities of two functions (section
+@sec:schwarz-combined-schwarz-bound derives it); it is never looser than the
+Schwarz product. `"csam"` multiplies the Schwarz product by
+$\max(X_{13}X_{24}, X_{14}X_{23})^{1/2}$, with the ratio
+$X_{st} = \max_{a\in s,\,b\in t}|(aa|bb)|/\sqrt{|(aa|aa)||(bb|bb)|} \le 1$
+(Thompson and Ochsenfeld, J. Chem. Phys. 147, 144101 (2017), Eqs. 9 to 12,
+ported from Psi4 in `crates/ferric-integrals/src/csam.rs`). That product is
+an estimate, not a bound: it can fall below the integral it screens.
 
 ### Fock matrix
 
@@ -146,16 +155,9 @@ each full build. No other event (a DIIS reset, MOM, a level-shift change)
 forces a rebuild.
 
 The scheme is on only when it can pay and its error cannot reach the
-convergence target:
-
-- the direct route (no density fitting, no pluggable K, no in-core store);
-- `energy_conv` $\ge 10^4\,\tau_{\rm int}$ and `density_conv` $\ge 10^3\,\tau_{\rm int}$
-  (`closed_shell_incremental_enabled` in `crates/ferric-scf/src/direct_jk.rs`;
-  the environment variable `FERRIC_SCF_INCREMENTAL` forces it on or off);
-- the builder has no in-core store (`DirectJK::incremental_pays`).
-
-The open-shell loops build increments only under
-`FERRIC_SCF_UHF_INCREMENTAL=1`.
+convergence target; section @sec:direct-and-incremental-incremental-build-runs
+lists the conditions. The environment variable `FERRIC_SCF_INCREMENTAL`
+forces it on or off.
 
 ### The in-core store
 
@@ -268,8 +270,9 @@ The incremental build is closed-shell, direct-only and conditional:
 | `energy_conv` $\ge 10^4\,\tau_{\rm int}$ and `density_conv` $\ge 10^3\,\tau_{\rm int}$ | `ferric-scf/src/direct_jk.rs::closed_shell_incremental_enabled` |
 | open shell | only with `FERRIC_SCF_UHF_INCREMENTAL=1` |
 
-The full rebuild every 8 iterations is a function-local constant of
-`solve_rhf`; nothing else, including a DIIS reset, forces one.
+The full rebuild every 8 iterations is
+`ferric-scf/src/driver.rs::INCREMENTAL_FULL_REBUILD_EVERY`, one value for
+the three drivers; nothing else, including a DIIS reset, forces one.
 
 Why is the open shell off by default? The doc comment of
 `ferric-scf/src/direct_jk.rs::open_shell_incremental_enabled` records the
@@ -299,13 +302,9 @@ this chapter is measured. Its own anchors are the energy anchors of section
 
 <!-- figures: site/src/reference/validation.md "UHF and ROHF energies, stability-checked" -->
 
-**Open item.** The unit tests
-`incremental_fock_matches_full_rebuild_water_ccpvdz` and
-`incremental_fock_matches_full_rebuild_methane_ccpvdz` in
-`crates/ferric-scf/src/rhf.rs` no longer exercise the incremental path. Since
-the in-core store became the default for small bases, `incremental_pays()`
-is false for water and methane in cc-pVDZ, so both tests compare the full
-build with itself. They need the store disabled to test what their names say.
+The incremental path is compared with a full rebuild every iteration, with
+the in-core store off, on water, methane and hexane in cc-pVDZ
+(`incremental_fock_matches_full_rebuild_*` in `crates/ferric-scf/src/rhf.rs`).
 
 ## Options that change the equation {#direct-and-incremental-options-change-equation}
 
@@ -313,7 +312,7 @@ build with itself. They need the store disabled to test what their names say.
 |---|---|
 | `[scf] integral_thresh` | $\tau_{\rm int}$ |
 | `[scf] screening = "csb"` | the tighter rigorous bound $\min(Q_{12}Q_{34}, M_{13}M_{24}, M_{14}M_{23})$ |
-| `[scf] screening = "csam"` | a non-rigorous refinement of the Schwarz bound |
+| `[scf] screening = "csam"` | the Schwarz product times $\max(X_{13}X_{24}, X_{14}X_{23})^{1/2}$; an estimate, not a bound |
 | `[scf] eri = "incore"` / `"auto"` | stores the integrals once and builds $J$, $K$ by matrix products (`crates/ferric-scf/src/incore_jk.rs`) |
 
 ## Sources

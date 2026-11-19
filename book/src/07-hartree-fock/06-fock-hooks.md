@@ -37,101 +37,45 @@ A hook (`rhf::solve_rhf_with_hook`, `uhf::solve_uhf_with_hook`,
 `rohf::solve_rohf_with_hook`; Python `fock_hook=`) adds one caller-supplied
 term to the energy functional:
 
-$$ E(\mathbf R) = E_0[\mathbf D;\mathbf R] + E_h[\mathbf D;\mathbf R], \qquad \mathbf V = \partial E_h/\partial\mathbf D . $$
+$$ E(\mathbf R) = E_0[D;\mathbf R] + E_h[D;\mathbf R], \qquad V = \partial E_h/\partial D . $$
 
-$E_0$ is the built-in HF or KS energy. $\mathbf V$ is added to the Fock
-matrix every iteration, with $\mathbf V_\sigma = \partial E_h/\partial\mathbf D_\sigma$
-per spin for UHF and ROHF. Why the derivative? Section @sec:energy-functionals showed that the
+$E_0$ is the built-in HF or KS energy. $V$ is added to the Fock matrix every
+iteration, with $V^\sigma = \partial E_h/\partial D^\sigma$ per spin for UHF
+and ROHF. Why the derivative? Section @sec:energy-functionals showed that the
 Fock matrix is $\partial E/\partial D$; differentiating the sum gives
-$F = F_0 + \mathbf V$, so the SCF that diagonalizes the hooked $F$ makes the
-hooked $E$ stationary.
-
-The SCF makes $E$ stationary under orbital rotations, subject to
-orthonormality $\mathbf C^{\mathsf T}\mathbf S\mathbf C = \mathbf 1$. Its
-Lagrangian is
-
-$$ \mathcal L = E[\mathbf D(\mathbf C);\mathbf R] - \sum_{ij}\epsilon_{ij}\left(\mathbf C^{\mathsf T}\mathbf S(\mathbf R)\mathbf C - \mathbf 1\right)_{ij} . $$
-
-At convergence $\partial\mathcal L/\partial\mathbf C = 0$ gives
-$\mathbf F\mathbf C_{\rm occ} = \mathbf S\mathbf C_{\rm occ}\boldsymbol\epsilon$
-with the hooked Fock matrix $\mathbf F = \mathbf F_0 + \mathbf V$.
+$F = F_0 + V$, so the SCF that diagonalizes the hooked $F$ makes the hooked
+$E$ stationary: $FC_o = SC_o\varepsilon$ with the hooked $F$.
 
 ### The nuclear gradient
 
-Move a nucleus. $\mathcal L$ depends on $\mathbf R$ directly and through
-$\mathbf C$, but $\partial\mathcal L/\partial\mathbf C = 0$ at convergence, so
-the orbital response drops out. The total derivative is the partial
-derivative of $\mathcal L$ at fixed $\mathbf C$:
+Section @sec:fock-hook-gradient derives the gradient of the hooked energy
+from the Lagrangian of section @sec:hf-gradient. The orbital response drops
+out at convergence, and
 
-$$ \frac{dE}{d\mathbf R} = \left.\frac{\partial E_0}{\partial\mathbf R}\right|_{\mathbf D} + \left.\frac{\partial E_h}{\partial\mathbf R}\right|_{\mathbf D} - \operatorname{Tr}\!\left[\mathbf W\,\frac{\partial\mathbf S}{\partial\mathbf R}\right], \qquad \mathbf W = \sum_\sigma\mathbf C_{\sigma,\rm occ}\boldsymbol\epsilon_\sigma\mathbf C_{\sigma,\rm occ}^{\mathsf T} . $$
+$$ \frac{dE}{d\mathbf R} = \left.\frac{\partial E_0}{\partial\mathbf R}\right|_D + \left.\frac{\partial E_h}{\partial\mathbf R}\right|_D - \operatorname{tr}\!\left[W\,\frac{\partial S}{\partial\mathbf R}\right], \qquad W = \tfrac12DFD \ \text{(closed shell)} . $$
 
-The closed-shell $\mathbf W$ carries the factor 2 of the double occupation:
-$\mathbf W = 2\mathbf C_{\rm occ}\boldsymbol\epsilon\mathbf C_{\rm occ}^{\mathsf T} = \tfrac12\mathbf D\mathbf F\mathbf D$.
-To see the second form, substitute $\mathbf D = 2\mathbf C_{\rm occ}\mathbf C_{\rm occ}^{\mathsf T}$
-and use $\mathbf C_{\rm occ}^{\mathsf T}\mathbf F\mathbf C_{\rm occ} = \boldsymbol\epsilon$:
-$\tfrac12\mathbf D\mathbf F\mathbf D = 2\mathbf C_{\rm occ}\boldsymbol\epsilon\mathbf C_{\rm occ}^{\mathsf T}$.
+The first term is the built-in gradient's integral-derivative terms at the
+hooked density. The Pulay term needs nothing from the hook: $W$ is built from
+the converged orbitals and eigenvalues of the hooked $F$, so its $V$ part,
+$\tfrac12DVD$ for the closed shell, is already there (for ROHF,
+$W = \operatorname{sym}(D^\alpha F^\alpha D^\alpha + D^\alpha F^\beta D^\beta)$
+with the hooked spin Fock matrices). The middle term, the derivative of $E_h$
+at fixed AO density, only the hook knows, so the caller supplies it
+(`fock_hook_grad=` in Python, `gradient::with_fock_hook_gradient` in Rust). A
+hook of $D$ alone, such as $\lambda\sum_{\mu\nu}D_{\mu\nu}^2$, has an explicit
+term of zero. For $E_h = \lambda\operatorname{tr}[DS]$ the explicit term
+$\lambda\operatorname{tr}[D\,\partial S/\partial\mathbf R]$ and the Pulay part
+$-\lambda\operatorname{tr}[D\,\partial S/\partial\mathbf R]$ cancel exactly,
+because $DSD = 2D$ and $\lambda\operatorname{tr}[DS] = \lambda N$ is a
+constant; the Python tests use that hook as their exactness anchor. Section
+@sec:fock-hook-gradient lists what the explicit term must and must not
+include.
 
-The three pieces have three owners:
-
-1. $\partial E_0/\partial\mathbf R|_{\mathbf D}$: the built-in gradient's
-   integral-derivative terms (nuclear repulsion,
-   $\operatorname{Tr}[\mathbf D\,\partial\mathbf h/\partial\mathbf R]$, the
-   two-electron and XC derivatives) at the hooked density. Unchanged code.
-2. The Pulay term $-\operatorname{Tr}[\mathbf W\,\partial\mathbf S/\partial\mathbf R]$.
-   $\mathbf W$ is built from the converged orbitals and eigenvalues, which
-   diagonalize the hooked $\mathbf F$, so the $\mathbf V$ part of the Lagrange
-   multipliers is included without the hook doing anything. Since
-   $\mathbf W = \tfrac12\mathbf D\mathbf F\mathbf D$ is linear in
-   $\mathbf F$, its $\mathbf V$ part is $\tfrac12\mathbf D\mathbf V\mathbf D$
-   (closed shell). For ROHF,
-   $\mathbf W = \operatorname{sym}(\mathbf D_\alpha\mathbf F_\alpha\mathbf D_\alpha + \mathbf D_\alpha\mathbf F_\beta\mathbf D_\beta)$
-   uses the converged spin Fock matrices, which hold $\mathbf V_\alpha$,
-   $\mathbf V_\beta$.
-3. The explicit term $\partial E_h/\partial\mathbf R|_{\mathbf D}$, the
-   derivative of the hook's energy with the AO density matrix held fixed. Only
-   the hook knows it, so the caller supplies it (`fock_hook_grad=` in Python,
-   `gradient::with_fock_hook_gradient` in Rust).
-
-### What the explicit term must and must not include
-
-It must include every dependence of $E_h$ on the nuclear positions at fixed
-AO density matrix: integrals over AO functions centred on the atoms (the
-derivative of $\langle\mu|\hat v|\nu\rangle$ with respect to the centres of
-$\mu$ and $\nu$), operator centres that sit on atoms, and purely classical
-terms such as a charge–nuclear repulsion. For example, a point charge $q$ at
-fixed $\mathbf r_c$ has
-$E_h = \operatorname{Tr}[\mathbf D\mathbf V_q] + \sum_AqZ_A/|\mathbf R_A - \mathbf r_c|$.
-Its explicit term is $\operatorname{Tr}[\mathbf D\,\partial\mathbf V_q/\partial\mathbf R_A]$
-(basis-centre derivatives only; the charge does not move) plus the derivative
-of the classical sum.
-
-It must not include any change of $\mathbf D$ with geometry (the response of
-the orbitals is handled by the Lagrangian above), nor the Pulay term of
-$\mathbf V$ (it is already in $\mathbf W$). A hook that depends only on
-$\mathbf D$, for example $E_h = \lambda\sum_{\mu\nu}D_{\mu\nu}^2$, has an
-explicit term of zero.
-
-A hook built from the overlap or another geometry-dependent AO matrix
-depends on $\mathbf R$ through that matrix. Take
-$E_h = \lambda\operatorname{Tr}[\mathbf D\mathbf S]$. Its potential is
-$\mathbf V = \lambda\mathbf S$ and its explicit term is
-$\lambda\operatorname{Tr}[\mathbf D\,\partial\mathbf S/\partial\mathbf R]$.
-Its Pulay part is
-$-\operatorname{Tr}[\tfrac12\lambda\mathbf D\mathbf S\mathbf D\,\partial\mathbf S/\partial\mathbf R]$.
-For the closed shell $\mathbf D\mathbf S\mathbf D = 2\mathbf D$, because
-$\mathbf C_{\rm occ}^{\mathsf T}\mathbf S\mathbf C_{\rm occ} = \mathbf 1$, so
-the Pulay part is $-\lambda\operatorname{Tr}[\mathbf D\,\partial\mathbf S/\partial\mathbf R]$
-and cancels the explicit term exactly. It must:
-$\lambda\operatorname{Tr}[\mathbf D\mathbf S] = \lambda N$ is a constant.
-The tests use it as their exactness anchor: both halves nonzero, their sum
-known in closed form.
-
-The formula holds for the converged hooked solution only (stationarity was
-used). It assumes integer aufbau occupations of the hooked $\mathbf F$, as
-the un-hooked gradients do, and that $\mathbf V$ is exactly
-$\partial E_h/\partial\mathbf D$. A hook whose $\mathbf V$ is not the
-derivative of its $E_h$ converges to a non-stationary point of $E$, and no
-gradient of the reported energy follows from this formula.
+The formula holds for the converged hooked solution only, with integer aufbau
+occupations of the hooked $F$, and only when $V$ is exactly
+$\partial E_h/\partial D$. A hook whose $V$ is not the derivative of its $E_h$
+converges to a non-stationary point of $E$, and no gradient of the reported
+energy follows from this formula.
 
 ## Where the hook enters the iteration {#fock-hooks-hook-enters-iteration}
 
@@ -172,10 +116,10 @@ the hook, so `validate_fock_hook` refuses it, naming the field:
 
 | Field | Reason |
 |---|---|
-| `symmetry`, `irrep_nelec` | the point-group-blocked solve does not call the hook |
+| `symmetry`, `irrep_nelec` | the point-group-blocked solve (section @sec:scf-exits-symmetry) does not call the hook |
 | `newton_trigger` | the Newton orbital Hessian does not include the hook |
 | `ah_trigger` | the augmented-Hessian step does not include the hook |
-| `aurora.enabled` | the AURORA curvature model does not include the hook |
+| `aurora.enabled` | the AURORA curvature model (section @sec:scf-exits-aurora) does not include the hook |
 | `trah_trigger` | the TRAH orbital Hessian does not include the hook |
 | `check_stability`, `scf_stability_descent` | the stability Hessian does not include the hook |
 
@@ -183,25 +127,22 @@ Each of these needs the response of the potential to a change of the
 density, $\partial V/\partial D$, which the hook interface does not return.
 
 In Python, a gradient run (`with_gradient=True`) with a `fock_hook` but no
-`fock_hook_grad` is a `ValueError` before the SCF. A hooked run records a `fock-hook` approximation in its
-certificate.
+`fock_hook_grad` is a `ValueError` before the SCF.
+
+A hooked run records a `fock-hook` approximation in its certificate.
 
 ## Numerical anchors {#fock-hooks-numerical-anchors}
 
-`crates/ferric-scf/tests/fock_hook_gradient.rs` checks the three-term gradient
-of @sec:fock-hooks-equations with a point-charge hook: the hooked gradient must equal the gradient
-of the same point charge supplied as an external potential, for RHF and RKS.
-That is an independent construction of the same functional.
+| Check | Agreement | Test |
+|---|---|---|
+| a fixed point charge entered as a hook, against the same charge as `RhfConfig.external_potential` (an independent construction of the same functional): RHF and RKS (LDA) water, UHF and ROHF NH2, 6-31G | max $\lvert\Delta g\rvert$ from 1.2e-14 (RHF) to 6.2e-11 (UHF) Ha/Bohr; bar 2e-7 Ha/Bohr | `crates/ferric-scf/tests/fock_hook_gradient.rs` (`point_charge_hook_gradient_matches_external_potential_{rhf,rks,uhf,rohf}`) |
+| the constant hook $\lambda\operatorname{tr}[DS]$ leaves the gradient unchanged; hooks built from $S$, $h$ and $D^2$ against finite differences of the hooked energy, including a KS case | asserted per test | `crates/ferric-python/tests/test_fock_hook_gradient.py` (`test_constant_trace_hook_leaves_the_gradient_unchanged`, `test_hooked_gradient_matches_finite_differences`, `test_hooked_ks_gradient_matches_finite_differences`) |
 
 ## Status {#fock-hooks-status}
 
-The section stays `edit`. The hook's gradient has a committed derivation and
-an independent-construction test, but no sympy proof script: the identity
-that a hook depending on $D$ alone has a zero explicit term, and the
-$\lambda\operatorname{tr}[DS]$ cancellation of @sec:fock-hooks-equations, are the natural claims
-for one. The steps $\mathbf W = \tfrac12\mathbf D\mathbf F\mathbf D$ and
-$\mathbf D\mathbf S\mathbf D = 2\mathbf D$ were checked numerically on a
-random model for this section.
+The gradient's derivation, its proof script and its verified equation are in
+section @sec:fock-hook-gradient. This section adds the hooked functional,
+where the hook enters the loop, and what is refused.
 
 ## Sources
 
@@ -209,3 +150,4 @@ random model for this section.
 |---|---|
 | `crates/ferric-scf/src/rhf.rs` | the entry point and the refusal list |
 | `crates/ferric-python/ferric.pyi` | the Python signatures |
+| section @sec:fock-hook-gradient | the gradient derivation and its proof |

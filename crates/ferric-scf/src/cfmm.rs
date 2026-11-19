@@ -1005,11 +1005,13 @@ pub struct CfmmConfig {
     pub l_max: usize,
     /// Octree depth (number of subdivisions below the root).
     pub max_level: usize,
-    /// Well-separatedness factor: two leaf boxes interact through the
+    /// Well-separatedness margin: two leaf boxes interact through the
     /// multipole (far-field) path when their center separation exceeds
-    /// `ws_factor * box_width`. The classic FMM value is 2.0.
+    /// `ext_a + ext_b + ws_factor * box_width` (the two largest pair extents
+    /// plus this margin; see `is_far_ext`). The classic FMM value is 2.0.
     pub ws_factor: f64,
-    /// Integral screening threshold for the near-field ERIs.
+    /// Not read by the code: the near field is evaluated unscreened. Kept for
+    /// configuration compatibility.
     pub thresh: f64,
     /// Density threshold defining a shell-pair distribution's spatial extent
     /// (see [`pair_extent`]). Smaller = larger extents = more pairs forced
