@@ -966,7 +966,8 @@
     },
     "ri-mp2-gradient": {
       "book": [
-        "book/src/15-correlated-gradients/01-lagrangian-zvector.md#lagrangian-zvector-z-vector-equation-ferric"
+        "book/src/15-correlated-gradients/01-lagrangian-zvector.md#lagrangian-zvector-z-vector-equation-ferric",
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-fitted-ri-jk-reference"
       ],
       "scripts": [
         "scripts/mp2_gradient_sympy.py",

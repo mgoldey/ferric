@@ -1016,6 +1016,16 @@ CASES = [
                 "FAIL G",
             ),
             (
+                "return [(p, 2 * weight), (n, 2 * weight), (p + n, -weight)]  # sign-split P + N",
+                "return [(p, 2 * weight), (n, 2 * weight)]  # sign-split P + N",
+                "FAIL F",
+            ),
+            (
+                "return q @ (div * (q.T @ dv @ q)) @ q.T  # Daleckii-Krein dM",
+                "return -cut_inverse(v)[0] @ dv @ cut_inverse(v)[0]  # Daleckii-Krein dM",
+                "FAIL F",
+            ),
+            (
                 "w_overlap = im1 - zeta_ao - vhf  # oo_rimp2_gradient w_overlap",
                 "w_overlap = im1 - zeta_ao  # oo_rimp2_gradient w_overlap",
                 "FAIL O",
