@@ -93,6 +93,10 @@ build = [
 ase = [
     "ase>=3.23",
 ]
+# ferric.rdkit (RDKit Mol <-> Molecule, from_smiles).
+rdkit = [
+    "rdkit>=2024.3",
+]
 # ferric.qcschema needs nothing; QCElemental is only for building and
 # validating QCSchema models around it.
 qcschema = [
