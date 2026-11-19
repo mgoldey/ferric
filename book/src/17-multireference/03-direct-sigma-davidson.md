@@ -21,6 +21,7 @@ by $N_\text{det}^2$.
 | Entry point | Location |
 |---|---|
 | Rust | `ferric-ci/src/sigma.rs::DirectSigma`, `ferric-ci/src/davidson.rs::davidson_lowest`, `ferric-ci/src/lib.rs::{run_cas_ci,run_cas_ci_on_integrals,dense_lowest}` |
+| CLI | none: CAS-CI runs inside `casscf` and `nevpt2` |
 | Python | `run_casci` |
 
 ## The split of $H$ {#direct-sigma-davidson-split}
@@ -124,8 +125,8 @@ T = (S\setminus q)\cup p .
 $$
 
 The phase is $\epsilon_1$ of section @sec:slater-condon. A string with $k$ electrons
-has $k(n-k)$ entries with $p \ne q$ and $k$ with $p = q$, so $k(n-k)+k$ in
-all: 12 per string for $k = 3$, $n = 6$. `DirectSigma::new` builds the
+has $k(n_a-k)$ entries with $p \ne q$ and $k$ with $p = q$, so $k(n_a-k)+k$ in
+all: 12 per string for $k = 3$, $n_a = 6$. `DirectSigma::new` builds the
 tables once per CAS-CI solve with this loop of
 `ferric-ci/src/sigma.rs::excitation_lists` (the string index map elided):
 
@@ -196,10 +197,13 @@ Two points about it:
   $\tfrac12\epsilon_1\epsilon_2$ with the integral index $(vw|tu)$.
 
 **Cost.** One call costs $O(N_\text{det}\, n_\text{exc}^\alpha n_\text{exc}^\beta)$
-for $\sigma_3$, with $n_\text{exc} = k(n-k)+k$, and no determinant pair is
-visited. $\sigma_1$ and $\sigma_2$ cost $O(N_\text{det}\,n_\text{exc})$
-plus the same-spin double fan-out. Rows of $\sigma$ are owned by one rayon
-task each, so the result does not depend on the thread count. Scratch
+for $\sigma_3$, with $n_\text{exc} = k(n_a-k)+k$, and no determinant pair is
+visited. In $\sigma_2$ the same-spin double fan-out is the leading term: per
+α string, building $F$ costs $(n^\alpha_\text{exc})^2$, and applying it
+costs the number of α strings $F$ reaches times $n^\beta_\text{str}$.
+$\sigma_1$ is the same with the channels exchanged. Rows of $\sigma$ are
+owned by one rayon task each, so the result does not depend on the thread
+count. Scratch
 beyond the Davidson vectors is four $N_\text{det}$ vectors (the output,
 $C^\mathsf{T}$, $\sigma_1^\mathsf{T}$ and $C'$) and the tables,
 $16(n_\text{str}^\alpha n^\alpha_\text{exc} + 2 n_\text{str}^\beta n^\beta_\text{exc})$
@@ -285,6 +289,8 @@ allocated.
 | `max_subspace` | integer | 50 | subspace size before a collapse |
 | `max_iter` | integer | 200 | Davidson iteration cap |
 | `memory_budget_gb` | GB | auto | the CAS-CI memory plan |
+| `compute_rdms` | bool | `True` (`false` in the Rust `CasCiConfig`) | also return $\gamma$ and $\Gamma$ (section @sec:rdms) |
+| `scf_max_iter`, `scf_energy_conv`, `scf_density_conv` | | the RHF defaults | the RHF that supplies the orbitals |
 
 ## Numerical anchors {#direct-sigma-davidson-numerical-anchors}
 
@@ -304,5 +310,3 @@ allocated.
 
 **Known limits (2026-11-15).** Lowest root of one $(n_\alpha, n_\beta)$
 sector only: no multiple roots, no state averaging and no $S^2$ handling.
-Rows of $\sigma$ are owned by one rayon task each, so the product does not
-depend on the thread count.

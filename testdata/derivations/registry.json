@@ -31,7 +31,8 @@
       "u-ccsd-t"
     ],
     "cli:drpa": [
-      "drpa"
+      "drpa",
+      "drpa-local"
     ],
     "cli:dsd-pbep86": [
       "double-hybrid",
@@ -284,7 +285,8 @@
       "d3"
     ],
     "py:run_drpa": [
-      "drpa"
+      "drpa",
+      "drpa-local"
     ],
     "py:run_drpa_gamma": [
       "pbc-drpa"
@@ -293,7 +295,8 @@
       "pbc-drpa"
     ],
     "py:run_drpa_scan": [
-      "drpa"
+      "drpa",
+      "drpa-local"
     ],
     "py:run_eom_ccsd": [
       "eom-ccsd"
@@ -388,7 +391,6 @@
     ],
     "py:run_pdep_rpa": [
       "pdep-rpa",
-      "u-pdep-rpa",
       "rpa-gradient",
       "pcm",
       "rpa-polarizability-c6",
@@ -929,10 +931,13 @@
     },
     "casci": {
       "book": [
-        "book/src/17-multireference/02-slater-condon.md#slater-condon-rules"
+        "book/src/17-multireference/02-slater-condon.md#slater-condon-rules",
+        "book/src/17-multireference/03-direct-sigma-davidson.md#direct-sigma-davidson-split",
+        "book/src/17-multireference/04-rdms.md#rdms-1-2-rdm"
       ],
       "scripts": [
-        "scripts/casci_slater_condon_phases_sympy.py"
+        "scripts/casci_slater_condon_phases_sympy.py",
+        "scripts/ci_rdm_casscf_gradient_sympy.py"
       ]
     },
     "ccsd-t": {
@@ -1537,7 +1542,8 @@
     },
     "casscf": {
       "book": [
-        "book/src/17-multireference/05-casscf.md#casscf"
+        "book/src/17-multireference/05-casscf.md#casscf",
+        "book/src/17-multireference/05-casscf.md#casscf-second-order-check"
       ],
       "scripts": [
         "scripts/ci_rdm_casscf_gradient_sympy.py"
@@ -1853,6 +1859,12 @@
     },
     "mbd-gradient": {
       "reason": "the MBD@rsSCS nuclear gradient through the Hirshfeld volumes and its Z-vector orbital relaxation have no book derivation and no sympy proof (only the coupled-dipole energy of 25.3 is proven)"
+    },
+    "drpa-local": {
+      "reason": "the masked Riccati solve is proven only in its exact limit (eps = 0, where it is the drpa method); no script or external reference checks the finite-threshold error model",
+      "book": [
+        "book/src/18-rpa/06-local-drpa.md#local-drpa"
+      ]
     }
   }
 }

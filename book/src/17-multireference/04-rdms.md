@@ -4,8 +4,8 @@
 
 The CI vector has $N_\text{det}$ coefficients, but $H$ has only one- and
 two-electron terms, so its expectation value needs only the one- and
-two-electron reduced density matrices $\gamma$ ($n^2$ numbers) and
-$\Gamma$ ($n^4$). Everything after the CI solve reads the wavefunction
+two-electron reduced density matrices $\gamma$ ($n_a^2$ numbers) and
+$\Gamma$ ($n_a^4$). Everything after the CI solve reads the wavefunction
 through them: the CAS-CI energy can be rebuilt from $\gamma$ and $\Gamma$,
 the CASSCF gradient (section @sec:casscf) needs both, and SC-NEVPT2 (section @sec:nevpt2)
 needs the 3-RDM, two contractions of the 4-RDM and the hole RDMs. ferric
@@ -84,8 +84,9 @@ $2c_1^2h_{00} + 2c_2^2h_{11} + c_1^2(00|00) + c_2^2(11|11) + 2c_1c_2(01|01)$,
 the expectation value of the $2\times2$ matrix of section @sec:slater-condon. The
 eigenvalues of $\gamma$, $2c_1^2$ and $2c_2^2$, are the natural orbital
 occupations. Their distance from 2 and 0 measures the static correlation,
-and at dissociation both approach 1. These elements and the energy were
-checked on Jordan–Wigner matrices in scratch.
+and at dissociation both approach 1. Check `rdm-two-config` of
+`scripts/ci_rdm_casscf_gradient_sympy.py` confirms every element and the
+energy on Jordan–Wigner matrices.
 
 > **Verified equation {#eq:ci-rdm-energy}** · the RDM energy and the identities
 >
@@ -135,7 +136,7 @@ $$
 \langle C|E_{pq}E_{rs}|C\rangle = \sum_I D_{qp}(I)\,D_{rs}(I).
 $$
 
-The second sum, over all pairs at once, is one $n^2\times n^2$ GEMM
+The second sum, over all pairs at once, is one $n_a^2\times n_a^2$ GEMM
 $DD^\mathsf{T}$. Write $D = D^\alpha + D^\beta$. The αα, ββ and αβ (cross)
 parts of $\Gamma$ are the blocks of that product, and none is assembled
 separately. `ferric-ci/src/rdm.rs::spin_summed_rdms` subtracts the
@@ -155,10 +156,10 @@ $\langle C|E_{pq} = D_{qp}^\mathsf{T}$.
 The determinants are processed in fixed blocks of α rows, about
 `CHUNK_DETS` = 4096 determinants each. Each block's $D$ is built,
 contracted and dropped, and block results are summed in block order, so the
-result does not depend on the thread count. The cost is $O(N_\text{det}\,n^4)$
+result does not depend on the thread count. The cost is $O(N_\text{det}\,n_a^4)$
 for the GEMM plus $O(N_\text{det}(n^\alpha_\text{exc}+n^\beta_\text{exc}))$
-for $D$. The scratch is one $n^2\times$block $D$ per worker and
-`BATCH_CHUNKS` = 64 block results of $n^4+n^2$ doubles, charged to the
+for $D$. The scratch is one $n_a^2\times$block $D$ per worker and
+`BATCH_CHUNKS` = 64 block results of $n_a^4+n_a^2$ doubles, charged to the
 CAS-CI memory plan when `compute_rdms` is set.
 
 ## The NEVPT RDMs {#rdms-nevpt-rdms}
@@ -196,11 +197,11 @@ How each maps onto PySCF:
 - $\Gamma^{(3)}$ is `fci.rdm.make_dm1234` followed by `reorder_dm1234`.
 - $f^\text{ca}$ and $f^\text{ac}$ are `mrpt.nevpt2._contract4pdm` with the
   kernels `NEVPTkern_cedf_aedf` and `NEVPTkern_aedf_ecdf`. They contract
-  the E-product 4-RDM, not the normal-ordered one. The einsum comments in
-  PySCF's `make_a16` and `make_a22` that list the 4-RDM in the argument
-  order above agree with the kernels to $4\times10^{-14}$ on random states.
-  The comment `kbij,rpqjkiac` above the first `f3ca` use in `make_a16` does
-  not (difference $\sim 40$).
+  the E-product 4-RDM, not the normal-ordered one. In PySCF 2.13.1 the
+  einsum comments in `make_a16` and `make_a22` that list the 4-RDM in the
+  argument order above agree with the kernels; the comment `kbij,rpqjkiac`
+  above the first `f3ca` use in `make_a16` does not, so read the kernels,
+  not that comment.
 - $\eta^{(k)}$ is `make_hdm1/2/3` fed with the E-product RDMs of
   `fci.rdm.make_dm123`, which is what PySCF's NEVPT2 driver passes. Fed
   with the reordered ones it matches no operator ordering.
@@ -211,7 +212,7 @@ against dense Fock-space expectation values.
 ### Construction
 
 Everything is built from CI-sized vectors, as for the 2-RDM. Start from
-$X_{rs} = E_{rs}C$, the $D$ of the 2-RDM build. As in @sec:rdms-1-2-rdm,
+$X_{rs} = E_{rs}C$, the $D$ of the 2-RDM build. As in section @sec:rdms-1-2-rdm,
 $\langle C|E_{ab}E_{cd} = (E_{dc}E_{ba}C)^\mathsf{T} = (E_{dc}X_{ba})^\mathsf{T}$,
 so
 
@@ -227,17 +228,17 @@ $$
 f^\text{ca}_{abcdef} = \langle E_{dc}X_{ba}|R_{ef}\rangle .
 $$
 
-For $f^\text{ac}$, use $(ik|je) = (ki|ej)$, so the same $W$ appears as
-$W_{ej}$, and with $R'_{ef} = \sum_j E_{jf}W_{ej}$
+For $f^\text{ac}$, rename $i \leftrightarrow k$ and use $(ki|je) = (ki|ej)$:
+the sum is $\sum_{ki}(ki|je)X_{ki} = W_{je} = W_{ej}$, the same $W$, and with $R'_{ef} = \sum_j E_{jf}W_{ej}$
 
 $$
 f^\text{ac}_{abcdef} = \langle E_{dc}X_{ba}|R'_{ef}\rangle .
 $$
 
-$X$, $W$, $R$ and $R'$ are $n^2$ vectors over all determinants; $W$ is one
+$X$, $W$, $R$ and $R'$ are $n_a^2$ vectors over all determinants; $W$ is one
 GEMM. $L_{dc,ba} = E_{dc}X_{ba}$ is built for one block of α rows at a time
-(about $2^{21}/n^4$ determinants) and contracted as $L^\mathsf{T}[X|R|R']$,
-an $n^4\times3n^2$ product. Blocks are summed in block order. No 4-RDM is
+(about $2^{21}/n_a^4$ determinants) and contracted as $L^\mathsf{T}[X|R|R']$,
+an $n_a^4\times3n_a^2$ product. Blocks are summed in block order. No 4-RDM is
 formed.
 
 The E-product 3-RDM becomes the normal-ordered one by the PySCF
@@ -251,17 +252,16 @@ $$
  - \delta_{qr}\delta_{st}\gamma_{up}.
 $$
 
-The cost is $O(3N_\text{det}n^6)$. The memory is $4n^2N_\text{det} + 6n^6$
-resident plus one $L$ block and its $3n^6$ result per worker, reserved
+The cost is $3N_\text{det}n_a^6$ multiply-adds. The memory is $4n_a^2N_\text{det} + 6n_a^6$
+resident plus one $L$ block and its $3n_a^6$ result per worker, reserved
 through a `MemoryPlan` before any allocation (`nevpt_rdm_memory_elems`).
 
 Identities: $\sum_x\Gamma^{(3)}_{pqrsxx} = (N-2)\Gamma_{pqrs}$,
-$\sum_x\eta^{(3)}_{pqx,abx} = (2n-N-2)\eta^{(2)}_{pq,ab}$ and
-$\sum_x\eta^{(2)}_{px,ax} = (2n-N-1)\eta^{(1)}_{pa}$. For one determinant
+$\sum_x\eta^{(3)}_{pqx,abx} = (2n_a-N-2)\eta^{(2)}_{pq,ab}$ and
+$\sum_x\eta^{(2)}_{px,ax} = (2n_a-N-1)\eta^{(1)}_{pa}$. For one determinant
 every RDM is the antisymmetrized product of the spin-resolved $\gamma$
-(particles) or $\eta = 1-\gamma^\mathsf{T}$ (holes). Both checks are blind to
-a wrong sign or index in the cumulant, which vanishes for one determinant
-and is summed away by a trace.
+(particles) or $\eta = 1-\gamma^\mathsf{T}$ (holes). Like the 2-RDM traces
+(section @sec:rdms-1-2-rdm), both checks are blind to the cumulant.
 
 These definitions were fixed against PySCF by exhaustive index permutation
 on dense Fock-space expectation values, and the Rust tests compare them with
@@ -277,7 +277,7 @@ each input by two routes on a model CI vector.
 | `dm1`, `dm2` vs PySCF `make_rdm12` on its own ground state, rotated into ferric's orbitals | same | `crates/ferric-ci/tests/casci_rdms.rs` |
 | 3-RDM, $f^\text{ca}$, $f^\text{ac}$ and hole RDMs vs PySCF on the same CI vector; partial traces; single determinants | H2O CAS(4,4), N2 CAS(6,6) at 1.10 and 2.20 Å | `crates/ferric-ci/tests/casci_rdm3.rs` |
 
-### What is proven and what is not {#rdms-proven}
+## What is proven and what is not {#rdms-proven}
 
 `crates/ferric-ci/tests/casci_rdms.rs` fails under each of three
 mutations: a dropped β phase, the missing αβ cross terms, and a doubled

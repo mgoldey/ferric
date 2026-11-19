@@ -52,9 +52,9 @@ water in STO-3G (7 orbitals, 5 α and 5 β electrons) has $21^2 = 441$.
 ferric stores a determinant as two `u64` bit strings, one per spin, and the
 CI vector as the matrix $C(I_\alpha, I_\beta)$ over α strings and β
 strings. A sign convention is part of that representation. It fixes which
-matrix elements of $H$ are positive, and a convention mixed up between two
-parts of the code gives a wrong Hamiltonian with the right spectrum on
-symmetric test molecules.
+matrix elements of $H$ are positive. A convention mixed between two parts
+of the code gives a wrong Hamiltonian. H2 in a minimal basis cannot show
+it, because no element there carries a nontrivial sign.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -70,11 +70,11 @@ symmetric test molecules.
 
 ## The convention {#determinants-convention}
 
-A determinant is a pair of `u64` strings $(A, B)$ over $n$ active spatial
+A determinant is a pair of `u64` strings $(A, B)$ over $n_a$ active spatial
 orbitals. Bit $p$ of $A$ set means $p\alpha$ is occupied; bit $p$ of $B$
 set means $p\beta$ is occupied. To write the determinant as operators we
-need an order for the $2n$ spin orbitals. ferric puts α before β: mode $p$
-is $p\alpha$ and mode $n+p$ is $p\beta$. The determinant is
+need an order for the $2n_a$ spin orbitals. ferric puts α before β: mode $p$
+is $p\alpha$ and mode $n_a+p$ is $p\beta$. The determinant is
 
 $$
 |A,B\rangle = \prod_{p\in A}^{\uparrow} a^\dagger_{p\alpha}
@@ -164,7 +164,7 @@ repulsion.
 ## Strings in the code {#determinants-strings-code}
 
 `ferric-ci/src/strings.rs::enumerate_strings` lists all $k$-electron
-strings of $n$ orbitals in ascending numeric order with Gosper's hack. The
+strings of $n_a$ orbitals in ascending numeric order with Gosper's hack. The
 loop, with the `clippy` attributes and their comment removed:
 
 ```rust

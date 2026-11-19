@@ -74,7 +74,12 @@ $$
 
 The bracket is the one-electron hop plus its interaction with the
 spectator electrons: Coulomb minus exchange with the same-spin ones,
-Coulomb with the others. The sign $\epsilon_1 = \langle D'|a^\dagger_v a_t|D\rangle$
+Coulomb with the others. In $\tfrac12\sum(pq|rs)a^\dagger_pa^\dagger_ra_sa_q$, take
+$(p,q) = (v,t)$ with $r = s$ a spectator, or $(r,s) = (v,t)$ with $p = q$ a
+spectator; the two choices are equal and cancel the $\tfrac12$, giving the
+Coulomb term $(vt|pp)$. Take $(p,s) = (v,t)$ with $q = r$ a spectator, or
+$(r,q) = (v,t)$ with $p = s$: the exchange term $-(vp|pt)$, which needs the
+spectator in the same spin channel as the moving electron. The sign $\epsilon_1 = \langle D'|a^\dagger_v a_t|D\rangle$
 comes from applying the operators right to left. Annihilate $t$ in $s$:
 ${\rm pb}(s, t)$. Then create $v$ in the string that no longer holds $t$:
 ${\rm pb}(s\setminus t, v)$. Taking the second phase in $s$ instead is
@@ -193,8 +198,8 @@ pa_i * pa_a * pb_j * pb_b * h2(ints, a, i, b, j)
 
 ### Everything else, and a (2,2) check
 
-All other classes are zero: $d_\alpha + d_\beta > 4$, or $d = 2$ split
-across the channels. `sigma_naive` and `dense_hamiltonian` apply
+All other pairs have $d_\alpha + d_\beta > 4$ and are zero. ($d_\alpha$ and
+$d_\beta$ are even because each channel conserves its electron number.) `sigma_naive` and `dense_hamiltonian` apply
 `general_element` to every pair and add $E_\text{core}$ on the diagonal;
 `hamiltonian_diagonal` uses `diagonal_element` plus $E_\text{core}$.
 `run_cas_ci` calls neither pair loop. They are test and benchmark oracles.
@@ -215,8 +220,9 @@ $$
 
 With $K > 0$ the lowest root has $c_1c_2 < 0$. In the dissociation limit
 of a minimal basis the two diagonal elements become equal, and then
-$|c_1| = |c_2| = 1/\sqrt2$. The element $K$ and its sign
-were checked on Jordan–Wigner matrices in scratch.
+$|c_1| = |c_2| = 1/\sqrt2$. Claim 7 of
+`scripts/casci_slater_condon_phases_sympy.py` checks the element $+K$
+against the Jordan–Wigner matrices and `general_element`.
 
 > **Verified equation {#eq:ci-slater-condon-elements}** · every element against the Jordan–Wigner $H$
 >
@@ -250,13 +256,15 @@ random asymmetric integrals, are what pin the convention.
 
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
-| `general_element`, `sigma` (direct) and `hamiltonian_diagonal` vs an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise, every excitation class exercised | CAS(4,4) to CAS(6,6), odd and even $N_\alpha$ | $\le 8.9\times10^{-15}$ measured, bar $10^{-12}$ | `crates/ferric-ci/tests/slater_condon_brute_force.rs` |
+| `general_element` vs an independent bit-loop second-quantized $H$ on random asymmetric integrals, element-wise, every excitation class | CAS(4,4) to CAS(6,6), odd and even $N_\alpha$ | $\le 8.9\times10^{-15}$ measured, bar $10^{-12}$ | `crates/ferric-ci/tests/slater_condon_brute_force.rs` |
+| direct `sigma` vs the same reference | the same | the same | the same |
+| `hamiltonian_diagonal` vs the same reference | the same | the same | the same |
 
 ## Sources {#slater-condon-sources}
 
 | Source | What it gives |
 |---|---|
-| `scripts/casci_slater_condon_phases_sympy.py` | claims 1–4 |
+| `scripts/casci_slater_condon_phases_sympy.py` | claims 1–4 and 7 |
 
 **Known limits (2026-11-15).** `dense_hamiltonian` and `sigma_naive` visit
 every determinant pair and are test and benchmark oracles; `run_cas_ci`

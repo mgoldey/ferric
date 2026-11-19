@@ -1512,6 +1512,11 @@ CASES = [
                 "f = hso + 0.0 * np.einsum(",
                 "FAIL claim 6 split",
             ),
+            (
+                "    return pa * pb * gsym(a, i, b, j)",
+                "    return -pa * pb * gsym(a, i, b, j)",
+                "FAIL claim 7",
+            ),
         ],
     ),
     (
@@ -1590,6 +1595,26 @@ CASES = [
                 "FAIL [casscf-gradient]",
             ),
             ("def rdms(c, swap=False)", "def rdms(c, swap=True)", "FAIL [rdm-energy]"),
+            (
+                "        + 2.0 * c1 * c2 * g_act[0, 1, 0, 1]",
+                "        + 1.0 * c1 * c2 * g_act[0, 1, 0, 1]",
+                "FAIL [rdm-two-config]",
+            ),
+            (
+                "def ah_hessian_product(c, gam, big, x, commutator=0.5)",
+                "def ah_hessian_product(c, gam, big, x, commutator=0.0)",
+                "FAIL [ah-hessian]",
+            ),
+            (
+                "    dfa = fa @ x - x @ fa + c.T @ (ja - 0.5 * ka) @ c",
+                "    dfa = fa @ x - x @ fa",
+                "FAIL [ah-frame-derivative]",
+            ),
+            (
+                "def claim_relaxed_hessian(ci_response=1.0)",
+                "def claim_relaxed_hessian(ci_response=0.0)",
+                "FAIL [relaxed-hessian]",
+            ),
             (
                 "def claim_sigma(h_eff, g_act, hm, half=0.5)",
                 "def claim_sigma(h_eff, g_act, hm, half=1.0)",

@@ -30,16 +30,12 @@ denominator.
 ## The method {#nevpt2-method}
 
 This is strongly contracted NEVPT2 of Angeli, Cimiraglia and Malrieu, JCP
-117, 9138 (2002), on one CAS root. The definitions, conventions and the
-prototype's measurements are in `scripts/prototypes/nevpt2_derivation.md`
-("the derivation" below), and its numpy construction
-`scripts/prototypes/nevpt2_proto.py` is the reference implementation. In
-this section $i, j$ are core, $r, s$ virtual, and active orbitals keep the
-active letters.
+117, 9138 (2002), on one CAS root. In this section $i, j$ are core, $r, s$
+virtual, and active orbitals keep the active letters.
 
 ### Dyall's Hamiltonian
 
-The zeroth-order Hamiltonian (derivation, "Definition") is
+The zeroth-order Hamiltonian is
 
 $$
 H_D = \sum_i \varepsilon_i E_{ii} + \sum_r \varepsilon_r E_{rr} + H_\text{act},\qquad
@@ -50,14 +46,18 @@ An electron in a core or virtual orbital contributes its orbital energy and
 nothing else. $H_\text{act}$ is the active-space Hamiltonian of section
 @sec:determinants-hamiltonian, with $F^I$ as the one-electron part and the two-electron term in
 the form of section @sec:direct-sigma-davidson-split. So $H_D$ acting on $\Psi_0$, whose core is
-full and virtuals empty, gives the CAS-CI problem back: $\Psi_0$ is an
-eigenfunction with eigenvalue $E_0$ in the active part. This holds only if
-$\Psi_0$ is an exact CI root, which is why the residual is checked below.
+full and virtuals empty, gives the CAS-CI problem back. $E_0$ is the
+eigenvalue of $H_\text{act}$ on $\Psi_0$, so
+$\langle\Psi_0|H|\Psi_0\rangle = E_\text{core} + E_0$ and
+$H_D\Psi_0 = (2\sum_i\varepsilon_i + E_0)\Psi_0$. The constant
+$2\sum_i\varepsilon_i$ is common to $\Psi_0$ and every perturber and
+cancels in $E_l - E_0$ below. This holds only if $\Psi_0$ is an exact CI
+root, which is why the residual is checked below.
 
 ### One perturber per label
 
-A label $l$ is the set of external orbitals of a class with $n_v$ virtual
-particles and $n_c$ core holes. The perturber is $\Psi_l = P_l H\Psi_0$,
+A label $l$ is the set of external orbitals of a class with $p$ virtual
+particles and $h$ core holes. The perturber is $\Psi_l = P_l H\Psi_0$,
 the part of $H\Psi_0$ with exactly that external occupation. Define
 
 $$
@@ -104,16 +104,28 @@ for (n, h, d) in labels {             // (N_l, K_l, Δ_l)
 
 ### The eight classes
 
-The eight classes are those of the derivation's table: `Sr` (r), `Si` (i),
-`Sijrs`, `Sijr`, `Srsi`, `Srs`, `Sij` and `Sir`. The name lists the
-external labels. Counting electrons gives the change of the active-space
-electron number: `Sijrs` and `Sir` leave it unchanged, `Sijr`, `Si` add
-one, `Sij` adds two, `Srsi`, `Sr` remove one and `Srs` removes two.
+The name of a class lists its external labels. Counting electrons gives the
+change of the active-space electron number:
+
+| Class | virtual particles $p$ | core holes $h$ | active electrons |
+|---|---:|---:|---:|
+| `Sijrs` | 2 | 2 | 0 |
+| `Sijr` | 1 | 2 | +1 |
+| `Srsi` | 2 | 1 | −1 |
+| `Sij` | 0 | 2 | +2 |
+| `Srs` | 2 | 0 | −2 |
+| `Sir` | 1 | 1 | 0 |
+| `Sr` | 1 | 0 | −1 |
+| `Si` | 0 | 1 | +1 |
+
+Labels of two orbitals of the same space are unordered pairs ($r \le s$,
+$i \le j$).
 
 The class energies of N2 in a CAS(6,6) in 6-31G at the equilibrium bond
 length and at 2.2 Å, from the `589b50832` build. `E_ref` is the CASSCF
 energy; the eight classes sum to `E_corr`. Stretching the bond moves weight
-from `Sir` to `Srsi`:
+from `Sir` to `Srsi`, and `Si` and `Sij`, the classes that put core
+electrons into the active space, both fall about sixfold:
 
 ```python
 import ferric
@@ -151,28 +163,90 @@ R=2.2 A  E_ref=-108.7665723034  E_corr=-0.0609713557  E_total=-108.8275436591
 ### Orbitals
 
 $F^I = h + J[D^c] - \tfrac12 K[D^c]$ with $D^c = 2C_cC_c^\mathsf{T}$, and
-$F = F^I + F^A$ with $F^A$ from $D^a = C_a\gamma C_a^\mathsf{T}$, as in
+$F^T = F^I + F^A$ with $F^A$ from $D^a = C_a\gamma C_a^\mathsf{T}$, as in
 section @sec:casscf. The core and virtual orbitals are the eigenvectors of the core
-and virtual blocks of $F$, and $\varepsilon$ their eigenvalues. This is
-PySCF `mcscf.CASCI.canonicalize`, which `mrpt.NEVPT` calls (derivation,
-"Orbitals"). The active orbitals are used as given: every active index is
+and virtual blocks of $F^T$, and $\varepsilon$ their eigenvalues. This is
+PySCF `mcscf.CASCI.canonicalize`, which `mrpt.NEVPT` calls. The active orbitals are used as given: every active index is
 summed, so $E$ does not depend on the active basis, and the RDMs are built
 in that basis from the reference CI vector. PySCF rotates to natural
 orbitals instead. With `canonicalize = false` the given core and virtual
-orbitals are used, $\varepsilon = \operatorname{diag}F$, and an off-diagonal
+orbitals are used, $\varepsilon = \operatorname{diag}F^T$, and an off-diagonal
 element above $10^{-8}$ Ha (`CANONICAL_TOL`) is an error.
 
 Inside a group of degenerate core or virtual orbitals the eigenvectors are
-not unique, and the pair classes are not invariant to rotations in it
-(derivation, "Comparison with pyscf.mrpt.NEVPT"). N2's $\pi$ pairs move
+not unique, and the pair classes are not invariant to rotations in it.
+N2's $\pi$ pairs move
 `Srs` by up to 1.7e-7 Ha.
+
+### From the definition to RDM contractions
+
+$N_l$ and $K_l$ reduce to contractions of integrals with active-space RDMs
+in five steps.
+
+1. Normal-order $H$ against the core:
+   $H = E_\text{core} + \sum F^I_{pq}\{a^\dagger_pa_q\} +
+   \tfrac12\sum(pq|rs)\{a^\dagger_pa^\dagger_ra_sa_q\}$. On $\Psi_0$, with
+   the core full and the virtuals empty, only strings without core creators
+   and virtual annihilators survive, and for those the normal-ordered
+   product is the plain string. Keeping the strings with the external counts
+   of a class gives its perturber $V\Psi_0 = P_lH\Psi_0$; its one-body
+   coefficient is $F^I$.
+2. $P_l$ is a product of spin-summed number operators on the label
+   orbitals: $\sum_\sigma a^\dagger_{r\sigma}a_{r\sigma}$ per virtual
+   label, $\sum_\sigma a_{i\sigma}a^\dagger_{i\sigma}$ per core label,
+   and $\tfrac12\sum_{\sigma\tau}a^\dagger_{r\sigma}a^\dagger_{r\tau}a_{r\tau}a_{r\sigma}$
+   for a doubly occupied virtual label (likewise for a doubly emptied core
+   label).
+3. $N_l = \langle V^\dagger P_lV\rangle$ and
+   $K_l = \langle V^\dagger P_l[H_\text{act}, V]\rangle$, which equals
+   $\langle V^\dagger P_l H_\text{act}V\rangle - E_0N_l$ because
+   $H_\text{act}\Psi_0 = E_0\Psi_0$. The commutator acts on each active
+   operator of $V$ by
+   $$
+   \begin{aligned}
+   [H_\text{act}, a_x] &= -h_{xq}a_q - \tfrac12(xq|rs)a^\dagger_ra_sa_q + \tfrac12(pq|xs)a^\dagger_pa_sa_q,\\
+   [H_\text{act}, a^\dagger_x] &= h_{px}a^\dagger_p + \tfrac12(px|rs)a^\dagger_pa^\dagger_ra_s - \tfrac12(pq|rx)a^\dagger_pa^\dagger_ra_q,
+   \end{aligned}
+   $$
+   with $h = F^I_\text{act}$, summed active indices, and spins following
+   the operator replaced. The commutator form keeps the highest RDM at
+   rank 4, where $\langle V^\dagger P_lH_\text{act}V\rangle$ would need
+   rank 5.
+4. Contract the core and virtual operators fully (core: $a^\dagger$ left of
+   $a$; virtual: $a$ left of $a^\dagger$). What is left is an active string,
+   whose expectation value is a spin-free RDM.
+5. Collect the terms into contractions of integral blocks with the RDMs.
+
+**One class worked through: `Srs`.** Two active electrons leave for the
+virtuals $r \ne s$. In step 1 only
+$\tfrac12\sum(pq|rs)a^\dagger_pa^\dagger_ra_sa_q$ with both creators
+virtual contributes, and the two assignments of $r, s$ to the creators are
+equal, so
+$$
+\Psi_{rs} = \sum_{tu}(rt|su)\sum_{\sigma\tau}a^\dagger_{r\sigma}a^\dagger_{s\tau}a_{u\tau}a_{t\sigma}\Psi_0 .
+$$
+In the norm, $V^\dagger$ carries $a^\dagger_{v\sigma'}a^\dagger_{w\tau'}a_{s\tau'}a_{r\sigma'}$ and the virtual operators contract as
+$a_{s\tau'}a_{r\sigma'}a^\dagger_{r\sigma}a^\dagger_{s\tau} \to \delta_{\sigma\sigma'}\delta_{\tau\tau'}$
+with sign $+$ (inner pair first), leaving
+$\sum_{\sigma\tau}\langle a^\dagger_{v\sigma}a^\dagger_{w\tau}a_{u\tau}a_{t\sigma}\rangle = \Gamma_{vtwu}$
+in the convention of section @sec:rdms-1-2-rdm:
+$$
+N_{rs} = \sum_{tuvw}(rt|su)(rv|sw)\,\Gamma_{vtwu} .
+$$
+With $V_{rspq} = (rp|sq)$ and $R_2$ of the intermediates table below,
+$(R_2)_{ijkl} = \langle E_{il}E_{jk}\rangle - \gamma_{ik}\delta_{jl} = \Gamma_{iljk}$,
+and the code's `rsqp,rsba,pqba` term is
+$\sum(rq|sp)(rb|sa)\Gamma_{paqb}$, which is $N_{rs}$ after renaming and
+$\Gamma_{pqrs} = \Gamma_{rspq} = \Gamma_{qpsr}$. At $r = s$ the projector
+of step 2 carries $\tfrac12$. $E_\text{class}$ is homogeneous of degree 1
+in $(N_l, K_l)$, so summing every ordered pair with weight $\tfrac12$, as
+the code does, gives the same energy. $K_{rs}$ follows the same way from
+$[H_\text{act}, V]$ and gives $A_7$. Claim C of `scripts/nevpt2_sympy.py`
+checks the coded norm and energy of every class against the definition.
 
 ### Evaluation
 
-$N_l$ and $K_l$ reduce (derivation, "Construction A", steps 1-5; $K_l$
-through $\langle V^\dagger P_l [H_\text{act}, V]\rangle$) to contractions
-of integrals with RDMs up to rank 4, the 4-RDM only contracted with
-$(aa|aa)$. The module evaluates them with the factorization of PySCF
+The module evaluates the contractions with the factorization of PySCF
 `mrpt.nevpt2` (`Sr` ... `Sir`, `make_a16`, `make_a17`, `make_a19`,
 `make_a22`, `make_a23`, `make_a25`, `make_a3`, `make_k27`, `make_a7`,
 `make_a9`, `make_a12`, `make_a13`), transcribed spec for spec into an
@@ -185,8 +259,7 @@ reordering there), the hole RDMs, and $f^\text{ca}$, $f^\text{ac}$. In
 PySCF's layout `h1e` is the active block of $F^I$ and
 $\texttt{h2e}_{pqrs} = (pr|qs)$. The external integral blocks are
 $(va|aa)$, $(ac|aa)$, $(cv|cv)$, $(ca|cv)$, $(va|cv)$, $(va|va)$, $(ca|ca)$,
-$(vc|aa)$, $(va|ca)$ and the $F^I$ blocks $va$, $ac$, $vc$ (derivation,
-"What a Rust port needs"), each transformed from the dense AO block with its
+$(vc|aa)$, $(va|ca)$ and the $F^I$ blocks $va$, $ac$, $vc$, each transformed from the dense AO block with its
 narrowest orbital set contracted first.
 
 **Reference checks before any class.** $\lVert Hc - Ec\rVert \le$
@@ -195,14 +268,16 @@ $H_\text{act}\Psi_0 = E_0\Psi_0$), $\lVert c\rVert = 1$ to $10^{-10}$,
 $n_\alpha = n_\beta$ (open-shell active spaces are not anchored and are
 refused), and a converged CASSCF or CAS-CI run.
 
-**Cost.** $O(n^8)$ for the $a_{16}$/$a_{22}$ intermediates, $O(n_v n^6)$ (r),
-$O(n_c n^6)$ (i), $O(n_v^2 n^4)$ (rs), $O(n_c^2 n^4)$ (ij), $O(n_c n_v n^4)$
-(ir) and $O(n_c^2 n_v^2)$ (ijrs). The `einsum` is a direct loop over every
+**Cost.** With $n_c$ core and $n_v$ virtual orbitals: $O(n_a^8)$ for the
+$a_{16}$/$a_{22}$ intermediates, $O(n_v n_a^6)$ (r), $O(n_c n_a^6)$ (i),
+$O(n_v^2 n_a^4)$ (rs), $O(n_c^2 n_a^4)$ (ij), $O(n_c n_v n_a^4)$ (ir) and
+$O(n_c^2 n_v^2)$ (ijrs). The `einsum` is a direct loop over every
 label combination (one sequential sum per output element, parallel over
 output elements), so its cost is the product of all label extents of a spec.
 
-**Memory.** The dense AO block $n_\text{bas}^4$, the MO blocks (twice,
-transformed and permuted), twelve $n^6$ intermediates and the per-label
+**Memory.** The dense AO block $n_\text{bas}^4$ (on the RI route the
+fitted $B$, $n_\text{aux}n_\text{bas}^2$, instead), the MO blocks (twice,
+transformed and permuted), twelve $n_a^6$ intermediates and the per-label
 tensors, reserved through one `MemoryPlan` before the AO block is built.
 
 ### The classes as coded
@@ -305,25 +380,6 @@ transpose.
 | $A_{12}$ `pqab` | $+$`ia,qpib`$(h,G_2)$; $-$`bi,qpai`$(h,G_2)$; $+$`ijka,qpjbik`$(g,G_3)$; $-$`kbij,qpajki`$(g,G_3)$; $-$`bjka,qpjk`$(g,G_2)$; $+$`jbij,qpai`$(g,G_2)$ |
 | $A_{13}$ `pqab` | $-$`ia,qbip`$(h,G_2)$; $+2$`pa,qb`$(h,\gamma)$; $+$`bi,qiap`$(h,G_2)$; $-2$`pa,bi,qi`$(\delta,h,\gamma)$; $-$`ijka,qbjpik`$(g,G_3)$; $+$`kbij,qjapki`$(g,G_3)$; $+$`blma,qmlp`$(g,G_2)$; $+2$`kpma,qbkm`$(g,G_2)$; $-2$`bpma,qm`$(g,\gamma)$; $-$`lbkl,qkap`$(g,G_2)$; $-2$`ap,mbkl,qlmk`$(\delta,g,G_2)$; $+2$`ap,lbkl,qk`$(\delta,g,\gamma)$ |
 
-### What the proofs cover
-
-[`scripts/nevpt2_sympy.py`](https://github.com/mgoldey/ferric/blob/main/scripts/nevpt2_sympy.py)
-proves four things. (D, sympy) the single-perturber energy above. (R) on a
-CAS(4,4) model, the normal-ordered and E-product 1- to 3-RDMs and the
-reorder formula, the hole RDMs of `hole_rdms` against
-$\langle aa\,a^\dagger a^\dagger\rangle$ and
-$\langle aaa\,a^\dagger a^\dagger a^\dagger\rangle$ from created vectors,
-and `f3ca`/`f3ac` by the `rdm3.rs` construction against a stored E-product
-4-RDM. (T) that its transcription of every function in the tables uses the
-specs and axes of `nevpt2.rs`, in order, parsed from the file. (C) that
-each of the eight class norms and energies of that transcription equals the
-definition in the full 4900-determinant space ($P_lH\Psi_0$ grouped by
-external occupation, $K_l$ from Dyall's $H_{\rm act}$ on active indices
-only), for the lowest singlet and the lowest $M_s = 0$ triplet root, with
-$\langle\Psi_0|H|\Psi_0\rangle = E_{\rm core} + E_0$ and
-$\sum_l N_l = |QH\Psi_0|^2$ as anchors. Its recorded mutations are in
-`crates/ferric-python/tests/test_derivation_scripts.py`.
-
 > **Verified equation {#eq:ci-nevpt2-classes}** · the eight class energies
 >
 > On a CAS(4,4) model (two core, four active, two virtual orbitals, random
@@ -372,10 +428,6 @@ $\sum_l N_l = |QH\Psi_0|^2$ as anchors. Its recorded mutations are in
 >
 > <!-- verified: id=ci.nevpt2.rdms; script=scripts/nevpt2_sympy.py; claim=R; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/rdm3.rs::{e_product_rdms,hole_rdms,nevpt_rdms}; rust_test=ferric-ci/tests/casci_rdm3.rs::rdm3_and_f3_match_pyscf_h2o_cas44; registry=nevpt2 -->
 
-The proof checks the factorization against the definition on a model; the
-Rust tests below check the Rust code against the numpy prototype's Wick
-construction and against PySCF on molecules.
-
 ## The algorithm {#nevpt2-algorithm}
 
 | Step | Quantity | Function |
@@ -395,7 +447,9 @@ block is built.
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
 | class energies vs the numpy prototype on the same orbitals and CI vector | H2O CAS(4,4), N2 CAS(6,6) at 1.0977 and 2.2 Å / 6-31G | $\le 6.2\times10^{-14}$ Ha | `crates/ferric-ci/tests/nevpt2.rs` |
-| vs PySCF `mrpt.NEVPT` on PySCF's own CASSCF | N2 (H2O $1.3\times10^{-8}$, stretched N2 $2.1\times10^{-8}$) | $\le 3.2\times10^{-8}$ Ha | `crates/ferric-ci/tests/nevpt2.rs` |
+| vs PySCF `mrpt.NEVPT` on PySCF's own CASSCF | H2O CAS(4,4) / 6-31G | $1.3\times10^{-8}$ Ha | `crates/ferric-ci/tests/nevpt2.rs` |
+| the same | N2 CAS(6,6) / 6-31G | $3.2\times10^{-8}$ Ha | `crates/ferric-ci/tests/nevpt2.rs` |
+| the same | N2 CAS(6,6) at 2.2 Å / 6-31G | $2.1\times10^{-8}$ Ha | `crates/ferric-ci/tests/nevpt2.rs` |
 | one closed-shell active orbital vs MP2 pair sums | H2O / 6-31G | $8.1\times10^{-15}$ Ha | `crates/ferric-ci/tests/nevpt2.rs` |
 | classes with an empty external space | H2, LiH | exactly 0 | `crates/ferric-ci/tests/nevpt2.rs` |
 
@@ -412,9 +466,28 @@ energies; inside a degenerate group of core or virtual orbitals the pair
 classes depend on the eigenvectors chosen, which moves N2's `Srs` by up to
 $1.7\times10^{-7}$ Ha between codes.
 
-### What is proven and what is not {#nevpt2-proven}
+## What is proven and what is not {#nevpt2-proven}
 
-The details of `crates/ferric-ci/tests/nevpt2.rs`:
+`scripts/nevpt2_sympy.py` proves four things. (D, sympy) the single-perturber energy above. (R) on a
+CAS(4,4) model, the normal-ordered and E-product 1- to 3-RDMs and the
+reorder formula, the hole RDMs of `hole_rdms` against
+$\langle aa\,a^\dagger a^\dagger\rangle$ and
+$\langle aaa\,a^\dagger a^\dagger a^\dagger\rangle$ from created vectors,
+and `f3ca`/`f3ac` by the `rdm3.rs` construction against a stored E-product
+4-RDM. (T) that its transcription of every function in the tables uses the
+specs and axes of `nevpt2.rs`, in order, parsed from the file. (C) that
+each of the eight class norms and energies of that transcription equals the
+definition in the full 4900-determinant space ($P_lH\Psi_0$ grouped by
+external occupation, $K_l$ from Dyall's $H_{\rm act}$ on active indices
+only), for the lowest singlet and the lowest $M_s = 0$ triplet root, with
+$\langle\Psi_0|H|\Psi_0\rangle = E_{\rm core} + E_0$ and
+$\sum_l N_l = |QH\Psi_0|^2$ as anchors. Its recorded mutations are in
+`crates/ferric-python/tests/test_derivation_scripts.py`.
+
+The proof checks the factorization against the definition on a model.
+The Rust tests check the Rust code against the numpy prototype's Wick
+construction and against PySCF on molecules. The details of
+`crates/ferric-ci/tests/nevpt2.rs`:
 
 | Check | Systems | Measured | Bar |
 |---|---|---|---|
@@ -435,10 +508,13 @@ and `Sr` gated on the core space (caught by the zeros anchor).
 |---|---|
 | `scripts/nevpt2_sympy.py` | claims D, R, T and C |
 | Angeli, Cimiraglia and Malrieu, JCP 117, 9138 (2002) | the method |
-| `scripts/prototypes/nevpt2_derivation.md`, `nevpt2_proto.py` | the derivation note and the Wick-construction reference |
+| `scripts/prototypes/nevpt2_proto.py` | the numpy Wick-construction reference of the prototype anchor |
 | PySCF `mrpt/nevpt2.py` | the factorization transcribed |
 
 **Known limits (2026-11-15).** Single root, closed-shell active spaces only
 ($n_\alpha = n_\beta$; open-shell active spaces are refused). On a CAS-CI
 reference the certificate is not graded. Dense $O(n_a^8)$ intermediates
-bound the active-space size.
+bound the active-space size. The default route holds the dense
+$n_\text{bas}^4$ AO block, which bounds the basis first; the RI route
+(`[cas] integrals = "ri"`, section @sec:casscf) holds
+$n_\text{aux}n_\text{bas}^2$ instead and is a different Hamiltonian.
