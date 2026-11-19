@@ -549,14 +549,14 @@ impl Default for RhfConfig {
             // (a *gradient*-gated accept of a state 85 mHa high). ΔP is a stronger
             // wrong-basin signal than that gradient — regression-guarded by the
             // h2o_plus_* UHF tests, which pass under this gate.
-            max_iter: 200,
-            energy_conv: 1e-3,
-            density_conv: 1e-6,
-            diis_size: 8,
+            max_iter: crate::options::DEFAULT_SCF_MAX_ITER,
+            energy_conv: crate::options::DEFAULT_SCF_ENERGY_CONV,
+            density_conv: crate::options::DEFAULT_SCF_DENSITY_CONV,
+            diis_size: crate::options::DEFAULT_DIIS_SIZE,
             diis_flavor: crate::diis::DiisFlavor::Pulay,
             diis_switch_thresh: 1e-1,
             smearing_sigma: None,
-            integral_thresh: 1e-12,
+            integral_thresh: crate::options::DEFAULT_INTEGRAL_THRESH,
             k_builder: None,
             cosx: crate::cosx_k::CosxConfig::default(),
             df_j_aux: None,

@@ -114,6 +114,10 @@ pub mod checkpoint;
 pub mod result;
 pub use result::{DfJkRoute, ScfResult, Spin};
 
+/// Frontend-neutral SCF options (`ScfOptions`) and their pure lowering to
+/// `RhfConfig`, plus the named SCF defaults.
+pub mod options;
+
 /// Estimated noise floor of the SCF energy change and the advisory `energy_conv` warning (#410).
 pub mod noise_floor;
 
