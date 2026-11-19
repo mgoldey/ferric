@@ -1,4 +1,4 @@
-# Imaginary-time and AO forms of $\chi_0$ {#laplace-ao-chi0}
+# The Laplace form of $\chi_0$ {#laplace-ao-chi0}
 
 <!-- status: ready; registry: pdep-rpa -->
 
@@ -10,22 +10,27 @@ into a piece for $i$ times a piece for $a$. That separation is the first step
 towards an atomic-orbital, reduced-scaling $\chi_0$, the same step Laplace
 MP2 takes for its denominator (section @sec:laplace-mp2). ferric has the
 molecular-orbital half of that construction, as library code. The AO half,
-where the scaling would change, is not built.
+where the scaling would change, is not built. The backend has no row in the
+validation table and is not graded: its anchors (section
+@sec:laplace-ao-chi0-numerical-anchors) are test tolerances of
+$5\times10^{-3}$ relative and $5\times10^{-4}$ Ha.
 
 The plan: the Laplace form of the kernel and the dielectric built from it
-(@sec:laplace-ao-chi0-laplace-form-kernel), the requirements the code enforces (@sec:laplace-ao-chi0-requirements-code-enforces), then anchors and
-sources.
+(@sec:laplace-ao-chi0-laplace-form-kernel), the choice of the frequency grid for it
+(@sec:laplace-ao-chi0-grid), the requirements the code enforces
+(@sec:laplace-ao-chi0-requirements-code-enforces), then anchors and sources.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
 | $t_l, w_l$ | minimax-Laplace nodes and weights for $1/x$ on the gap range | `LaplaceQuadrature` |
 | $t_{\max}$ | largest Laplace node | `t_max` |
+| $n_{\mathrm L}$ | number of Laplace nodes | |
 | $u$ | imaginary frequency | `omega` |
+| $n$ | number of imaginary-frequency nodes (section @sec:quadratures) | `n_points` |
 
 | Entry point | Location |
 |---|---|
 | Rust, Laplace $\chi_0$ | `ferric-rpa/src/laplace_chi0.rs::{dielectric_matrix_laplace,dielectric_matrix_laplace_into,build_laplace_for_gaps}`, selected by `Chi0Backend::Laplace` |
-| Rust, imaginary time | `ferric-rpa/src/ao_rpa.rs::{ao_rpa_correlation_energy,build_tau_quadrature,pseudo_density_occ,pseudo_density_vir}` |
 | CLI, Python | none; both always use the dense $\chi_0$ |
 
 ## The Laplace form of the kernel {#laplace-ao-chi0-laplace-form-kernel}
@@ -44,7 +49,7 @@ $$ \tilde{\boldsymbol\varepsilon}_U(iu) - \mathbf 1 \approx \sum_l 4w_l\cos(ut_l
 
 **The nodes.** They are the minimax-Laplace nodes for $1/x$ on
 $[\Delta_{\min}, \Delta_{\max}]$, the same tables as Laplace MP2 scaled by
-$1/\Delta_{\min}$, with $n \in \{3, 5, 7\}$. Why the scaling works: the table
+$1/\Delta_{\min}$, with $n_{\mathrm L} \in \{3, 5, 7\}$. Why the scaling works: the table
 gives $r^{\mathrm{tab}}(y) \approx 1/y$ on $[1, R]$. Put
 $r(x) = r^{\mathrm{tab}}(x/\Delta_{\min})/\Delta_{\min}$, which is the table
 with $t_l = t_l^{\mathrm{tab}}/\Delta_{\min}$ and
@@ -62,7 +67,7 @@ and `LaplaceQuadrature::new` picks the table entry with
 `ferric-quadrature/src/minimax.rs::select_minimax_points`: the first entry
 whose range satisfies $R_{\mathrm{tab}} \ge 0.99R$, a 1% slack. An $R$
 beyond the last entry of the table is an error, as is an untabulated
-$n$.
+$n_{\mathrm L}$.
 
 **What the code computes.** The coded sum is
 $\operatorname{Re}r(\Delta + iu)$ with $r(x) = \sum_lw_le^{-t_lx} \approx 1/x$:
@@ -72,9 +77,7 @@ and take the real part: the result is the sum in (@eq:laplace-ao-chi0-1). It is 
 minimax approximant at $u = 0$ and is not controlled at large $u\,t_l$, where
 the cosine oscillates across the nodes. So the code uses the dense kernel at
 any frequency node with $u\,t_{\max} > \pi/2$. On the Laplace side every
-$u\,t_l \le \pi/2$, so every $\cos(ut_l) \ge 0$. Each term is accumulated as a
-general matrix product, not a symmetric rank update; the coefficient
-$4w_l\cos(ut_l)$ is never negative there.
+$u\,t_l \le \pi/2$, so every coefficient $4w_l\cos(ut_l)$ is non-negative.
 
 The core of `ferric-rpa/src/laplace_chi0.rs::dielectric_matrix_laplace_into`,
 with the shape assertions and the code's comments removed, and the setup of
@@ -109,7 +112,7 @@ helper `accumulate_one_spin`). Each spin gets its own Laplace quadrature on
 its own gap range, built in the open-shell driver `u_pdep_rpa_core`. The per-spin coefficient is
 $2w_l\cos(ut_l)$, the pole pair alone, as in (@eq:open-shell-dielectric-1):
 
-$$ \mathbf V^{\mathsf T}\tilde{\boldsymbol\varepsilon}_U(iu)\mathbf V = \mathbf 1 + \sum_\sigma\sum_{l\in\sigma}2w_l\cos(ut_l)\,\mathbf X^{\sigma}_l\mathbf X^{\sigma\mathsf T}_l . $$
+$$ \mathbf V^{\mathsf T}\tilde{\boldsymbol\varepsilon}^{\mathrm u}(iu)\mathbf V = \mathbf 1 + \sum_\sigma\sum_{l\in\sigma}2w_l\cos(ut_l)\,\mathbf X^{\sigma}_l\mathbf X^{\sigma\mathsf T}_l . $$
 
 An empty $\beta$ channel (no $\beta$ occupied orbital) reuses the
 $\alpha$ quadrature and contributes nothing. The fallback threshold uses the
@@ -127,20 +130,16 @@ static eigensolve and the frequency loop. The closed-shell inverse-dielectric
 stack is built only on the dense backend.
 
 **Where the factorization leads.** In this molecular-orbital form nothing is
-saved: each frequency node does $n$ products of the size the dense path does
+saved: each frequency node does $n_{\mathrm L}$ products of the size the dense path does
 once. The point of the form is
 that $e^{-t\Delta_i^a} = e^{t\varepsilon_i}e^{-t\varepsilon_a}$ factorizes, so
 a sum over $ia$ can be carried as two pseudo-densities
 $\underline P_{\mu\nu}(t) = \sum_i C_{\mu i}e^{t\varepsilon_i}C_{\nu i}$ and
 $\overline P_{\mu\nu}(t) = \sum_a C_{\mu a}e^{-t\varepsilon_a}C_{\nu a}$, which
-are sparse for large molecules. `ao_rpa.rs` builds those pseudo-densities and
-an imaginary-time $\chi_0$ from them (after Kaltak, Klimeš and Kresse 2014),
-but evaluates the contraction densely. The sparse AO contraction is not
-implemented. The module is the MO-basis version of the imaginary-time
-formulation, with the dense $\mathcal O(N^4)$ scaling per frequency of MO-basis
-RPA. The formulation reaches $\mathcal O(N^3)$ only with AO sparsity (atom-pair
-cutoffs on the orbital coefficients through local orbitals), which is the
-part not built.
+are sparse for large molecules (Kaltak, Klimeš and Kresse, J. Chem. Theory
+Comput. 10, 2498 (2014)). The formulation reaches $\mathcal O(N^3)$ only
+with that AO sparsity (atom-pair cutoffs on the orbital coefficients through
+local orbitals), which is not built.
 
 > **Verified equation @eq:rpa-chi0-laplace** · the Laplace dielectric
 >
@@ -162,12 +161,37 @@ part not built.
 >
 > <!-- verified: id=rpa.chi0.laplace; script=scripts/rpa_laplace_chi0_sympy.py; claim=L3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-rpa/src/laplace_chi0.rs::{dielectric_matrix_laplace_into,dielectric_matrix_laplace_unrestricted_into,build_laplace_for_gaps}; rust_test=ferric-rpa/tests/laplace_chi0.rs::h2o_ccpvdz_laplace_matches_dense_at_static; registry=pdep-rpa -->
 
+## Choosing the frequency grid {#laplace-ao-chi0-grid}
+
+The backend falls back to the dense kernel at any frequency node with
+$u\,t_{\max} > \pi/2$, so the imaginary-frequency grid of section
+@sec:quadratures decides how many nodes take the Laplace path. Only
+$u_0 = 0.5$ has been calibrated on the dense path. A smaller $u_0$ moves nodes to smaller $u$,
+so it keeps more of them on the Laplace path.
+`CHEBYSHEV_TAN_RECOMMENDED_U0 = 0.2` is calibrated for that backend only, and
+costs a coarser high-frequency tail.
+
+At equal $(n, u_0)$, Chebyshev–Tan and Gauss–Legendre send about the same
+number of nodes to the fallback, and which sends more depends on $t_{\max}$.
+At $n = 20$:
+
+| $t_{\max}$ | $u_0$ | Nodes on the Laplace path, Chebyshev–Tan | Gauss–Legendre |
+|---|---|---|---|
+| $\approx 1.5$ (H2O / cc-pVDZ) | 0.2 | 16 | 15 |
+| $\approx 1.5$ (H2O / cc-pVDZ) | 0.5 | 13 | 12 |
+
+At $t_{\max} = 2\pi$ the order reverses: Chebyshev–Tan sends one node more to
+the fallback, 13 against 12 at $u_0 = 0.5$. Lowering $u_0$ moves more nodes
+onto the Laplace path than the choice of scheme does. The CLI and the Python
+bindings always use `Chi0Backend::Dense`; `Chi0Backend::Laplace`
+(`crates/ferric-rpa/src/laplace_chi0.rs`) is a library option.
+
 ## Requirements the code enforces {#laplace-ao-chi0-requirements-code-enforces}
 
 | Requirement | Why | Where |
 |---|---|---|
 | canonical orbital energies | $\Delta_i^a = \varepsilon_a - \varepsilon_i$ is a per-pair scalar only in a Fock-diagonal basis | debug assertion in `build_e_ia` (`crates/ferric-rpa/src/laplace_chi0.rs`) |
-| $n \in \{3, 5, 7\}$ | only those minimax tables exist; other sizes are an error, not a silent fallback | `LaplaceQuadrature::new` |
+| $n_{\mathrm L} \in \{3, 5, 7\}$ | only those minimax tables exist; other sizes are an error, not a silent fallback | `LaplaceQuadrature::new` |
 | no aux-basis route | the energy-only route of section @sec:drpa-three-ways has no Laplace evaluator, so the Laplace backend always runs the static solve | `static_route_required` |
 
 ## Numerical anchors {#laplace-ao-chi0-numerical-anchors}
@@ -184,10 +208,13 @@ validation row.
 
 | Source | What it gives |
 |---|---|
-| `scripts/rpa_laplace_chi0_sympy.py`, claims L0 to L6 | the proof |
+| `scripts/rpa_laplace_chi0_sympy.py`, claims L1 to L6 | the proof |
 | section @sec:laplace-mp2-quadrature | the node tables |
-| section @sec:quadratures-rule | the fallback counts for Gauss–Legendre and Chebyshev–Tan |
-| module documentation of `crates/ferric-rpa/src/laplace_chi0.rs` and `crates/ferric-rpa/src/ao_rpa.rs` | the two forms and their scope |
+| module documentation of `crates/ferric-rpa/src/laplace_chi0.rs` | the Laplace form and its scope |
+| Kaltak, Klimeš and Kresse, J. Chem. Theory Comput. 10, 2498 (2014) | imaginary-time and Laplace transformations for low-scaling RPA |
 
-**Known limits (2026-11-15).** Library only. No reduced-scaling claim: both
-forms are dense.
+**Known limits (2026-11-15).** Library only. No reduced-scaling claim: the
+Laplace form is dense. `ferric-rpa/src/ao_rpa.rs::ao_rpa_correlation_energy`
+builds the occupied and virtual pseudo-densities and an imaginary-time
+$\chi_0$ from them, but contracts them densely; no test checks its energy
+against the dense route, so this page does not derive it.

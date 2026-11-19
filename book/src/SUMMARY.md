@@ -121,7 +121,7 @@
   - [18.2 Imaginary-frequency quadratures](18-rpa/02-quadratures.md)
   - [18.3 Projective dielectric eigenpotentials](18-rpa/03-pdep.md)
   - [18.4 Open-shell dielectric](18-rpa/04-open-shell-dielectric.md)
-  - [18.5 Imaginary-time and AO forms of $\chi_0$](18-rpa/05-laplace-ao-chi0.md)
+  - [18.5 The Laplace form of $\chi_0$](18-rpa/05-laplace-ao-chi0.md)
   - [18.6 Ring amplitudes with a threshold: local dRPA](18-rpa/06-local-drpa.md)
 - [19. GW and the Bethe–Salpeter equation](19-gw-bse/index.md)
   - [19.1 RI factors and the exchange self-energy](19-gw-bse/01-ri-factors-and-exchange.md)

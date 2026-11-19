@@ -1,12 +1,21 @@
 # The random phase approximation {#rpa}
 
-The direct random phase approximation (dRPA) adds to MP2 what MP2 leaves
-out: the screening of the interaction between two electrons by the response
-of all the others. It sums the ring diagrams to infinite order, which is
-what makes it describe long-range correlation and dispersion; its
-second-order term is direct MP2.
+This chapter covers the direct random phase approximation (dRPA): the
+energy three ways (@sec:drpa-three-ways), the imaginary-frequency grids it
+is integrated on (@sec:quadratures), the projective dielectric
+eigenpotentials (PDEP, @sec:pdep) and their open-shell form
+(@sec:open-shell-dielectric), the Laplace form of the response function
+(@sec:laplace-ao-chi0), and the amplitude-threshold local approximation
+(@sec:local-drpa). The analytic gradient is section @sec:rpa-gradient.
 
-This chapter covers the dRPA energy three ways, the frequency grids it is
-integrated on, the projective dielectric eigenpotentials (PDEP) and their
-open-shell form, and the reduced forms of the response function. The
-analytic gradient is section @sec:rpa-gradient.
+Sections @sec:drpa-three-ways and @sec:quadratures are prerequisites for
+the rest. Sections @sec:open-shell-dielectric to @sec:local-drpa are
+independent of each other.
+
+| Index | Range |
+|---|---|
+| $i, j$ | active occupied orbitals |
+| $a, b$ | virtual orbitals |
+| $P, Q$ | auxiliary functions |
+| $\xi, \eta$ | PDEP modes |
+| $k$ | imaginary-frequency node $u_k$, weight $w_k$ |

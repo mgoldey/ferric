@@ -51,6 +51,21 @@ CASES = [
                 "bt_chol = np.linalg.solve(lchol.T, qia)",
                 "FAIL [ri-factor-freedom]",
             ),
+            (
+                "t = y @ np.linalg.inv(x)",
+                "t = np.linalg.inv(x) @ y",
+                "FAIL [riccati-eigenvector-form]",
+            ),
+            (
+                "u_rand = np.linalg.qr(",
+                "u_rand = 1.5 * np.linalg.qr(",
+                "FAIL [pdep-truncation-sign]",
+            ),
+            (
+                "f = sp.log(1 + xs) - xs + xs**2 / 2",
+                "f = sp.log(1 + xs) - xs + xs**2 / 3",
+                "FAIL [static-summand-bound]",
+            ),
         ],
     ),
     (

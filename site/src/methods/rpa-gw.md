@@ -154,7 +154,13 @@ dRPA is not variational, so the error is first order in what is dropped. It
 is positive (less correlation) at every point measured, which is a
 measurement, not a guarantee, and grows faster than linearly in `eps`: on
 n-octane / 6-31G it is 6.7e-7, 3.9e-5, 5.5e-4 and 1.0e-2 Ha at `eps` = 1e-6,
-1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes. `[local] reference = true`
+1e-5, 1e-4 and 1e-3, keeping 82%, 50%, 18% and 3% of the amplitudes
+(measured with the solver stopped at relative residual 1e-12). By default the
+CLI and Python stop the local solve at relative residual max(1e-12, 0.1·`eps`)
+(Python `eps_rtol_factor=`, 0 to disable the link; the CLI has no key for it); on water / 6-31G
+that solver error (±3e-8 Ha at `eps` = 1e-4) is larger than the truncation
+error, which is exactly zero there, so compare with the exact limit at
+`eps_rtol_factor=0`. `[local] reference = true`
 (Python `compute_reference=True`) also computes the canonical plasmon dRPA and
 prints the error against it. `[local] eps_sweep` (Python `run_drpa_scan`)
 evaluates several `eps` on one SCF and one localized assembly. Proven
