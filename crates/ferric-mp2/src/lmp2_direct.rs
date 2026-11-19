@@ -3371,6 +3371,7 @@ pub fn amplitude_lmp2_direct(
     cfg: &AmplitudeLmp2Config,
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
+    crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_direct", &cfg.virtual_space)?;
     let (mut r, st) =
@@ -3394,6 +3395,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     dcfg: &DirectConfig,
     vvhv: &VvHv,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
+    crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
     let t0 = Instant::now();
     let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
     let t_loc_s = t0.elapsed().as_secs_f64();

@@ -744,7 +744,21 @@ pub fn build_vvhv(
     obs_bs: &BasisSet,
     rhf: &ScfResult,
 ) -> Result<VvHv, FerricError> {
-    build_vvhv_with(mol, obs, obs_bs, rhf, solve_spd)
+    build_vvhv_with_fock(mol, obs, obs_bs, rhf, rhf.fock_r())
+}
+
+/// [`build_vvhv`] with the AO Fock matrix `f_ao` that pseudo-canonicalizes
+/// the hard virtuals supplied by the caller (the seam for a reference whose
+/// Fock operator is not `rhf.fock_r()`). `build_vvhv` is this with
+/// `rhf.fock_r()`. The occupied MOs still come from `rhf`.
+pub fn build_vvhv_with_fock(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    f_ao: &Array2<f64>,
+) -> Result<VvHv, FerricError> {
+    build_vvhv_with(mol, obs, obs_bs, rhf, f_ao, solve_spd)
 }
 
 /// The SPD solve `S⁻¹·B` [`build_vvhv`] uses (a seam so tests can build the
@@ -756,9 +770,10 @@ fn build_vvhv_with(
     obs: &PreparedBasis,
     obs_bs: &BasisSet,
     rhf: &ScfResult,
+    f_ao: &Array2<f64>,
     solve: SpdSolve,
 ) -> Result<VvHv, FerricError> {
-    build_vvhv_traced(mol, obs, obs_bs, rhf, solve).map(|(v, _)| v)
+    build_vvhv_traced(mol, obs, obs_bs, rhf, f_ao, solve).map(|(v, _)| v)
 }
 
 /// [`build_vvhv_with`] that also returns the AO index of every selected
@@ -773,7 +788,7 @@ pub(crate) fn build_vvhv_traced_dense(
     obs_bs: &BasisSet,
     rhf: &ScfResult,
 ) -> Result<(VvHv, Vec<usize>), FerricError> {
-    build_vvhv_traced(mol, obs, obs_bs, rhf, solve_spd)
+    build_vvhv_traced(mol, obs, obs_bs, rhf, rhf.fock_r(), solve_spd)
 }
 
 fn build_vvhv_traced(
@@ -781,6 +796,7 @@ fn build_vvhv_traced(
     obs: &PreparedBasis,
     obs_bs: &BasisSet,
     rhf: &ScfResult,
+    f_ao: &Array2<f64>,
     solve: SpdSolve,
 ) -> Result<(VvHv, Vec<usize>), FerricError> {
     let s = overlap(obs);
@@ -874,7 +890,6 @@ fn build_vvhv_traced(
         // (the block gather below is the only use), so form F·C_h once and
         // contract each atom's columns against it: Σ_A nao·m_A² instead of
         // the full n_h × n_h product C_hᵀ (F C_h).
-        let f_ao = rhf.fock_r();
         let fch = f_ao.dot(&ch);
         let mut by_atom: HashMap<usize, Vec<usize>> = HashMap::new();
         for (k, &a) in sel_parents.iter().enumerate() {
@@ -1002,6 +1017,25 @@ pub fn check_vvhv(
 // driver
 // ---------------------------------------------------------------------------
 
+/// Refuse a Kohn-Sham SCF reference for local MP2 (`who` names the driver).
+/// MP2 is defined on the Hartree-Fock Fock operator: the local drivers read
+/// the reference's Fock matrix for the denominators and the f_oo/f_vv
+/// coupling, so a KS reference would silently give MP2 with KS denominators.
+/// Reads [`ScfResult::xc`], which every SCF entry point stamps (`None` =
+/// Hartree-Fock; a hand-built result also says `None`).
+pub fn require_hf_reference(rhf: &ScfResult, who: &str) -> Result<(), FerricError> {
+    match &rhf.xc {
+        None => Ok(()),
+        Some(xc) => Err(FerricError::Unsupported {
+            feature: format!("{who} on a Kohn-Sham reference ({xc})"),
+            reason: "local MP2 takes its denominators and Fock coupling from the reference \
+                     Fock matrix, which here is the Kohn-Sham one; run it on a Hartree-Fock \
+                     (RHF) reference"
+                .to_string(),
+        }),
+    }
+}
+
 /// Amplitude-threshold local MP2 with the VV-HV space built internally.
 pub fn amplitude_lmp2(
     mol: &Molecule,
@@ -1012,6 +1046,7 @@ pub fn amplitude_lmp2(
     rhf: &ScfResult,
     cfg: &AmplitudeLmp2Config,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    require_hf_reference(rhf, "lmp2_amplitude")?;
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_amplitude", &cfg.virtual_space)?;
     let mut r = amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)?;
@@ -1300,7 +1335,7 @@ pub fn localized_spaces(
     frozen_core: usize,
     vvhv: &VvHv,
 ) -> Result<LocalizedSpaces, FerricError> {
-    localized_spaces_capped(mol, obs, rhf, frozen_core, vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0)
+    localized_spaces_with_fock(mol, obs, rhf, rhf.fock_r(), frozen_core, vvhv, 0.0)
 }
 
 /// [`localized_spaces`] with λ-Boys occupieds
@@ -1314,10 +1349,28 @@ pub fn localized_spaces_lambda(
     vvhv: &VvHv,
     lambda_boys: f64,
 ) -> Result<LocalizedSpaces, FerricError> {
+    localized_spaces_with_fock(mol, obs, rhf, rhf.fock_r(), frozen_core, vvhv, lambda_boys)
+}
+
+/// [`localized_spaces_lambda`] with the AO Fock matrix `f_ao` supplied by
+/// the caller: it weights the λ-Boys objective and gives the localized
+/// `f_oo`/`f_vv` blocks (the seam for a reference whose Fock operator is
+/// not `rhf.fock_r()`). The occupied MOs still come from `rhf`.
+/// [`localized_spaces_lambda`] is this with `rhf.fock_r()`.
+pub fn localized_spaces_with_fock(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    rhf: &ScfResult,
+    f_ao: &Array2<f64>,
+    frozen_core: usize,
+    vvhv: &VvHv,
+    lambda_boys: f64,
+) -> Result<LocalizedSpaces, FerricError> {
     localized_spaces_capped(
         mol,
         obs,
         rhf,
+        f_ao,
         frozen_core,
         vvhv,
         LMP2_BOYS_MAX_SWEEPS,
@@ -1340,10 +1393,12 @@ fn boys_error(what: &str, e: FerricError) -> FerricError {
 
 /// [`localized_spaces_lambda`] with an explicit Boys sweep cap (the test
 /// hook for the non-convergence error).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn localized_spaces_capped(
     mol: &Molecule,
     obs: &PreparedBasis,
     rhf: &ScfResult,
+    f_ao: &Array2<f64>,
     frozen_core: usize,
     vvhv: &VvHv,
     boys_max_sweeps: usize,
@@ -1357,7 +1412,7 @@ pub(crate) fn localized_spaces_capped(
     let (boys, lambda_report) = crate::boys::lambda_boys_localize_checked(
         &c_occ_can,
         &dip,
-        rhf.fock_r(),
+        f_ao,
         lambda_boys,
         boys_max_sweeps,
         crate::boys::LAMBDA_BOYS_MAX_SWEEPS,
@@ -1383,7 +1438,6 @@ pub(crate) fn localized_spaces_capped(
             virt_centers[(a, x)] = v;
         }
     }
-    let f_ao = rhf.fock_r();
     let f_oo = c_locc.t().dot(&f_ao.dot(&c_locc));
     let f_vv = c_vloc.t().dot(&f_ao.dot(&c_vloc));
     Ok(LocalizedSpaces {
@@ -2252,6 +2306,7 @@ pub fn amplitude_lmp2_with_virtuals(
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    require_hf_reference(rhf, "lmp2_amplitude")?;
     if trace::trace_enabled() {
         eprintln!(
             "[ferric-mem] lmp2-amplitude entry rss={}",
@@ -2604,16 +2659,24 @@ mod tests {
     fn unconverged_occupied_boys_is_an_error() {
         let (mol, obs, bs, rhf) = c4_631g();
         let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
-        let err = localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, 1, 0.0)
+        let err = localized_spaces_capped(&mol, &obs, &rhf, rhf.fock_r(), 4, &vvhv, 1, 0.0)
             .expect_err("a one-sweep Boys localization must be refused");
         let msg = err.to_string();
         assert!(
             msg.contains("occupieds") && msg.contains("Boys localization did not converge"),
             "{msg}"
         );
-        assert!(
-            localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0).is_ok()
-        );
+        assert!(localized_spaces_capped(
+            &mol,
+            &obs,
+            &rhf,
+            rhf.fock_r(),
+            4,
+            &vvhv,
+            LMP2_BOYS_MAX_SWEEPS,
+            0.0
+        )
+        .is_ok());
     }
 
     /// λ-Boys exactness anchors on C4/6-31G (frozen core 4, cc-pvdz-ri):
@@ -2761,8 +2824,9 @@ mod tests {
         bs: &BasisSet,
         rhf: &ScfResult,
     ) {
-        let (v_new, h_new) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd).unwrap();
-        let (v_old, h_old) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd_lu_oracle).unwrap();
+        let (v_new, h_new) = build_vvhv_traced(mol, obs, bs, rhf, rhf.fock_r(), solve_spd).unwrap();
+        let (v_old, h_old) =
+            build_vvhv_traced(mol, obs, bs, rhf, rhf.fock_r(), solve_spd_lu_oracle).unwrap();
         assert_vvhv_spaces_match(obs, (&v_new, &h_new), (&v_old, &h_old), "LU oracle");
         let nocc = (mol.nelec() as usize) / 2;
         let (o, sp) = check_vvhv(obs, rhf, nocc, &v_new.c_vloc);
@@ -3128,7 +3192,8 @@ mod tests {
     fn vvhv_matches_the_pre_cubic_fix_oracle() {
         for xyz in ["alkane_8.xyz", "water.xyz", "benzene.xyz"] {
             let (mol, obs, bs, rhf) = rhf_631g(xyz);
-            let (v_new, h_new) = build_vvhv_traced(&mol, &obs, &bs, &rhf, solve_spd).unwrap();
+            let (v_new, h_new) =
+                build_vvhv_traced(&mol, &obs, &bs, &rhf, rhf.fock_r(), solve_spd).unwrap();
             let (v_old, h_old) = build_vvhv_pre_fix_oracle(&mol, &obs, &bs, &rhf).unwrap();
             assert_vvhv_spaces_match(&obs, (&v_new, &h_new), (&v_old, &h_old), xyz);
         }
