@@ -89,6 +89,11 @@ print(res.energy, res.stress())
   per-route support for forces and stress is listed in
   [the input reference](../reference/input.md#cell) and
   [Capabilities and validation](../reference/validation.md).
+- Open-shell SCAN / r2SCAN forces and stress (UKS and ROKS) run at a k-mesh
+  on `jk = "dense"`; a 1×1×1 mesh is the Gamma point. The Gamma-point UKS /
+  ROKS meta-GGA is energy only, and the Gamma-point ROKS range-separated
+  stress has no entry point (its force runs); both errors name the 1×1×1
+  mesh.
 - Open-shell forces and stress refuse a non-stationary SCF state rather than
   return a number: ROHF/ROKS orbital gradient above 1e-5 Ha, UKS spin
   commutator above 1e-5 Ha (k-point), a stored Fock that differs from the

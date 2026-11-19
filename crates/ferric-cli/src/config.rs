@@ -9193,12 +9193,13 @@ kind = "ccsd"
                 assert!(gate(spin, rsgdf, "HYB_GGA_XC_WB97X").is_err());
             }
         }
-        // SCAN / r2SCAN: closed shell on either J/K, UKS on dense only, no ROKS.
+        // SCAN / r2SCAN: closed shell on either J/K, UKS and ROKS on dense only.
         for f in ["SCAN", "r2SCAN"] {
             gate(DerivSpin::Restricted, true, f).unwrap();
-            gate(DerivSpin::Unrestricted, false, f).unwrap();
-            assert!(gate(DerivSpin::Unrestricted, true, f).is_err());
-            assert!(gate(DerivSpin::RestrictedOpen, false, f).is_err());
+            for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
+                gate(spin, false, f).unwrap();
+                assert!(gate(spin, true, f).is_err(), "{spin:?} {f} rsgdf");
+            }
         }
         // TPSS: closed shell on the dense-AFT J/K only.
         gate(DerivSpin::Restricted, false, "TPSS").unwrap();
@@ -9223,16 +9224,11 @@ kind = "ccsd"
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
         assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", HSE)).optimize);
         assert!(ok(&opt("ksdft", rsgdf, HSE)).optimize);
-        // Open-shell KS: the ROKS meta-GGA force is refused by the derivative
-        // gate (its energy runs, #498); the UKS SCAN force runs (dense J/K);
-        // the UKS and ROKS RSH forces run on either J/K (#498).
-        let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
-        assert!(
-            e.contains("method.task = \"optimize\" with [cell] kmesh: ")
-                && e.contains("SCAN: the k-point ROKS meta-GGA force and stress"),
-            "rohf: {e}"
-        );
-        assert!(ok(&opt("uhf", "kmesh = [1, 1, 2]", SCAN)).optimize);
+        // Open-shell KS: the UKS and ROKS SCAN forces run on the dense J/K
+        // (#498); the UKS and ROKS RSH forces run on either J/K (#498).
+        for kind in ["uhf", "rohf"] {
+            assert!(ok(&opt(kind, "kmesh = [1, 1, 2]", SCAN)).optimize, "{kind}");
+        }
         for kind in ["uhf", "rohf"] {
             for cell in ["kmesh = [1, 1, 2]", rsgdf] {
                 assert!(ok(&opt(kind, cell, HSE)).optimize, "{kind} {cell}");

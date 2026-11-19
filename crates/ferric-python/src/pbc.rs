@@ -3961,13 +3961,13 @@ fn kpoint_open_entry(
 /// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
 /// hybrids, and range-separated (CAM) GGA hybrids on either J/K
 /// (`ferric_pbc::kroks::solve_kroks`), and the pure meta-GGAs SCAN / r2SCAN
-/// as an ENERGY on `jk="dense"` (their force and stress, and the RS-GDF J/K,
-/// are ValueErrors; `run_uks_kpts` has the SCAN / r2SCAN derivatives);
-/// Roothaan effective Fock) on a k-mesh. Arguments and result as
+/// on `jk="dense"` with their force and stress (the RS-GDF J/K and TPSS are
+/// ValueErrors); Roothaan effective Fock) on a k-mesh. Arguments and result as
 /// `run_uks_kpts`; `mo_energy` / `mo_energy_beta` are `c† F_σ c` per k in the
 /// Roothaan orbital order. The derivatives run on the dense-AFT and the
 /// unsplit RS-GDF J/K, range-separated hybrids included for HSE06 /
-/// CAM-B3LYP (`ferric_pbc::kuxcgrad::kpoint_roks_gradient`,
+/// CAM-B3LYP, and on the dense-AFT J/K for SCAN / r2SCAN
+/// (`ferric_pbc::kuxcgrad::kpoint_roks_gradient`,
 /// `ferric_pbc::kuxcstress::kpoint_roks_stress`; wB97X is a ValueError). The
 /// stress gate is the ROHF orbital gradient (converge `grad_conv` well below
 /// 1e-5). `level_shift=None` (default) is the solver's automatic virtual
