@@ -267,6 +267,9 @@
     "py:run_cdft": [
       "cdft"
     ],
+    "py:cdft_coupling": [
+      "cdft"
+    ],
     "py:run_dft": [
       "ks-semilocal",
       "ks-mgga",
@@ -279,6 +282,10 @@
       "fock-hook-gradient",
       "cosx-gradient",
       "vv10-gradient"
+    ],
+    "py:tune_omega": [
+      "ks-hybrid-rsh",
+      "ks-omega-tuning"
     ],
     "py:run_double_hybrid": [
       "double-hybrid",
@@ -966,7 +973,7 @@
     },
     "cdft": {
       "book": [
-        "book/src/09-kohn-sham/07-cdft.md#cdft-equations"
+        "book/src/09-kohn-sham/06-cdft.md#cdft-equations"
       ],
       "scripts": [
         "scripts/cdft_constraint_coupling_sympy.py"
@@ -1075,7 +1082,7 @@
       "book": [
         "book/src/14-derivatives/05-ks-hessian.md#ks-hessian-xc-terms",
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-equations",
-        "book/src/09-kohn-sham/06-fxc.md#fxc-linearized-potential",
+        "book/src/09-kohn-sham/07-fxc.md#fxc-linearized-potential",
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-factored-ri-k",
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-one-electron-operators",
         "book/src/14-derivatives/04-hf-hessian.md#hf-hessian-fitted-jk"
@@ -1864,6 +1871,12 @@
       "reason": "the masked Riccati solve is proven only in its exact limit (eps = 0, where it is the drpa method); no script or external reference checks the finite-threshold error model",
       "book": [
         "book/src/18-rpa/06-local-drpa.md#local-drpa"
+      ]
+    },
+    "ks-omega-tuning": {
+      "reason": "tune_omega runs the range-separated hybrid of ks-hybrid-rsh at several omega; the tuning criterion J(omega) (the ionization-potential condition) is a definition stated in book section #hybrids-tuning, and the golden-section bookkeeping (11 steps from 0.9 to 5e-3, the best evaluated point returned) is checked against PySCF there but transcribed in no sympy script",
+      "book": [
+        "book/src/09-kohn-sham/04-hybrids.md#hybrids-tuning"
       ]
     }
   }

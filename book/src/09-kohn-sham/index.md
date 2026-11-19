@@ -16,10 +16,10 @@ over space, evaluated on a grid.
 - @sec:hybrids adds exact exchange, globally or split by electron–electron distance,
   and tunes the split parameter $\omega$.
 - @sec:vv10 adds VV10 nonlocal correlation, a double integral over the density.
-- @sec:fxc differentiates the potential once more: the response kernels the
-  orbital Hessian, the Z-vector and TDDFT use.
 - @sec:cdft constrains the charge on a fragment with a Lagrange multiplier and
   computes the electron-transfer coupling between two constrained states.
+- @sec:fxc differentiates the potential once more: the response kernels the
+  orbital Hessian, the Z-vector and TDDFT use.
 
 Some Kohn–Sham topics live elsewhere. The XC nuclear gradient is section
 @sec:xc-gradient, the KS Z-vector section @sec:ks-zvector and TDDFT chapter

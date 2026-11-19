@@ -13,10 +13,10 @@ The method list is DERIVED from the code, never hand-listed:
   a ``FrequencyReference`` in ``run_frequencies`` (the analytic-Hessian routes);
 * ``md:<kind>`` for every entry of ``MD_KINDS``
   (``crates/ferric-cli/src/config.rs``), the kinds ``task = "md"`` runs;
-* ``py:<name>`` for every top-level ``def run_*`` in
-  ``crates/ferric-python/ferric.pyi``, plus every top-level response or
-  derivative function (name containing ``polariz``, ``gradient`` or
-  ``hessian``) or ending in ``_energy``;
+* ``py:<name>`` for every top-level ``def run_*`` or ``def tune_*`` in
+  ``crates/ferric-python/ferric.pyi``, plus every top-level response,
+  derivative or coupling function (name containing ``polariz``,
+  ``gradient``, ``hessian`` or ``coupling``) or ending in ``_energy``;
 * ``py-gradient:<name>`` and ``py-stress:<name>`` for every periodic entry
   point (``*_gamma``, ``*_kpts``) that takes ``with_gradient`` or
   ``with_stress`` (the molecular gradients are their ``optimize:`` routes);
@@ -71,8 +71,8 @@ def derived_routes():
     sig = re.compile(r"^def ([A-Za-z_][A-Za-z0-9_]*)\((.*?)\)\s*->", re.M | re.S)
     for name, args in sig.findall(pyi):
         if (
-            name.startswith("run_")
-            or re.search("polariz|gradient|hessian", name)
+            name.startswith(("run_", "tune_"))
+            or re.search("polariz|gradient|hessian|coupling", name)
             or name.endswith("_energy")
         ):
             routes.add(f"py:{name}")
@@ -138,6 +138,8 @@ def test_derivation_is_not_vacuous():
         "md:ksdft",
         "py:run_rhf",
         "py:d3bj_energy",
+        "py:tune_omega",
+        "py:cdft_coupling",
         "py-gradient:run_rhf_gamma",
         "py-stress:run_uks_kpts",
         "cell:drpa",
