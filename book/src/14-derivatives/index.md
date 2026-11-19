@@ -18,14 +18,16 @@ the integral-derivative loops described here.
 
 | Section | Topic | Registry id | Status |
 |---|---|---|---|
-| 14.1 | Hartree–Fock nuclear gradient | `hf-gradient` | ready |
-| 14.2 | Gradients of density-fitted J and K | none | gap |
-| 14.3 | XC gradient: AO-derivative and grid-response terms | `ks-gradient` | ready |
-| 14.4 | Hartree–Fock Hessian and coupled-perturbed equations | `hf-hessian` | ready |
-| 14.5 | Kohn–Sham Hessian on a fixed and a moving grid | `ks-hessian` | ready |
-| 14.6 | Harmonic frequencies | `harmonic-frequencies` | ready |
-| 14.7 | Fock-hook gradients | none | edit |
-| 14.8 | Geometry optimization, saddle points and reaction paths | none | gap |
+| @sec:hf-gradient | Hartree–Fock nuclear gradient | `hf-gradient`, `cosx-gradient` | ready |
+| @sec:df-jk-gradient | Gradients of density-fitted J and K | `hf-gradient` | edit |
+| @sec:xc-gradient | XC gradient: AO-derivative and grid-response terms | `ks-gradient`, `vv10-gradient` | ready |
+| @sec:hf-hessian | Hartree–Fock Hessian and coupled-perturbed equations | `hf-hessian` | ready |
+| @sec:ks-hessian | Kohn–Sham Hessian on a fixed and a moving grid | `ks-hessian` | ready |
+| @sec:frequencies | Harmonic frequencies | `harmonic-frequencies`, `rrho-thermo`, `ir-intensities` | ready |
+| @sec:fock-hook-gradient | Fock-hook gradients | `fock-hook-gradient` | edit |
+| @sec:geometry-search | Geometry optimization, saddle points and reaction paths | `geometry-search` | edit |
 
-Units throughout: Hartree, Bohr, atomic masses in u until a section says
-otherwise. Gradients are `(natoms, 3)` arrays in Hartree/Bohr.
+Units throughout: Hartree and Bohr. Atomic masses are in u, except in
+section @sec:frequencies, which converts them to electron masses before mass
+weighting; the saddle search of section @sec:geometry-search keeps them in u. Gradients are `(natoms, 3)` arrays in
+Hartree/Bohr.
