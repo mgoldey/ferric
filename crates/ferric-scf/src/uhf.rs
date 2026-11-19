@@ -2304,7 +2304,11 @@ fn stability_uhf<'r>(
     let skip = if fock_modified {
         Some(crate::stability::StabilitySkip::FockModified)
     } else {
-        crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega).err()
+        crate::stability::environment_is_analysable(config)
+            .and_then(|()| {
+                crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega)
+            })
+            .err()
     };
     if let Some(skip) = skip {
         eprintln!(

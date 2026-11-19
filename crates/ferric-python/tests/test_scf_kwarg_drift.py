@@ -216,6 +216,29 @@ def test_stability_descent_on_run_dft(water, sto3g):
     assert checked.energy == plain.energy
 
 
+@pytest.mark.parametrize("name", ["rhf", "uhf", "uks"])
+def test_stability_skipped_under_pcm(name, water, nh2, sto3g, capfd):
+    """The orbital Hessian has no PCM response term, so with ``solvent`` the
+    stability check (and the descent that follows its verdict) is skipped
+    with ``StabilitySkip::Solvent``'s printed reason rather than reporting the
+    vacuum Hessian's verdict for the solvated solution. Without ``solvent``
+    the same call is checked."""
+    mol = water if name == "rhf" else nh2
+    run = ks("uks") if name == "uks" else getattr(ferric, f"run_{name}")
+    reason = "SKIPPED — the SCF ran with PCM/COSMO implicit solvent"
+    capfd.readouterr()
+    run(mol, sto3g, stability_descent=True, **TIGHT)
+    assert reason not in capfd.readouterr().err
+    solvated = run(mol, sto3g, stability_descent=True, solvent="water", **TIGHT)
+    assert reason in capfd.readouterr().err
+    if name != "rhf":
+        # The open-shell certificate also records "not checked".
+        assert any(
+            "internal stability not checked" in w
+            for w in solvated.certificate["warnings"]
+        )
+
+
 # --- integral handling ----------------------------------------------------------
 
 
@@ -300,6 +323,28 @@ def test_mom_reference_on_run_uks(nh2, sto3g):
         run(nh2, sto3g, mom_reference="initial", mom_after_iter=2)
     with pytest.raises(ValueError, match="mom_reference"):
         run(nh2, sto3g, mom_reference="bogus")
+
+
+def test_initial_mom_holds_a_core_hole_on_run_uks(water, sto3g):
+    """``mom_reference="initial"`` reaches the UKS solver: from a water-cation
+    start with the beta O 1s emptied it keeps the hole, while MOM armed after
+    iteration 1 (previous-iteration reference) refills it. The run_uhf
+    analogue is ``test_open_shell_dm0.py``."""
+    c = ferric.run_rhf(water, sto3g, **TIGHT).mo_coefficients()
+    cation = ferric.Molecule.from_xyz_string(WATER, charge=1, multiplicity=2)
+    dm0 = (c[:, :5] @ c[:, :5].T, c[:, 1:5] @ c[:, 1:5].T)
+    s = ferric.AoIntegrals(cation, sto3g).overlap()
+
+    def beta_1s(r):
+        return float(c[:, 0] @ s @ r.density_beta() @ s @ c[:, 0])
+
+    run = ks("uks")
+    held = run(cation, sto3g, dm0=dm0, mom_reference="initial", **TIGHT)
+    late = run(cation, sto3g, dm0=dm0, mom_after_iter=1, **TIGHT)
+    assert held.converged and late.converged
+    assert beta_1s(held) < 0.1
+    assert beta_1s(late) > 0.9
+    assert held.energy - late.energy > 10.0
 
 
 def _trace_hook(mol, bs):

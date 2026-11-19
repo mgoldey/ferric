@@ -237,6 +237,5 @@ Next, each as its own PR following the patterns above:
     `validate_open_shell_scf_keys` / `validate_accelerators`; `ScfKwargs`
     fields grouped (convergence, J/K route, guess, environment, accelerators,
     Kohn-Sham); `ksdft_ladder`'s own copy of the KS JK-fit default and the
-    RIJCOSX rule; a `StabilitySkip::Solvent` (the stability Hessian has no PCM
-    response term); `run_dft`'s `symmetry=True` overload typing in
+    RIJCOSX rule; `run_dft`'s `symmetry=True` overload typing in
     `ferric.pyi`.
