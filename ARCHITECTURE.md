@@ -27,7 +27,7 @@ ferric-core
   lowering; new SCF entry points go through it.
 - **Python does not reach into ferric-cli** except through `ferric_cli::run`
   (the bundled `ferric` command). CLI helpers may call `process::exit`, which
-  would kill the interpreter. Existing uses (`LocalCfg`, `Mp2Cfg`) are slated
+  would kill the interpreter. Existing uses (`LocalCfg`, `LocalModel`, `LocalScheme`, `Mp2Cfg`) are slated
   to move into ferric-mp2.
 
 ## Options and configs
@@ -50,8 +50,9 @@ ferric-core
 - One home per invariant. A rule is checked by one function; other layers call
   it rather than restating it with their own message.
 - Per-flavour defaults that differ on purpose (for example `run_rhf` vs
-  `run_dft` vs the CLI auxiliary-basis policy) are encoded explicitly in the
-  lowering, not merged.
+  `run_dft` vs the CLI auxiliary-basis policy) are kept, not merged: each
+  frontend sets only the options fields it used to set, and every field it
+  leaves `None` takes the method crate's default.
 - Every lowering has a test asserting it reproduces the previous construction
   field by field, for defaults and for an all-options case.
 
@@ -85,10 +86,12 @@ ferric-core
   extension trait. `OrExit` replaces the hand-written
   `unwrap_or_else(|e| { eprintln!(...); exit(1) })` closures. It is a
   transitional step: run functions should move to `Result<_, CliError>` with
-  `?`, so that `process::exit` appears only in `main`/`run`.
+  `?`, so that `process::exit` appears only in `main`/`run`. `CliError` has
+  no producers yet; it marks where that migration lands.
 - **Python:** convert a `FerricError` with the crate-local `IntoPyResult`
   extension trait (`.py()?`), not a fresh `map_err` per call site. A blanket
-  `From<FerricError> for PyErr` is not possible (orphan rule). Exception
+  `From<FerricError> for PyErr` is not possible (orphan rule). Older
+  `map_err(make_err)` sites migrate as their files are touched. Exception
   classes only ever become narrower subclasses of the class raised today;
   they are never swapped.
 
@@ -120,10 +123,11 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
   applied, prepared basis, operator, Schwarz bounds, context) is built by a
   single constructor and only borrowed afterwards, so a solver cannot receive
   a molecule without its ECP.
-- **Units are newtypes at API boundaries only** (`Bohr`/`Angstrom` on molecule
-  constructors and accessors, `Hartree` on result energies). Kernels keep raw
-  `f64` and arrays. Python constants live in `ferric.units` and match the Rust
-  values.
+- **Units (target):** newtypes at API boundaries only (`Bohr`/`Angstrom` on
+  molecule constructors and accessors, `Hartree` on result energies), with
+  kernels keeping raw `f64` and arrays. No such newtypes exist yet. Today the
+  Python constants live in `ferric.units` and match the Rust values, which mix
+  CODATA 2010 (Bohr) and CODATA 2018 (eV).
 
 ## Module size
 
