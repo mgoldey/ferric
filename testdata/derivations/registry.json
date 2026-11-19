@@ -1,5 +1,5 @@
 {
-  "_doc": "Derivations registry (CONTRIBUTING.md, 'Every method has a derivation and a sympy proof'). routes: every derived CLI kind, analytic optimize/frequencies arm and Python entry point -> method ids. methods: book sections (book/src/<page>.md#<label>) plus sympy scripts, each run by a test under crates/ferric-python/tests. gaps: methods missing a piece, with the reason. Checked by crates/ferric-python/tests/test_derivation_registry.py.",
+  "_doc": "Derivations registry (CONTRIBUTING.md, 'Every method has a derivation and a sympy proof'). routes: every derived CLI kind, analytic optimize/frequencies arm, CLI task = \"md\" kind (md:<kind>, from MD_KINDS) and Python entry point -> method ids. methods: book sections (book/src/<page>.md#<label>) plus sympy scripts, each run by a test under crates/ferric-python/tests. gaps: methods missing a piece, with the reason. Checked by crates/ferric-python/tests/test_derivation_registry.py.",
   "routes": {
     "cli:att-rimp2": [
       "attenuated-mp2",
@@ -141,6 +141,25 @@
       "harmonic-frequencies",
       "rrho-thermo",
       "ir-intensities"
+    ],
+    "md:rhf": [
+      "hf-gradient",
+      "molecular-dynamics"
+    ],
+    "md:uhf": [
+      "hf-gradient",
+      "molecular-dynamics"
+    ],
+    "md:rohf": [
+      "hf-gradient",
+      "molecular-dynamics"
+    ],
+    "md:ksdft": [
+      "ks-gradient",
+      "d3",
+      "ks-zvector",
+      "mbd",
+      "molecular-dynamics"
     ],
     "optimize:att-rimp2": [
       "att-rimp2-gradient",
@@ -1219,7 +1238,7 @@
     },
     "u-rs-mp2-rpa": {
       "book": [
-        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations",
+        "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations-open-shell",
         "book/src/06-density-fitting/01-factorization-and-metric.md#factorization-and-metric-signed",
         "book/src/26-rs-mp2-rpa/04-two-formulations.md#two-formulations-terf"
       ],
@@ -1251,14 +1270,17 @@
   },
   "gaps": {
     "pbc-ks": {
-      "reason": "the energy functional, Fock convention, exxdiv and RS-GDF J/K are proven with pbc-hf (theory sections 7 and 8); the periodic XC grid quadrature and the XC force and stress terms have no sympy proof",
+      "reason": "the energy functional, Fock convention, exxdiv and RS-GDF J/K are proven with pbc-hf (book sections #exchange-divergence and #rsgdf); the periodic XC grid quadrature and the XC force and stress terms have no sympy proof",
       "book": [
         "book/src/24-periodic/08-stress.md#stress-strain-moves",
         "book/src/24-periodic/06-kpoint-scf.md#kpoint-scf"
       ]
     },
     "xtb": {
-      "reason": "no book derivation of what ferric adds over the tblite reference"
+      "reason": "ferric adds no equations over libxtb (built with -Dtblite=disabled); appendix D describes the binding and derives nothing, and there is no sympy proof",
+      "book": [
+        "book/src/appendix-d-xtb.md#appendix-d"
+      ]
     }
   }
 }

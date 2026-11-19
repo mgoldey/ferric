@@ -11,6 +11,8 @@ The method list is DERIVED from the code, never hand-listed:
 * ``optimize:<kind>`` for every arm of the CLI ``run_optimize`` dispatch (the
   analytic-gradient routes) and ``frequencies:<kind>`` for every arm mapping to
   a ``FrequencyReference`` in ``run_frequencies`` (the analytic-Hessian routes);
+* ``md:<kind>`` for every entry of ``MD_KINDS``
+  (``crates/ferric-cli/src/config.rs``), the kinds ``task = "md"`` runs;
 * ``py:<name>`` for every top-level ``def run_*`` in
   ``crates/ferric-python/ferric.pyi``, plus every top-level response or
   derivative function (name containing ``polariz``, ``gradient`` or
@@ -22,8 +24,8 @@ section exists and each script exists and is run by a test here) or in ``gaps``
 (with a reason). A gap may record the pieces it already has; the test fails if
 a gap holds both, so the gap list only shrinks.
 
-Mutation: delete one ``routes`` entry (e.g. ``"cli:rhf"``) from the manifest;
-``test_every_derived_route_is_in_the_manifest`` fails.
+Mutation: delete one ``routes`` entry (e.g. ``"cli:rhf"`` or ``"md:rhf"``)
+from the manifest; ``test_every_derived_route_is_in_the_manifest`` fails.
 """
 
 import json
@@ -33,6 +35,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 REGISTRY = ROOT / "testdata" / "derivations" / "registry.json"
 CLI_LIB = ROOT / "crates" / "ferric-cli" / "src" / "lib.rs"
+CLI_CONFIG = ROOT / "crates" / "ferric-cli" / "src" / "config.rs"
 PYI = ROOT / "crates" / "ferric-python" / "ferric.pyi"
 TESTS = Path(__file__).resolve().parent
 
@@ -54,6 +57,8 @@ def derived_routes():
     for m in arm.finditer(_fn_body(src, "run_frequencies")):
         if "FrequencyReference::" in m.group(2):
             routes |= {f"frequencies:{k}" for k in re.findall(r'"([^"]+)"', m.group(1))}
+    md = re.search(r"MD_KINDS: &\[&str\] = &\[(.*?)\];", CLI_CONFIG.read_text(), re.S)
+    routes |= {f"md:{k}" for k in re.findall(r'"([^"]+)"', md.group(1))}
     pyi = PYI.read_text()
     for name in re.findall(r"^def ([A-Za-z_][A-Za-z0-9_]*)\(", pyi, re.M):
         if name.startswith("run_") or re.search("polariz|gradient|hessian", name):
@@ -93,7 +98,13 @@ def test_derivation_is_not_vacuous():
     routes = derived_routes()
     # The parse must see the CLI kinds, the analytic gradient and Hessian
     # arms and the Python entry points; a broken regex returns an empty set.
-    for must in ("cli:rhf", "optimize:rimp2", "frequencies:uhf", "py:run_rhf"):
+    for must in (
+        "cli:rhf",
+        "optimize:rimp2",
+        "frequencies:uhf",
+        "md:ksdft",
+        "py:run_rhf",
+    ):
         assert must in routes, must
     assert len(routes) > 90
 
