@@ -6,8 +6,8 @@ to the molecule (26 valence electrons, effective nuclear charge 25 on I). The
 correlated drivers used to prepare the same basis, which carries V_ECP and
 the reduced charge, on the all-electron molecule (54 electrons), so their
 reference was a different, unphysical system: `run_rimp2(...).rhf_energy` was
--143.31 Ha against `run_rhf`'s -297.23 Ha. Every driver now builds a
-`ferric_scf::PreparedSystem`, which applies the ECP (roadmap item 8 of
+-143.31 Ha against `run_rhf`'s -297.23 Ha. Each driver family now builds its
+`ferric_scf::PreparedSystem` with `EcpPolicy::Apply` (roadmap item 8 of
 ARCHITECTURE.md), and each test below pins one family to the SCF drivers.
 
 Bars: where a driver reports its reference energy, it runs the same SCF
@@ -65,28 +65,29 @@ def ri_factors(charge: int, multiplicity: int):
     return np.linalg.solve(low, eri3.reshape(n, -1)).reshape(eri3.shape)
 
 
-def ri_mp2_pair(b, ca, ea, na, cb, eb, nb):
-    """Opposite- or same-spin RI-MP2 pair energy of channels a and b."""
-    bia = np.einsum("Pmn,mi,na->Pia", b, ca[:, :na], ca[:, na:])
-    bjb = np.einsum("Pmn,mi,na->Pia", b, cb[:, :nb], cb[:, nb:])
+def ri_mp2_pair(b, ca, ea, na, cb, eb, nb, frozen):
+    """`(ia|jb)` and the denominators of channels a and b, the first `frozen`
+    occupied orbitals of each dropped."""
+    bia = np.einsum("Pmn,mi,na->Pia", b, ca[:, frozen:na], ca[:, na:])
+    bjb = np.einsum("Pmn,mi,na->Pia", b, cb[:, frozen:nb], cb[:, nb:])
     iajb = np.einsum("Pia,Pjb->iajb", bia, bjb)
     den = (
-        ea[:na, None, None, None]
+        ea[frozen:na, None, None, None]
         - ea[None, na:, None, None]
-        + eb[None, None, :nb, None]
+        + eb[None, None, frozen:nb, None]
         - eb[None, None, None, nb:]
     )
     return iajb, den
 
 
-def ri_ump2(scf_alpha, scf_beta, charge, multiplicity):
+def ri_ump2(scf_alpha, scf_beta, charge, multiplicity, frozen=0):
     """RI-UMP2 correlation on given (C, eps, n_occ) per spin."""
     b = ri_factors(charge, multiplicity)
     e = 0.0
-    iajb, den = ri_mp2_pair(b, *scf_alpha, *scf_beta)
+    iajb, den = ri_mp2_pair(b, *scf_alpha, *scf_beta, frozen)
     e += np.sum(iajb**2 / den)
     for c, eps, n in (scf_alpha, scf_beta):
-        iajb, den = ri_mp2_pair(b, c, eps, n, c, eps, n)
+        iajb, den = ri_mp2_pair(b, c, eps, n, c, eps, n, frozen)
         e += 0.5 * np.sum(iajb * (iajb - iajb.transpose(0, 3, 2, 1)) / den)
     return e
 
@@ -108,6 +109,9 @@ def test_mp2_family_reference_is_run_rhf_or_run_uhf():
     assert abs(r.rhf_energy - e_rhf) < EREF
     channel = rhf_channel()
     assert abs(r.mp2_corr - ri_ump2(channel, channel, 0, 1)) < 1e-9
+    # frozen_core counts orbitals of the valence (ECP-reduced) occupied space.
+    fc = ferric.run_rimp2(hi(), bs, aux, frozen_core=9)
+    assert abs(fc.mp2_corr - ri_ump2(channel, channel, 0, 1, frozen=9)) < 1e-9
     assert abs(ferric.run_rimp2(hi(1, 2), bs, aux).rhf_energy - uhf().energy) < EREF
     assert abs(ferric.run_scs_mp2(hi(), bs, aux).rhf_energy - e_rhf) < EREF
     assert abs(ferric.run_laplace_sos_mp2(hi(), bs, aux).rhf_energy - e_rhf) < EREF
@@ -117,21 +121,29 @@ def test_mp2_family_reference_is_run_rhf_or_run_uhf():
     assert abs(lap.total_energy - lap.mp2_corr - e_rhf) < EREF
 
 
-def test_rimp2_ecp_gradient_matches_finite_differences():
-    # run_rhf's own analytic gradient sits 3.1e-7 Ha/Bohr from this central
-    # difference (h = 1e-3 A), RI-MP2's 3.1e-7 too: the bar is 1e-6.
+@pytest.mark.parametrize("driver", ["rimp2", "oo_rimp2", "pdep_rpa"])
+def test_ecp_gradient_matches_finite_differences(driver):
+    # A guard on the gradients' ECP terms, not fail-before evidence (the old
+    # all-electron reference was self-consistent too). run_rhf's own
+    # analytic gradient sits 3.1e-7 Ha/Bohr from this central difference
+    # (h = 1e-3 A) and so do these three: the bar is 1e-6.
     bs, aux = bases()
     conv = {"scf_energy_conv": 1e-12, "scf_density_conv": 1e-10}
+    run, extra = {
+        "rimp2": (ferric.run_rimp2, {}),
+        "oo_rimp2": (ferric.run_oo_rimp2, {"grad_conv": 1e-9}),
+        "pdep_rpa": (ferric.run_pdep_rpa, {"trunc_thresh": 0.0}),
+    }[driver]
     h, bohr = 1e-3, 1.8897261246257702
 
     def mol(z):
         return ferric.Molecule.from_xyz_string(f"2\n\nH 0 0 0\nI 0 0 {z}\n")
 
     def energy(z):
-        return ferric.run_rimp2(mol(z), bs, aux, **conv).total_energy
+        return run(mol(z), bs, aux, **conv, **extra).total_energy
 
     fd = (energy(1.61 + h) - energy(1.61 - h)) / (2 * h * bohr)
-    g = ferric.run_rimp2(mol(1.61), bs, aux, with_gradient=True, **conv).gradient()
+    g = run(mol(1.61), bs, aux, with_gradient=True, **conv, **extra).gradient()
     assert abs(g[1, 2] - fd) < 1e-6
 
 
@@ -256,3 +268,21 @@ def test_a_molecule_reused_from_an_ecp_run_is_all_electron_in_sto3g():
     fresh = ferric.Molecule.from_xyz_string(moved.to_xyz_string())
     e_fresh = ferric.run_rhf(fresh, sto).energy
     assert abs(ferric.run_rhf(moved, sto).energy - e_fresh) < 1e-8
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda bs, aux: ferric.run_rimp2(
+            hi(), bs, aux, local="amplitude-threshold", eps=1e-4
+        ),
+        lambda bs, aux: ferric.run_linlccd(
+            hi(), bs, aux, local="amplitude-threshold", eps=1e-4
+        ),
+        lambda bs, aux: ferric.run_drpa_scan(hi(), bs, aux, [1e-3]),
+    ],
+    ids=["local_rimp2", "local_linlccd", "drpa_scan"],
+)
+def test_local_correlation_refuses_an_ecp_basis(call):
+    with pytest.raises(RuntimeError, match="ECP atoms"):
+        call(*bases())
