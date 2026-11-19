@@ -1740,10 +1740,7 @@ impl PyOoRiMp2Result {
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
     }
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -1944,10 +1941,7 @@ pub(crate) struct PyMp3Result {
 
 #[pymethods]
 impl PyMp3Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2052,10 +2046,7 @@ pub(crate) struct PyLaplaceMp2Result {
 
 #[pymethods]
 impl PyLaplaceMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2183,10 +2174,7 @@ pub(crate) struct PySosMp2Result {
 
 #[pymethods]
 impl PySosMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2355,10 +2343,7 @@ pub(crate) struct PyAttenuatedMp2Result {
 
 #[pymethods]
 impl PyAttenuatedMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2591,10 +2576,7 @@ impl PyScsMp2Result {
 
 #[pymethods]
 impl PyScsMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2781,10 +2763,7 @@ pub(crate) struct PyMp2VResult {
 
 #[pymethods]
 impl PyMp2VResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)

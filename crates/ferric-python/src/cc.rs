@@ -124,10 +124,7 @@ pub(crate) fn py_ladder_route(r: &ferric_cc::CcResult) -> (Option<String>, Optio
 
 #[pymethods]
 impl PyCcResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
