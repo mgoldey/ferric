@@ -90,6 +90,95 @@ impl PyGwResult {
     }
 }
 
+/// `method` of `run_gw` / `run_u_gw` (case-insensitive; unknown values are a
+/// hard `ValueError`).
+fn parse_gw_method(method: Option<&str>) -> PyResult<ferric_gw::GwMethod> {
+    use ferric_gw::GwMethod;
+    Ok(
+        match method.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            None | Some("g0w0") => GwMethod::G0W0,
+            Some("cohsex") => GwMethod::Cohsex,
+            Some("evgw0") => GwMethod::EvGw0,
+            Some("evgw") => GwMethod::EvGw,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
+            )));
+            }
+        },
+    )
+}
+
+/// The PDEP screening (W) keywords shared by `run_gw`, `run_u_gw`,
+/// `run_bse_tda` and `run_tdhf_static_polarizability`.
+struct PdepArgs<'a> {
+    frozen_core: usize,
+    n_quad: Option<usize>,
+    quadrature: Option<&'a str>,
+    u0: Option<f64>,
+    trunc_thresh: Option<f64>,
+    eigensolver_conv_thresh: Option<f64>,
+    chi0_sparsity: Option<&'a str>,
+    memory_budget_gb: Option<f64>,
+}
+
+impl PdepArgs<'_> {
+    /// The PDEP config, with `default_n_quad` frequency points when `n_quad`
+    /// is unset. The inverse-dielectric frequency stack is on: the GW
+    /// self-energy build forces it on regardless, so it is set explicitly
+    /// for clarity at the call site too.
+    fn config(&self, default_n_quad: usize) -> PyResult<ferric_rpa::PdepRpaConfig> {
+        use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
+        let scheme = QuadratureScheme::parse_config_str(self.quadrature)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+        Ok(ferric_rpa::PdepRpaConfig {
+            frozen_core: self.frozen_core,
+            trunc_thresh: self.trunc_thresh.unwrap_or(1e-4),
+            eigensolver_max_vecs: 0,
+            eigensolver_conv_thresh: lanczos_conv_thresh_or(self.eigensolver_conv_thresh, 1e-6),
+            quadrature: QuadratureConfig {
+                scheme,
+                n_points: self.n_quad.unwrap_or(default_n_quad),
+                u0: self.u0.unwrap_or(0.5),
+            },
+            sternheimer: SternheimerConfig::default(),
+            run_diagnostics: false,
+            eigensolver: ferric_rpa::Eigensolver::default(),
+            chi0_backend: ferric_rpa::config::Chi0Backend::default(),
+            chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(self.chi0_sparsity)
+                .map_err(make_err)?,
+            memory_budget_bytes: budget_bytes_from_gb(self.memory_budget_gb),
+            need_inv_dielectric_freq: true,
+            need_eigenvalues_freq: true,
+            verbose: false,
+        })
+    }
+}
+
+/// The GW loop config of `run_gw` / `run_u_gw`; frozen core and memory budget
+/// are those of the PDEP screening build `pdep`.
+fn gw_config(
+    method: ferric_gw::GwMethod,
+    qp_mos: Option<(usize, usize)>,
+    max_ev_iter: Option<usize>,
+    ev_conv_thresh: Option<f64>,
+    pade_npts: Option<usize>,
+    qp_newton_damp: Option<f64>,
+    pdep: &ferric_rpa::PdepRpaConfig,
+) -> ferric_gw::GwConfig {
+    ferric_gw::GwConfig {
+        method,
+        qp_mos: qp_mos.map(|(lo, hi)| lo..hi),
+        max_ev_iter: max_ev_iter.unwrap_or(20),
+        ev_conv_thresh: ev_conv_thresh.unwrap_or(1e-4),
+        pade_npts: pade_npts.unwrap_or(0),
+        qp_newton_damp: qp_newton_damp.unwrap_or(1.0),
+        frozen_core: pdep.frozen_core,
+        memory_budget_bytes: pdep.memory_budget_bytes,
+        verbose: false,
+    }
+}
+
 /// Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference.
 ///
 /// `method`: "g0w0" (default) | "cohsex" | "evgw0" | "evgw" (case-insensitive;
@@ -139,55 +228,24 @@ pub(crate) fn run_gw(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyGwResult> {
-    use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids, GwConfig, GwMethod};
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
+    use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids};
 
-    let gw_method = match method.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("g0w0") => GwMethod::G0W0,
-        Some("cohsex") => GwMethod::Cohsex,
-        Some("evgw0") => GwMethod::EvGw0,
-        Some("evgw") => GwMethod::EvGw,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
-            )));
-        }
-    };
+    let gw_method = parse_gw_method(method)?;
 
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
 
-    let mut cfg = rhf_config_conv(
+    let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let vxc_diag = if let Some(xc_name) = xc {
-        // KS reference: RI-J/RI-K default (matches run_dft/run_ksdft), run
-        // through the level-shift ladder for the same DIIS-oscillation
-        // fallback KS-DFT gets elsewhere.
-        cfg.xc = Some(xc_name.to_string());
-        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-        cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
-        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-        let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-        let lr =
-            ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-                .map_err(make_err)?;
-        if let Some(r) = ladder.get(lr.rung_reached) {
-            cfg = r.config.clone();
-        }
-        let scf = lr.result;
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
+    let (scf, cfg, vxc_diag) = if let Some(xc_name) = xc {
+        // KS reference through the level-shift ladder.
+        let cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
+        let (scf, cfg) = ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?;
         let (diag, _beta) = {
             // The grids this reference SCF ran on.
             let grids = ferric_scf::ks_gradient::KsGradGrids::from_config(&cfg);
@@ -201,55 +259,32 @@ pub(crate) fn run_gw(
             )
             .map_err(make_err)?
         };
-        (scf, Some(diag))
+        (scf, cfg, Some(diag))
     } else {
-        let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
-        (scf, None)
+        let scf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &cfg)?;
+        (scf, cfg, None)
     };
-    let (scf, vxc_diag) = vxc_diag;
 
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
-    let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
-        frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(ferric_gw::DEFAULT_N_QUAD),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // run_gw forces this on internally; set explicitly for clarity too.
-        need_inv_dielectric_freq: true,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
-    let gw_cfg = GwConfig {
-        method: gw_method,
-        qp_mos: qp_mos.map(|(lo, hi)| lo..hi),
-        max_ev_iter: max_ev_iter.unwrap_or(20),
-        ev_conv_thresh: ev_conv_thresh.unwrap_or(1e-4),
-        pade_npts: pade_npts.unwrap_or(0),
-        qp_newton_damp: qp_newton_damp.unwrap_or(1.0),
-        frozen_core: fc,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        verbose: false,
-    };
+    let pdep_cfg = PdepArgs {
+        frozen_core: frozen_core.unwrap_or(0),
+        n_quad,
+        quadrature,
+        u0,
+        trunc_thresh,
+        eigensolver_conv_thresh,
+        chi0_sparsity,
+        memory_budget_gb,
+    }
+    .config(ferric_gw::DEFAULT_N_QUAD)?;
+    let gw_cfg = gw_config(
+        gw_method,
+        qp_mos,
+        max_ev_iter,
+        ev_conv_thresh,
+        pade_npts,
+        qp_newton_damp,
+        &pdep_cfg,
+    );
 
     // All closure arguments are owned Rust values (an owned Molecule clone
     // plus locals built above) so nothing Python-borrowed crosses the
@@ -468,24 +503,10 @@ pub(crate) fn run_u_gw(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyUGwResult> {
-    use ferric_gw::{
-        run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids, GwConfig, GwMethod,
-    };
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
+    use ferric_gw::{run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids};
     use ferric_scf::rohf::solve_rohf;
 
-    let gw_method = match method.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("g0w0") => GwMethod::G0W0,
-        Some("cohsex") => GwMethod::Cohsex,
-        Some("evgw0") => GwMethod::EvGw0,
-        Some("evgw") => GwMethod::EvGw,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
-            )));
-        }
-    };
+    let gw_method = parse_gw_method(method)?;
     let reference = match reference.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         None | Some("uhf") => "uhf",
         Some("rohf") => "rohf",
@@ -510,22 +531,16 @@ pub(crate) fn run_u_gw(
     // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms
     // (same precedent as the CLI's "pdep-rpa"/"gw" open-shell dispatch).
     cfg.mom_after_iter = 5;
+    if let Some(xc_name) = xc {
+        cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
+    }
+    let scf = if reference == "rohf" {
+        solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg)
+    } else {
+        solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg)
+    };
+    let scf = converged(scf.map_err(make_err)?)?;
     let vxc_diag = if let Some(xc_name) = xc {
-        cfg.xc = Some(xc_name.to_string());
-        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-        cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
-        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-        let scf = if reference == "rohf" {
-            solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?
-        } else {
-            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
-        };
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
         // The certificate's reference is the SCF as solved (a ROKS reference
         // is graded `rohf`), before the semi-canonical conversion below.
         let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
@@ -550,58 +565,31 @@ pub(crate) fn run_u_gw(
         };
         (scf, Some((diag_a, diag_b)), ref_cert)
     } else {
-        let scf = if reference == "rohf" {
-            solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?
-        } else {
-            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
-        };
-        if !scf.converged {
-            return Err(make_err(ferric_core::FerricError::ScfConvergence {
-                iterations: scf.iterations,
-                last_energy: scf.energy,
-            }));
-        }
         let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
         (scf, None, ref_cert)
     };
     let (scf, vxc_diag, reference_cert) = vxc_diag;
 
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
-    let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
-        frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(ferric_gw::DEFAULT_N_QUAD),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // run_u_gw forces this on internally; set explicitly for clarity too.
-        need_inv_dielectric_freq: true,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
-    let gw_cfg = GwConfig {
-        method: gw_method,
-        qp_mos: qp_mos.map(|(lo, hi)| lo..hi),
-        max_ev_iter: max_ev_iter.unwrap_or(20),
-        ev_conv_thresh: ev_conv_thresh.unwrap_or(1e-4),
-        pade_npts: pade_npts.unwrap_or(0),
-        qp_newton_damp: qp_newton_damp.unwrap_or(1.0),
-        frozen_core: fc,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        verbose: false,
-    };
+    let pdep_cfg = PdepArgs {
+        frozen_core: frozen_core.unwrap_or(0),
+        n_quad,
+        quadrature,
+        u0,
+        trunc_thresh,
+        eigensolver_conv_thresh,
+        chi0_sparsity,
+        memory_budget_gb,
+    }
+    .config(ferric_gw::DEFAULT_N_QUAD)?;
+    let gw_cfg = gw_config(
+        gw_method,
+        qp_mos,
+        max_ev_iter,
+        ev_conv_thresh,
+        pade_npts,
+        qp_newton_damp,
+        &pdep_cfg,
+    );
 
     let r = run_u_gw_inner(
         &mol.inner,
@@ -801,54 +789,28 @@ pub(crate) fn run_bse_tda(
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyBseResult> {
     use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
-    if !scf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        }));
-    }
+    let (prep, dfbs, scf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &cfg)?;
 
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
     let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
+    let pdep_cfg = PdepArgs {
         frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(20),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // run_bse_tda's internal GW build forces this on regardless; set it
-        // explicitly for clarity at the call site too (matches run_gw).
-        need_inv_dielectric_freq: true,
-        need_eigenvalues_freq: true,
-        verbose: false,
-    };
+        n_quad,
+        quadrature,
+        u0,
+        trunc_thresh,
+        eigensolver_conv_thresh,
+        chi0_sparsity,
+        memory_budget_gb,
+    }
+    .config(20)?;
 
     let r =
         run_bse_tda_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
@@ -985,66 +947,39 @@ pub(crate) fn run_tdhf_static_polarizability(
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
     use ferric_gw::bse::run_rpax_static_polarizability;
-    use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
-    use ferric_rpa::PdepRpaConfig;
 
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
 
     // KS reference (required — see doc comment above), same ladder path
     // run_gw's xc branch uses.
-    let mut cfg = rhf_config_conv(
+    let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    cfg.xc = Some(xc.to_string());
-    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
-    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-        .map_err(make_err)?;
-    if let Some(r) = ladder.get(lr.rung_reached) {
-        cfg = r.config.clone();
-    }
-    let scf = lr.result;
-    if !scf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        }));
-    }
+    let cfg = ks_jkfit_config(cfg, xc, scf_ri_j_precision)?;
+    let (scf, cfg) = ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?;
 
-    let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
     let fc = frozen_core.unwrap_or(0);
-    let pdep_cfg = PdepRpaConfig {
-        frozen_core: fc,
-        trunc_thresh: trunc_thresh.unwrap_or(1e-4),
-        eigensolver_max_vecs: 0,
-        eigensolver_conv_thresh: lanczos_conv_thresh_or(eigensolver_conv_thresh, 1e-6),
-        quadrature: QuadratureConfig {
-            scheme,
-            n_points: n_quad.unwrap_or(20),
-            u0: u0.unwrap_or(0.5),
-        },
-        sternheimer: SternheimerConfig::default(),
-        run_diagnostics: false,
-        eigensolver: ferric_rpa::Eigensolver::default(),
-        chi0_backend: ferric_rpa::config::Chi0Backend::default(),
-        chi0_sparsity: ferric_rpa::config::Chi0Sparsity::parse_config_str(chi0_sparsity)
-            .map_err(make_err)?,
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+    let pdep_cfg = ferric_rpa::PdepRpaConfig {
         // No GW self-energy build in this path (static screening modes from
         // run_pdep_rpa only) — does not need the inverse-dielectric
         // frequency stack that run_bse_tda/run_gw force on.
         need_inv_dielectric_freq: false,
-        need_eigenvalues_freq: true,
-        verbose: false,
+        ..PdepArgs {
+            frozen_core: fc,
+            n_quad,
+            quadrature,
+            u0,
+            trunc_thresh,
+            eigensolver_conv_thresh,
+            chi0_sparsity,
+            memory_budget_gb,
+        }
+        .config(20)?
     };
 
     let r = run_rpax_static_polarizability(
