@@ -1092,13 +1092,19 @@ fn parse_mom_reference(
         .transpose()
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
         .unwrap_or_default();
-    let conflicts = mom_after_iter.unwrap_or(0) > 0 || stability_descent.unwrap_or(false);
-    if reference == ferric_scf::mom::MomReference::Initial && conflicts {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "run_uhf: mom_reference=\"initial\" applies MOM from the first iteration and \
-             holds the starting occupation; pass neither mom_after_iter nor stability_descent",
-        ));
-    }
+    // The rule lives in `MomReference::check_initial`; this layer only words
+    // either conflict in kwarg terms (one message naming both kwargs).
+    reference
+        .check_initial(
+            mom_after_iter.unwrap_or(0),
+            stability_descent.unwrap_or(false),
+        )
+        .map_err(|_conflict| {
+            pyo3::exceptions::PyValueError::new_err(
+                "run_uhf: mom_reference=\"initial\" applies MOM from the first iteration and \
+                 holds the starting occupation; pass neither mom_after_iter nor stability_descent",
+            )
+        })?;
     Ok(reference)
 }
 
