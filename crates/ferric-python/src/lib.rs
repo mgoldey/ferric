@@ -94,7 +94,7 @@ use tddft::*;
 
 /// A molecular geometry (atoms, charge, multiplicity). Coordinates are stored
 /// internally in Bohr; XYZ input is in Ångström.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Molecule")]
 struct PyMolecule {
     inner: Molecule,
@@ -214,6 +214,29 @@ impl PyMolecule {
     /// silently reverts to neutral singlet.
     fn to_xyz_string(&self) -> String {
         molecule_to_xyz_string(&self.inner)
+    }
+    /// Net molecular charge in elementary charges (read-only).
+    #[getter]
+    fn charge(&self) -> i32 {
+        self.inner.charge
+    }
+    /// Spin multiplicity 2S+1 (read-only).
+    #[getter]
+    fn multiplicity(&self) -> usize {
+        self.inner.multiplicity
+    }
+    /// `Molecule(H2O, 3 atoms, charge=0, multiplicity=1)`: Hill-order formula
+    /// of the real (non-ghost) atoms, then the atom count including ghosts.
+    fn __repr__(&self) -> String {
+        let m = &self.inner;
+        let n = m.atoms.len();
+        format!(
+            "Molecule({}, {n} atom{}, charge={}, multiplicity={})",
+            m.hill_formula(),
+            if n == 1 { "" } else { "s" },
+            m.charge,
+            m.multiplicity
+        )
     }
 }
 
