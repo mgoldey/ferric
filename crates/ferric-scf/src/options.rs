@@ -561,7 +561,7 @@ mod tests {
             mom_after_iter: k.mom_after_iter.unwrap_or(0),
             external_potential: k.external_potential,
             three_index_budget_bytes: k.budget_bytes.unwrap_or(0),
-            guess_basis: None,
+            guess_basis: k.guess_basis,
             eri: k.eri.unwrap_or(EriMode::Auto),
             relativistic: k.relativistic,
             ..Default::default()
@@ -690,7 +690,7 @@ mod tests {
             smearing_sigma: None,
             soscf: None,
             guess: None,
-            guess_basis: None,
+            guess_basis: k.guess_basis,
             init_guess_density: None,
             external_potential: k.external_potential,
             pcm: None,
