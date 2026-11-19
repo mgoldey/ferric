@@ -33,9 +33,9 @@
 //! T_bare sign: T_ij = (δ_ij R² − 3 R_i R_j)/R⁵, the convention in which
 //! A⁻¹ + T is the screening operator (same as [`super::mbd`]).
 //!
-//! Unlike [`super::mbd::dipole_coupling_tensor`] (which keeps its
-//! Abramowitz–Stegun erf for the `[rpa] c6_source = "mbd"` path), this module
-//! uses the C library `erf` (double precision).
+//! This module and [`super::mbd::dipole_coupling_tensor`] (the
+//! `[rpa] c6_source = "mbd"` path) both use the double-precision
+//! `ferric_core::special::erf`.
 //!
 //! Analytic gradient: [`mbd_rsscs_gradient_from_params`] /
 //! [`mbd_rsscs_gradient`] differentiate the same forward pass in reverse mode
@@ -535,7 +535,8 @@ pub struct MbdRsscsGradient {
 /// ∂f/∂R = f' a/S, ∂f/∂S = −f' a R/S².
 fn fermi_partials(r: f64, s: f64, a: f64) -> (f64, f64) {
     let e = (-a * (r / s - 1.0)).exp();
-    // e = +inf (R ≪ S, f = 0 to double precision): f' = 0, not inf/inf.
+    // e is not finite only if a (1 - R/S) > 709, i.e. a > 709 since R >= 0;
+    // never at the default a = 6. Guards a caller-supplied a: f' = 0, not inf/inf.
     let fp = if e.is_finite() {
         e / ((1.0 + e) * (1.0 + e))
     } else {

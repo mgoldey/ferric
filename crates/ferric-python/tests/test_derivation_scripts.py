@@ -137,6 +137,11 @@ CASES = [
         20,
         [
             (
+                "c6 = 1.5 * a0[0] * a0[1] * om[0] * om[1] / (om[0] + om[1])",
+                "c6 = 0.75 * a0[0] * a0[1] * om[0] * om[1] / (om[0] + om[1])",
+                "FAIL [two-oscillator-ratio]",
+            ),
+            (
                 "return 0.5 * np.sum(np.sqrt(lam)) - 1.5 * om.sum()",
                 "return 0.5 * np.sum(np.sqrt(lam)) - 1.0 * om.sum()",
                 "FAIL [qho-vs-frequency]",
