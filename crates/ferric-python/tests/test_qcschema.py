@@ -449,3 +449,50 @@ def test_qcelemental_validates_the_new_routes():
         assert res.extras["ferric"]["certificate"]["capability"]
     hess = AtomicResult(**qcs.run(_inp(driver="hessian")))
     assert np.asarray(hess.return_result).shape in ((9, 9), (81,))
+
+
+def test_molecule_qcschema_round_trip_and_ghost():
+    import ferric.qcschema as qcs
+
+    mol = ferric.Molecule.from_arrays(
+        ["H", "H", "He"],
+        [[0, 0, 0], [0, 0, 1.4], [0, 0, 5.0]],
+        units="bohr",
+        ghost=[False, False, True],
+    )
+    d = qcs.molecule_to_qcschema(mol, charge=0, multiplicity=1)
+    assert d["schema_name"] == "qcschema_molecule" and d["real"] == [True, True, False]
+    assert len(d["geometry"]) == 9 and d["molecular_multiplicity"] == 1
+    back = qcs.molecule_from_qcschema(d)
+    assert back.symbols() == mol.symbols()
+    assert back.coords_bohr() == mol.coords_bohr()
+    assert back.is_ghost() == mol.is_ghost()
+
+
+def test_molecule_from_qcschema_charge_and_errors():
+    import ferric.qcschema as qcs
+
+    d = {
+        "symbols": ["O", "H"],
+        "geometry": [[0, 0, 0], [0, 0, 1.8]],
+        "molecular_charge": -1,
+        "molecular_multiplicity": 1,
+    }
+    assert qcs.molecule_from_qcschema(d).nelec() == 10
+    with pytest.raises(ValueError, match="geometry"):
+        qcs.molecule_from_qcschema({"symbols": ["H"], "geometry": [0, 0]})
+    with pytest.raises(ValueError):
+        qcs.molecule_from_qcschema("nope")
+
+
+def test_molecule_to_qcschema_defaults_from_molecule():
+    import ferric.qcschema as qcs
+
+    mol = ferric.Molecule.from_arrays(
+        ["O", "O"], [[0, 0, 0], [0, 0, 2.3]], units="bohr", multiplicity=3
+    )
+    d = qcs.molecule_to_qcschema(mol)
+    assert d["molecular_charge"] == 0 and d["molecular_multiplicity"] == 3
+    d = qcs.molecule_to_qcschema(mol, multiplicity=1)
+    assert d["molecular_multiplicity"] == 1
+    assert qcs.molecule_from_qcschema(qcs.molecule_to_qcschema(mol)).multiplicity == 3

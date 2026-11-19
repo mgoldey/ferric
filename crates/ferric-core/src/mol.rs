@@ -94,6 +94,19 @@ fn validate_electron_multiplicity_parity(
     Ok(())
 }
 
+/// Ordering and counting rules for [`Molecule::formula`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormulaStyle {
+    /// Hill notation over the real atoms: C then H first only when the
+    /// formula contains carbon, otherwise purely alphabetical (HCl is
+    /// `"ClH"`); ghost centres are not counted.
+    Hill,
+    /// The CLI run log's `formula` record (kept byte-stable for existing
+    /// logs): C then H always lead (HCl is `"HCl"`), and every centre is
+    /// counted, ghosts included.
+    RunLog,
+}
+
 /// A collection of atoms forming a molecule.
 ///
 /// Coordinates are stored internally in Bohr. The XYZ parser converts from Angstroms.
@@ -273,6 +286,59 @@ impl Molecule {
         z_sum - self.charge
     }
 
+    /// Hill-order formula of the real atoms: C first, then H, then the rest
+    /// alphabetically (all alphabetically when there is no C), counts of 1
+    /// omitted. Ghost (basis-only) centres are excluded; `"-"` when there
+    /// are no real atoms. Symbols are taken as written in the input.
+    /// Shorthand for [`Molecule::formula`] with [`FormulaStyle::Hill`].
+    ///
+    /// ```
+    /// use ferric_core::mol::Molecule;
+    ///
+    /// let mol = Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0 1\nH 0 1 0\n", 0, 1).unwrap();
+    /// assert_eq!(mol.hill_formula(), "H2O");
+    /// ```
+    pub fn hill_formula(&self) -> String {
+        self.formula(FormulaStyle::Hill)
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    /// Molecular formula in `style`, counts of 1 omitted and symbols taken
+    /// as written in the input; `None` when `style` counts no atoms. The
+    /// remaining symbols follow byte order (`"Cl"` before `"H"` but after
+    /// `"C"`).
+    pub fn formula(&self, style: FormulaStyle) -> Option<String> {
+        let counted = |a: &&Atom| match style {
+            FormulaStyle::Hill => !a.ghost,
+            FormulaStyle::RunLog => true,
+        };
+        let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+        for a in self.atoms.iter().filter(counted) {
+            *counts.entry(a.symbol.as_str()).or_default() += 1;
+        }
+        if counts.is_empty() {
+            return None;
+        }
+        let c_h_first = match style {
+            FormulaStyle::Hill => counts.contains_key("C"),
+            FormulaStyle::RunLog => true,
+        };
+        let first: &[&str] = if c_h_first { &["C", "H"] } else { &[] };
+        let order = first
+            .iter()
+            .copied()
+            .filter(|s| counts.contains_key(s))
+            .chain(counts.keys().copied().filter(|s| !first.contains(s)));
+        Some(
+            order
+                .map(|s| match counts[s] {
+                    1 => s.to_string(),
+                    k => format!("{s}{k}"),
+                })
+                .collect(),
+        )
+    }
+
     /// Number of core orbitals the standard small-core convention freezes for
     /// this molecule: `Σ core_orbitals(z)` over the real atoms, minus the core
     /// orbitals an ECP has already removed from the MO space.
@@ -427,6 +493,110 @@ impl FromStr for Molecule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hill_formula_orders_c_h_then_alphabetical_and_skips_ghosts() {
+        let f = |xyz: &str| Molecule::parse_xyz(xyz, 0, 1).unwrap().hill_formula();
+        assert_eq!(f("3\n\nO 0 0 0\nH 0 0 1\nH 0 1 0\n"), "H2O");
+        assert_eq!(
+            f("5\n\nH 0 0 0\nC 0 0 1.1\nH 1 0 1.5\nH 0 1 1.5\nH -1 -1 1.5\n"),
+            "CH4"
+        );
+        // Ethanol written O-first: C, H, then O.
+        assert_eq!(
+            f("9\n\nO 0 0 0\nH 0 0 1\nC 1 0 0\nC 2 0 0\nH 1 1 0\nH 1 -1 0\nH 2 1 0\nH 2 -1 0\nH 3 0 0\n"),
+            "C2H6O"
+        );
+        // No carbon: purely alphabetical (H before N).
+        assert_eq!(f("4\n\nN 0 0 0\nH 0 0 1\nH 0 1 0\nH 1 0 0\n"), "H3N");
+        // Ghost centres are excluded (parsed `@` ghosts and flagged atoms
+        // alike); all-ghost gives "-".
+        let ghost = Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0 1\n@H 0 1 0\n", 0, 2).unwrap();
+        assert!(ghost.atoms[2].ghost);
+        assert_eq!(ghost.hill_formula(), "HO");
+        let mut all = Molecule::parse_xyz("1\n\nHe 0 0 0\n", 0, 1).unwrap();
+        all.atoms[0].ghost = true;
+        assert_eq!(all.hill_formula(), "-");
+    }
+
+    /// Verbatim copy of the CLI's former `molecular_formula` (run-log
+    /// `formula`), the oracle for [`FormulaStyle::RunLog`].
+    fn old_cli_molecular_formula(mol: &Molecule) -> String {
+        let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for a in &mol.atoms {
+            *counts.entry(a.symbol.as_str()).or_insert(0) += 1;
+        }
+        let mut out = String::new();
+        let mut push = |sym: &str, n: usize| {
+            out.push_str(sym);
+            if n > 1 {
+                out.push_str(&n.to_string());
+            }
+        };
+        for sym in ["C", "H"] {
+            if let Some(n) = counts.remove(sym) {
+                push(sym, n);
+            }
+        }
+        for (sym, n) in counts {
+            push(sym, n);
+        }
+        out
+    }
+
+    #[test]
+    fn formula_styles_differ_on_hcl_ghosts_and_empty() {
+        let hcl = Molecule::parse_xyz("2\n\nH 0 0 0\nCl 0 0 1.3\n", 0, 1).unwrap();
+        assert_eq!(hcl.formula(FormulaStyle::Hill).as_deref(), Some("ClH"));
+        assert_eq!(hcl.formula(FormulaStyle::RunLog).as_deref(), Some("HCl"));
+        assert_eq!(hcl.hill_formula(), "ClH");
+
+        let ghost = Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0 1\n@H 0 1 0\n", 0, 2).unwrap();
+        assert_eq!(ghost.formula(FormulaStyle::Hill).as_deref(), Some("HO"));
+        assert_eq!(ghost.formula(FormulaStyle::RunLog).as_deref(), Some("H2O"));
+
+        let mut all = Molecule::parse_xyz("1\n\nHe 0 0 0\n", 0, 1).unwrap();
+        all.atoms[0].ghost = true;
+        assert_eq!(all.formula(FormulaStyle::Hill), None);
+        assert_eq!(all.formula(FormulaStyle::RunLog).as_deref(), Some("He"));
+        let mut empty = all.clone();
+        empty.atoms.clear();
+        assert_eq!(empty.formula(FormulaStyle::Hill), None);
+        assert_eq!(empty.formula(FormulaStyle::RunLog), None);
+        assert_eq!(empty.hill_formula(), "-");
+    }
+
+    /// `RunLog` reproduces the old CLI function byte for byte, including
+    /// ghosts, no-carbon inputs, mixed-case symbols and the empty molecule.
+    #[test]
+    fn run_log_formula_matches_old_cli_function() {
+        let cases = [
+            "2\n\nH 0 0 0\nCl 0 0 1.3\n",
+            "3\n\nO 0 0 0\nH 0 0 1\n@H 0 1 0\n",
+            "4\n\nN 0 0 0\nH 0 0 1\nH 0 1 0\nH 1 0 0\n",
+            "9\n\nO 0 0 0\nH 0 0 1\nC 1 0 0\nC 2 0 0\nH 1 1 0\nH 1 -1 0\nH 2 1 0\nH 2 -1 0\nH 3 0 0\n",
+            "3\n\nC 0 0 0\nCl 0 0 1.7\n@C 0 1 0\n",
+            "2\n\nNa 0 0 0\nCl 0 0 2.4\n",
+            "1\n\nHe 0 0 0\n",
+        ];
+        for xyz in cases {
+            // Singlet, or doublet for an odd electron count.
+            let mol = Molecule::parse_xyz(xyz, 0, 1)
+                .or_else(|_| Molecule::parse_xyz(xyz, 0, 2))
+                .unwrap();
+            assert_eq!(
+                mol.formula(FormulaStyle::RunLog).unwrap_or_default(),
+                old_cli_molecular_formula(&mol),
+                "{xyz:?}"
+            );
+        }
+        let mut empty = Molecule::parse_xyz("1\n\nHe 0 0 0\n", 0, 1).unwrap();
+        empty.atoms.clear();
+        assert_eq!(
+            empty.formula(FormulaStyle::RunLog).unwrap_or_default(),
+            old_cli_molecular_formula(&empty)
+        );
+    }
 
     #[test]
     fn test_parse_water() {

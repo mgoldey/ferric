@@ -31,37 +31,47 @@ pub(crate) struct PyCcResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-/// Spin-blocked UCCSD and, with `triples`, UCCSD(T) on a UHF reference of
-/// the open-shell `mol` (the open-shell branch of `run_ccsd` / `run_ccsd_t`).
-/// Returns the result for Python, built without the GIL.
-#[allow(clippy::too_many_arguments)]
+/// Which coupled-cluster energy `run_ccsd` / `run_ccsd_t` compute.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CcLevel {
+    Ccsd,
+    CcsdT,
+}
+
+impl CcLevel {
+    /// The certificate's method kind.
+    fn kind(self) -> &'static str {
+        match self {
+            CcLevel::Ccsd => "ccsd",
+            CcLevel::CcsdT => "ccsd(t)",
+        }
+    }
+}
+
+/// Spin-blocked UCCSD and, at `CcLevel::CcsdT`, UCCSD(T) on a UHF reference
+/// of the open-shell `mol` (the open-shell branch of `run_ccsd` /
+/// `run_ccsd_t`). Returns the result for Python, built without the GIL.
 fn run_u_ccsd_inner(
     mol: &Molecule,
     basis: &ferric_core::basis::BasisSet,
     aux: &ferric_core::basis::BasisSet,
     scf_config: &RhfConfig,
     cfg: &CcConfig,
-    triples: bool,
+    level: CcLevel,
 ) -> Result<PyCcResult, ferric_core::FerricError> {
     let prep = PreparedBasis::new(mol, basis)?;
     let dfbs = PreparedBasis::new(mol, aux)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let ctx = ParallelContext::default();
-    let uhf = solve_uhf(&ctx, mol, &prep, &bounds, scf_config)?;
-    if !uhf.converged {
-        return Err(ferric_core::FerricError::ScfConvergence {
-            iterations: uhf.iterations,
-            last_energy: uhf.energy,
-        });
-    }
+    let uhf = require_converged(solve_uhf(&ctx, mol, &prep, &bounds, scf_config)?)?;
     let cc = ferric_cc::u_ccsd::u_ccsd(mol, &prep, &dfbs, op, &uhf, cfg)?;
     let mut comps = std::collections::HashMap::from([
         ("e_aa".to_string(), cc.e_aa),
         ("e_ab".to_string(), cc.e_ab),
         ("e_bb".to_string(), cc.e_bb),
     ]);
-    let t_correction = if triples {
+    let t_correction = if level == CcLevel::CcsdT {
         let t = ferric_cc::u_ccsd_t::u_ccsd_t(mol, &prep, &dfbs, op, &uhf, &cc, cfg)?;
         comps.extend([
             ("t_aaa".to_string(), t.aaa),
@@ -74,7 +84,6 @@ fn run_u_ccsd_inner(
         None
     };
     let reference = reference_certificate(mol, &uhf, scf_config, basis);
-    let kind = if triples { "ccsd(t)" } else { "ccsd" };
     Ok(PyCcResult {
         correlation_energy: cc.correlation_energy,
         t_correction,
@@ -83,7 +92,10 @@ fn run_u_ccsd_inner(
         reference: "uhf".into(),
         spin_components: Some(comps),
         certificate_data: ferric_cc::certificate::u_cc_certificate(
-            kind, &reference, &aux.name, cfg,
+            level.kind(),
+            &reference,
+            &aux.name,
+            cfg,
         ),
     })
 }
@@ -112,10 +124,7 @@ pub(crate) fn py_ladder_route(r: &ferric_cc::CcResult) -> (Option<String>, Optio
 
 #[pymethods]
 impl PyCcResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -162,23 +171,14 @@ pub(crate) fn run_ccd(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
     let rhf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let (prep, dfbs, rhf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
@@ -203,6 +203,110 @@ pub(crate) fn run_ccd(
     })
 }
 
+/// The CC settings of the closed-shell entry points; an unknown `ladder` route
+/// is a ValueError before any SCF runs.
+fn cc_config(
+    frozen_core: Option<usize>,
+    memory_budget_gb: Option<f64>,
+    ladder: &str,
+) -> PyResult<CcConfig> {
+    Ok(CcConfig {
+        frozen_core: frozen_core.unwrap_or(0),
+        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        ..Default::default()
+    })
+}
+
+/// The Python arguments `run_ccsd` and `run_ccsd_t` share.
+struct CcsdArgs<'a> {
+    mol: &'a PyMolecule,
+    basis_set: &'a PyBasisSet,
+    auxbasis: &'a PyBasisSet,
+    frozen_core: Option<usize>,
+    k_builder: Option<&'a str>,
+    memory_budget_gb: Option<f64>,
+    ladder: &'a str,
+    conv: ScfConv,
+}
+
+/// `run_ccsd` / `run_ccsd_t`: UCCSD(/T) for an open-shell molecule, else the
+/// spin-adapted closed-shell CCSD and, at `CcLevel::CcsdT`, its (T).
+fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<PyCcResult> {
+    let emol = a.mol.inner.clone();
+    let ebasis = a.basis_set.inner.clone();
+    let eaux = a.auxbasis.inner.clone();
+    let rhf_config = rhf_config_conv(
+        a.k_builder,
+        budget_bytes_from_gb(a.memory_budget_gb),
+        a.conv,
+    );
+    let cfg = cc_config(a.frozen_core, a.memory_budget_gb, a.ladder)?;
+    refuse_open_shell_ladder(&emol, a.ladder)?;
+    if emol.multiplicity > 1 {
+        return py
+            .allow_threads(|| run_u_ccsd_inner(&emol, &ebasis, &eaux, &rhf_config, &cfg, level))
+            .map_err(make_err);
+    }
+    // Release the GIL for the SCF + CCSD (+ (T)) compute. All captured values
+    // are owned clones/locals built above, so nothing Python-borrowed crosses
+    // the closure boundary.
+    //
+    // A closed-shell molecule reaches here, and `solve_rhf` yields a
+    // restricted reference, so both halves take the spin-adapted path
+    // unconditionally: `ccsd_closed_shell` for the amplitudes and
+    // `ccsd_t_closed_shell` for the triples, over spatial orbitals (no/nv)
+    // rather than spin orbitals (2no/2nv), so the O(N^6) VVVV block is 16x
+    // smaller. The amplitudes flow straight through — no
+    // `expand_amplitudes_to_spin_orbital` round-trip, since the spin-adapted
+    // (T) consumes the spatial convention natively (and hard-rejects
+    // spin-orbital amplitudes with a typed error).
+    //
+    // Measured on water/aug-cc-pVDZ: CCSD 24.6 s -> 1.10 s (22x), peak RSS
+    // 1.82 GB -> 0.48 GB; (T) 1.87 -> 0.14 s. The two (T) implementations
+    // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
+    // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
+    let (r, t_correction, reference) = py
+        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
+            let (prep, aux, rhf) = rhf_with_aux(&emol, &ebasis, &eaux, &rhf_config)?;
+            let op = Operator::coulomb();
+            let r = run_ccsd_cs_inner(&emol, &prep, &aux, op, &rhf, &cfg)?;
+            let e_t = match level {
+                CcLevel::Ccsd => None,
+                CcLevel::CcsdT => {
+                    Some(run_ccsd_t_cs_inner(&emol, &prep, &aux, op, &rhf, &r, &cfg)?)
+                }
+            };
+            let reference = reference_certificate(&emol, &rhf, &rhf_config, &ebasis);
+            Ok((r, e_t, reference))
+        })
+        .map_err(make_err)?;
+    let (ladder_route, ladder_block) = py_ladder_route(&r);
+    let certificate =
+        ferric_cc::certificate::cc_certificate(level.kind(), &reference, &eaux.name, &cfg, &r);
+    let certificate_data = match level {
+        CcLevel::Ccsd => ferric_mp2::certificate::with_anchor_envelope(
+            certificate,
+            "CCSD",
+            &emol,
+            &ebasis,
+            Some(&eaux),
+        ),
+        // `run_ccsd_t` has never carried the anchor envelope.
+        CcLevel::CcsdT => certificate,
+    };
+    Ok(PyCcResult {
+        correlation_energy: r.correlation_energy,
+        t_correction,
+        ladder_route,
+        ladder_block,
+        reference: "rhf".into(),
+        spin_components: None,
+        certificate_data,
+    })
+}
+
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
@@ -221,78 +325,18 @@ pub(crate) fn run_ccsd(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
-    let emol = mol.inner.clone();
-    let ebasis = basis_set.inner.clone();
-    let eaux = auxbasis.inner.clone();
-    let rhf_config = rhf_config_conv(
+    let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
+    let args = CcsdArgs {
+        mol,
+        basis_set,
+        auxbasis,
+        frozen_core,
         k_builder,
-        budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let cfg = CcConfig {
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // Strict: an unknown route is a ValueError before any SCF runs.
-        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
-        ..Default::default()
+        memory_budget_gb,
+        ladder,
+        conv,
     };
-    refuse_open_shell_ladder(&emol, ladder)?;
-    if emol.multiplicity > 1 {
-        return py
-            .allow_threads(|| run_u_ccsd_inner(&emol, &ebasis, &eaux, &rhf_config, &cfg, false))
-            .map_err(make_err);
-    }
-    // Release the GIL for the SCF + CCSD compute. All captured values are
-    // owned clones/locals built above, so nothing Python-borrowed crosses
-    // the closure boundary.
-    //
-    // A closed-shell molecule reaches here, and `solve_rhf` yields a
-    // restricted reference, so this is the spin-adapted path
-    // unconditionally: same CCSD energy, but over spatial
-    // orbitals (no/nv) rather than spin orbitals (2no/2nv), so the O(N^6) VVVV
-    // block is 16x smaller. Measured on water/aug-cc-pVDZ: 24.6 s -> 1.10 s
-    // (22x) and peak RSS 1.82 GB -> 0.48 GB.
-    //
-    // NOTE `run_ccsd_t` below deliberately does NOT switch — see its comment.
-    let r = py
-        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let prep = PreparedBasis::new(&emol, &ebasis)?;
-            let dfbs = PreparedBasis::new(&emol, &eaux)?;
-            let op = Operator::coulomb();
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let ctx = ParallelContext::default();
-            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
-            if !rhf.converged {
-                return Err(ferric_core::FerricError::ScfConvergence {
-                    iterations: rhf.iterations,
-                    last_energy: rhf.energy,
-                });
-            }
-            let reference = reference_certificate(&emol, &rhf, &rhf_config, &basis_set.inner);
-            Ok((
-                run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?,
-                reference,
-            ))
-        })
-        .map_err(make_err)?;
-    let (r, reference) = r;
-    let (ladder_route, ladder_block) = py_ladder_route(&r);
-    Ok(PyCcResult {
-        correlation_energy: r.correlation_energy,
-        t_correction: None,
-        ladder_route,
-        ladder_block,
-        reference: "rhf".into(),
-        spin_components: None,
-        certificate_data: ferric_mp2::certificate::with_anchor_envelope(
-            ferric_cc::certificate::cc_certificate("ccsd", &reference, &eaux.name, &cfg, &r),
-            "CCSD",
-            &emol,
-            &ebasis,
-            Some(&eaux),
-        ),
-    })
+    run_ccsd_level(py, args, CcLevel::Ccsd)
 }
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
@@ -313,77 +357,18 @@ pub(crate) fn run_ccsd_t(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
-    let emol = mol.inner.clone();
-    let ebasis = basis_set.inner.clone();
-    let eaux = auxbasis.inner.clone();
-    let rhf_config = rhf_config_conv(
+    let conv = ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv);
+    let args = CcsdArgs {
+        mol,
+        basis_set,
+        auxbasis,
+        frozen_core,
         k_builder,
-        budget_bytes_from_gb(memory_budget_gb),
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let cfg = CcConfig {
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // Strict: an unknown route is a ValueError before any SCF runs.
-        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
-        ..Default::default()
+        memory_budget_gb,
+        ladder,
+        conv,
     };
-    refuse_open_shell_ladder(&emol, ladder)?;
-    if emol.multiplicity > 1 {
-        return py
-            .allow_threads(|| run_u_ccsd_inner(&emol, &ebasis, &eaux, &rhf_config, &cfg, true))
-            .map_err(make_err);
-    }
-    // Release the GIL for the SCF + CCSD + (T) compute. All captured values
-    // are owned clones/locals built above, so nothing Python-borrowed
-    // crosses the closure boundary.
-    //
-    // `solve_rhf` always yields a restricted reference, so both halves take the
-    // spin-adapted path: `ccsd_closed_shell` for the amplitudes and
-    // `ccsd_t_closed_shell` for the triples. Both work over spatial orbitals
-    // (no/nv) instead of spin orbitals (2no/2nv).
-    //
-    // The amplitudes flow straight through — no `expand_amplitudes_to_spin_orbital`
-    // round-trip, since the spin-adapted (T) consumes the spatial convention
-    // natively (and hard-rejects spin-orbital amplitudes with a typed error).
-    //
-    // Measured on water/aug-cc-pVDZ: CCSD 24.8 -> 0.70 s and (T) 1.87 -> 0.14 s,
-    // i.e. ~26.6 s -> under a second for the pair. The two (T) implementations
-    // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
-    // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
-    let (r_cs, e_t, reference) = py
-        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let prep = PreparedBasis::new(&emol, &ebasis)?;
-            let dfbs = PreparedBasis::new(&emol, &eaux)?;
-            let op = Operator::coulomb();
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let ctx = ParallelContext::default();
-            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
-            if !rhf.converged {
-                return Err(ferric_core::FerricError::ScfConvergence {
-                    iterations: rhf.iterations,
-                    last_energy: rhf.energy,
-                });
-            }
-            let r_cs = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
-            let e_t = run_ccsd_t_cs_inner(&emol, &prep, &dfbs, op, &rhf, &r_cs, &cfg)?;
-            let reference = reference_certificate(&emol, &rhf, &rhf_config, &basis_set.inner);
-            Ok((r_cs, e_t, reference))
-        })
-        .map_err(make_err)?;
-    let (ladder_route, ladder_block) = py_ladder_route(&r_cs);
-    Ok(PyCcResult {
-        correlation_energy: r_cs.correlation_energy,
-        t_correction: Some(e_t),
-        ladder_route,
-        ladder_block,
-        reference: "rhf".into(),
-        spin_components: None,
-        certificate_data: ferric_cc::certificate::cc_certificate(
-            "ccsd(t)", &reference, &eaux.name, &cfg, &r_cs,
-        ),
-    })
+    run_ccsd_level(py, args, CcLevel::CcsdT)
 }
 
 #[pyclass]
@@ -492,12 +477,8 @@ pub(crate) fn run_eom_ccsd(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let cfg = CcConfig {
-        frozen_core: frozen_core.unwrap_or(0),
-        memory_budget_bytes: budget,
         energy_conv: ferric_cc::eom_ccsd::EOM_CCSD_ENERGY_CONV,
-        ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
-        ..Default::default()
+        ..cc_config(frozen_core, memory_budget_gb, ladder)?
     };
     let eom_cfg = ferric_cc::eom_ccsd::EomCcsdConfig {
         n_roots,
@@ -508,18 +489,8 @@ pub(crate) fn run_eom_ccsd(
     };
     let (rhf_energy, cc, eom, reference) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let prep = PreparedBasis::new(&emol, &ebasis)?;
-            let dfbs = PreparedBasis::new(&emol, &eaux)?;
+            let (prep, dfbs, rhf) = rhf_with_aux(&emol, &ebasis, &eaux, &rhf_config)?;
             let op = Operator::coulomb();
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let ctx = ParallelContext::default();
-            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
-            if !rhf.converged {
-                return Err(ferric_core::FerricError::ScfConvergence {
-                    iterations: rhf.iterations,
-                    last_energy: rhf.energy,
-                });
-            }
             let cc = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
             let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
                 &emol,
@@ -531,7 +502,7 @@ pub(crate) fn run_eom_ccsd(
                 cfg.frozen_core,
                 &eom_cfg,
             )?;
-            let reference = reference_certificate(&emol, &rhf, &rhf_config, &basis_set.inner);
+            let reference = reference_certificate(&emol, &rhf, &rhf_config, &ebasis);
             Ok((rhf.energy, cc, eom, reference))
         })
         .map_err(make_err)?;

@@ -223,6 +223,11 @@ python3 scripts/check_doc_style.py --verbose site/src/using/python.md
 
 ## Code quality
 
+Before adding an entry point, option or result type, read
+[ARCHITECTURE.md](ARCHITECTURE.md): where defaults live, how frontends lower
+user input into method configs, signature and error conventions, and the
+Python API compatibility rules.
+
 CI enforces several gates. Some block a PR, some only report; know which is
 which.
 

@@ -114,7 +114,14 @@ import numpy as np
 
 import ferric
 
-__all__ = ["run", "SCHEMA_VERSION"]
+from ._util import _plain, default_multiplicity
+
+__all__ = [
+    "SCHEMA_VERSION",
+    "molecule_from_qcschema",
+    "molecule_to_qcschema",
+    "run",
+]
 
 SCHEMA_VERSION = 1
 
@@ -475,7 +482,47 @@ def _bundled(name, what):
         raise _QcError("input_error", f"{what} {name!r}: {err}") from err
 
 
+def molecule_from_qcschema(d: dict[str, Any]) -> ferric.Molecule:
+    """A ``ferric.Molecule`` from a QCSchema molecule dict.
+
+    Reads ``symbols``, ``geometry`` (Bohr, flat or (N, 3)),
+    ``molecular_charge``, ``molecular_multiplicity`` (default: 1 for an even
+    electron count, else 2) and ``real`` (False marks a ghost atom). Raises
+    ``ValueError`` for a malformed molecule.
+    """
+    try:
+        return _molecule(d)[0]
+    except _QcError as err:
+        raise ValueError(str(err)) from err
+
+
+def molecule_to_qcschema(
+    mol: ferric.Molecule, charge: int | None = None, multiplicity: int | None = None
+) -> dict[str, Any]:
+    """A QCSchema molecule dict for a ``ferric.Molecule``.
+
+    ``geometry`` is flat (3N) in Bohr, ``real`` carries the ghost flags.
+    ``charge`` and ``multiplicity`` default to the Molecule's own; explicit
+    values override. ``molecule_from_qcschema`` reads them back. The
+    coordinates are ferric's own Bohr numbers, so the round trip is exact.
+    """
+    coords = np.asarray(mol.coords_bohr(), dtype=float)
+    charge = mol.charge if charge is None else charge
+    multiplicity = mol.multiplicity if multiplicity is None else multiplicity
+    return {
+        "schema_name": "qcschema_molecule",
+        "schema_version": 2,
+        "symbols": list(mol.symbols()),
+        "geometry": coords.reshape(-1).tolist(),
+        "real": [not g for g in mol.is_ghost()],
+        "molecular_charge": int(charge),
+        "molecular_multiplicity": int(multiplicity),
+    }
+
+
 def _molecule(mol):
+    """Private form of ``molecule_from_qcschema``: ``(Molecule, multiplicity)``,
+    raising ``_QcError`` (``input_error``) on a bad molecule."""
     if not isinstance(mol, dict):
         raise _QcError("input_error", "molecule must be a dict")
     symbols, geometry = mol.get("symbols"), mol.get("geometry")
@@ -497,23 +544,7 @@ def _molecule(mol):
         return ferric.Molecule.from_arrays(
             list(symbols), coords, multiplicity=mult, **common
         ), mult
-    try:
-        return ferric.Molecule.from_arrays(
-            list(symbols), coords, multiplicity=1, **common
-        ), 1
-    except ValueError:
-        return ferric.Molecule.from_arrays(
-            list(symbols), coords, multiplicity=2, **common
-        ), 2
-
-
-def _plain(obj):
-    if isinstance(obj, dict):
-        return {str(k): _plain(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_plain(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.generic):
-        return obj.item()
-    return obj
+    mult = default_multiplicity(symbols, common["charge"], ghost)
+    return ferric.Molecule.from_arrays(
+        list(symbols), coords, multiplicity=mult, **common
+    ), mult

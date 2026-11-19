@@ -270,19 +270,8 @@ pub(crate) fn rimp2_energies(
     let dfbs = PreparedBasis::new(mol, auxbasis)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep)?;
-    let ctx = ParallelContext::default();
     let open_shell = mol.multiplicity > 1;
-    let scf = if open_shell {
-        solve_uhf(&ctx, mol, &prep, &bounds, rhf_config)?
-    } else {
-        solve_rhf(&ctx, mol, &prep, op, &bounds, rhf_config)?
-    };
-    if !scf.converged {
-        return Err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        });
-    }
+    let scf = spin_reference(&prep, &bounds, mol, rhf_config)?;
     let (mp2_corr, total_energy, precision) = if open_shell {
         let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
         (u.mp2_corr, u.total_energy, u.precision)
@@ -763,6 +752,147 @@ pub(crate) fn mp2_exact_default_config(
     )
 }
 
+// ── Reference-SCF preamble of the correlated drivers ──
+//
+// Every correlated `run_*` entry point solves its reference the same way:
+// prepare the orbital (and fitting) basis on `mol`, Coulomb Schwarz bounds, a
+// default `ParallelContext`, solve, and refuse a non-converged SCF. These
+// helpers are that preamble. None of them applies the basis set's ECP: the
+// drivers that use them never have (ECP-aware drivers such as `ci.rs` apply
+// it themselves before calling in). Making that uniform is the
+// `PreparedSystem` item of the ARCHITECTURE.md refactoring roadmap and a
+// behaviour change, kept out of this deduplication.
+
+/// `scf`, or `ScfConvergence` when it did not converge: the rule every
+/// `run_*` driver applies to its reference SCF.
+pub(crate) fn require_converged(
+    scf: ferric_scf::result::ScfResult,
+) -> Result<ferric_scf::result::ScfResult, ferric_core::FerricError> {
+    if !scf.converged {
+        return Err(ferric_core::FerricError::ScfConvergence {
+            iterations: scf.iterations,
+            last_energy: scf.energy,
+        });
+    }
+    Ok(scf)
+}
+
+/// [`require_converged`] for a binding returning `PyResult`.
+pub(crate) fn converged(
+    scf: ferric_scf::result::ScfResult,
+) -> PyResult<ferric_scf::result::ScfResult> {
+    require_converged(scf).map_err(make_err)
+}
+
+/// The converged closed-shell Coulomb RHF on `prep` (FerricError-typed, so it
+/// also runs inside `allow_threads`).
+pub(crate) fn rhf_reference(
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    mol: &Molecule,
+    config: &RhfConfig,
+) -> Result<ferric_scf::result::ScfResult, ferric_core::FerricError> {
+    let ctx = ParallelContext::default();
+    require_converged(solve_rhf(
+        &ctx,
+        mol,
+        prep,
+        Operator::coulomb(),
+        bounds,
+        config,
+    )?)
+}
+
+/// The converged reference by the rule of `run_rimp2`: the closed-shell RHF
+/// for a singlet, the UHF for multiplicity > 1.
+pub(crate) fn spin_reference(
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    mol: &Molecule,
+    config: &RhfConfig,
+) -> Result<ferric_scf::result::ScfResult, ferric_core::FerricError> {
+    if mol.multiplicity <= 1 {
+        return rhf_reference(prep, bounds, mol, config);
+    }
+    let ctx = ParallelContext::default();
+    require_converged(solve_uhf(&ctx, mol, prep, bounds, config)?)
+}
+
+/// The orbital basis and fitting basis prepared on `mol` and the converged
+/// closed-shell Coulomb RHF on them (FerricError-typed, for `allow_threads`).
+pub(crate) fn rhf_with_aux(
+    mol: &Molecule,
+    basis: &basis::BasisSet,
+    aux: &basis::BasisSet,
+    config: &RhfConfig,
+) -> Result<(PreparedBasis, PreparedBasis, ferric_scf::result::ScfResult), ferric_core::FerricError>
+{
+    let prep = PreparedBasis::new(mol, basis)?;
+    let aux = PreparedBasis::new(mol, aux)?;
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep)?;
+    let rhf = rhf_reference(&prep, &bounds, mol, config)?;
+    Ok((prep, aux, rhf))
+}
+
+/// [`rhf_with_aux`] for a binding returning `PyResult`.
+pub(crate) fn converged_rhf_with_aux(
+    mol: &Molecule,
+    basis: &basis::BasisSet,
+    aux: &basis::BasisSet,
+    config: &RhfConfig,
+) -> PyResult<(PreparedBasis, PreparedBasis, ferric_scf::result::ScfResult)> {
+    rhf_with_aux(mol, basis, aux, config).map_err(make_err)
+}
+
+/// [`converged_rhf_with_aux`] with the reference rule of [`spin_reference`].
+pub(crate) fn converged_reference_with_aux(
+    mol: &Molecule,
+    basis: &basis::BasisSet,
+    aux: &basis::BasisSet,
+    config: &RhfConfig,
+) -> PyResult<(PreparedBasis, PreparedBasis, ferric_scf::result::ScfResult)> {
+    let prep = PreparedBasis::new(mol, basis).map_err(make_err)?;
+    let aux = PreparedBasis::new(mol, aux).map_err(make_err)?;
+    let rhf = converged_reference(mol, &prep, config)?;
+    Ok((prep, aux, rhf))
+}
+
+/// `cfg` turned into the KS reference config of the GW/TDHF/TDDFT entry
+/// points: functional `xc` with RI-J/RI-K on def2-universal-jkfit (as
+/// run_dft/run_ksdft default).
+pub(crate) fn ks_jkfit_config(
+    mut cfg: RhfConfig,
+    xc: &str,
+    scf_ri_j_precision: Option<&str>,
+) -> PyResult<RhfConfig> {
+    cfg.xc = Some(xc.to_string());
+    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+    Ok(cfg)
+}
+
+/// The converged closed-shell KS reference run through the KS-DFT
+/// level-shift ladder (the DIIS-oscillation fallback KS-DFT gets elsewhere),
+/// with the config of the rung that ran.
+pub(crate) fn ks_ladder_reference(
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    mol: &Molecule,
+    cfg: RhfConfig,
+) -> PyResult<(ferric_scf::result::ScfResult, RhfConfig)> {
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
+    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, mol, prep, op, bounds, &ladder)
+        .map_err(make_err)?;
+    let cfg = match ladder.get(lr.rung_reached) {
+        Some(r) => r.config.clone(),
+        None => cfg,
+    };
+    Ok((converged(lr.result)?, cfg))
+}
+
 /// Solve the closed-shell Coulomb RHF reference, building its Schwarz table.
 pub(crate) fn converged_rhf(
     mol: &Molecule,
@@ -781,19 +911,8 @@ pub(crate) fn converged_reference(
     prep: &PreparedBasis,
     config: &RhfConfig,
 ) -> PyResult<ferric_scf::result::ScfResult> {
-    if mol.multiplicity <= 1 {
-        return converged_rhf(mol, prep, config);
-    }
     let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let uhf = solve_uhf(&ctx, mol, prep, &bounds, config).map_err(make_err)?;
-    if !uhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: uhf.iterations,
-            last_energy: uhf.energy,
-        }));
-    }
-    Ok(uhf)
+    spin_reference(prep, &bounds, mol, config).map_err(make_err)
 }
 
 /// "RHF" or "UHF": what `converged_reference` solved.
@@ -814,15 +933,7 @@ pub(crate) fn converged_rhf_with_bounds(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> PyResult<ferric_scf::result::ScfResult> {
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(&ctx, mol, prep, Operator::coulomb(), bounds, config).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
-    Ok(rhf)
+    rhf_reference(prep, bounds, mol, config).map_err(make_err)
 }
 
 /// The exact-J/K RHF reference of the local dRPA / LinLCCD paths.
@@ -870,9 +981,8 @@ pub(crate) fn run_rimp2_local(
         )));
     }
     let op = local_correlation_operator(att_keys, model, &basis_set.inner.name)?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, rhf_config)?;
     let eps = model.eps[0];
     let lcfg = AmplitudeLmp2Config {
         eps,
@@ -1235,30 +1345,14 @@ pub(crate) fn run_drpa_scan(
     )?;
     // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
     let compute_reference = compute_reference.unwrap_or(false);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_conv(
-            k_builder,
-            budget_bytes_from_gb(memory_budget_gb),
-            ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-        ),
-    )
-    .map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf_config = rhf_config_conv(
+        k_builder,
+        budget_bytes_from_gb(memory_budget_gb),
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
+    );
+    let (prep, dfbs, rhf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     let base_cfg = drpa_config(
         None,
         frozen_core,
@@ -1646,10 +1740,7 @@ impl PyOoRiMp2Result {
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
     }
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -1850,10 +1941,7 @@ pub(crate) struct PyMp3Result {
 
 #[pymethods]
 impl PyMp3Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -1888,24 +1976,15 @@ pub(crate) fn run_mp3(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyMp3Result> {
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
     let budget = budget_bytes_from_gb(memory_budget_gb);
     let rhf_config = rhf_config_conv(
         k_builder,
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &rhf_config).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let (prep, dfbs, rhf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     // The VVVV size guard inside mp3_energy used to resolve the budget itself
     // with a hardcoded `None` (env/auto-detect only), so a caller's budget
     // never reached it; it is now a parameter.
@@ -1967,10 +2046,7 @@ pub(crate) struct PyLaplaceMp2Result {
 
 #[pymethods]
 impl PyLaplaceMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2019,11 +2095,10 @@ pub(crate) fn run_laplace_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     let r = laplace_ri_mp2(
         &mol.inner,
         &prep,
@@ -2099,10 +2174,7 @@ pub(crate) struct PySosMp2Result {
 
 #[pymethods]
 impl PySosMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2181,10 +2253,9 @@ pub(crate) fn run_laplace_sos_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     let form =
         SosFormulation::parse_config_str(formulation, domain_cutoff_bohr).map_err(make_err)?;
     let cfg = SosMp2Config {
@@ -2272,10 +2343,7 @@ pub(crate) struct PyAttenuatedMp2Result {
 
 #[pymethods]
 impl PyAttenuatedMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2324,9 +2392,8 @@ pub(crate) fn run_attenuated_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -2400,9 +2467,8 @@ pub(crate) fn run_terfc_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     // r0 supplied in Å; convert to Bohr for the operator.
     let resolved = ferric_mp2::terfc_r0::resolve_terfc_r0(&basis_set.inner.name, r0)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -2485,12 +2551,32 @@ pub(crate) struct PyScsMp2Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+impl PyScsMp2Result {
+    /// The result of `run_scs_mp2` / `run_scs_mp2_2terfc`.
+    fn new(
+        r: &ferric_mp2::scs::ScsMp2Result,
+        rhf: &ferric_scf::result::ScfResult,
+        jk: ferric_scf::scf_jk::ScfJk,
+        certificate_data: ferric_core::certificate::Certificate,
+    ) -> Self {
+        Self {
+            total_energy: r.total_energy,
+            reference: reference_name(rhf),
+            rhf_energy: rhf.energy,
+            scs_corr: r.scs_corr,
+            e_os: r.e_os,
+            e_ss: r.e_ss,
+            scf_jk: jk.mode.as_str().to_string(),
+            jk_label: jk.label(),
+            jk_auxbasis: jk.aux,
+            certificate_data,
+        }
+    }
+}
+
 #[pymethods]
 impl PyScsMp2Result {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2540,9 +2626,8 @@ pub(crate) fn run_scs_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0),
         c_ss: c_ss.unwrap_or(1.0 / 3.0),
@@ -2561,18 +2646,7 @@ pub(crate) fn run_scs_mp2(
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
-    Ok(PyScsMp2Result {
-        total_energy: r.total_energy,
-        reference: reference_name(&rhf),
-        rhf_energy: rhf.energy,
-        scs_corr: r.scs_corr,
-        e_os: r.e_os,
-        e_ss: r.e_ss,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-        certificate_data,
-    })
+    Ok(PyScsMp2Result::new(&r, &rhf, jk, certificate_data))
 }
 
 /// SCS-MP2(2terfc): dual-attenuated SCS-MP2 (Goldey & Head-Gordon, J. Phys.
@@ -2612,9 +2686,8 @@ pub(crate) fn run_scs_mp2_2terfc(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_reference(&mol.inner, &prep, &rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
         &basis_set.inner.name,
@@ -2646,18 +2719,7 @@ pub(crate) fn run_scs_mp2_2terfc(
         &auxbasis.inner.name,
         &cfg,
     );
-    Ok(PyScsMp2Result {
-        total_energy: r.total_energy,
-        reference: reference_name(&rhf),
-        rhf_energy: rhf.energy,
-        scs_corr: r.scs_corr,
-        e_os: r.e_os,
-        e_ss: r.e_ss,
-        scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
-        jk_auxbasis: jk.aux,
-        certificate_data,
-    })
+    Ok(PyScsMp2Result::new(&r, &rhf, jk, certificate_data))
 }
 
 // ── MP2-V (attenuated MP2 + Eq.-11-damped VV10, JCTC 11, 4159 (2015)) ──
@@ -2701,10 +2763,7 @@ pub(crate) struct PyMp2VResult {
 
 #[pymethods]
 impl PyMp2VResult {
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// the method's grade from the validation page capped by the reference
-    /// SCF's, its settings as `approximations`, the reference's as
-    /// `scf <name>`, and its warnings.
+    #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
         certificate_dict(py, &self.certificate_data)
@@ -2771,9 +2830,8 @@ pub(crate) fn run_mp2_v(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = converged_rhf(&mol.inner, &prep, &rhf_config)?;
+    let (prep, dfbs, rhf) =
+        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
 
     // Start from the published MP2-V(terfc, aTZ) parameterization and override
     // only what the caller set (same construction order as the CLI's
@@ -2897,9 +2955,6 @@ pub(crate) fn run_mp2_v_scan(
     }
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
     let mut rcfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
@@ -2908,13 +2963,7 @@ pub(crate) fn run_mp2_v_scan(
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     rcfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rcfg)?;
     let mut base = AttVv10Config::mp2_v_terfc_atz();
     if let Some(c) = c {
         base.vv10.c = c;
@@ -3009,9 +3058,6 @@ pub(crate) fn run_vv10_variants(
 ) -> PyResult<Vec<f64>> {
     use ferric_dft::vv10::{Vv10Damping, Vv10Weight};
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let coul = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(coul, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
     let mut rcfg = rhf_config_conv(
         None,
         None,
@@ -3020,13 +3066,7 @@ pub(crate) fn run_vv10_variants(
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     rcfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, coul, &bounds, &rcfg).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf(&mol.inner, &prep, &rcfg)?;
     let mut weights = Vec::new();
     for (kind, r0, rw, power) in &specs {
         let r0_bohr = r0 * ferric_mp2::att_vv10::BOHR_PER_ANG;

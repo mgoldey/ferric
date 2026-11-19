@@ -54,6 +54,17 @@ use ndarray::{Array2, Array3};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 
+/// The docstring shared by the `certificate` getters of the post-SCF method
+/// results, written once so the Python-visible text cannot drift.
+macro_rules! method_certificate_doc {
+    () => {
+        "Validation certificate of this result (see `RhfResult.certificate`):\n\
+         the method's grade from the validation page capped by the reference\n\
+         SCF's, its settings as `approximations`, the reference's as\n\
+         `scf <name>`, and its warnings."
+    };
+}
+
 mod blocks;
 mod cc;
 mod cdft;
@@ -96,7 +107,7 @@ use tddft::*;
 
 /// A molecular geometry (atoms, charge, multiplicity). Coordinates are stored
 /// internally in Bohr; XYZ input is in Ångström.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Molecule")]
 struct PyMolecule {
     inner: Molecule,
@@ -216,6 +227,29 @@ impl PyMolecule {
     /// silently reverts to neutral singlet.
     fn to_xyz_string(&self) -> String {
         molecule_to_xyz_string(&self.inner)
+    }
+    /// Net molecular charge in elementary charges (read-only).
+    #[getter]
+    fn charge(&self) -> i32 {
+        self.inner.charge
+    }
+    /// Spin multiplicity 2S+1 (read-only).
+    #[getter]
+    fn multiplicity(&self) -> usize {
+        self.inner.multiplicity
+    }
+    /// `Molecule(H2O, 3 atoms, charge=0, multiplicity=1)`: Hill-order formula
+    /// of the real (non-ghost) atoms, then the atom count including ghosts.
+    fn __repr__(&self) -> String {
+        let m = &self.inner;
+        let n = m.atoms.len();
+        format!(
+            "Molecule({}, {n} atom{}, charge={}, multiplicity={})",
+            m.hill_formula(),
+            if n == 1 { "" } else { "s" },
+            m.charge,
+            m.multiplicity
+        )
     }
 }
 
@@ -438,6 +472,22 @@ fn make_ferric_err(e: ferric_core::FerricError) -> PyErr {
             pyo3::exceptions::PyNotImplementedError::new_err(e.to_string())
         }
         other => make_err(other),
+    }
+}
+
+/// `?`-friendly conversion of a method-crate `Result` into a `PyResult`
+/// with exactly the exception class and message of [`make_ferric_err`]
+/// (`NotImplementedError` for `FerricError::Unsupported`, `RuntimeError`
+/// otherwise). A crate-local extension trait because `From<FerricError> for
+/// PyErr` would break the orphan rule.
+pub(crate) trait IntoPyResult<T> {
+    /// Convert, mapping the error through [`make_ferric_err`].
+    fn py(self) -> PyResult<T>;
+}
+
+impl<T> IntoPyResult<T> for Result<T, ferric_core::FerricError> {
+    fn py(self) -> PyResult<T> {
+        self.map_err(make_ferric_err)
     }
 }
 
@@ -1044,13 +1094,19 @@ fn parse_mom_reference(
         .transpose()
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
         .unwrap_or_default();
-    let conflicts = mom_after_iter.unwrap_or(0) > 0 || stability_descent.unwrap_or(false);
-    if reference == ferric_scf::mom::MomReference::Initial && conflicts {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "run_uhf: mom_reference=\"initial\" applies MOM from the first iteration and \
-             holds the starting occupation; pass neither mom_after_iter nor stability_descent",
-        ));
-    }
+    // The rule lives in `MomReference::check_initial`; this layer only words
+    // either conflict in kwarg terms (one message naming both kwargs).
+    reference
+        .check_initial(
+            mom_after_iter.unwrap_or(0),
+            stability_descent.unwrap_or(false),
+        )
+        .map_err(|_conflict| {
+            pyo3::exceptions::PyValueError::new_err(
+                "run_uhf: mom_reference=\"initial\" applies MOM from the first iteration and \
+                 holds the starting occupation; pass neither mom_after_iter nor stability_descent",
+            )
+        })?;
     Ok(reference)
 }
 

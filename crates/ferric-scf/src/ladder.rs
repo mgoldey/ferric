@@ -240,7 +240,7 @@ pub fn rung_tricks(c: &RhfConfig) -> String {
 /// whatever `[mp2] auxbasis` the caller may have configured for a downstream
 /// correlated method, per the project convention that SCF JK aux stays
 /// separate from RPA/MP2 aux (see `ferric-jk-aux-convention`).
-pub const DF_GUESS_DEFAULT_AUX: &str = "def2-universal-jkfit";
+pub const DF_GUESS_DEFAULT_AUX: &str = crate::options::DEFAULT_JK_AUX;
 
 /// Outcome of a [`solve_rhf_with_df_guess`] run: the exact-stage `ScfResult`
 /// plus enough of the DF stage's own outcome to audit that it actually ran

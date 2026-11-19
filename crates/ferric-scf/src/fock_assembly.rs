@@ -81,7 +81,7 @@ use ndarray::Array2;
 
 /// Default JK-fit auxiliary basis when the caller hasn't set one (the same
 /// default the solvers use for RI-J/RI-K auto-selection).
-pub(crate) const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
+pub(crate) const DEFAULT_JK_AUX: &str = crate::options::DEFAULT_JK_AUX;
 
 /// The exchange a solver's functional asks for, as the J/K route reads it.
 #[derive(Clone, Copy, Debug, PartialEq)]

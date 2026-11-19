@@ -235,12 +235,9 @@ pub(crate) fn run_tddft(
     }
     let mut scf_cfg = rhf_config(None);
     let (scf, grid) = if let Some(xc_name) = functional {
+        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
+        scf_cfg = ks_jkfit_config(scf_cfg, xc_name, scf_ri_j_precision)?;
         let cfg = &mut scf_cfg;
-        ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(cfg);
-        cfg.xc = Some(xc_name.to_string());
-        cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-        cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
-        cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
         // Explicit grid kwargs win; with none, a meta-GGA gets the finer
         // response grid, everything else the production grid.
         cfg.dft_grid =
@@ -270,12 +267,7 @@ pub(crate) fn run_tddft(
         .map_err(make_err)?;
         (scf, ferric_dft::grid::AtomicGridConfig::default())
     };
-    if !scf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        }));
-    }
+    let scf = converged(scf)?;
 
     let grid_used = functional.map(|_| {
         (
