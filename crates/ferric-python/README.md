@@ -122,3 +122,15 @@ print(f"Kept eigenmodes:     {rpa.n_eigenpotentials}")
 # 4. Generate scree plot diagnostic
 rpa.save_scree_plot("water_rpa_scree.png")
 ```
+
+---
+
+## 4. Optional Python modules
+
+Pure-Python helpers under `ferric.*` (not part of the compiled API; their optional dependencies are imported lazily):
+
+* **`ferric.rdkit`**: `from_rdkit`, `from_smiles`, `to_rdkit` (RDKit `Mol` <-> `Molecule`; `pip install "ferric[rdkit]"`).
+* **`ferric.units`**: `BOHR_TO_ANGSTROM`, `ANGSTROM_TO_BOHR`, `HARTREE_TO_EV`, `HARTREE_TO_KCAL_MOL`, `HARTREE_TO_KJ_MOL` (the Rust crates' values).
+* **`ferric.serialize`**: `to_dict`, `to_json`, `molecule_from_dict`, `read_run_log` (plain-data views of molecules and results; the CLI JSON Lines run log).
+* **`ferric.qcschema`**: `run`, `molecule_from_qcschema`, `molecule_to_qcschema`.
+* **`ferric.ase`** (`pip install "ferric[ase]"`) and **`ferric.viz`** (py3Dmol): ASE calculator and 3-D views.
