@@ -938,8 +938,8 @@ pub fn gradient_task_config(
 }
 
 /// Closed-shell RHF/RKS: refuse BEFORE the SCF a COSX setup whose gradient is
-/// not implemented (pruned grid; overlap fit with a KS functional), so a geometry driver fails
-/// fast instead of after a full SCF. `Ok(())` when exchange is not COSX.
+/// not implemented (an invalid grid; overlap fit with a KS functional), so a geometry driver
+/// fails fast instead of after a full SCF. `Ok(())` when exchange is not COSX.
 pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
     refuse_cosmo_gradient(config)?;
     refuse_relativistic_gradient(config)?;

@@ -16,7 +16,7 @@
 //!
 //! `DfK` drops metric modes below the cut of `crate::df_k::metric_lindep_cut`
 //! (nominally 1e-10; the Hessian counts dropped modes with the same rule, on
-//! its own `dsyev` spectrum, which that rule classifies solver-independently
+//! its own `dsyevd` spectrum, which that rule classifies solver-independently
 //! by construction). With none dropped,
 //! `M = V⁻¹` exactly (the product of the two `V^{-1/2}` factors), so every
 //! derivative below follows from `∂M = −M V_x M`. A metric with a dropped mode

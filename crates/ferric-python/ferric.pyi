@@ -5205,7 +5205,10 @@ class SaddleResult:
     @property
     def symbols(self) -> list[str]: ...
     @property
-    def coords(self) -> list[tuple[float, float, float]]: ...
+    def coords(self) -> list[tuple[float, float, float]]:
+        """Final-geometry coordinates in Angstrom, matching ``symbols``. Valid
+        to inspect even when ``converged`` is false."""
+        ...
     @property
     def imaginary_mode(self) -> list[float] | None:
         """The followed mode as a flat 3N Cartesian displacement vector.

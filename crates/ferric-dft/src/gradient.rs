@@ -1003,8 +1003,9 @@ pub fn gga_gradient_from_potentials(
 /// v_ρ and v_σ, then assembles via `gga_gradient_from_potentials`. The NLC
 /// grid is built fresh (the SCF's NLC grid is not persisted on the result).
 ///
-/// Like all semilocal gradients in this round, the grid-weight response
-/// (Becke partition derivative) is dropped — see module doc.
+/// Unlike the semilocal LDA/GGA/meta-GGA gradients, this one has no
+/// grid-weight response (Becke partition derivative): it is the exception
+/// named in the module doc.
 #[allow(clippy::too_many_arguments)]
 pub fn vv10_gradient_from_density(
     mol: &Molecule,
