@@ -1969,6 +1969,11 @@ CASES = [
                 "[FAIL] (claim kmp2-supercell)",
             ),
             (
+                "(g2 <= gcut * gcut) & (first > 0)",
+                "(g2 <= gcut * gcut) & (g2 > 0)",
+                "[FAIL] (claim auto-omega-gcount)",
+            ),
+            (
                 "pi_q = (4.0 / NK) *",
                 "pi_q = (4.0) *",
                 "[FAIL] (claim kdrpa-supercell)",
@@ -1983,6 +1988,16 @@ CASES = [
                 "* (1 - 2 * ac * mu_ij) / 2",
                 "* (1 - 2 * ac * mu_ij)",
                 "[FAIL] 5. becke_weights_and_grad assembly",
+            ),
+            (
+                "np.conj(bloch_pair(kp, kv)),",
+                "bloch_pair(kp, kv),",
+                "[FAIL] (claim krsgdf-block-diagonal)",
+            ),
+            (
+                "np.conj(x), x, 4 * math.pi / kv**2",
+                "x, x, 4 * math.pi / kv**2",
+                "[FAIL] (claim krsgdf-block-diagonal)",
             ),
             (
                 "/ (rJ * Rij) + mu_ij / Rij**2 * vij[k])",
