@@ -295,6 +295,32 @@ struct PbcArgs<'a, 'py> {
     closed_shell: bool,
 }
 
+/// The [`PbcArgs`] of a `run_*` binding from its kwargs, which every binding
+/// names alike: `pbc_args!(fname, closed_shell; mol, lattice, basis_set,
+/// exxdiv, omega, gdf_omega, jk, auxbasis, max_eri_gb, memory_budget_gb)`.
+macro_rules! pbc_args {
+    (
+        $fname:expr, $closed_shell:expr; $mol:ident, $lattice:ident, $basis:ident,
+        $exxdiv:ident, $omega:ident, $gdf_omega:ident, $jk:ident, $auxbasis:ident,
+        $max_eri_gb:ident, $memory_budget_gb:ident $(,)?
+    ) => {
+        PbcArgs {
+            fname: $fname,
+            mol: $mol,
+            lattice: &$lattice,
+            basis: $basis,
+            exxdiv: $exxdiv,
+            omega: $omega,
+            gdf_omega: $gdf_omega,
+            jk: $jk,
+            auxbasis: $auxbasis,
+            max_eri_gb: $max_eri_gb,
+            memory_budget_gb: $memory_budget_gb,
+            closed_shell: $closed_shell,
+        }
+    };
+}
+
 /// A validated cell, orbital basis and J/K choice.
 struct PbcSetup {
     fname: &'static str,
@@ -445,6 +471,212 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
         derivs: DerivRequest::default(),
         range_split: None,
         sr_column_rotation: SrColumnRotation::Off,
+    })
+}
+
+// ──────────────────────────────────────────────────── SCF entry plumbing ──
+
+/// The method a periodic SCF binding runs (its functional for Kohn-Sham).
+#[derive(Clone, Copy)]
+enum PbcKind<'f> {
+    Rhf,
+    Uhf,
+    Rohf,
+    Rks(&'f str),
+    Uks(&'f str),
+    Roks(&'f str),
+}
+
+impl<'f> PbcKind<'f> {
+    fn functional(self) -> Option<&'f str> {
+        match self {
+            PbcKind::Rks(f) | PbcKind::Uks(f) | PbcKind::Roks(f) => Some(f),
+            PbcKind::Rhf | PbcKind::Uhf | PbcKind::Rohf => None,
+        }
+    }
+
+    /// RHF / RKS: no `ewald_start` (the staged start is open-shell only).
+    fn closed_shell(self) -> bool {
+        matches!(self, PbcKind::Rhf | PbcKind::Rks(_))
+    }
+
+    fn ks_kind(self) -> KKsKind {
+        match self {
+            PbcKind::Rhf | PbcKind::Rks(_) => KKsKind::Closed,
+            PbcKind::Uhf | PbcKind::Uks(_) => KKsKind::Unrestricted,
+            PbcKind::Rohf | PbcKind::Roks(_) => KKsKind::RestrictedOpen,
+        }
+    }
+}
+
+/// The XC-grid kwargs of the Kohn-Sham bindings (see [`periodic_grid`]).
+#[derive(Clone, Copy)]
+struct GridKw {
+    n_radial: usize,
+    n_angular: usize,
+    neighbour_cutoff: Option<f64>,
+    neighbour_switch: f64,
+}
+
+impl GridKw {
+    fn config(&self, fname: &str) -> PyResult<PeriodicGridConfig> {
+        periodic_grid(
+            fname,
+            self.n_radial,
+            self.n_angular,
+            self.neighbour_cutoff,
+            self.neighbour_switch,
+        )
+    }
+}
+
+/// The SCF kwargs the Gamma and k-point SCF bindings share.
+struct ScfKw<'a, 'py> {
+    /// Open shells only (`None` for RHF / RKS, which take no such kwarg).
+    ewald_start: Option<&'a str>,
+    with_gradient: bool,
+    with_stress: bool,
+    range_split: Option<&'a Bound<'py, PyAny>>,
+    /// Kohn-Sham only; `None` = `PeriodicGridConfig::default()` (unused).
+    grid: Option<GridKw>,
+}
+
+/// A validated SCF request, before any integral is built.
+struct ScfPrep {
+    s: PbcSetup,
+    start: EwaldStart,
+    start_name: Option<String>,
+    grid: PeriodicGridConfig,
+}
+
+impl ScfKw<'_, '_> {
+    /// [`pbc_setup`] with this request's derivatives.
+    fn setup(&self, a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
+        let mut s = pbc_setup(a)?;
+        s.derivs = DerivRequest {
+            gradient: self.with_gradient,
+            stress: self.with_stress,
+        };
+        Ok(s)
+    }
+
+    fn grid_config(&self, fname: &str) -> PyResult<PeriodicGridConfig> {
+        match &self.grid {
+            Some(g) => g.config(fname),
+            None => Ok(PeriodicGridConfig::default()),
+        }
+    }
+
+    /// `(Staged, None)` for a closed shell, which has no `ewald_start`.
+    fn ewald_start(
+        &self,
+        kind: PbcKind<'_>,
+        s: &PbcSetup,
+    ) -> PyResult<(EwaldStart, Option<String>)> {
+        if kind.closed_shell() {
+            Ok((EwaldStart::Staged, None))
+        } else {
+            parse_ewald_start(s.fname, s.exx, self.ewald_start)
+        }
+    }
+}
+
+/// The shared prologue of the Gamma SCF bindings (`run_rhf_gamma` lives in
+/// `gamma.rs`): setup, the functional / derivative gate, the SR knobs, then
+/// `ewald_start` and the grid, in that order (the first refusal wins).
+fn gamma_scf_prep(
+    a: &PbcArgs<'_, '_>,
+    kind: PbcKind<'_>,
+    kw: &ScfKw<'_, '_>,
+    sr_column_rotation: Option<bool>,
+) -> PyResult<ScfPrep> {
+    let fname = a.fname;
+    let mut s = kw.setup(a)?;
+    match kind {
+        // Before any integral is built: the meta-GGA allowlist (SCAN / r2SCAN /
+        // TPSS; their force / stress is the 1x1x1 route) and the meta-GGA and
+        // range-separated derivative J/K (dense AFT only).
+        PbcKind::Rks(f) => {
+            ferric_pbc::dft::check_gamma_rks_request(f, &s.derivs.kinds(), s.aux.is_some())
+                .map_err(|e| val_err(format!("{fname}: functional {f:?}: {e}")))?
+        }
+        PbcKind::Uks(f) => check_gamma_open_ks(&s, f, false)?,
+        PbcKind::Roks(f) => check_gamma_open_ks(&s, f, true)?,
+        PbcKind::Rhf | PbcKind::Uhf | PbcKind::Rohf => {}
+    }
+    s.set_sr_knobs(kw.range_split, sr_column_rotation)?;
+    let (start, start_name) = kw.ewald_start(kind, &s)?;
+    let grid = kw.grid_config(fname)?;
+    Ok(ScfPrep {
+        s,
+        start,
+        start_name,
+        grid,
+    })
+}
+
+/// The mesh and SCF-threshold kwargs of the k-point SCF bindings.
+struct KpointKw<'a> {
+    mesh: (usize, usize, usize),
+    centring: &'a str,
+    max_iter: usize,
+    energy_conv: f64,
+    grad_conv: f64,
+}
+
+impl<'a> KpointKw<'a> {
+    fn new(
+        mesh: (usize, usize, usize),
+        centring: &'a str,
+        max_iter: usize,
+        energy_conv: f64,
+        grad_conv: f64,
+    ) -> Self {
+        KpointKw {
+            mesh,
+            centring,
+            max_iter,
+            energy_conv,
+            grad_conv,
+        }
+    }
+}
+
+/// A validated k-point SCF request, before any integral is built.
+struct KScfPrep {
+    p: ScfPrep,
+    mesh: KPointMesh,
+    scf: KScfConfig,
+}
+
+/// The shared prologue of the k-point SCF bindings: setup, the functional
+/// gate, `range_split`, the mesh, the grid, `ewald_start`, then the SCF
+/// thresholds, in that order (the first refusal wins).
+fn kpoint_scf_prep(
+    a: &PbcArgs<'_, '_>,
+    kind: PbcKind<'_>,
+    kw: &ScfKw<'_, '_>,
+    k: &KpointKw<'_>,
+) -> PyResult<KScfPrep> {
+    let fname = a.fname;
+    let mut s = kw.setup(a)?;
+    if let Some(f) = kind.functional() {
+        check_kpoint_ks_support(fname, f, kind.ks_kind(), &s)?;
+    }
+    s.range_split = parse_range_split(fname, kw.range_split, s.aux.is_some(), s.derivs)?;
+    let mesh = k_mesh(&s, k.mesh, k.centring)?;
+    let grid = kw.grid_config(fname)?;
+    let (start, start_name) = kw.ewald_start(kind, &s)?;
+    let scf = kscf_config(fname, k.max_iter, k.energy_conv, k.grad_conv)?;
+    Ok(KScfPrep {
+        p: ScfPrep {
+            s,
+            start,
+            start_name,
+            grid,
+        },
+        mesh,
+        scf,
     })
 }
 
@@ -1113,6 +1345,14 @@ impl OpenMethod {
             _ => None,
         }
     }
+    fn kind(&self) -> PbcKind<'_> {
+        match self {
+            OpenMethod::Uhf => PbcKind::Uhf,
+            OpenMethod::Rohf => PbcKind::Rohf,
+            OpenMethod::Uks(f) => PbcKind::Uks(f),
+            OpenMethod::Roks(f) => PbcKind::Roks(f),
+        }
+    }
 }
 
 struct OpenOpts {
@@ -1371,6 +1611,26 @@ fn run_open_shell(
     })
 }
 
+/// Shared body of the four Gamma open-shell bindings: [`gamma_scf_prep`],
+/// then [`run_open_shell`].
+fn gamma_open_entry(
+    py: Python<'_>,
+    method: OpenMethod,
+    a: &PbcArgs<'_, '_>,
+    kw: ScfKw<'_, '_>,
+    sr_column_rotation: Option<bool>,
+    scf: RhfConfig,
+) -> PyResult<PyGammaOpenShellResult> {
+    let p = gamma_scf_prep(a, method.kind(), &kw, sr_column_rotation)?;
+    let o = OpenOpts {
+        method,
+        start: p.start,
+        scf,
+        grid: p.grid,
+    };
+    run_open_shell(py, p.s, o, p.start_name)
+}
+
 /// Gamma-point periodic **UHF** (spin state from the Molecule's
 /// multiplicity). Same cell/J-K/units/strictness contract as
 /// `run_rhf_gamma` (lattice rows in Å, omega in Å⁻¹, jk "dense"|"rsgdf",
@@ -1430,34 +1690,27 @@ fn run_uhf_gamma(
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let fname = "run_uhf_gamma";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
+    let method = OpenMethod::Uhf;
+    let a = pbc_args!(
+        "run_uhf_gamma", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: None,
     };
-    s.set_sr_knobs(range_split, sr_column_rotation)?;
-    let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
-    let o = OpenOpts {
-        method: OpenMethod::Uhf,
-        start,
-        scf: gamma_scf_config(max_iter, density_conv),
-        grid: PeriodicGridConfig::default(),
-    };
-    run_open_shell(py, s, o, start_name)
+    gamma_open_entry(
+        py,
+        method,
+        &a,
+        kw,
+        sr_column_rotation,
+        gamma_scf_config(max_iter, density_conv),
+    )
 }
 
 /// Gamma-point periodic **ROHF** (Guest-Saunders Roothaan coupling on one
@@ -1503,34 +1756,27 @@ fn run_rohf_gamma(
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let fname = "run_rohf_gamma";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
+    let method = OpenMethod::Rohf;
+    let a = pbc_args!(
+        "run_rohf_gamma", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: None,
     };
-    s.set_sr_knobs(range_split, sr_column_rotation)?;
-    let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
-    let o = OpenOpts {
-        method: OpenMethod::Rohf,
-        start,
-        scf: gamma_scf_config(max_iter, density_conv),
-        grid: PeriodicGridConfig::default(),
-    };
-    run_open_shell(py, s, o, start_name)
+    gamma_open_entry(
+        py,
+        method,
+        &a,
+        kw,
+        sr_column_rotation,
+        gamma_scf_config(max_iter, density_conv),
+    )
 }
 
 /// The Gamma UKS / ROKS (`restricted_open`) request gate, before any integral
@@ -1617,41 +1863,32 @@ fn run_uks_gamma(
     sr_column_rotation: Option<bool>,
     neighbour_switch: f64,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let fname = "run_uks_gamma";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
-    };
-    check_gamma_open_ks(&s, functional, false)?;
-    s.set_sr_knobs(range_split, sr_column_rotation)?;
-    let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
-    let o = OpenOpts {
-        method: OpenMethod::Uks(functional.to_string()),
-        start,
-        scf: gamma_scf_config(max_iter, density_conv),
-        grid: periodic_grid(
-            fname,
+    let method = OpenMethod::Uks(functional.to_string());
+    let a = pbc_args!(
+        "run_uks_gamma", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: Some(GridKw {
             n_radial,
             n_angular,
             neighbour_cutoff,
             neighbour_switch,
-        )?,
+        }),
     };
-    run_open_shell(py, s, o, start_name)
+    gamma_open_entry(
+        py,
+        method,
+        &a,
+        kw,
+        sr_column_rotation,
+        gamma_scf_config(max_iter, density_conv),
+    )
 }
 
 /// Gamma-point periodic **ROKS** (spin-polarized XC, Roothaan coupling on
@@ -1715,41 +1952,32 @@ fn run_roks_gamma(
     sr_column_rotation: Option<bool>,
     neighbour_switch: f64,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let fname = "run_roks_gamma";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
-    };
-    check_gamma_open_ks(&s, functional, true)?;
-    s.set_sr_knobs(range_split, sr_column_rotation)?;
-    let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
-    let o = OpenOpts {
-        method: OpenMethod::Roks(functional.to_string()),
-        start,
-        scf: roks_scf_config(functional, max_iter, density_conv),
-        grid: periodic_grid(
-            fname,
+    let method = OpenMethod::Roks(functional.to_string());
+    let a = pbc_args!(
+        "run_roks_gamma", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: Some(GridKw {
             n_radial,
             n_angular,
             neighbour_cutoff,
             neighbour_switch,
-        )?,
+        }),
     };
-    run_open_shell(py, s, o, start_name)
+    gamma_open_entry(
+        py,
+        method,
+        &a,
+        kw,
+        sr_column_rotation,
+        roks_scf_config(functional, max_iter, density_conv),
+    )
 }
 
 // ─────────────────────────────────────────────────────────── Gamma RKS ──
@@ -1979,37 +2207,25 @@ fn run_rks_gamma(
     neighbour_switch: f64,
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: true,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
+    let a = pbc_args!(
+        fname, true;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start: None,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: Some(GridKw {
+            n_radial,
+            n_angular,
+            neighbour_cutoff,
+            neighbour_switch,
+        }),
     };
-    // Before any integral is built: the meta-GGA allowlist (SCAN / r2SCAN /
-    // TPSS; their force / stress is the 1x1x1 route) and the meta-GGA and
-    // range-separated derivative J/K (dense AFT only).
-    ferric_pbc::dft::check_gamma_rks_request(functional, &s.derivs.kinds(), s.aux.is_some())
-        .map_err(|e| val_err(format!("{fname}: functional {functional:?}: {e}")))?;
-    s.set_sr_knobs(range_split, sr_column_rotation)?;
-    let grid = periodic_grid(
-        fname,
-        n_radial,
-        n_angular,
-        neighbour_cutoff,
-        neighbour_switch,
-    )?;
+    let ScfPrep { s, grid, .. } =
+        gamma_scf_prep(&a, PbcKind::Rks(functional), &kw, sr_column_rotation)?;
     gamma_rks_preflight(&s, functional)?;
     let scf = gamma_scf_config(max_iter, density_conv);
     let (r, derivs, e_nuc, timings_data) = py
@@ -2298,20 +2514,11 @@ fn run_mp2_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_mp2_gamma";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: true,
-    })?;
+    let mut s = pbc_setup(&pbc_args!(
+        fname, true;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    ))?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let o = CorrOpts {
         drpa_quad: None,
@@ -2361,20 +2568,11 @@ fn run_drpa_gamma(
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_drpa_gamma";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: true,
-    })?;
+    let mut s = pbc_setup(&pbc_args!(
+        fname, true;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    ))?;
     if let (Some(q), None) = (quad_points, &s.aux) {
         return Err(val_err(format!(
             "{fname}: quad_points={q} is ignored by jk=\"dense\" (the exact plasmon \
@@ -2611,6 +2809,14 @@ fn kjk_kind(s: &PbcSetup) -> KJkKind {
     }
 }
 
+/// Cartesian k-points Bohr⁻¹ -> Å⁻¹.
+fn kpts_per_angstrom(kpts: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    let c = ANGSTROM_TO_BOHR;
+    kpts.iter()
+        .map(|k| [k[0] * c, k[1] * c, k[2] * c])
+        .collect()
+}
+
 /// The k-point result skeleton every k binding fills in.
 fn kpoint_result_base(
     s: &PbcSetup,
@@ -2632,17 +2838,7 @@ fn kpoint_result_base(
         mesh: (n[0], n[1], n[2]),
         centring: centring_name(mesh.centring()),
         nk: mesh.nk(),
-        kpts: scf
-            .kpts
-            .iter()
-            .map(|k| {
-                [
-                    k[0] * ANGSTROM_TO_BOHR,
-                    k[1] * ANGSTROM_TO_BOHR,
-                    k[2] * ANGSTROM_TO_BOHR,
-                ]
-            })
-            .collect(),
+        kpts: kpts_per_angstrom(&scf.kpts),
         mo_energy: Vec::new(),
         mo_energy_beta: None,
         homo: None,
@@ -2923,27 +3119,21 @@ fn run_rhf_kpts(
     with_stress: bool,
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_rhf_kpts";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: true,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
+    let a = pbc_args!(
+        fname, true;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start: None,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: None,
     };
-    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
-    let m = k_mesh(&s, mesh, centring)?;
-    let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
+    let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
+    let KScfPrep { p, mesh: m, scf } = kpoint_scf_prep(&a, PbcKind::Rhf, &kw, &k)?;
+    let s = p.s;
     let (r, madelung, derivs) = py
         .allow_threads(|| krhf_driver(&s, &m, scf))
         .map_err(pbc_err(fname))?;
@@ -3021,51 +3211,20 @@ fn run_uhf_kpts(
     with_gradient: bool,
     with_stress: bool,
 ) -> PyResult<PyKpointScfResult> {
-    let fname = "run_uhf_kpts";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
+    let a = pbc_args!(
+        "run_uhf_kpts", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: None,
     };
-    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
-    let m = k_mesh(&s, mesh, centring)?;
-    let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
-    let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
-    let (r, derivs) = py
-        .allow_threads(|| kuhf_driver(&s, &m, scf, start))
-        .map_err(pbc_err(fname))?;
-    let u = &r.scf;
-    let like = KScfLike {
-        energy: u.energy,
-        converged: u.converged,
-        iterations: u.iterations,
-        e_nuc: u.e_nuc,
-        madelung: r.madelung,
-        kpts: u.kpts.clone(),
-        lindep: (&u.lindep).into(),
-    };
-    let mut out = kpoint_result_base(&s, &m, "uhf", &like);
-    out.timings_data = r.timings.clone();
-    out.ewald_start = start_name;
-    out.none_stage_energy = r.none_stage.as_ref().map(|n| n.energy);
-    (out.mo_energy, out.mo_energy_beta) = (u.eps_alpha.clone(), Some(u.eps_beta.clone()));
-    (out.nalpha, out.nbeta, out.s2) = (Some(r.nocc.0), Some(r.nocc.1), Some(u.s2));
-    (out.gap_alpha, out.gap_beta) = (r.gaps.gap_alpha, r.gaps.gap_beta);
-    (out.gradient_data, out.stress_data) = (derivs.gradient, derivs.stress);
-    Ok(out)
+    let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
+    kpoint_open_entry(py, OpenMethod::Uhf, &a, kw, k, None)
 }
 
 // ─────────────────────────────────────────────────── k-point RKS ──
@@ -3359,40 +3518,33 @@ fn run_rks_kpts(
     neighbour_switch: f64,
 ) -> PyResult<PyKpointRksResult> {
     let fname = "run_rks_kpts";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: true,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
+    let a = pbc_args!(
+        fname, true;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start: None,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: Some(GridKw {
+            n_radial,
+            n_angular,
+            neighbour_cutoff,
+            neighbour_switch,
+        }),
     };
-    check_kpoint_ks_support(fname, functional, KKsKind::Closed, &s)?;
-    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
-    let m = k_mesh(&s, mesh, centring)?;
-    let grid = periodic_grid(
-        fname,
-        n_radial,
-        n_angular,
-        neighbour_cutoff,
-        neighbour_switch,
-    )?;
-    let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
+    let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
+    let KScfPrep {
+        p: ScfPrep { s, grid, .. },
+        mesh: m,
+        scf,
+    } = kpoint_scf_prep(&a, PbcKind::Rks(functional), &kw, &k)?;
     let (r, madelung, derivs) = py
         .allow_threads(|| krks_driver(&s, &m, functional, grid, scf))
         .map_err(pbc_err(fname))?;
     let n = m.n();
-    let c = ANGSTROM_TO_BOHR;
     Ok(PyKpointRksResult {
         functional: functional.to_string(),
         energy: r.scf.energy,
@@ -3408,12 +3560,7 @@ fn run_rks_kpts(
         mesh: (n[0], n[1], n[2]),
         centring: centring_name(m.centring()),
         nk: m.nk(),
-        kpts: r
-            .scf
-            .kpts
-            .iter()
-            .map(|k| [k[0] * c, k[1] * c, k[2] * c])
-            .collect(),
+        kpts: kpts_per_angstrom(&r.scf.kpts),
         mo_energy: r.scf.eps.clone(),
         homo: r.scf.homo,
         lumo: r.scf.lumo,
@@ -3608,90 +3755,71 @@ fn run_uks_kpts(
     gdf_omega: Option<f64>,
     neighbour_switch: f64,
 ) -> PyResult<PyKpointScfResult> {
-    let fname = "run_uks_kpts";
-    let mut s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    })?;
-    s.derivs = DerivRequest {
-        gradient: with_gradient,
-        stress: with_stress,
+    let a = pbc_args!(
+        "run_uks_kpts", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
+        ewald_start,
+        with_gradient,
+        with_stress,
+        range_split,
+        grid: Some(GridKw {
+            n_radial,
+            n_angular,
+            neighbour_cutoff,
+            neighbour_switch,
+        }),
     };
-    check_kpoint_ks_support(fname, functional, KKsKind::Unrestricted, &s)?;
-    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
-    let m = k_mesh(&s, mesh, centring)?;
-    let grid = periodic_grid(
-        fname,
-        n_radial,
-        n_angular,
-        neighbour_cutoff,
-        neighbour_switch,
-    )?;
-    let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
-    let scf = kscf_config(fname, max_iter, energy_conv, grad_conv)?;
-    let (r, derivs) = py
-        .allow_threads(|| kuks_driver(&s, &m, functional, grid, scf, start))
-        .map_err(pbc_err(fname))?;
-    let u = &r.scf;
-    let like = KScfLike {
-        energy: u.energy,
-        converged: u.converged,
-        iterations: u.iterations,
-        e_nuc: u.e_nuc,
-        madelung: r.madelung,
-        kpts: u.kpts.clone(),
-        lindep: (&u.lindep).into(),
-    };
-    let parts = KOpenParts {
-        method: "uks",
-        like,
-        eps_alpha: u.eps_alpha.clone(),
-        eps_beta: u.eps_beta.clone(),
-        nocc: r.nocc,
-        s2: u.s2,
-        gaps: &r.gaps,
-        timings: r.timings.clone(),
-        none_stage_energy: r.none_stage.as_ref().map(|n| n.energy),
-        ewald_start: start_name,
-        ks: Some((
-            functional.to_string(),
-            r.e_xc,
-            r.exact_exchange_fraction,
-            r.n_grid_points,
-            r.electrons_on_grid,
-        )),
-        level_shift: None,
-        derivs,
-    };
-    Ok(open_kpoint_result(&s, &m, parts))
+    let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
+    kpoint_open_entry(py, OpenMethod::Uks(functional.to_string()), &a, kw, k, None)
 }
 
-/// Shared body of `run_roks_kpts` / `run_rohf_kpts`.
-#[allow(clippy::too_many_arguments)]
-fn run_ro_kpts(
+/// The [`KOpenParts`] of a k-point UHF / UKS / ROHF / ROKS driver result
+/// (the three result types share these field names).
+macro_rules! k_open_parts {
+    ($r:expr, $method:expr, $start_name:expr, $derivs:expr, $ks:expr, $level_shift:expr) => {{
+        let r = $r;
+        let u = &r.scf;
+        KOpenParts {
+            method: $method,
+            like: KScfLike {
+                energy: u.energy,
+                converged: u.converged,
+                iterations: u.iterations,
+                e_nuc: u.e_nuc,
+                madelung: r.madelung,
+                kpts: u.kpts.clone(),
+                lindep: (&u.lindep).into(),
+            },
+            eps_alpha: u.eps_alpha.clone(),
+            eps_beta: u.eps_beta.clone(),
+            nocc: r.nocc,
+            s2: u.s2,
+            gaps: &r.gaps,
+            timings: r.timings.clone(),
+            none_stage_energy: r.none_stage.as_ref().map(|n| n.energy),
+            ewald_start: $start_name,
+            ks: $ks,
+            level_shift: $level_shift,
+            derivs: $derivs,
+        }
+    }};
+}
+
+/// Shared body of the k-point open-shell bindings (`run_uhf_kpts`,
+/// `run_uks_kpts`, `run_rohf_kpts`, `run_roks_kpts`): the `level_shift`
+/// check (ROHF / ROKS), [`kpoint_scf_prep`], the driver, the result.
+fn kpoint_open_entry(
     py: Python<'_>,
-    fname: &'static str,
+    method: OpenMethod,
     a: &PbcArgs<'_, '_>,
-    functional: Option<&str>,
-    mesh: (usize, usize, usize),
-    centring: &str,
-    ewald_start: Option<&str>,
-    scfk: (usize, f64, f64),
-    grid: (usize, usize, Option<f64>, f64),
-    derivs: DerivRequest,
-    range_split: Option<&Bound<'_, PyAny>>,
+    kw: ScfKw<'_, '_>,
+    k: KpointKw<'_>,
     level_shift: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
+    let fname = a.fname;
     if let Some(x) = level_shift {
         if !(x.is_finite() && x >= 0.0) {
             return Err(PyValueError::new_err(format!(
@@ -3699,53 +3827,55 @@ fn run_ro_kpts(
             )));
         }
     }
-    let mut s = pbc_setup(a)?;
-    s.derivs = derivs;
-    if let Some(f) = functional {
-        check_kpoint_ks_support(fname, f, KKsKind::RestrictedOpen, &s)?;
-    }
-    s.range_split = parse_range_split(fname, range_split, s.aux.is_some(), s.derivs)?;
-    let m = k_mesh(&s, mesh, centring)?;
-    let grid = periodic_grid(fname, grid.0, grid.1, grid.2, grid.3)?;
-    let (start, start_name) = parse_ewald_start(fname, s.exx, ewald_start)?;
-    let scf = kscf_config(fname, scfk.0, scfk.1, scfk.2)?;
-    let (r, derivs) = py
-        .allow_threads(|| kroks_driver(&s, &m, functional, grid, scf, start, level_shift))
-        .map_err(pbc_err(fname))?;
-    let u = &r.scf;
-    let like = KScfLike {
-        energy: u.energy,
-        converged: u.converged,
-        iterations: u.iterations,
-        e_nuc: u.e_nuc,
-        madelung: r.madelung,
-        kpts: u.kpts.clone(),
-        lindep: (&u.lindep).into(),
-    };
-    let parts = KOpenParts {
-        method: if functional.is_some() { "roks" } else { "rohf" },
-        like,
-        eps_alpha: u.eps_alpha.clone(),
-        eps_beta: u.eps_beta.clone(),
-        nocc: r.nocc,
-        s2: u.s2,
-        gaps: &r.gaps,
-        timings: r.timings.clone(),
-        none_stage_energy: r.none_stage.as_ref().map(|n| n.energy),
-        ewald_start: start_name,
-        level_shift: Some(r.level_shift),
-        ks: functional.map(|f| {
-            (
+    let KScfPrep { p, mesh: m, scf } = kpoint_scf_prep(a, method.kind(), &kw, &k)?;
+    let ScfPrep {
+        s,
+        start,
+        start_name,
+        grid,
+    } = p;
+    let out = match &method {
+        OpenMethod::Uhf => {
+            let (r, derivs) = py
+                .allow_threads(|| kuhf_driver(&s, &m, scf, start))
+                .map_err(pbc_err(fname))?;
+            let parts = k_open_parts!(&r, "uhf", start_name, derivs, None, None);
+            open_kpoint_result(&s, &m, parts)
+        }
+        OpenMethod::Uks(f) => {
+            let (r, derivs) = py
+                .allow_threads(|| kuks_driver(&s, &m, f, grid, scf, start))
+                .map_err(pbc_err(fname))?;
+            let ks = Some((
                 f.to_string(),
                 r.e_xc,
                 r.exact_exchange_fraction,
                 r.n_grid_points,
                 r.electrons_on_grid,
-            )
-        }),
-        derivs,
+            ));
+            let parts = k_open_parts!(&r, "uks", start_name, derivs, ks, None);
+            open_kpoint_result(&s, &m, parts)
+        }
+        OpenMethod::Rohf | OpenMethod::Roks(_) => {
+            let functional = method.kind().functional();
+            let (r, derivs) = py
+                .allow_threads(|| kroks_driver(&s, &m, functional, grid, scf, start, level_shift))
+                .map_err(pbc_err(fname))?;
+            let ks = functional.map(|f| {
+                (
+                    f.to_string(),
+                    r.e_xc,
+                    r.exact_exchange_fraction,
+                    r.n_grid_points,
+                    r.electrons_on_grid,
+                )
+            });
+            let name = if functional.is_some() { "roks" } else { "rohf" };
+            let parts = k_open_parts!(&r, name, start_name, derivs, ks, Some(r.level_shift));
+            open_kpoint_result(&s, &m, parts)
+        }
     };
-    Ok(open_kpoint_result(&s, &m, parts))
+    Ok(out)
 }
 
 /// **k-point ROKS** (restricted open-shell Kohn-Sham; LDA / GGA / global
@@ -3803,35 +3933,30 @@ fn run_roks_kpts(
     level_shift: Option<f64>,
     neighbour_switch: f64,
 ) -> PyResult<PyKpointScfResult> {
-    let args = PbcArgs {
-        fname: "run_roks_kpts",
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    };
-    run_ro_kpts(
-        py,
-        "run_roks_kpts",
-        &args,
-        Some(functional),
-        mesh,
-        centring,
+    let a = pbc_args!(
+        "run_roks_kpts", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
         ewald_start,
-        (max_iter, energy_conv, grad_conv),
-        (n_radial, n_angular, neighbour_cutoff, neighbour_switch),
-        DerivRequest {
-            gradient: with_gradient,
-            stress: with_stress,
-        },
+        with_gradient,
+        with_stress,
         range_split,
+        grid: Some(GridKw {
+            n_radial,
+            n_angular,
+            neighbour_cutoff,
+            neighbour_switch,
+        }),
+    };
+    let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
+    kpoint_open_entry(
+        py,
+        OpenMethod::Roks(functional.to_string()),
+        &a,
+        kw,
+        k,
         level_shift,
     )
 }
@@ -3870,37 +3995,20 @@ fn run_rohf_kpts(
     range_split: Option<&Bound<'_, PyAny>>,
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
-    let args = PbcArgs {
-        fname: "run_rohf_kpts",
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: false,
-    };
-    run_ro_kpts(
-        py,
-        "run_rohf_kpts",
-        &args,
-        None,
-        mesh,
-        centring,
+    let a = pbc_args!(
+        "run_rohf_kpts", false;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    );
+    let kw = ScfKw {
         ewald_start,
-        (max_iter, energy_conv, grad_conv),
-        (75, 302, None, 0.0),
-        DerivRequest {
-            gradient: with_gradient,
-            stress: with_stress,
-        },
+        with_gradient,
+        with_stress,
         range_split,
-        None,
-    )
+        grid: None,
+    };
+    let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
+    kpoint_open_entry(py, OpenMethod::Rohf, &a, kw, k, None)
 }
 
 // ─────────────────────────────────────────────── k-point MP2 / dRPA ──
@@ -4242,20 +4350,11 @@ fn run_mp2_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointCorrelationResult> {
     let fname = "run_mp2_kpts";
-    let s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: true,
-    })?;
+    let s = pbc_setup(&pbc_args!(
+        fname, true;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    ))?;
     let m = k_mesh(&s, mesh, centring)?;
     let o = KCorrOpts {
         drpa: None,
@@ -4308,20 +4407,11 @@ fn run_drpa_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointCorrelationResult> {
     let fname = "run_drpa_kpts";
-    let s = pbc_setup(&PbcArgs {
-        fname,
-        mol,
-        lattice: &lattice,
-        basis: basis_set,
-        exxdiv,
-        omega,
-        gdf_omega,
-        jk,
-        auxbasis,
-        max_eri_gb,
-        memory_budget_gb,
-        closed_shell: true,
-    })?;
+    let s = pbc_setup(&pbc_args!(
+        fname, true;
+        mol, lattice, basis_set, exxdiv, omega, gdf_omega,
+        jk, auxbasis, max_eri_gb, memory_budget_gb
+    ))?;
     let m = k_mesh(&s, mesh, centring)?;
     let e = parse_kdrpa_energy(fname, energy)?;
     if let (Some(q), false) = (quad_points, e == KDrpaEnergy::Quadrature) {
