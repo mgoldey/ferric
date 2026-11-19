@@ -4,17 +4,15 @@ This chapter fixes one notation for the whole book. You can read it once
 straight through, or come back to a single section when a symbol in a
 chapter looks unfamiliar. Each section states the convention, lists where
 the sources disagree, and names the choice the book makes. The sources are
-the code, the site pages, the dissertation, and the SR-MP2 + LR-RPA
-derivation notes.
+the code, the site pages and the dissertation.
 
 Code is cited by item, as `ferric-mp2/src/rimp2.rs::pair_energy`, as in every other chapter;
 the build checks that the item exists and resolves its line (`book/BUILD.md`).
 A line inside a function is quoted in an excerpt that the build compares with
 the source. Pages of the user guide are cited by file and heading. Paths
 starting with `crates/` or `site/` are in the repository. `dissertation.txt`
-and `wiki/papers/…` are local files outside the repository that do not
-change; they are cited by line so a claim can be checked, and are never
-copied whole.
+is a local file outside the repository that does not change; it is cited by
+line so a claim can be checked, and is never copied whole.
 
 When a source disagrees with the book, the code is the authority for what is
 computed and the book is the authority for how it is written down.
@@ -138,8 +136,8 @@ $(ia|jb) = \langle ij|ab\rangle$, and its exchange partner $(ib|ja)$ is
 $\langle ij|ba\rangle$.
 
 The spin-orbital coupled-cluster code uses this convention
-(section @sec:ccd-ccsd-spin-orbital), and so do the derivation notes
-(`wiki/papers/sr-mp2-lr-rpa-derivation.tex:125-131`). The spin integration in
+(section @sec:ccd-ccsd-spin-orbital), as does the antisymmetrized integral of
+section @sec:hamiltonian. The spin integration in
 $(pr|qs)$ is implied: the integral vanishes unless $p, r$ share a spin and
 $q, s$ share a spin.
 
@@ -168,7 +166,6 @@ $$ E^{(2)} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib|ja)\,\big]}{\Delt
 
 | Source | Definition | Sign |
 |---|---|---|
-| `wiki/papers/sr-mp2-lr-rpa-derivation.tex:207` | $D_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
 | `dissertation.txt:2852-2857` (Eq. 4.3) | $\varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$, unnamed | positive |
 | Code, `ferric-mp2/src/rimp2.rs::pair_energy` | `denom = e_ij - eps[a] - eps[b]` | negative |
 | Code doc, the `kappa` field of `ferric-mp2/src/rimp2.rs::RiMp2Config` | $\Delta = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
@@ -274,8 +271,8 @@ $p > q$ (module documentation of `crates/ferric-ci/src/casscf.rs`).
 - The letter $\kappa$ has two other meanings in the sources. It is the
   regularization strength of $\kappa$-MP2, in Ha$^{-1}$
   (the `kappa` field of `ferric-mp2/src/rimp2.rs::RiMp2Config`),
-  and it is the particle-hole kernel in the derivation notes
-  (`wiki/papers/sr-mp2-lr-rpa-derivation.tex:417`). The book keeps $\kappa$ for
+  and it is a common name for the particle-hole kernel of response theory.
+  The book keeps $\kappa$ for
   orbital rotations, writes the regularization strength as
   $\kappa_{\mathrm{reg}}$, and writes the particle-hole kernel as
   $\mathbf K$ with $K_{ia,jb} = 2(ia|jb)$.
@@ -382,9 +379,8 @@ it, followed by the atomic-unit value in parentheses: "$\omega = 0.420$
 
 **The letter $\omega$** has three meanings in the sources: the range-separation
 parameter, the frequency of a response function, and the Ewald splitting
-parameter (the `[cell] omega` key). The derivation notes use it for the
-first two in the same chapter
-(`wiki/papers/sr-mp2-lr-rpa-derivation.tex:359`, `:410`). The book assigns:
+parameter (the `[cell] omega` key). The range-separated RPA methods need
+the first two in the same equations. The book assigns:
 
 | Quantity | Symbol |
 |---|---|

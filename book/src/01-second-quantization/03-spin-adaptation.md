@@ -1,6 +1,6 @@
 # Spin adaptation: from spin orbitals to spatial orbitals {#spin-adaptation}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 In a closed-shell molecule every occupied spatial orbital holds one
 $\alpha$ and one $\beta$ electron, and the $\alpha$ and $\beta$ orbitals are
@@ -44,9 +44,9 @@ spin in $q$ and $s$. Equation (@eq:hamiltonian-3) says this with deltas: an
 antisymmetrized integral is a direct term, nonzero when the spins pair as
 $(p,r)$ and $(q,s)$, minus an exchange term, nonzero when they pair as
 $(p,s)$ and $(q,r)$. Between occupied pair $(i_\sigma, j_\tau)$ and virtual
-pair $(a_\rho, b_\kappa)$:
+pair $(a_{\sigma'}, b_{\tau'})$:
 
-$$ \langle i_\sigma j_\tau\|a_\rho b_\kappa\rangle = (ia|jb)\,\delta_{\sigma\rho}\delta_{\tau\kappa} - (ib|ja)\,\delta_{\sigma\kappa}\delta_{\tau\rho} . $$
+$$ \langle i_\sigma j_\tau\|a_{\sigma'} b_{\tau'}\rangle = (ia|jb)\,\delta_{\sigma\sigma'}\delta_{\tau\tau'} - (ib|ja)\,\delta_{\sigma\tau'}\delta_{\tau\sigma'} . $$
 
 Go through the 16 spin assignments of $(i, j, a, b)$ and keep those where
 at least one delta pair is satisfied:
@@ -84,9 +84,10 @@ $$ E_{\mathrm{ref}} - E_{\mathrm{nn}} = 2\sum_i h_{ii} + \sum_{ij}\big[\,2(ii|jj
 Check one doubly occupied orbital, as in He or H$_2$ in a minimal basis.
 Then $E_{\mathrm{ref}} - E_{\mathrm{nn}} = 2h_{11} + (11|11)$: two
 electrons, each with its one-electron energy, and one Coulomb repulsion
-between them. The $2(11|11)$ counts the repulsion of each electron with the
-other's charge, and the $-(11|11)$ removes the self-interaction that the
-same count includes.
+between them. Of the $2(11|11)$, one $(11|11)$ is the repulsion between the
+two electrons, counted from both sides with the $\tfrac12$, and the other
+is each electron's repulsion with itself. The exchange term $-(11|11)$
+removes that self-interaction.
 
 > **Verified equation @eq:so-closed-shell-energy** · the closed-shell reference energy
 >
@@ -130,11 +131,11 @@ chapter, section @sec:notation-density-matrices-fock-matrix). The factor 2 in $D
 > | | |
 > |---|---|
 > | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check labelled "claim B0" |
-> | Negative control | none for this check |
-> | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
-> | Code | `ferric-mp2/src/spinorbital.rs::asym_oovv` |
+> | Negative control | the spatial model built as $h + 2J - 2K$ (mutation `fock_k_double`) must fail the check |
+> | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py`, which applies the mutation |
+> | Code | `ferric-scf/src/rhf.rs::RhfJk::build_fock` assembles $F = h + J[D] - \tfrac12 K[D]$ |
 >
-> <!-- verified: id=so.fock-closed-shell; script=scripts/oomp2_mp3_identities_sympy.py; claim=B0; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/spinorbital.rs::asym_oovv -->
+> <!-- verified: id=so.fock-closed-shell; script=scripts/oomp2_mp3_identities_sympy.py; claim=B0; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-scf/src/rhf.rs::RhfJk::build_fock -->
 
 ### The energy as the code computes it
 
@@ -273,8 +274,10 @@ let t_val = k / denom;                 // t = -<ij||ab> / Delta
 energy_i += t_val * k;
 t_i[(j, a, b_idx)] = t_val;
 // ... after the j, a, b loops:
-*energy_i_slot = 0.25 * energy_i;      // the 1/4 of (1.13)
+*energy_i_slot = 0.25 * energy_i;      // the same-spin 1/4
 ```
+
+The last line is the $\tfrac14$ of $E_{\alpha\alpha}$ in (@eq:so-ump2-blocks).
 
 The opposite-spin kernel, `opposite_spin_pair_kernel`, has the same shape
 with `k` replaced by the single integral $(ia|\bar\jmath\bar b)$ and no
@@ -304,7 +307,7 @@ only the order in which the two electrons are named changed. Expanding to
 spin orbitals applies the selection rule of section @sec:spin-adaptation-integral-selection-rule to the
 amplitude:
 
-$$ t_{i_\sigma j_\tau}^{a_\rho b_\kappa} = t_{ij}^{ab}\,\delta_{\sigma\rho}\delta_{\tau\kappa} - t_{ij}^{ba}\,\delta_{\sigma\kappa}\delta_{\tau\rho}, \qquad t_{i_\sigma}^{a_\rho} = t_i^a\,\delta_{\sigma\rho} . \label{eq:spin-adaptation-4} $$
+$$ t_{i_\sigma j_\tau}^{a_{\sigma'} b_{\tau'}} = t_{ij}^{ab}\,\delta_{\sigma\sigma'}\delta_{\tau\tau'} - t_{ij}^{ba}\,\delta_{\sigma\tau'}\delta_{\tau\sigma'}, \qquad t_{i_\sigma}^{a_{\sigma'}} = t_i^a\,\delta_{\sigma\sigma'} . \label{eq:spin-adaptation-4} $$
 
 `ferric-cc/src/ccsd_closed_shell.rs::expand_amplitudes_to_spin_orbital` is this
 expansion. Its doubles loop, with the loop headers removed:
@@ -323,8 +326,8 @@ t2_so[[i, j, a, b]] = v;
 
 It is `asym_oovv` of section @sec:hamiltonian with $t$ in place of $(ia|jb)$, and the
 same `spin`/`spat` convention. The $\alpha\beta\alpha\beta$ block of (@eq:spin-adaptation-4)
-is $t_{ij}^{ab}$ itself: with $\sigma = \rho = \alpha$ and
-$\tau = \kappa = \beta$ only the first delta pair holds.
+is $t_{ij}^{ab}$ itself: with $\sigma = \sigma' = \alpha$ and
+$\tau = \tau' = \beta$ only the first delta pair holds.
 
 The correlation energy is $\tfrac14\sum\langle ij\|ab\rangle t_{ij}^{ab}$ in
 spin orbitals. Substitute the table for the integral and (@eq:spin-adaptation-4) for the
@@ -410,24 +413,23 @@ for both.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/casci_slater_condon_phases_sympy.py`, claim 4, control e: the blocked-order Slater–Condon port mismatches the interleaved matrix element by element, the absolute values of the elements agree, and the spectra agree |
-> | Negative control | the claim is itself the comparison against the other ordering; claim 3 holds only for the blocked order |
+> | Proof | `scripts/casci_slater_condon_phases_sympy.py`, claim 4, control e: the blocked-order Slater–Condon port mismatches the interleaved matrix element by element, the blocked matrix equals $S H S$ of the interleaved one with $S_{AB}$ in the explicit form above, and the spectra agree |
+> | Negative control | the two matrices compared without $S_{AB}$ differ; claim 3 holds only for the blocked order |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-ci/src/hamiltonian.rs::general_element` |
 >
 > <!-- verified: id=so.ordering-similarity; script=scripts/casci_slater_condon_phases_sympy.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/hamiltonian.rs::general_element -->
 
-The script checks that the two orderings differ by a diagonal sign
-similarity with the same spectrum. It does not assert the explicit form of
-$S_{AB}$ above.
-
 ## Known limits
+
+Checked 2026-11-19.
 
 - There is no open-shell CCSD or $(T)$ in the library. Every coupled-cluster
   solver reads a restricted reference (see the validation page).
-- ROHF references use one spatial set with unequal occupations. The spin
-  blocks above hold for them through the UHF functional at the ROHF
-  densities (chapter @sec:hartree-fock), and are not restated here.
+- ROHF references are semi-canonicalized per spin on entry, after which
+  (@eq:so-ump2-blocks) applies. The single-excitation term
+  $-\sum_{ia}|f^\sigma_{ia}|^2/\Delta_i^a$, nonzero for ROHF, is not included
+  (`ferric-mp2/src/u_rimp2.rs`, module documentation).
 
 ## Sources
 

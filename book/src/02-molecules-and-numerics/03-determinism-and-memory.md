@@ -1,10 +1,11 @@
 # Determinism, threads and the memory budget {#determinism-and-memory}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 Run the same input twice, once on 4 threads and once on 12. Should the
-energies agree? To the last bit, if the code is careful about the order in
-which it adds numbers. Without that care they differ in the last digits, and
+energies agree? To the last bit if `blas_threads = 1`, and to about
+$10^{-13}$ Ha with the defaults, because the code adds its own sums in a
+fixed order. Without that care they differ in the last digits, and
 a test that compares the two runs sees a difference that has nothing to do
 with the chemistry. A second class of failure is a job that the operating system
 kills because two parts of the code each assumed they had all the memory.
@@ -14,12 +15,12 @@ in what order a sum is added, and what happens when a job meets its memory
 budget. This section states them once. A chapter that depends on one refers
 back here.
 
-| Setting | CLI | Python | Environment |
-|---|---|---|---|
-| Serial-section BLAS threads | `[parallel] blas_threads` | `ferric.set_blas_threads` | `FERRIC_BLAS_THREADS` |
-| Rayon threads | | | `RAYON_NUM_THREADS` |
-| BLAS threads in parallel regions | | | `OPENBLAS_NUM_THREADS` |
-| Memory budget | `[memory] budget_gb` | keyword arguments where offered | `FERRIC_MEM_BUDGET_GB` |
+| Setting | Default | CLI | Python | Environment |
+|---|---|---|---|---|
+| Serial-section BLAS threads | the rayon pool size | `[parallel] blas_threads` | `ferric.set_blas_threads` | `FERRIC_BLAS_THREADS` |
+| Rayon threads | every logical CPU | | | `RAYON_NUM_THREADS` |
+| BLAS threads in parallel regions | 1 | | | `OPENBLAS_NUM_THREADS` |
+| Memory budget | 0.8 × available RAM | `[memory] budget_gb` | keyword arguments where offered | `FERRIC_MEM_BUDGET_GB` |
 
 | Entry point | Location |
 |---|---|
@@ -131,9 +132,9 @@ depends on the order of its terms.
 
 A parallel reduction that combines partial sums in a tree has a tree shape
 that depends on the worker count. Its result can therefore change with
-`RAYON_NUM_THREADS`. Reductions in ferric fold in a fixed ascending order
-that does not depend on the thread count, so results are bit-identical across
-`RAYON_NUM_THREADS`.
+`RAYON_NUM_THREADS`. Reductions that ferric writes itself fold in a fixed
+ascending order that does not depend on the thread count. The remaining
+dependence is the serial BLAS count, below.
 
 The RI-MP2 energy (section @sec:closed-shell-ri-mp2) shows the pattern. Each occupied orbital
 $i$ gets its own partial sums on some worker, the partials are collected
@@ -160,7 +161,7 @@ for (e_os_i, e_ss_i) in partials {       // serial, ascending i
 ```
 
 A rayon `reduce` would be shorter and would change the bits with the worker
-count; the code comment puts the variation at the µHa level. The cost of the
+count. The cost of the
 fixed order is one vector of `nocc` pairs and a serial loop over it.
 
 The contraction engine's row-banded matrix product gives the same bits for
@@ -266,6 +267,8 @@ in the last digits, and two runs at one budget are bit-identical (section
 @sec:closed-shell-ri-mp2 gives the RI-MP2 case).
 
 ## Known limits
+
+Checked 2026-11-19.
 
 - A library or Python caller installs no pool, so each check there compares
   its own allocation with the whole budget.

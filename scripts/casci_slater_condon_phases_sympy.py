@@ -50,6 +50,10 @@ Claims
           +-1 similarity, so it must mismatch element-wise yet give the same
           spectrum. That is checked numerically below, which shows claim 3
           is convention-specific (strictly stronger than an energy test).
+          The similarity is asserted in its explicit form
+          S_AB = (-1)^{#{(p,q): p in B, q in A, p < q}} (book
+          `eq:so-ordering-similarity`); the same matrices compared without
+          S_AB must differ, so the sign check cannot pass vacuously.
 
   5  The spatial second-quantized Hamiltonian (book `eq:hamiltonian-1`, spin sums written
      out) equals the spin-orbital one with antisymmetrized integrals (book
@@ -642,6 +646,18 @@ def claim4():
     dspec = np.abs(np.linalg.eigvalsh(m_ab) - np.linalg.eigvalsh(m_il)).max()
     check(sim < 1e-12, f"|H_ab| == |H_interleaved| element-wise (max {sim:.1e})")
     check(dspec < 1e-10, f"same spectrum (max eigenvalue diff {dspec:.1e})")
+
+    # The similarity is the book's S_AB = (-1)^{#{(p,q): p in B, q in A, p<q}}:
+    # moving each beta creator of the blocked string past every later alpha one.
+    s_ab = np.array(
+        [(-1) ** sum(1 for p in occ(bk) for q in occ(ak) if p < q) for ak, bk in dets]
+    )
+    d_sim = np.abs(m_ab - s_ab[:, None] * m_il * s_ab[None, :]).max()
+    check(
+        d_sim < 1e-12, f"H_ab == S H_interleaved S with S_AB explicit (max {d_sim:.1e})"
+    )
+    d_nosign = np.abs(m_ab - m_il).max()
+    check(d_nosign > 1e-6, f"without S_AB the matrices differ (max {d_nosign:.1e})")
 
 
 def main():

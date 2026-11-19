@@ -1,6 +1,6 @@
 # Wick contractions as the proof scripts run them {#wick}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 Deriving a correlation energy by hand means expanding products of operator
 strings, pairing creators with annihilators in every allowed way, and
@@ -31,24 +31,24 @@ prefactors it has settled.
 
 ## Wick's theorem for an expectation value {#wick-wick-s-theorem-expectation}
 
-For a product of creation and annihilation operators, Wick's theorem writes
-the product as a sum of normal-ordered terms with every possible set of
-contractions. A contraction of two operators is their expectation value in
-$|0\rangle$. The only nonzero contractions relative to $|0\rangle$ are
+Wick's theorem, the contractions (@eq:hamiltonian-contractions) and the
+sign rule are stated in section @sec:hamiltonian-wick-theorem. The scripts
+use two consequences of it.
 
-$$ \langle a^\dagger_i a_j\rangle = \delta_{ij}\ (i, j \text{ occupied}), \qquad \langle a_a a^\dagger_b\rangle = \delta_{ab}\ (a, b \text{ virtual}). $$
+- **An expectation value in $|0\rangle$ keeps only the fully contracted
+  terms.** Every normal-ordered remainder has zero expectation value. With
+  the occupied and virtual labels of this section, the nonzero
+  contractions are $\langle a^\dagger_i a_j\rangle = \delta_{ij}$ and
+  $\langle a_a a^\dagger_b\rangle = \delta_{ab}$: an electron removed from
+  an occupied orbital and put back, or added to an empty one and taken out
+  again.
+- **No contraction joins two operators inside one normal-ordered string.**
+  In a product such as $\hat T_2^\dagger\,\{\hat V_{\mathrm N}\}\,\hat T_2$
+  every contraction runs between two different factors.
 
-The first removes an electron from an occupied orbital and puts it back.
-The second adds an electron to an empty orbital and takes it out again.
-Every other order gives zero: you cannot remove an electron from an empty
-orbital, or add one to a full orbital.
-
-A vacuum expectation value keeps only the fully contracted terms, because
-every normal-ordered remainder has zero expectation value (section @sec:hamiltonian-reference-determinant-normal-ordering).
-Each contraction sets two orbital labels equal and removes one sum. A sign
-comes from the number of operator crossings: draw a line between each
-contracted pair, and the term carries $(-1)$ for every crossing of two
-lines.
+Each contraction sets two orbital labels equal and removes one sum. The
+sign is $(-1)$ for every crossing of two lines, when each contracted pair
+is joined by a line.
 
 You have already seen the theorem at work. The two expectation values that
 gave $E_{\mathrm{ref}}$ in (@eq:so-ref-energy) are the full contractions of
@@ -62,7 +62,7 @@ cross ($-$).
 | Step | What the script does | Why |
 |---|---|---|
 | 1 | Build each vertex as a sum of antisymmetrized tensors times a string of operators, for example $\tfrac14 t^{ab}_{ij}\,a^\dagger_a a^\dagger_b a_j a_i$ for the doubles operator $\hat T_2$ | The tensors keep their symmetry, so a result is a sum of tensor products |
-| 2 | Give the bra, each vertex and the ket **distinct dummy indices** | Sharing a symbol between two factors merges terms that are different. On the MP3 ring term it produces a spurious factor of $\tfrac14$ |
+| 2 | Give the bra, each vertex and the ket **distinct dummy indices** | Sharing a symbol between two factors merges terms that are different. On the MP3 ring term it produces a spurious factor of $\tfrac14$ (a separate error from the single-ordering $\tfrac14$ of section @sec:wick-three-prefactors-recipe-settled) |
 | 3 | Call `wicks(..., keep_only_fully_contracted=True)` and collect terms with `substitute_dummies` | One canonical representative of each term |
 | 4 | Evaluate each term as a sum over a random antisymmetrized model with the same tensor shapes the code uses | The coefficient of a given contraction pattern is then a number |
 | 5 | Compare with a route that uses no Wick algebra: finite differences of an energy, or Rayleigh–Schrödinger perturbation theory in the full determinant space of a few spin orbitals | A bug in step 1 to 3 shows as a mismatch |
@@ -118,8 +118,11 @@ The first-order doubles amplitudes of canonical Hartree–Fock orbitals are
 
 $$ t_{ij}^{ab} = -\,\frac{\langle ij\|ab\rangle}{\Delta_{ij}^{ab}}, \qquad \hat T_2 = \frac14\sum_{ijab} t_{ij}^{ab}\, a^\dagger_a a^\dagger_b a_j a_i , \label{eq:wick-1} $$
 
-and the second-order energy is the contraction of $\hat V_{\mathrm N}$ with
-$\hat T_2$:
+The first-order wavefunction is $|\Psi^{(1)}\rangle = \hat T_2|0\rangle$;
+single excitations do not appear because $f_{ia} = 0$ for Hartree–Fock
+orbitals. The second-order energy is
+$E^{(2)} = \langle 0|\hat V_{\mathrm N}|\Psi^{(1)}\rangle$, the contraction
+of $\hat V_{\mathrm N}$ with $\hat T_2$:
 
 $$ E^{(2)} = \langle 0|\hat V_{\mathrm N}\hat T_2|0\rangle = \frac14\sum_{ijab}\langle ij\|ab\rangle\,t_{ij}^{ab} = -\frac14\sum_{ijab}\frac{|\langle ij\|ab\rangle|^2}{\Delta_{ij}^{ab}} . \label{eq:so-e2-wick} $$
 
@@ -208,22 +211,23 @@ both lines.
 >
 > | | |
 > |---|---|
-> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the checks "B1 J(t*) == E2" and the one labelled "claim A3" (Rayleigh–Schrödinger $E_2$) |
-> | Negative control | none specific to this identity; the mutations change the MP3 ring coefficient, the sign of $\kappa$ and the two-particle density |
-> | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
+> | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the checks "B1 J(t*) == E2", "B1 canonical form" (the two-term $J(t)$ above at a random $t$) and the one labelled "claim A3" (Rayleigh–Schrödinger $E_2$) |
+> | Negative control | the sign of $\Delta$ flipped in the model (mutation `delta_sign`) must fail the canonical-form check |
+> | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py`, which applies the mutation |
 > | Code | `ferric-mp2/src/mp3.rs::mp3_energy` |
 >
 > <!-- verified: id=so.e2-wick; script=scripts/oomp2_mp3_identities_sympy.py; claim=A3; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/mp3.rs::mp3_energy -->
-
-The script asserts stationarity and the value at the stationary point.
-It does not assert the explicit canonical form of $J(t)$ written above.
 
 The closed-shell form of (@eq:so-e2-wick), the one RI-MP2 evaluates, follows in
 section @sec:spin-adaptation.
 
 ## Three prefactors the recipe settled {#wick-three-prefactors-recipe-settled}
 
-The third-order energy $E^{(3)} = \langle \hat T_2^\dagger \hat V_{\mathrm N}\hat T_2\rangle$
+The third-order energy is
+$E^{(3)} = \langle\Psi^{(1)}|\hat V_{\mathrm N} - E^{(1)}|\Psi^{(1)}\rangle$,
+and $E^{(1)} = \langle 0|\hat V_{\mathrm N}|0\rangle$ is zero because
+$\hat V_{\mathrm N}$ is normal ordered. So
+$E^{(3)} = \langle \hat T_2^\dagger \hat V_{\mathrm N}\hat T_2\rangle$, which
 has three connected parts. In each, $\hat T_2$ excites a pair,
 $\hat V_{\mathrm N}$ scatters it once, and $\hat T_2^\dagger$ returns it.
 The particle–particle ladder scatters the two particles, the hole–hole
@@ -294,6 +298,8 @@ equivalence to the spin-orbital form is the subject of
 independent symbol, and section @sec:mp3 covers it.
 
 ## Known limits
+
+Checked 2026-11-19.
 
 - The recipe proves an identity between expressions. It does not show that the
   Rust loop contracts the expression. That is the job of the Rust tests and

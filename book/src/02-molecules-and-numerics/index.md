@@ -12,3 +12,6 @@ Sections:
 - [@sec:basis-sets Contracted Gaussians, normalization and parsers](02-basis-sets.md)
 - [@sec:determinism-and-memory Determinism, threads and the memory budget](03-determinism-and-memory.md)
 - [@sec:tensors Dense tensors and the einsum macro](04-tensors.md)
+
+Sections @sec:determinism-and-memory and @sec:tensors are reference material. Skip them on a first read and
+return when a chapter cites them.
