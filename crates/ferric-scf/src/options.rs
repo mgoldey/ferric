@@ -24,6 +24,28 @@
 //! an [`ScfOptions`](crate::options::ScfOptions) live here as pure functions
 //! (e.g. [`df_k_aux_or_default`](crate::options::df_k_aux_or_default), the
 //! RIJCOSX "no RI-K default under COSX" rule).
+//!
+//! # Per-frontend defaults
+//!
+//! What each frontend puts in the [`ScfOptions`](crate::options::ScfOptions)
+//! fields that differ between them when the caller says nothing ("unset" =
+//! the field is `None`, so the [`RhfConfig::default`](crate::rhf::RhfConfig::default)
+//! value applies). `JK` is [`DEFAULT_JK_AUX`](crate::options::DEFAULT_JK_AUX);
+//! "no RI-K under COSX" is [`df_k_aux_or_default`](crate::options::df_k_aux_or_default).
+//! A caller's explicit value always wins (aux spellings through
+//! [`AuxBasis::parse`](crate::options::AuxBasis::parse)).
+//!
+//! | Frontend | `df_j_aux` | `df_k_aux` | `guess` | `cosx` | `ri_j_task` | `xc` |
+//! |---|---|---|---|---|---|---|
+//! | `run_rhf` / `run_uhf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | unset (HF) |
+//! | `run_rohf` | unset (exact J) | unset (exact K) | unset (SAD) | unset (`CosxConfig::default`) | unset (energy) | unset (HF) |
+//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | unset (SAD) | the `cosx_*` kwargs | unset (energy) | the functional, default `"LDA"` |
+//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `run_uks`: `guess=` kwarg, else SAD; `run_roks`: SAD | unset (`CosxConfig::default`) | unset (energy) | the functional (required) |
+//! | CLI `[scf]` | the kind's default: `JK` for Kohn-Sham, RPA/response and TDA/TDDFT kinds, else unset | as `df_j_aux`; no RI-K under COSX | `[scf] guess`, else SAD | `[scf] cosx_*` and the `[gpu]` fp64 router | from `method.task`: geometry for `optimize` / `frequencies` / `md`, else energy | the kind's functional (`[dft]`, `[rpa] xc`, `[tddft] xc`), else unset |
+//!
+//! The CLI column is `Config::scf_xc_and_aux_defaults` and `ri_j_task_for`
+//! in `ferric-cli`; each Python row is the `ScfOptions` literal of that
+//! binding in `ferric-python` (`scf.rs`, `dft.rs`).
 
 use ferric_core::FerricError;
 use ndarray::Array2;
@@ -53,9 +75,8 @@ pub const COSX_K_BUILDER: &str = "cosx";
 /// applied (`None`, so an explicit `df_k_aux` next to COSX stays the conflict
 /// the SCF refuses). RI-J is unaffected.
 ///
-/// Generic over the aux representation so the Python KS entry points
-/// ([`AuxBasis`]) and the CLI `[scf]` lowering (resolved strings) share the
-/// one rule.
+/// Generic over the aux representation; the Python KS entry points and the
+/// CLI `[scf]` lowering both pass [`AuxBasis`].
 pub fn df_k_aux_or_default<T>(
     k_builder: Option<&str>,
     explicit: Option<T>,
