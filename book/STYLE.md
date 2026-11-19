@@ -120,6 +120,10 @@ A rewrite changes the explanation, never the facts.
   (`// F t_ij (particle a)`). Comments explain the mathematics. Do not
   restate the code.
 - Keep excerpts under about 20 lines. Show the core loop, not the setup.
+- Mark every excerpt with `<!-- excerpt: file.rs::item -->` on the line
+  above the fence (`scripts/x.py::function` for a proof script). The checker
+  ignores comments, so your comments do not break the match; a gap without
+  a `// ...` line does.
 
 ## Runnable examples
 

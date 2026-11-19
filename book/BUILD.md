@@ -154,11 +154,20 @@ is already visible in the repository.
    it (`fn`, `struct`, `enum`, `trait`, `const`, `static` or `type`), or in a
    submodule directory of the same name. The build resolves the line and
    links to it at the build commit. Reason: a line reference drifts with every
-   edit to the file it points into.
-2. **Code excerpts must match the source.** A fenced Rust block preceded by
-   `<!-- excerpt: file.rs::item -->` must occur, with whitespace normalized,
-   inside that item. A change to a kernel then fails the book until the
-   excerpt and the text around it are reread.
+   edit to the file it points into. A `file.rs:123` pin into the repository
+   (any `crates/`, `scripts/` or `site/` file) is an error; a line inside a
+   function that has to be shown is quoted in a marked excerpt instead.
+   Documents outside the repository that do not change, such as the
+   dissertation text, may still be cited by line.
+2. **Code excerpts must match the source.** A fenced block preceded by
+   `<!-- excerpt: file.rs::item -->` (Rust) or
+   `<!-- excerpt: scripts/x.py::function -->` (Python) must occur inside that
+   item. Comments are removed on both sides before the comparison and
+   whitespace is normalized, so an excerpt carries the per-line comments that
+   STYLE.md asks for. A `// ...` line (`# ...` in Python) marks a gap: the
+   pieces between gaps must each occur, in order. Any other omission has to be
+   marked with a gap line, or the check fails. A change to a kernel then fails
+   the book until the excerpt and the text around it are reread.
 3. **Sections name their registry ids.** A section header comment lists the
    registry method ids it covers and its status. The checker fails when a
    `ready` section covers an id that the registry lists under `gaps`, when a

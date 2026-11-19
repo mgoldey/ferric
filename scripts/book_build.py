@@ -44,7 +44,13 @@ Checks:
   * each ``crates/<crate>/theory.md`` is the generated index of the book pages
     that cite the crate's code, and must equal what ``--write-theory-index``
     writes;
-  * ``<!-- excerpt: file.rs::item -->`` fenced blocks occur in the item;
+  * ``<!-- excerpt: file.rs::item -->`` (or ``script.py::function``) fenced blocks
+    occur in the item: comments are ignored on both sides, so an excerpt may
+    carry its own explanatory comments, and a ``// ...`` (``# ...``) line is a
+    gap; the pieces between gaps must occur in order;
+  * no ``file.rs:123`` line-number pin into the repository (they rot; cite
+    ``file.rs::item``);
+  * a ``chapter @sec:x`` reference points at a chapter, not at a section;
   * backticked repository paths exist; no link points at the local-only
     dissertation or wiki; SUMMARY.md matches the chapter glob;
   * appendices A (verified equations), B (functions cited) and C (validation grades)
@@ -74,9 +80,25 @@ HEADER_RE = re.compile(
 )
 INCLUDE_RE = re.compile(r"<!--\s*include:\s*(.*?)\s*-->")
 EXCERPT_RE = re.compile(
-    r"<!--\s*excerpt:\s*(\S+?)\s*-->\s*\n```[^\n]*\n(.*?)\n```", re.S
+    r"<!--\s*excerpt:\s*([^\n]+?)\s*-->[ \t]*\n[ \t]*```[^\n]*\n(.*?)\n[ \t]*```", re.S
 )
-CODE_REF_RE = re.compile(r"([\w\-./]+\.rs)::(\{[^}]*\}|\w+(?:::\w+)*)")
+EXCERPT_MARK_RE = re.compile(r"<!--\s*excerpt:")
+
+
+def code_ref_re(ext: str) -> re.Pattern:
+    """``path.<ext>::item`` or ``path.<ext>::{a, b}``."""
+    return re.compile(rf"([\w\-./]+\.{ext})::(\{{[^}}]*\}}|\w+(?:::\w+)*)")
+
+
+CODE_REF_RE = code_ref_re("rs")
+# Excerpts may also quote a proof script.
+EXCERPT_REF_RE = code_ref_re("(?:rs|py)")
+# A repository file cited by line ("rimp2.rs:1017", "input.md:166-170"). Local
+# documents outside the repository (the dissertation text, the derivation notes)
+# do not change and are cited by line on purpose; their extensions are not listed.
+LINE_PIN_RE = re.compile(
+    r"(?<![\w./-])((?:[\w\-]+/)*[\w\-]+\.(?:rs|py|pyi|cc|h|md|toml|json)):\d+(?:-\d+)?\b"
+)
 FENCE_RE = re.compile(r"^(```|~~~)")
 
 
@@ -207,6 +229,8 @@ HEAD_ATTR_RE = re.compile(rf"\s*\{{#({LABEL})\}}\s*$")
 EQ_LABEL_RE = re.compile(rf"\\label\{{eq:({LABEL})\}}")
 EQ_ITEM_RE = re.compile(rf"\{{#eq:({LABEL})\}}")
 REF_RE = re.compile(rf"\{{@(eq|sec):({LABEL})\}}|(?<![\w@{{])@(eq|sec):({LABEL})")
+# "chapter @sec:x": the noun must match the target, or "chapter 10.1" is printed.
+CHAPTER_REF_RE = re.compile(rf"\b[Cc]hapters?[ \t]*\n?[ \t>]*@sec:({LABEL})")
 DISPLAY_RE = re.compile(r"\$\$(?:(?!\n[ \t>]*\n).)+?\$\$", re.S)
 # A heading that writes its own number: "## 10.1.2 Title", "# 10. Title", "## D.3 Title".
 NUMBERED_HEADING_RE = re.compile(
@@ -531,6 +555,15 @@ def check_numbering(root: Path, rep: Report) -> None:
             )
             if (k, label) not in nb.targets:
                 rep.err(where, f"undefined reference @{k}:{label}")
+        for m in CHAPTER_REF_RE.finditer(scrub):
+            t = nb.targets.get(("sec", m.group(1)))
+            if t is not None and t.number and "." in t.number:
+                line = scrub.count("\n", 0, m.start()) + 1
+                rep.err(
+                    where,
+                    f"line {line}: 'chapter @sec:{m.group(1)}' points at section "
+                    f"{t.number}; write 'section'",
+                )
         if p.name in gen:
             continue
         for i, line in enumerate(scrub.split("\n")):
@@ -601,7 +634,12 @@ def find_rs(root: Path, path: str) -> Path | None:
     return None
 
 
-def decl_re(name: str) -> re.Pattern:
+def decl_re(name: str, py: bool = False) -> re.Pattern:
+    if py:
+        return re.compile(
+            rf"^[ \t]*(?:async[ \t]+)?(?:def|class)[ \t]+{re.escape(name)}\b",
+            re.MULTILINE,
+        )
     return re.compile(
         rf"\b(?:fn|struct|enum|trait|const|static|type|mod|union)\s+{re.escape(name)}\b"
     )
@@ -613,20 +651,41 @@ def resolve_item(root: Path, path: str, item: str) -> tuple[Path, int] | None:
     if f is None:
         return None
     name = item.split("::")[-1]
-    pat = decl_re(name)
+    pat = decl_re(name, py=f.suffix == ".py")
     cands = [f]
     sub = f.with_suffix("")
     if sub.is_dir():
         cands += sorted(sub.rglob("*.rs"))
     for c in cands:
-        m = pat.search(read(c))
+        text = read(c)
+        m = pat.search(text)
         if m:
-            return c, m.start()
+            # From the start of the line, so `pub` and `async` belong to the item.
+            return c, text.rfind("\n", 0, m.start()) + 1
     return None
 
 
-def item_body(text: str, start: int) -> str:
+def py_item_body(text: str, start: int) -> str:
+    """A Python ``def``/``class`` from ``start`` to the last line indented under it."""
+    line_end = text.find("\n", start)
+    if line_end < 0:
+        return text[start:]
+    indent = len(text[start:line_end]) - len(text[start:line_end].lstrip())
+    end = line_end
+    for m in re.finditer(r"[^\n]*(?:\n|$)", text[line_end + 1 :]):
+        line = m.group().rstrip("\n")
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        end = line_end + 1 + m.end()
+        if not m.group():
+            break
+    return text[start:end]
+
+
+def item_body(text: str, start: int, py: bool = False) -> str:
     """Text from ``start`` to the end of the braced item (comments and strings skipped)."""
+    if py:
+        return py_item_body(text, start)
     i, n, depth, opened, nest = start, len(text), 0, False, 0
     while i < n:
         c = text[i]
@@ -660,10 +719,83 @@ def item_body(text: str, start: int) -> str:
     return text[start:]
 
 
-def expand_refs(spec: str) -> list[tuple[str, str]]:
+RUST_CHAR_RE = re.compile(r"'(?:\\.|[^\\'\n])'")
+PY_STRING_RE = re.compile(
+    r'"""[\s\S]*?"""' r"|'''[\s\S]*?'''" r'|"(?:\\.|[^\\"\n])*"' r"|'(?:\\.|[^\\'\n])*'"
+)
+
+
+def strip_comments(code: str, py: bool = False) -> str:
+    """``code`` with its comments removed; string and character literals are kept.
+
+    Rust: ``//`` to the end of the line and ``/* ... */``. Python: ``#`` to the
+    end of the line. A ``'`` in Rust that does not open a character literal is a
+    lifetime and is kept as it is."""
+    out, i, n = [], 0, len(code)
+    while i < n:
+        c = code[i]
+        lit = None
+        if py and c in "\"'":
+            lit = PY_STRING_RE.match(code, i)
+        elif not py and c == "'":
+            lit = RUST_CHAR_RE.match(code, i)
+        if lit:
+            out.append(lit.group())
+            i = lit.end()
+        elif (py and c == "#") or (not py and code.startswith("//", i)):
+            j = code.find("\n", i)
+            i = n if j < 0 else j
+        elif not py and code.startswith("/*", i):
+            j = code.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            out.append(" ")
+        elif not py and c == '"':
+            j = i + 1
+            while j < n and code[j] != '"':
+                j += 2 if code[j] == "\\" else 1
+            out.append(code[i : j + 1])
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def excerpt_pieces(block: str, py: bool = False) -> list[str]:
+    """The code of an excerpt, split at its gap lines (``// ...`` or ``# ...``),
+    with comments removed and whitespace normalized; empty pieces dropped."""
+    gap = re.compile(r"^\s*#\s*\.\.\." if py else r"^\s*//\s*\.\.\.")
+    pieces, cur = [], []
+    for line in block.split("\n"):
+        if gap.match(line):
+            pieces.append("\n".join(cur))
+            cur = []
+        else:
+            cur.append(line)
+    pieces.append("\n".join(cur))
+    return [x for x in (norm(strip_comments(p, py)) for p in pieces) if x]
+
+
+def excerpt_occurs(block: str, body: str, py: bool = False) -> bool:
+    """Every piece of the excerpt occurs in ``body``, in order, comments ignored.
+
+    Comments are the reader's and are not compared: STYLE.md asks an excerpt to
+    comment each line with the term it computes, which the source does not."""
+    pieces = excerpt_pieces(block, py)
+    hay = norm(strip_comments(body, py))
+    pos = 0
+    for piece in pieces:
+        k = hay.find(piece, pos)
+        if k < 0:
+            return False
+        pos = k + len(piece)
+    return bool(pieces)
+
+
+def expand_refs(spec: str, pattern: re.Pattern = CODE_REF_RE) -> list[tuple[str, str]]:
     """'a.rs::{x, y}' -> [(a.rs, x), (a.rs, y)]."""
     out = []
-    for path, items in CODE_REF_RE.findall(spec):
+    for path, items in pattern.findall(spec):
         if items.startswith("{"):
             out += [(path, s.strip()) for s in items[1:-1].split(",") if s.strip()]
         else:
@@ -860,13 +992,33 @@ def check_page(root: Path, p: Path, rep: Report, ctx: dict, release: bool) -> No
     for spec in INCLUDE_RE.findall(prose):
         check_theory(root, f"{where} include", spec, rep)
 
+    if len(EXCERPT_MARK_RE.findall(text)) != len(EXCERPT_RE.findall(text)):
+        rep.err(where, "an excerpt marker is not directly followed by a fenced block")
     for ref, block in EXCERPT_RE.findall(text):
-        for path, item in expand_refs(ref):
-            hit = resolve_item(root, path, item)
-            if hit is None:
-                rep.err(where, f"excerpt target not found: {ref}")
-            elif norm(block) not in norm(item_body(read(hit[0]), hit[1])):
-                rep.err(where, f"excerpt does not occur in {path}::{item}")
+        # A braced list quotes several items in one block: the block is matched
+        # against their bodies joined in the listed order.
+        refs = expand_refs(ref, EXCERPT_REF_RE)
+        hits = [resolve_item(root, path, item) for path, item in refs]
+        if not refs or None in hits:
+            rep.err(where, f"excerpt target not found: {ref}")
+            continue
+        py = hits[0][0].suffix == ".py"
+        bodies = "\n".join(item_body(read(f), at, py) for f, at in hits)
+        if not excerpt_occurs(block, bodies, py):
+            rep.err(where, f"excerpt does not occur in {ref}")
+
+    for i, line in enumerate(strip_fences(text).split("\n")):
+        for m in LINE_PIN_RE.finditer(line):
+            if (
+                m.group(1).startswith(ROOTS)
+                or "/" not in m.group(1)
+                or "/src/" in m.group(1)
+            ):
+                rep.err(
+                    where,
+                    f"line {i + 1}: line-number pin {m.group()!r} rots with every edit; "
+                    "cite file.rs::item, or quote the line in a marked excerpt",
+                )
 
     # Code references in prose, outside boxes' own comments (those were checked above).
     for path, item in expand_refs(BOX_RE.sub("", INCLUDE_RE.sub("", prose))):
@@ -887,9 +1039,7 @@ def check_page(root: Path, p: Path, rep: Report, ctx: dict, release: bool) -> No
     scrubbed = BOX_RE.sub("", CODE_REF_RE.sub("CODEREF", prose))
     for tok in re.findall(r"`([^`\n]+)`", scrubbed):
         tok = tok.strip().split("#")[0].split(" ")[0].rstrip(".,:;")
-        tok = re.sub(
-            r":\d+(?:-\d+)?$", "", tok
-        )  # file:line pins are checked for the file only
+        tok = re.sub(r":\d+(?:-\d+)?$", "", tok)  # a pin is reported above
         if not tok.startswith(ROOTS) or re.search(r"[*<>{}$]|\.\.\.|…", tok):
             continue
         if not (root / tok).exists():

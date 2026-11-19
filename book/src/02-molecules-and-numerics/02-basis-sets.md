@@ -54,6 +54,7 @@ Cartesian d functions span the five pure ones plus the combination
 $x^2+y^2+z^2$, which has s symmetry. The count
 comes from `ferric-core/src/basis.rs::num_functions`:
 
+<!-- excerpt: ferric-core/src/basis.rs::num_functions -->
 ```rust
 pub fn num_functions(l: i32, pure: bool) -> usize {
     if pure {
@@ -122,6 +123,7 @@ primitive $S = c_1^2$, and the rescaled coefficient is $c_1/|c_1| = \pm 1$.
 The code is (@eq:basis-unit-self-overlap) as a double loop, in
 `ferric-core/src/basis.rs::renormalize_contraction`:
 
+<!-- excerpt: ferric-core/src/basis.rs::renormalize_contraction -->
 ```rust
 let lf = l as f64;
 let mut s = 0.0_f64;
@@ -236,6 +238,7 @@ and a basis set and builds that list as a libint2 handle. It
 Steps 3 and 4 are these lines, with the FFI shell record and the copies kept
 for it removed:
 
+<!-- excerpt: ferric-integrals/src/basis_bridge.rs::PreparedBasis::new -->
 ```rust
 for (ai, atom) in mol.atoms.iter().enumerate() {          // atoms in input order
     let tmpls = bs

@@ -36,7 +36,7 @@ Entry point `ferric-toy/src/lib.rs::pair_energy`, also
 
 <!-- excerpt: ferric-toy/src/lib.rs::pair_energy -->
 ```rust
-let e = a * b;
+let e = a * b; // the product
 ```
 
 $$ E = a b . \\label{eq:toy-energy} $$
@@ -239,6 +239,22 @@ MUTATIONS = {
         '<!-- include: crates/ferric-gone/notes.md#"1. Toy theory" -->',
     ),
     "excerpt differs": (SEC, "let e = a * b;", "let e = a + b;"),
+    "excerpt differs inside a commented line": (
+        SEC,
+        "let e = a * b; // the product",
+        "let e = a - b; // the product",
+    ),
+    "line-number pin": (
+        SEC,
+        "`scripts/toy_sympy.py`.",
+        "`scripts/toy_sympy.py` (`crates/ferric-toy/src/lib.rs:2`).",
+    ),
+    "bare line-number pin": (SEC, "Inline math", "See lib.rs:2-3. Inline math"),
+    "chapter noun on a section": (
+        SEC,
+        "chapter @sec:toy-chapter",
+        "chapter @sec:toy",
+    ),
     "path does not exist": (SEC, "`scripts/toy_sympy.py`", "`scripts/nope_sympy.py`"),
     "link to local-only source": (
         SEC,
@@ -505,6 +521,102 @@ def test_item_body_skips_semicolons_inside_brackets():
     body = bb.item_body(src, 0)
     assert body.rstrip().endswith("}") and "let x = 1;" in body
     assert bb.item_body("fn g();\nfn h() {}", 0) == "fn g();"
+
+
+TWO_PIECE = """pub fn kernel(a: f64) -> f64 {
+    let x = a * 2.0; // double it
+    let url = "http://x";
+    let y = x + 1.0;
+    let z = y * y;
+    z
+}
+"""
+
+
+def _excerpt(tree, body, ref="ferric-toy/src/lib.rs::kernel", lang="rust"):
+    p = tree / "crates/ferric-toy/src/lib.rs"
+    p.write_text(p.read_text() + TWO_PIECE)
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        f"<!-- excerpt: {ref} -->\n```{lang}\n{body}\n```\n\nInline math",
+    )
+    return check(tree).errors
+
+
+def test_excerpt_with_reader_comments_and_a_gap_passes(tree):
+    body = (
+        "// the doubled input\nlet x = a * 2.0;   // x = 2a\n"
+        "// ... the URL line\nlet z = y * y;   // z = y^2"
+    )
+    assert _excerpt(tree, body) == []
+
+
+def test_excerpt_pieces_out_of_order_fail(tree):
+    body = "let z = y * y;\n// ...\nlet x = a * 2.0;"
+    assert any("excerpt does not occur" in e for e in _excerpt(tree, body))
+
+
+def test_excerpt_gap_must_be_marked(tree):
+    # Two non-adjacent lines with no "// ..." between them are one piece.
+    body = "let x = a * 2.0;\nlet y = x + 1.0;"
+    assert any("excerpt does not occur" in e for e in _excerpt(tree, body))
+
+
+def test_excerpt_string_contents_are_compared(tree):
+    body = 'let url = "http://y";'
+    assert any("excerpt does not occur" in e for e in _excerpt(tree, body))
+
+
+def test_python_excerpt_is_checked(tree):
+    script = tree / "scripts/toy_sympy.py"
+    script.write_text(
+        script.read_text()
+        + "\n\ndef part_a():\n    q = 1  # quarter\n    s = '#x'\n    return q\n\n\ndef part_b():\n    return 2\n"
+    )
+    ok = "    q = 1  # the prefactor\n    # ...\n    return q"
+    assert _excerpt(tree, ok, "scripts/toy_sympy.py::part_a", "python") == []
+    sub(tree, SEC, "return q\n```", "return 2\n```")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)
+
+
+def test_braced_excerpt_quotes_several_items_in_order(tree):
+    both = "pub fn pair_energy(a: f64, b: f64) -> f64 {\n// ...\nfn other_fn() {}"
+    ref = "ferric-toy/src/lib.rs::{pair_energy, other_fn}"
+    assert _excerpt(tree, both, ref) == []
+    sub(tree, SEC, "{pair_energy, other_fn} -->", "{other_fn, pair_energy} -->")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)
+
+
+def test_excerpt_inside_a_list_item_is_checked(tree):
+    item = "- A point.\n\n  <!-- excerpt: ferric-toy/src/lib.rs::kernel -->\n  ```rust\n  let z = y * y;\n  ```"
+    assert _excerpt(tree, "let x = a * 2.0;") == []
+    sub(tree, SEC, "Inline math", item + "\n\nInline math")
+    assert check(tree).errors == []
+    sub(tree, SEC, "  let z = y * y;", "  let z = y + y;")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)
+
+
+def test_excerpt_marker_without_a_block_is_an_error(tree):
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        "<!-- excerpt: ferric-toy/src/lib.rs::other_fn -->\n\nInline math",
+    )
+    assert any("not directly followed" in e for e in check(tree).errors)
+
+
+def test_local_document_cited_by_line_is_not_a_pin(tree):
+    sub(tree, SEC, "Inline math", "As `dissertation.txt:2867` says. Inline math")
+    assert check(tree).errors == []
+
+
+def test_comments_are_stripped_but_literals_kept():
+    rs = "let a = \"x//y\"; // c\nlet c = '/'; fn f<'a>() /* b */ {}"
+    assert bb.strip_comments(rs) == "let a = \"x//y\"; \nlet c = '/'; fn f<'a>()   {}"
+    assert bb.strip_comments('x = "#a"  # c\ny = 1', py=True) == 'x = "#a"  \ny = 1'
 
 
 # ---------------------------------------------------------------- appendices

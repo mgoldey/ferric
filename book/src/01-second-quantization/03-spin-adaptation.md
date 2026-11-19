@@ -147,6 +147,7 @@ $\mathrm{tr}[DF] = 2\sum_i f_{ii} = 2\sum_i h_{ii} + 2\sum_{ij}[2(ii|jj) - (ij|i
 Half their sum is (@eq:so-closed-shell-energy). `ferric-scf/src/rhf.rs::RhfState::energy`
 evaluates it in one line:
 
+<!-- excerpt: ferric-scf/src/rhf.rs::RhfState::energy -->
 ```rust
 let e_elec_no_xc: f64 = 0.5 * (d * &(&env.h + &*f)).sum();  // 1/2 tr[D (h + F)]
 ```
@@ -190,7 +191,7 @@ Check one doubly occupied orbital again. Then $i = j$, and
 $(ia|ib) - (ib|ia) = 0$ for every $a, b$, so $E_{\mathrm{SS}} = 0$. That is
 right: two electrons in one spatial orbital have opposite spins, and
 there is no same-spin pair to correlate. All of the MP2 energy of He or of
-H$_2$ in any basis is opposite-spin. For larger molecules chapter @sec:closed-shell-ri-mp2
+H$_2$ in any basis is opposite-spin. For larger molecules section @sec:closed-shell-ri-mp2
 shows the split on water: about three quarters of the correlation energy is
 opposite-spin.
 
@@ -211,11 +212,12 @@ opposite-spin.
 
 ### The unique-pair sum
 
-Chapter @sec:closed-shell-ri-mp2 uses (@eq:so-mp2-spin-adaptation) as its working equation and shows the inner loop,
+Section @sec:closed-shell-ri-mp2 uses (@eq:so-mp2-spin-adaptation) as its working equation and shows the inner loop,
 `pair_energy`, which evaluates one $(i,j)$ block. The loop that calls it,
-in `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`, visits
+in `ferric-mp2/src/rimp2.rs::spin_components_from_blocks`, visits
 only $j \ge i$:
 
+<!-- excerpt: ferric-mp2/src/rimp2.rs::spin_components_from_blocks -->
 ```rust
 for j in i..nocc {
     // Symmetry weight: off-diagonal pairs stand in for their mirror.
@@ -261,6 +263,7 @@ is (@eq:so-ump2-blocks) term by term. This is its inner loop, from the branch th
 stores amplitudes, with the loop headers and orbital-energy lookups
 removed:
 
+<!-- excerpt: ferric-mp2/src/u_rimp2.rs::same_spin_pair_kernel -->
 ```rust
 let g_ab = g_i[(a, j * nvir + b_idx)]; // (ia|jb)
 let g_ba = g_i[(b_idx, j * nvir + a)]; // (ib|ja)
@@ -290,7 +293,7 @@ different sizes, so the two spins carry separate `nocc` and `nvir`.
 > <!-- verified: id=so.ump2-blocks; script=scripts/mp2_variant_identities.py; claim=2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/u_rimp2.rs::same_spin_pair_kernel -->
 
 The same blockwise reduction for third order, including the ring terms that
-mix spins, is `scripts/ump3_spin_blocks_sympy.py` (chapter @sec:mp3).
+mix spins, is `scripts/ump3_spin_blocks_sympy.py` (section @sec:mp3).
 
 ## Closed-shell amplitudes {#spin-adaptation-closed-shell-amplitudes}
 
@@ -306,6 +309,7 @@ $$ t_{i_\sigma j_\tau}^{a_\rho b_\kappa} = t_{ij}^{ab}\,\delta_{\sigma\rho}\delt
 `ferric-cc/src/ccsd_closed_shell.rs::expand_amplitudes_to_spin_orbital` is this
 expansion. Its doubles loop, with the loop headers removed:
 
+<!-- excerpt: ferric-cc/src/ccsd_closed_shell.rs::expand_amplitudes_to_spin_orbital -->
 ```rust
 let mut v = 0.0;
 if spin(i) == spin(a) && spin(j) == spin(b) {
@@ -345,7 +349,7 @@ $t_{ij}^{ba} = -(ib|ja)/\Delta_{ij}^{ab}$, and (@eq:so-cc-amplitude-expansion) b
 $-\sum(ia|jb)[2(ia|jb) - (ib|ja)]/\Delta$, which is
 $E_{\mathrm{OS}} + E_{\mathrm{SS}}$ of (@eq:so-mp2-spin-adaptation). The combination
 $2t^{ab} - t^{ba}$ is the closed-shell form of "direct minus exchange", and
-it is the same $2(ia|jb) - (ib|ja)$ pattern as in chapter @sec:closed-shell-ri-mp2.
+it is the same $2(ia|jb) - (ib|ja)$ pattern as in section @sec:closed-shell-ri-mp2.
 
 > **Verified equation @eq:so-cc-amplitude-expansion** · closed-shell amplitudes and energy
 >

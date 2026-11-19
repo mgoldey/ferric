@@ -47,6 +47,7 @@ radius $0.52917721092$ Å (CODATA 2010, the value PySCF uses). These are the
 three definitions in `units.rs`, with their doc comments replaced by short
 ones:
 
+<!-- excerpt: ferric-core/src/units.rs::{BOHR_RADIUS_ANGSTROM,ANGSTROM_TO_BOHR,BOHR_TO_ANGSTROM} -->
 ```rust
 pub const BOHR_RADIUS_ANGSTROM: f64 = 0.529_177_210_92;   // a_0 in Å
 pub const ANGSTROM_TO_BOHR: f64 = 1.0 / BOHR_RADIUS_ANGSTROM;   // 1 Å ≈ 1.889 Bohr
@@ -93,6 +94,7 @@ $n^{\mathrm{ECP}}_A = 0$ and $Z^{\mathrm{eff}}_A = Z_A$.
 The code is (@eq:molecule-1) line for line, in
 `ferric-core/src/mol.rs::Atom::effective_z`:
 
+<!-- excerpt: ferric-core/src/mol.rs::Atom::effective_z -->
 ```rust
 pub fn effective_z(&self) -> i32 {
     if self.ghost {
@@ -134,6 +136,7 @@ $N_\beta \ge 0$, so $M - 1$ may not exceed $N$. The construction `from_atoms`
 checks both conditions in
 `ferric-core/src/mol.rs::validate_electron_multiplicity_parity`:
 
+<!-- excerpt: ferric-core/src/mol.rs::validate_electron_multiplicity_parity -->
 ```rust
 let two_s = multiplicity as i64 - 1;   // M - 1 = 2S = N_alpha - N_beta
 let numerator = nelec as i64 + two_s;  // 2 N_alpha = N + M - 1
@@ -172,6 +175,7 @@ picture of the atom.
 `ferric-core/src/mol.rs::Molecule::nuclear_repulsion` is the double loop of
 (@eq:molecule-3):
 
+<!-- excerpt: ferric-core/src/mol.rs::Molecule::nuclear_repulsion -->
 ```rust
 for i in 0..self.atoms.len() {
     if self.atoms[i].ghost {
@@ -231,6 +235,7 @@ The molecule's count is the sum over real atoms, minus
 $n^{\mathrm{ECP}}_A/2$ for each ECP atom, since the potential has already
 removed those orbitals. From `ferric-core/src/mol.rs::Molecule::auto_frozen_core`:
 
+<!-- excerpt: ferric-core/src/mol.rs::Molecule::auto_frozen_core -->
 ```rust
 self.atoms
     .iter()

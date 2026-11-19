@@ -59,6 +59,7 @@ SCFs of the SAD guess. The first lines of
 `ferric-core/src/blas_threads.rs::opt_in_blas_threads_with` are the guard and
 the precedence:
 
+<!-- excerpt: ferric-core/src/blas_threads.rs::opt_in_blas_threads_with -->
 ```rust
 if rayon::current_thread_index().is_some() {
     return 1;                                  // inside a parallel region: rayon owns the cores
@@ -88,6 +89,7 @@ So the outermost scope restores the process baseline recorded by
 thread restores the count its enclosing scope set. From
 `ferric-core/src/blas_threads.rs::with_blas_threads`:
 
+<!-- excerpt: ferric-core/src/blas_threads.rs::with_blas_threads -->
 ```rust
 let outer = SCOPE.with(|s| s.get());            // (nesting depth, count) on this thread
 let restore_to = if outer.0 > 0 {
@@ -136,9 +138,11 @@ that does not depend on the thread count, so results are bit-identical across
 The RI-MP2 energy (section @sec:closed-shell-ri-mp2) shows the pattern. Each occupied orbital
 $i$ gets its own partial sums on some worker, the partials are collected
 into a vector indexed by $i$, and one thread adds them in order. From
-`ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`, with the
-body of the per-$i$ closure removed:
+`ferric-mp2/src/rimp2.rs::spin_components_from_blocks`, the driver that
+`ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu` calls, with
+the body of the per-$i$ closure removed:
 
+<!-- excerpt: ferric-mp2/src/rimp2.rs::spin_components_from_blocks -->
 ```rust
 let partials: Vec<(f64, f64)> = (0..nocc)
     .into_par_iter()                     // parallel over i
@@ -219,6 +223,7 @@ The reservation is one atomic compare-and-swap loop, in
 private `reserve_once` it calls, with the source comments, a lint attribute,
 the bookkeeping of the success branch and the error text removed:
 
+<!-- excerpt: ferric-core/src/memory/pool.rs::MemoryPool::reserve_once -->
 ```rust
 let outcome =
     self.inner

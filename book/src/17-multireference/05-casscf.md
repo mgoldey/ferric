@@ -289,7 +289,7 @@ warning.
 ### The augmented-Hessian step
 
 `optimizer = "ah"` (`src/casscf_newton.rs`, the default) uses the exact
-orbital Hessian at fixed RDMs, applied as a product. Chapter @sec:second-order describes
+orbital Hessian at fixed RDMs, applied as a product. Section @sec:second-order describes
 the augmented-Hessian and trust-region machinery for SCF; here are the
 CASSCF ingredients.
 
@@ -436,7 +436,7 @@ minimum or a saddle. The sign of the lowest eigenvalue of the orbital
 Hessian decides, but it has to be the Hessian of the energy with the CI
 vector relaxed at every orbital set, because that is the function CASSCF
 minimizes. `src/casscf_stability.rs` (`[cas] stability`, 2026-11-14)
-computes it after convergence; chapter @sec:stability does the same for SCF.
+computes it after convergence; section @sec:stability does the same for SCF.
 
 **The coupled Hessian.** Write the CI vector as
 $c(z) = (c+z)/\lVert c+z\rVert$ with $z\perp c$, about the CI root $c$

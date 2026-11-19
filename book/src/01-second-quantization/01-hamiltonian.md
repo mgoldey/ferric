@@ -265,6 +265,7 @@ so the spin deltas of (@eq:hamiltonian-3) are resolved by which loop a pair sits
 With the $\beta$ one-electron loop and the $\beta\beta$ pair loop removed
 (they repeat the $\alpha$ ones):
 
+<!-- excerpt: ferric-ci/src/hamiltonian.rs::diagonal_element -->
 ```rust
 for &p in a_occ {
     e += h1(ints, p, p);                   // sum_i h_ii (alpha; beta likewise)

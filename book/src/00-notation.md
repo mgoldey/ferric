@@ -7,12 +7,14 @@ the sources disagree, and names the choice the book makes. The sources are
 the code, the site pages, the dissertation, and the SR-MP2 + LR-RPA
 derivation notes.
 
-File and line references are to commit `81486b984`. Paths starting with
-`crates/` or `site/` are in the repository. `dissertation.txt` and
-`wiki/papers/…` are local files outside the repository; they are cited by line
-so a claim can be checked, and are never copied whole. Line references drift
-with every edit to a source file. The other chapters cite functions by name
-and resolve the line at build time; see `book/BUILD.md`.
+Code is cited by item, as `ferric-mp2/src/rimp2.rs::pair_energy`, as in every other chapter;
+the build checks that the item exists and resolves its line (`book/BUILD.md`).
+A line inside a function is quoted in an excerpt that the build compares with
+the source. Pages of the user guide are cited by file and heading. Paths
+starting with `crates/` or `site/` are in the repository. `dissertation.txt`
+and `wiki/papers/…` are local files outside the repository that do not
+change; they are cited by line so a claim can be checked, and are never
+copied whole.
 
 When a source disagrees with the book, the code is the authority for what is
 computed and the book is the authority for how it is written down.
@@ -26,6 +28,7 @@ computed and the book is the authority for how it is written down.
 | General MOs | $p, q, r, s$ | $n$ |
 | CAS active MOs | $t, u, v, w$ | $n_a$ |
 | AO basis functions | $\mu, \nu, \lambda, \sigma$ | $N$ |
+| Primitive Gaussians of a shell | $p, q$ with exponent $\alpha_p$ and contraction coefficient $c_p$ | $K$ |
 | Auxiliary (fitting) functions | $P, Q, R, S$ | $N_{\mathrm{aux}}$ |
 | Atoms | $A, B, C$ | $N_{\mathrm{at}}$ |
 | Cartesian components | $x, y, z$ or $\alpha_c, \beta_c$ written out | 3 |
@@ -33,12 +36,32 @@ computed and the book is the authority for how it is written down.
 | Spin labels | $\sigma, \tau \in \{\alpha, \beta\}$ | |
 | PDEP eigenpotentials | $\xi, \eta$ | $N_{\mathrm{pdep}}$ |
 | Quadrature nodes | $k$ with weight $w_k$ | $n_q$ |
+| Electrons | | $N_{\mathrm{el}} = N_\alpha + N_\beta$ |
+
+Atom $A$ carries the atomic number $Z_A$, the number of core electrons
+$n^{\mathrm{ECP}}_A$ that an effective core potential replaces, and the
+effective charge $Z^{\mathrm{eff}}_A$ that the electrons and the other nuclei
+see (0 for a ghost atom, $Z_A - n^{\mathrm{ECP}}_A$ otherwise; section
+@sec:molecule-ghost-atoms-effective-charge). A contracted Gaussian is
+defined once, in section @sec:basis-sets-contracted-shell. The primitive
+labels $p, q$ are local to a shell and never meet an orbital index in one
+equation.
 
 "Active occupied" excludes frozen core orbitals. In code the active occupied
 block starts at `first_occ = frozen_core`, and virtual orbitals start at
-`nocc_total` (`crates/ferric-mp2/src/rimp2.rs:1017-1020`). The count of active
-occupied orbitals comes from `active_occ` (`crates/ferric-mp2/src/rimp2.rs:98`),
-which returns an error when the freeze covers every occupied orbital.
+`nocc_total`. From `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components`:
+
+<!-- excerpt: ferric-mp2/src/rimp2.rs::ri_mp2_spin_components -->
+```rust
+let nocc_total = nelec / 2;                              // all occupied orbitals
+let nocc = active_occ(nocc_total, config.frozen_core)?;  // n_o, the active ones
+let first_occ = config.frozen_core;                      // first active occupied
+let nvir = nbas - nocc_total;                            // n_v, starting at nocc_total
+```
+
+The count of active occupied orbitals comes from
+`ferric-mp2/src/rimp2.rs::active_occ`, which returns an error when the freeze
+covers every occupied orbital.
 
 In a CAS chapter, $i, j$ index the doubly occupied core orbitals and
 $t, u, v, w$ the active orbitals (chapter @sec:multireference).
@@ -47,6 +70,8 @@ A $\beta$-spin spatial orbital carries an overbar: $\bar\imath, \bar a$.
 
 **Disagreements.**
 
+- Chapter @sec:molecules-and-numerics writes $N_{\mathrm{el}}$ for the
+  electron count, never $N$, which is the AO count here.
 - The PCM chapter uses $i, j, k$ for tesserae and declares them in its
   header, because no occupied-orbital index appears in its equations.
 - The dissertation uses $O, V, N, X$ for the numbers of occupied, virtual,
@@ -54,9 +79,10 @@ A $\beta$-spin spatial orbital carries an overbar: $\bar\imath, \bar a$.
   `dissertation.txt:2871-2895`). The book uses $n_o, n_v, N, N_{\mathrm{aux}}$,
   which match the code's `nocc`, `nvir`, `nbas`, `naux`.
 
-Each chapter opens with a table of the index sets it uses. A chapter may add
-local letters; it may not reuse a letter from the table above for a different
-range.
+Each section that writes indexed equations opens with a table of the index
+sets it uses; a chapter overview may give one table for all its sections. A
+chapter may add local letters; it may not reuse a letter from the table above
+for a different range.
 
 ## Spin orbitals and spatial orbitals {#notation-spin-orbitals-spatial-orbitals}
 
@@ -73,7 +99,7 @@ Two spin-orbital orderings exist in the code.
 
 | Ordering | Rule | Used by |
 |---|---|---|
-| Interleaved | spin orbital $2p + s$, $s = 0$ for $\alpha$ and $1$ for $\beta$ | `crates/ferric-mp2/src/spinorbital.rs:22`, `crates/ferric-mp2/src/mp3.rs:246-253`, the spin-orbital coupled-cluster codes (section @sec:ccd-ccsd-spin-orbital) |
+| Interleaved | spin orbital $2p + s$, $s = 0$ for $\alpha$ and $1$ for $\beta$ | `ferric-mp2/src/spinorbital.rs::{spin,spat}`, `ferric-mp2/src/mp3.rs::mp3_energy`, the spin-orbital coupled-cluster codes (section @sec:ccd-ccsd-spin-orbital) |
 | Blocked | mode $p$ is $p\alpha$, mode $n + p$ is $p\beta$ | CAS-CI determinants (section @sec:determinants-convention) |
 
 The ordering does not change any energy. It changes determinant phases, so
@@ -123,9 +149,9 @@ The exchange partner of an $ov$-$ov$ integral is written out, $(ib|ja)$.
 
 - The dissertation writes the three-center integral as $(ia|P)$
   (`dissertation.txt:2871-2876`). The code
-  stores the auxiliary index first, shape `(naux, nocc*nvir)`
-  (`crates/ferric-mp2/src/rimp2.rs:682`). The book writes $(P|\mu\nu)$ and
-  $(P|ia)$, auxiliary index first, without conjugates.
+  stores the auxiliary index first, shape `(naux, nocc*nvir)` (the `b_ov`
+  field of `ferric-mp2/src/rimp2.rs::Mp2Intermediates`). The book writes
+  $(P|\mu\nu)$ and $(P|ia)$, auxiliary index first, without conjugates.
 
 ## Orbital-energy denominators {#notation-orbital-energy-denominators}
 
@@ -144,8 +170,17 @@ $$ E^{(2)} = -\sum_{ijab} \frac{(ia|jb)\,\big[\,2(ia|jb) - (ib|ja)\,\big]}{\Delt
 |---|---|---|
 | `wiki/papers/sr-mp2-lr-rpa-derivation.tex:207` | $D_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
 | `dissertation.txt:2852-2857` (Eq. 4.3) | $\varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$, unnamed | positive |
-| Code, `crates/ferric-mp2/src/rimp2.rs:1332` | `denom = e_ij - eps[a] - eps[b]` | negative |
-| Code doc, `crates/ferric-mp2/src/rimp2.rs:52-53` | $\Delta = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
+| Code, `ferric-mp2/src/rimp2.rs::pair_energy` | `denom = e_ij - eps[a] - eps[b]` | negative |
+| Code doc, the `kappa` field of `ferric-mp2/src/rimp2.rs::RiMp2Config` | $\Delta = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$ | positive |
+
+The pair kernel divides by the negative denominator, with
+`e_ij` $= \varepsilon_i + \varepsilon_j$:
+
+<!-- excerpt: ferric-mp2/src/rimp2.rs::pair_energy -->
+```rust
+let denom = e_ij - eps[nocc_total + a] - eps[nocc_total + b];   // -Delta_ij^ab
+e_os_ij += g_ab * g_ab / denom;                                 // carries the minus sign
+```
 
 The book adopts the positive $\Delta$ and never writes $D_{ij}^{ab}$. $D$ is
 reserved for the density matrix. Where the code divides by the negative
@@ -161,10 +196,15 @@ $$ D_{\mu\nu} = 2\sum_i C_{\mu i} C_{\nu i}, \qquad \operatorname{tr}(DS) = N_{\
 Spin densities are $D^\sigma = \sum_{i \in \sigma} C^\sigma_{\mu i} C^\sigma_{\nu i}$
 with $D = D^\alpha + D^\beta$.
 
-This is what the code builds (`crates/ferric-scf/src/rhf.rs:3738`,
-`D = 2·C_occ·C_occᵀ`), what the Python surface documents
-(`crates/ferric-python/ferric.pyi:567`), and what the DFT pages assume
-(`site/src/methods/dft-derivations.md:13-15`).
+This is what the code builds, what the Python surface documents (`AoIntegrals`
+in `crates/ferric-python/ferric.pyi`: "`jk()` takes the TOTAL density"), and
+what the DFT pages assume (`site/src/methods/dft-derivations.md`, "Closed
+shell, total density matrix"). From `ferric-scf/src/rhf.rs::take_orbitals`:
+
+<!-- excerpt: ferric-scf/src/rhf.rs::take_orbitals -->
+```rust
+let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));  // D = 2 C_o C_o^T
+```
 
 The factor $\tfrac12$ on $K$ comes from the factor 2 in $D$. Exchange acts only
 between electrons of the same spin, and each spin carries half the closed-shell
@@ -193,9 +233,9 @@ The code uses three forms of $U$, which agree through second order in $\kappa$.
 
 | Form | $U(\kappa)$ | Function |
 |---|---|---|
-| Cayley | $(1 - \tfrac12\kappa)^{-1}(1 + \tfrac12\kappa)$ | `cayley_rotation`, `crates/ferric-mp2/src/orbital_rotation.rs:53`; `cayley_unitary`, `crates/ferric-scf/src/cayley.rs:24` |
-| Exponential | $e^{\kappa}$ by scaling and squaring | `expm_antisymmetric`, `crates/ferric-ci/src/casscf.rs:855` |
-| Geodesic | $e^{\kappa}$ in closed form from the SVD of the $vo$ block | `geodesic_rotation`, `crates/ferric-scf/src/aurora.rs:270` |
+| Cayley | $(1 - \tfrac12\kappa)^{-1}(1 + \tfrac12\kappa)$ | `ferric-mp2/src/orbital_rotation.rs::cayley_rotation`; `ferric-scf/src/cayley.rs::cayley_unitary` |
+| Exponential | $e^{\kappa}$ by scaling and squaring | `ferric-ci/src/casscf.rs::expm_antisymmetric` |
+| Geodesic | $e^{\kappa}$ in closed form from the SVD of the $vo$ block | `ferric-scf/src/aurora.rs::geodesic_rotation` |
 
 The Cayley form is orthogonal to rounding for any antisymmetric $\kappa$ and
 differs from $e^{\kappa}$ at third order. Claim 6 of
@@ -204,16 +244,28 @@ reversed form $(1 + \tfrac12\kappa)^{-1}(1 - \tfrac12\kappa)$ tracks
 $e^{-\kappa}$.
 
 The index placement is the same in every caller: `kappa[(a, i)] = v`,
-`kappa[(i, a)] = -v` (`crates/ferric-scf/src/cayley.rs:55-61`,
-`crates/ferric-scf/src/rohf_newton.rs:219-236`,
-`crates/ferric-scf/src/cdft_driver.rs:1371-1380`). CASSCF uses
-$C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
-(`crates/ferric-ci/src/casscf.rs:21`).
+`kappa[(i, a)] = -v` (`ferric-scf/src/cayley.rs::apply_cayley_ov`,
+`ferric-scf/src/rohf_newton.rs::rohf_newton_step`,
+`ferric-scf/src/cdft_driver.rs::rotate_mos`). The first of them:
+
+<!-- excerpt: ferric-scf/src/cayley.rs::apply_cayley_ov -->
+```rust
+for (ir, a) in (nocc..n).enumerate() {
+    for i in 0..nocc {
+        let v = k_ov[(ir, i)];
+        kappa[(a, i)] = v;     // kappa_ai, the stored parameter
+        kappa[(i, a)] = -v;    // kappa_ia = -kappa_ai
+    }
+}
+```
+
+CASSCF uses $C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for
+$p > q$ (module documentation of `crates/ferric-ci/src/casscf.rs`).
 
 **Disagreements.**
 
 - The module documentation of
-  `crates/ferric-mp2/src/orbital_rotation.rs:5-13` records that the closed-shell
+  `crates/ferric-mp2/src/orbital_rotation.rs` records that the closed-shell
   driver once used the reversed Cayley form. Any derivation older than that
   module is suspect for the sign of $\kappa$ and of the gradient.
 - `wiki/sympy_derivations.md:210-211` writes the generator as the operator
@@ -221,7 +273,7 @@ $C' = C\,e^{K}$ with $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$
   matches the matrix convention above.
 - The letter $\kappa$ has two other meanings in the sources. It is the
   regularization strength of $\kappa$-MP2, in Ha$^{-1}$
-  (`crates/ferric-mp2/src/rimp2.rs:50-56`),
+  (the `kappa` field of `ferric-mp2/src/rimp2.rs::RiMp2Config`),
   and it is the particle-hole kernel in the derivation notes
   (`wiki/papers/sr-mp2-lr-rpa-derivation.tex:417`). The book keeps $\kappa$ for
   orbital rotations, writes the regularization strength as
@@ -238,18 +290,25 @@ $$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad
 - $M$ is any matrix with $M^{\mathsf T} M = V^{-1}$. Only $B^{\mathsf T}B$
   enters an energy, so the choice of $M$ does not change it. The code uses
   $M = L^{-1}$ from the Cholesky factor $V = LL^{\mathsf T}$
-  (`cholesky_inverse_sqrt`, `crates/ferric-mp2/src/rimp2.rs:2219`) and the
+  (`ferric-mp2/src/rimp2.rs::cholesky_inverse_sqrt`) and the
   symmetric $M = U\lambda^{-1/2}U^{\mathsf T}$ with small eigenvalues dropped
-  for the erf and terf operators (`eigh_inverse_sqrt`,
-  `crates/ferric-mp2/src/rimp2.rs:2264`; dispatch in `metric_inverse_sqrt`,
-  `crates/ferric-mp2/src/rimp2.rs:2356`).
+  for the erf and terf operators (`ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt`;
+  dispatch in `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt`).
 - The auxiliary index is the upper index and the first array axis. Blocks are
   named by their orbital spaces: $B_{ov}$, $B_{oo}$, $B_{vv}$. The flattened
-  $ov$ block has column index $i\,n_v + a$
-  (`crates/ferric-mp2/src/rimp2.rs:1431-1433`).
+  $ov$ block has column index $i\,n_v + a$, so the columns of occupied
+  orbital $i$ are one contiguous slice. From
+  `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`:
+
+  <!-- excerpt: ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu -->
+  ```rust
+  let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]);   // B^P_{ia}, a = 0..n_v
+  ```
+
 - The metric and the three-index integrals use the same operator $\hat w$
   unless a section says otherwise
-  (`crates/ferric-mp2/src/rimp2.rs:1042`, `met_op = config.metric_op.unwrap_or(op)`).
+  (`met_op = config.metric_op.unwrap_or(op)` in
+  `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components`).
 
 **Disagreements.**
 
@@ -260,21 +319,22 @@ $$ V_{PQ} = (P|\hat w|Q), \qquad B^P_{pq} = \sum_Q M_{PQ}\,(Q|\hat w|pq), \qquad
   (section @sec:factorization-and-metric). The energies are identical. The book
   writes $M$ and names the factor used where it matters (conditioning, rank
   loss).
-- `crates/ferric-scf/src/df_j.rs:9` calls the **raw** tensor
-  $B_{P,\mu\nu} = (P|\mu\nu)$, while `crates/ferric-scf/src/df_k.rs:27` calls
-  the **dressed** tensor $B[P,\mu,\nu]$. The book writes the raw tensor as
+- The module documentation of `crates/ferric-scf/src/df_j.rs` calls the
+  **raw** tensor $B_{P,\mu\nu} = (P|\mu\nu)$, while that of
+  `crates/ferric-scf/src/df_k.rs` calls the **dressed** tensor
+  $B[P,\mu,\nu]$. The book writes the raw tensor as
   $(P|\mu\nu)$ and the RI-J fit coefficients as
   $c_P = \sum_Q V^{-1}_{PQ}\,(Q|\mu\nu)D_{\mu\nu}$.
 
 ## Attenuated Coulomb operators {#notation-attenuated-coulomb-operators}
 
-| Name | Kernel $\hat w(r)$ | Constructor (`crates/ferric-integrals/src/operator.rs`) |
+| Name | Kernel $\hat w(r)$ | Constructor |
 |---|---|---|
-| Coulomb | $1/r$ | `Operator::coulomb`, `:119` |
-| erf (long range) | $\operatorname{erf}(\omega r)/r$ | `Operator::erf`, `:124` |
-| erfc (short range) | $\operatorname{erfc}(\omega r)/r$ | `Operator::erfc`, `:129` |
-| terf (long range) | $\operatorname{terf}(r; r_0)/r$ | `Operator::terf`, `:239` |
-| terfc (short range) | $\operatorname{terfc}(r; r_0)/r$ | `Operator::terfc`, `:227` |
+| Coulomb | $1/r$ | `ferric-integrals/src/operator.rs::Operator::coulomb` |
+| erf (long range) | $\operatorname{erf}(\omega r)/r$ | `ferric-integrals/src/operator.rs::Operator::erf` |
+| erfc (short range) | $\operatorname{erfc}(\omega r)/r$ | `ferric-integrals/src/operator.rs::Operator::erfc` |
+| terf (long range) | $\operatorname{terf}(r; r_0)/r$ | `ferric-integrals/src/operator.rs::Operator::terf` |
+| terfc (short range) | $\operatorname{terfc}(r; r_0)/r$ | `ferric-integrals/src/operator.rs::Operator::terfc` |
 
 $$ \operatorname{terf}(r; r_0, \omega) = \tfrac12\big[\operatorname{erf}\big(\omega(r - r_0)\big) + \operatorname{erf}\big(\omega(r + r_0)\big)\big], \qquad \operatorname{terfc} = 1 - \operatorname{terf} . $$
 
@@ -283,10 +343,10 @@ and $\operatorname{terf} + \operatorname{terfc} = 1$.
 
 **The curvature constraint.** By default the terf sharpness is tied to the
 cutoff, $r_0\,\omega = 1/\sqrt2$, so $r_0$ is the only parameter
-(`crates/ferric-integrals/src/operator.rs:224-229`,
-`dissertation.txt:1404`). `Operator::terfc_with_omega` and
-`Operator::terf_with_omega` (`crates/ferric-integrals/src/operator.rs:252`,
-`:258`) take $r_0$ and $\omega$ independently. The book writes
+(`ferric-integrals/src/operator.rs::Operator::terfc`,
+`dissertation.txt:1404`).
+`ferric-integrals/src/operator.rs::{Operator::terfc_with_omega,Operator::terf_with_omega}`
+take $r_0$ and $\omega$ independently. The book writes
 $\operatorname{terfc}(r; r_0)$ for the constrained form and
 $\operatorname{terfc}(r; r_0, \omega)$ for the free form.
 
@@ -295,26 +355,26 @@ an integral, $(ia|jb) = s + l$, as in `dissertation.txt:2826-2839`. Energies of 
 carry the operator in brackets: $E_{\mathrm{OS}}[\operatorname{erfc}]$.
 
 **Units of $\omega$ and $r_0$.** Inside the Rust API both are atomic units:
-$\omega$ in Bohr$^{-1}$ and $r_0$ in Bohr
-(`crates/ferric-integrals/src/operator.rs:57-61`). The book's equations use
+$\omega$ in Bohr$^{-1}$ and $r_0$ in Bohr (the `omega` and `distance` fields
+of `ferric-integrals/src/operator.rs::Operator`). The book's equations use
 atomic units. The user surfaces do not all agree:
 
 | Surface | Parameter | Unit | Reference |
 |---|---|---|---|
-| TOML `[mp2] omega`, `terf_omega`, `att_omega`, `mp2v_omega` | $\omega$ | Å$^{-1}$ | `site/src/reference/input.md:166`, `:176`, `:179`, `:188` |
-| TOML `[mp2] att_r0` and the other $r_0$ keys | $r_0$ | Å | `crates/ferric-cli/src/config.rs:1981-1983` |
-| TOML `[dft] omega` (`wb97x-l-v`) | $\omega$ | Bohr$^{-1}$ | `site/src/reference/input.md:152` |
-| TOML `[cell] omega`, `gdf_omega` (Ewald splits) | $\omega$ | inverse of `[cell] unit`, Å$^{-1}$ by default | `site/src/reference/input.md:632`, `:639-640` |
-| Python `run_attenuated_rimp2(omega=)` and the other MP2 entry points | $\omega$ | Å$^{-1}$ | `crates/ferric-python/ferric.pyi:5039` |
-| Python `AoIntegrals` `operator='erf'/'erfc'` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/ferric.pyi:568` |
-| Python range-separated functional property `omega` | $\omega$ | Bohr$^{-1}$ | `crates/ferric-python/ferric.pyi:2685` |
+| TOML `[mp2] omega`, `terf_omega`, `att_omega`, `mp2v_omega` | $\omega$ | Å$^{-1}$ | `site/src/reference/input.md`, `[mp2]` |
+| TOML `[mp2] att_r0` and the other $r_0$ keys | $r_0$ | Å | `ferric-cli/src/config.rs::att_rimp2_operator` |
+| TOML `[dft] omega` (`wb97x-l-v`) | $\omega$ | Bohr$^{-1}$ | `site/src/reference/input.md`, `[dft]` |
+| TOML `[cell] omega`, `gdf_omega` (Ewald splits) | $\omega$ | inverse of `[cell] unit`, Å$^{-1}$ by default | `site/src/reference/input.md`, `[cell]` |
+| Python `run_attenuated_rimp2(omega=)` and the other MP2 entry points | $\omega$ | Å$^{-1}$ | `run_attenuated_rimp2` in `crates/ferric-python/ferric.pyi` |
+| Python `AoIntegrals` `operator='erf'/'erfc'` | $\omega$ | Bohr$^{-1}$ | `AoIntegrals` in `crates/ferric-python/ferric.pyi` |
+| Python range-separated functional property `omega` | $\omega$ | Bohr$^{-1}$ | `TddftResult.omega` in `crates/ferric-python/ferric.pyi` |
 | Dissertation | $\omega$, $r_0$ | Å$^{-1}$, Å | `dissertation.txt:1538`, `:3739` (the text extraction drops the exponent of Å$^{-1}$) |
 
 The conversion is one constant. An inverse length in Å$^{-1}$ times
-`BOHR_TO_ANGSTROM` is Bohr$^{-1}$ (`crates/ferric-core/src/units.rs:22-24`;
-the alias `BOHR_INV_PER_ANG_INV` at `crates/ferric-mp2/src/attenuated.rs:160`).
-The default $\omega = 0.420$ Å$^{-1}$ is $0.222254$ Bohr$^{-1}$
-(`crates/ferric-mp2/src/attenuated.rs:165`).
+`BOHR_TO_ANGSTROM` is Bohr$^{-1}$ (`ferric-core/src/units.rs::BOHR_TO_ANGSTROM`;
+the alias `ferric-mp2/src/attenuated.rs::BOHR_INV_PER_ANG_INV`).
+The default $\omega = 0.420$ Å$^{-1}$ is $0.222254$ Bohr$^{-1}$ (the
+`Default` of `ferric-mp2/src/attenuated.rs::AttenuatedMp2Config`).
 
 The book quotes every parameter value in the unit of the surface that takes
 it, followed by the atomic-unit value in parentheses: "$\omega = 0.420$
@@ -352,14 +412,14 @@ below gives for that surface.
 
 | Quantity | Internal | At the TOML and Python surface | Reference |
 |---|---|---|---|
-| Coordinates | Bohr | Å in XYZ files and Python constructors | `crates/ferric-core/src/mol.rs:196-198`, `crates/ferric-python/ferric.pyi:180` |
-| Bohr radius | 0.52917721092 Å (CODATA 2010) | | `crates/ferric-core/src/units.rs:17` |
+| Coordinates | Bohr | Å in XYZ files and Python constructors | `ferric-core/src/mol.rs::Molecule::parse_xyz`, `Molecule` in `crates/ferric-python/ferric.pyi` |
+| Bohr radius | 0.52917721092 Å (CODATA 2010) | | `ferric-core/src/units.rs::BOHR_RADIUS_ANGSTROM` |
 | Attenuation $\omega$, $r_0$ | Bohr$^{-1}$, Bohr | see section @sec:notation-attenuated-coulomb-operators | |
-| $\kappa_{\mathrm{reg}}$ | Ha$^{-1}$ | Ha$^{-1}$ | `crates/ferric-mp2/src/rimp2.rs:56` |
-| Lattice vectors, k-points | Bohr, Bohr$^{-1}$ | Å, Å$^{-1}$ (or `unit = "bohr"`) | `site/src/reference/input.md:632` |
-| Force-field parameters | atomic units | kcal/mol, Å, degrees | `crates/ferric-mm/src/topology.rs:302-318` |
-| Excitation and quasiparticle energies | Hartree | eV in printed output | `crates/ferric-gw/src/bse.rs:102` |
-| Memory budget | bytes | GB (`[memory] budget_gb`) | `site/src/reference/input.md:396` |
+| $\kappa_{\mathrm{reg}}$ | Ha$^{-1}$ | Ha$^{-1}$ | `ferric-mp2/src/rimp2.rs::RiMp2Config` |
+| Lattice vectors, k-points | Bohr, Bohr$^{-1}$ | Å, Å$^{-1}$ (or `unit = "bohr"`) | `site/src/reference/input.md`, `[cell]` |
+| Force-field parameters | atomic units | kcal/mol, Å, degrees | `ferric-mm/src/topology.rs::from_amber_units` |
+| Excitation and quasiparticle energies | Hartree | eV in printed output | `ferric-gw/src/bse.rs::lowest_ev` |
+| Memory budget | bytes | GB (`[memory] budget_gb`) | `site/src/reference/input.md`, `[memory]` |
 
 Benchmark statistics taken from the dissertation are in kcal/mol, as printed
 there.
@@ -367,12 +427,12 @@ there.
 **Disagreements.**
 
 - The Hartree-to-eV factor is written as the literal `27.211_386_245_988`
-  (CODATA 2018) in `crates/ferric-gw/src/bse.rs:102`, while the length and
-  energy constants in `crates/ferric-core/src/units.rs:17` and `:27` are
-  CODATA 2010. The difference is below $10^{-7}$ relative. The book states
+  (CODATA 2018) in `ferric-gw/src/bse.rs::lowest_ev`, while the length and
+  energy constants `ferric-core/src/units.rs::{BOHR_RADIUS_ANGSTROM,HARTREE_JOULE}`
+  are CODATA 2010. The difference is below $10^{-7}$ relative. The book states
   which constant a printed eV value uses.
 - `[dft] omega` is in Bohr$^{-1}$ and `[mp2] omega` is in Å$^{-1}$
-  (`site/src/reference/input.md:152`, `:166`). The input reference documents
+  (`site/src/reference/input.md`, `[dft]` and `[mp2]`). The input reference documents
   the difference. The book repeats the warning wherever both keys appear in
   one example.
 

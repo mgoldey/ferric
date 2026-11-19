@@ -71,6 +71,7 @@ Here are steps 1 to 3 as `scripts/oomp2_mp3_identities_sympy.py` writes
 them for the MP3 hole–hole ladder, in `part_a`, with the particle–particle
 vertex and the dummy-index declarations removed:
 
+<!-- excerpt: scripts/oomp2_mp3_identities_sympy.py::part_a -->
 ```python
     q = Rational(1, 4)
     t_bra = q * AntiSymmetricTensor("t", (a, b), (i, j)) * Fd(i) * Fd(j) * F(b) * F(a)
@@ -82,11 +83,13 @@ vertex and the dummy-index declarations removed:
         * F(j2)
         * F(i2)
     )
+    # ... the dummy-index declarations and the particle-particle vertex
     v_hh = (                                  # hole-hole block of V_N, labels o1..o4
         q
         * AntiSymmetricTensor("g", (o1, o2), (o3, o4))
         * NO(Fd(o1) * Fd(o2) * F(o4) * F(o3))
     )
+    # ...
     hh = wick_expect(t_bra * v_hh * t_ket)  # step 3
 ```
 
@@ -181,12 +184,16 @@ ij\|ab\rangle$. The amplitude and energy are three lines of
 spin-orbital back end of `mp3_energy`, shown here with the memory-management
 comments removed:
 
+<!-- excerpt: ferric-mp2/src/mp3.rs::mp3_energy_from_spin_orbital_blocks -->
 ```rust
 let d = eo[i] + eo[j] - ev[a] - ev[b];          // D = -Delta < 0
-t[[i, j, a, b]] = asym_oovv_t[[i, j, a, b]] / d; // t = <ij||ab> / D, Eq. (1.7)
+t[[i, j, a, b]] = asym_oovv_t[[i, j, a, b]] / d; // t = <ij||ab> / D
 // ...
-let v = 0.25 * einsum!("ijab,ijab->", &t_t, &oovv_t);  // E2 = 1/4 sum t <ij||ab>, Eq. (1.8)
+let v = 0.25 * einsum!("ijab,ijab->", &t_t, &oovv_t);  // E2 = 1/4 sum t <ij||ab>
 ```
+
+The second line is the amplitude of (@eq:wick-1) and the last is the energy
+of (@eq:so-e2-wick).
 
 There is no leading minus anywhere, because the sign sits in `d`. A port
 that writes $\Delta$ with the textbook sign has to add the minus sign to
@@ -248,14 +255,18 @@ holes and particles exchanged.
 The code applies the three coefficients as literals. With the scoping
 blocks and tensor wrapping removed:
 
+<!-- excerpt: ferric-mp2/src/mp3.rs::mp3_energy_from_spin_orbital_blocks -->
 ```rust
 let x: ArrayD<f64> = einsum!("ijab,abcd->ijcd", &t_t, &vvvv_t);  // sum_ab t_ij^ab <ab||cd>
+// ...
 0.125 * einsum!("ijcd,ijcd->", &x_t, &t_t)                         // e_pp: 1/8
 // ...
 let y: ArrayD<f64> = einsum!("klij,ijab->klab", &oooo_t, &t_t);  // sum_ij <kl||ij> t_ij^ab
+// ...
 0.125 * einsum!("klab,klab->", &y_t, &t_t)                         // e_hh: 1/8
 // ...
 let z: ArrayD<f64> = einsum!("ijab,kbcj->iakc", &t_t, &ovvo_t);  // sum_jb t_ij^ab <kb||cj>
+// ...
 einsum!("iakc,iakc->", &z_t, &t_iakc_t)                            // e_ph: coefficient 1
 ```
 
@@ -280,7 +291,7 @@ a plain elementwise sum.
 The unrestricted code works in spin blocks, not in spin orbitals. Its
 equivalence to the spin-orbital form is the subject of
 `scripts/ump3_spin_blocks_sympy.py`, which treats every spatial integral as an
-independent symbol, and chapter @sec:mp3 covers it.
+independent symbol, and section @sec:mp3 covers it.
 
 ## Known limits
 

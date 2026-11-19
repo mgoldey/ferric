@@ -65,6 +65,7 @@ permutation can cost a full copy of the operand, so the code avoids it where
 it can. From `ferric-tensors/src/einsum.rs::to_2d_or_transpose`, with the
 row and column counts computed above it removed:
 
+<!-- excerpt: ferric-tensors/src/einsum.rs::to_2d_or_transpose -->
 ```rust
 let fwd: Vec<usize> = first.iter().chain(second.iter()).copied().collect();
 if fwd.iter().enumerate().all(|(i, &p)| i == p) && op.is_standard_layout() {
@@ -107,6 +108,7 @@ GEMM. It splits the contracted axis into blocks of `GEMM_K_BLOCK` = 128 and
 accumulates the blocks in ascending order, in
 `ferric-tensors/src/einsum.rs::gemm_kblocked`:
 
+<!-- excerpt: ferric-tensors/src/einsum.rs::gemm_kblocked -->
 ```rust
 let mut k0 = 0;
 while k0 < k {
