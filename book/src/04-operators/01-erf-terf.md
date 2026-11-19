@@ -10,7 +10,7 @@ feel each other through it, and that is where dispersion comes from. A
 method can be good at one of these jobs and poor at the other. MP2 in a
 finite basis is one example. Its long-range part overestimates dispersion,
 and basis set superposition error adds more spurious binding. The
-dissertation's abstract states the remedy that chapter 2 develops:
+dissertation's abstract states the remedy that its chapter 2 develops:
 "attenuation of the long-range helps to cancel both BSSE and intrinsic MP2
 errors".
 
@@ -70,12 +70,9 @@ therefore lies in $(0, 1]$ on the same range.
 
 In each pair the "c" member is the short-range part: erfc and terfc go to 1
 at $r = 0$, so the short-range kernel keeps the full Coulomb singularity, and
-to 0 as $r \to \infty$. erf and terf carry the long range. The limits match
-between the pairs: as $r_0 \to \infty$ ($\omega \to 0$ at the constraint
-below) terf $\to 0$, and as $r_0 \to 0$ terf $\to$ erf with $\omega \to \infty$,
-which is the full Coulomb operator.
+to 0 as $r \to \infty$. erf and terf carry the long range.
 
-Check those two limits by substitution. At $r_0 = 0$ the two terms of (@eq:erf-terf-2)
+Check the limits of terf by substitution. At $r_0 = 0$ the two terms of (@eq:erf-terf-2)
 are equal and terf$(r; 0, \omega) = \operatorname{erf}(\omega r)$. With the
 constraint $\omega = 1/(\sqrt2\,r_0)$ of @sec:erf-terf-curvature-constraint, the arguments of (@eq:erf-terf-2) are
 $(r \mp r_0)/(\sqrt2\,r_0)$. As $r_0 \to \infty$ at fixed $r$ they tend to
@@ -84,11 +81,11 @@ of $1/r$ is short range. As $r_0 \to 0$ both arguments go to $+\infty$ for
 any $r > 0$, terf $\to 1$, and the long-range kernel is all of $1/r$. The
 dissertation reports the same two ends for attenuated MP2 itself: it
 "converges to the unattenuated result" as $r_0$ grows and "approaches HF
-results" as $r_0 \to 0$ (chapter 3, figure captions).
+results" as $r_0 \to 0$ (dissertation chapter 3, figure captions).
 
 Range separation of the correlation energy with the erf pair, and the terf
 pair of Dutoi and Head-Gordon, are introduced in the dissertation's chapter 2;
-chapter 4, Eqs. 4.1–4.2, restates terf and terfc in
+its chapter 4, Eqs. 4.1–4.2, restates terf and terfc in
 the form (@eq:erf-terf-2).
 
 ![Left: $r\hat w(r)$ for the four kernels; each pair sums to 1. Right: the long-range kernels themselves, normalized at $r = 0$. Script: `book/src/figures/04-operators/kernels.py`.](../figures/04-operators/kernels.svg)
@@ -135,17 +132,13 @@ $$ \frac{\operatorname{terf}(r; r_0, \omega)}{r} = \tau_1 + \tau_3 r^2 + O(r^4),
 with $\tau_1 = g'(0)$. Check the limit $r_0 = 0$: $\tau_3 \to
 -2\omega^3/(3\sqrt\pi)$, the erf coefficient above.
 
-`scripts/terf_identities_sympy.py` writes the same expansion as
-$c_0 + c_2 r^2 + O(r^4)$, with $c_0 = \tau_1$ and
-$c_2 = 2\omega^3(2\omega^2 r_0^2 - 1)\,e^{-\omega^2 r_0^2}/(3\sqrt\pi)$,
-which is $\tau_3$ with the factor 2 taken out of the bracket.
-
 $\tau_3$ has one positive root, $\omega = 1/(\sqrt2\,r_0)$. At that $\omega$
 the long-range kernel is flat to fourth order at the origin, so the
 short-range kernel $\operatorname{terfc}/r = 1/r - \tau_1 - O(r^4)$ has the
 same first, second and third derivatives as $1/r$. The dissertation states
 the constraint as $r_0\omega = 1/\sqrt2$ and the property as "the same
-derivative as the Coulomb operator in the short-range" (chapter 2). The erf
+derivative as the Coulomb operator in the short-range" (dissertation
+chapter 2). The erf
 kernel has no such freedom: $\operatorname{erf}(\omega r)/r$ has a nonzero
 $r^2$ term for every $\omega > 0$, which the right panel of the figure shows.
 
@@ -175,8 +168,10 @@ so the fitted methods of @sec:erf-terf-parameters-dissertation have a single len
 > <!-- verified: id=op.terf.curvature-constraint; script=scripts/mp2_family_sympy.py; claim=D; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/operator.rs::{terfc,terf}; rust_test=ferric-integrals/tests/operator_positivity_gate.rs::terf_plus_terfc_reconstructs_coulomb -->
 
 The proof script finds $\tau_3$ with a sympy series and solves for its
-roots. The intermediate steps above ($g'(0)$, $g'''(0)$ and the $r_0 = 0$
-check) were checked separately with sympy.
+roots. `scripts/terf_identities_sympy.py` proves the same expansion a second
+time (claim [curvature], with the mutation $1/\sqrt2 \to 1/2$), and its claim
+[taylor-steps] checks the intermediate steps above: $g'(0)$, $g'''(0)$,
+$\tau_3 = g'''(0)/6$ and the $r_0 = 0$ limit.
 
 `Operator::terfc` and `Operator::terf` apply the constraint, so $r_0$ is their
 only argument:
@@ -235,54 +230,21 @@ claim 4 of `scripts/mp2_variant_identities.py`.
 
 **terf is not positive definite.** A kernel $\hat w$ is positive definite
 when $(\rho|\hat w|\rho) > 0$ for every nonzero charge distribution $\rho$.
-In Fourier space $(\rho|\hat w|\rho) = \int |\tilde\rho(k)|^2\,\tilde w(k)\,
-d\mathbf k$, so the kernel is positive definite when its transform is
-positive (Bochner's theorem; section @sec:terf-table-engine-kernels-fourier-space derives the transforms). The
-transforms of the kernels are
+Section @sec:terf-table-engine-kernels-fourier-space derives the Fourier
+transforms $\hat K(k)$ of the kernels: terf's carries the factor
+$\cos(kr_0)$ and is negative near $kr_0 = \pi$, where a charge distribution
+modulated at wavelength near $2r_0$ has negative interaction energy through
+it. erf, erfc and terfc have positive transforms. The erf kernel is long
+range too, but its switch is centred on $r = 0$ and its transform has no
+oscillating factor. `terf_is_indefinite_and_terfc_is_not` in
+`crates/ferric-integrals/tests/operator_positivity_gate.rs` asserts a
+negative terf diagonal and a non-negative terfc one on water / cc-pVDZ.
 
-| Kernel | $\tilde w(k)\cdot 2\pi^2 k^2$ | Positive definite |
-|---|---|---|
-| erf | $e^{-k^2/4\omega^2}$ | yes |
-| erfc | $1 - e^{-k^2/4\omega^2}$ | yes |
-| terfc | $1 - \cos(k r_0)\,e^{-k^2/4\omega^2}$ | yes |
-| terf | $\cos(k r_0)\,e^{-k^2/4\omega^2}$ | no: negative at $k r_0 = \pi$ |
-
-The factor $\cos(kr_0)$ comes from the shell. terf switches on at a finite
-distance $r_0$, and a charge distribution modulated at a wavevector with
-$kr_0$ near $\pi$ (wavelength near $2r_0$) has negative interaction energy
-through it. The erf
-kernel is long range too, but its switch is centred on $r = 0$ and its
-transform has no oscillating factor.
-
-A kernel that is not positive definite has no Cauchy–Schwarz bound, and its
-fitting metric has negative eigenvalues that belong to the interaction, not
-to rounding. Two consequences follow in the code. Schwarz screening is
-refused for terf. And terf is never fitted in its own metric:
-`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` returns an error for it. A
-fit that dropped the negative modes would compute the interaction under the
-positive part of the kernel alone. The long-range terf interaction of
-RS-MP2 + LR-RPA is Coulomb RI minus terfc RI instead, a factor with a
-signature (section @sec:factorization-and-metric-signed). The table in this
-section is the one pinned by
-`crates/ferric-integrals/tests/operator_positivity_gate.rs`, whose test
-`terf_is_indefinite_and_terfc_is_not` asserts a negative terf diagonal and a
-non-negative terfc one on water / cc-pVDZ.
-
-The dispatch is one `match` on the operator kind (message shortened):
-
-```rust
-match op.kind {
-    OperatorKind::Terf => Err(FerricError::General(..)), // indefinite: never fitted
-    OperatorKind::ErfCoulomb => eigh_inverse_sqrt(v),    // drop near-null modes of V
-    _ => cholesky_inverse_sqrt(v),                       // V = L L^T, M = L^{-1}
-}
-```
-
-The erf metric is positive definite in exact arithmetic; it takes the
-eigendecomposition branch because it loses rank numerically in a
-Coulomb-fitted auxiliary basis (section @sec:factorization-and-metric). terfc takes the
-Cholesky branch, as Coulomb and erfc do: its transform is positive, and a
-Cholesky failure on it would point at a real defect in the integrals.
+Two consequences follow in the code. Schwarz screening is refused for terf
+(section @sec:schwarz-bound-admitted-kernels). And terf is never fitted in
+its own metric: `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` returns an
+error for it, and the long-range terf interaction is Coulomb RI minus terfc
+RI (section @sec:factorization-and-metric-signed).
 
 ## Options and units {#erf-terf-options-units}
 
@@ -293,17 +255,19 @@ exception: it is in Bohr$^{-1}$ (chapter @sec:notation, section @sec:notation-at
 | Parameter | Surface | Default | Used by |
 |---|---|---|---|
 | $\omega$, erfc | `[mp2] omega`, `run_attenuated_rimp2(omega=)` | 0.420 Å$^{-1}$ (0.2223 Bohr$^{-1}$) | `att-rimp2` with erfc |
-| $r_0$, terfc | `[mp2] att_r0` | 1.05 Å | `att-rimp2` with `att_operator = "terfc"` |
-| free $\omega$, terfc | `[mp2] att_omega` | linked, $1/(\sqrt2 r_0)$ | same, `Operator::terfc_with_omega` |
+| kernel of `att-rimp2` | `[mp2] att_operator`, `run_rimp2(att_operator=)` | `"erfc"`; `"terfc"` is the other value | `att-rimp2` |
+| $r_0$, terfc | `[mp2] att_r0`, `run_terfc_rimp2(r0=)`, `run_rimp2(att_r0=)` | basis-aware: 1.05 Å for aug-cc-pVDZ, 1.35 Å for aug-cc-pVTZ (`ferric-mp2/src/terfc_r0.rs::resolve_terfc_r0`); an untabulated basis is an error | `att-rimp2` with `att_operator = "terfc"` |
+| free $\omega$, terfc | `[mp2] att_omega`, `run_rimp2(att_omega=)` | linked, $1/(\sqrt2 r_0)$ | same, `Operator::terfc_with_omega` |
 | $r_0^{(1)}, r_0^{(2)}$ | `[mp2] r0_bonded`, `r0_nonbonded` | 0.75 Å, 1.05 Å | `scs-mp2-2terfc` |
-| $r_0$, terf | `[mp2] r0` | 1.6828 Å (3.18 Bohr) | `rs-mp2-rpa` with terf |
+| $r_0$, terf | `[mp2] r0`, `run_rs_mp2_rpa(r0=)` | 1.6828 Å (3.18 Bohr) | `rs-mp2-rpa` with terf |
+| free $\omega$, terf | `[mp2] terf_omega`, `run_rs_mp2_rpa(terf_omega=)` | linked, $1/(\sqrt2 r_0)$ | `rs-mp2-rpa` with terf |
 
-The Bohr values in the table are the Å values times 0.529177 Bohr/Å for
+The Bohr values in the table are the Å values times 0.529177 Å/Bohr for
 $\omega$ and divided by it for $r_0$.
 
-The terf and terfc integrals come from interpolation tables that are not in
-the repository; the run needs `FERRIC_TERF_TABLE_DIR` (the input reference
-says where).
+The terf and terfc integrals come from interpolation tables. They ship in
+the repository under `terf-tables/`, but the engine finds them only through
+`FERRIC_TERF_TABLE_DIR` (the input reference says where).
 
 ## Parameters from the dissertation {#erf-terf-parameters-dissertation}
 
@@ -335,13 +299,17 @@ is $1/(\sqrt2 \times 1.05)$.
 
 | Source | What it gives |
 |---|---|
-| section @sec:scs-and-kappa-scs-mp2 | the terfc kernel, (@eq:op-terf-curvature-constraint) and its root |
-| section @sec:attenuated-mp2-energy | units, the range-split cross term |
 | `scripts/mp2_family_sympy.py`, part D | the proof of (@eq:op-terf-curvature-constraint) |
-| `crates/ferric-integrals/tests/operator_positivity_gate.rs` | the Fourier-transform table and its measurement |
+| `scripts/terf_identities_sympy.py` | the second proof of the expansion and its steps (claims [complement], [curvature], [taylor-steps]) |
+| `scripts/mp2_variant_identities.py`, claim 4 | the range-split cross term |
+| `crates/ferric-integrals/tests/operator_positivity_gate.rs` | the measured sign of the terf and terfc diagonals |
 | Dissertation, chapters 2–5 | the terf pair, the constraint, the fitted parameters |
 
-**Known limits (2026-11-15).** The terf/terfc tests skip when the
-interpolation tables are absent, so a run without `FERRIC_TERF_TABLE_DIR`
-checks only the erf pair. Yukawa, Slater-geminal and fitted-geminal kernels
+**Known limits (2026-11-15).** The terf/terfc tests skip when they cannot
+find the tables. CI does not set `FERRIC_TERF_TABLE_DIR`, so the tests that
+read only that variable (`operator_positivity_gate.rs`, and
+`terf_signed_fit.rs` of section @sec:factorization-and-metric-signed) skip
+there; those that fall back to `terf-tables/` (`terfc_base_validation.rs`,
+`validation_terfc_integrals.rs`) run. A run where neither is found checks
+only the erf pair. Yukawa, Slater-geminal and fitted-geminal kernels
 are section @sec:yukawa-geminal.

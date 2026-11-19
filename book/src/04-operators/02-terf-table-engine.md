@@ -1,6 +1,6 @@
 # The terf table engine and its far-field fallback {#terf-table-engine}
 
-<!-- status: edit; registry: none -->
+<!-- status: edit; registry: terfc-rimp2-gradient -->
 
 Every Gaussian integral code reduces a two-electron integral over the
 Coulomb kernel to one special function, the Boys function $F_m(T)$. erf and
@@ -66,7 +66,7 @@ Check the limits. $r_0 = 0$ sets $\cos(kr_0) = 1$ and the terf row becomes
 the erf row. $\omega \to \infty$ at $r_0 = 0$ sends the Gaussian factor to 1
 and the erf row to $4\pi/k^2$, the Coulomb transform.
 
-Two consequences carry the screening chapter.
+Chapter @sec:screening uses two consequences.
 
 - $\hat K_{\mathrm{terf}}$ is negative for $kr_0 \in (\pi/2, 3\pi/2)$ and
   periodically beyond; its first zero is at $kr_0 = \pi/2$. By Bochner's
@@ -83,16 +83,8 @@ integrals are sums of $|\hat\rho(k)|^2 \hat K(k)$. The transforms carry the
 factor $1/(2\pi)^3$ of the inverse transform in the code comments of
 `schwarz.rs`, which write $\hat K/(2\pi)^3 =
 \cos(kr_0)e^{-k^2/4\omega^2}/(2\pi^2k^2)$. The refusal itself is one match
-arm in `ferric-integrals/src/schwarz.rs::check_operator_supported`
-(error message shortened):
-
-```rust
-OperatorKind::Terf => {
-    return Err(FerricError::Libint(
-        "Schwarz screening is INVALID for the Terf operator, ...".to_string(),
-    ))
-}
-```
+arm in `ferric-integrals/src/schwarz.rs::check_operator_supported`, shown in
+section @sec:schwarz-bound-admitted-kernels.
 
 ![The four kernels in r (left) and in k relative to the Coulomb transform (right); terf's transform crosses zero at k r0 = pi/2. Script: book/src/figures/04-operators/kernels_rk.py](../figures/04-operators/kernels_rk.svg)
 
@@ -170,10 +162,10 @@ Check the limits:
   $2\pi^{5/2}F_0(\theta^2R^2)/(pq\sqrt{p+q})$.
 
 The Coulomb prefactor is common to every kernel; the kernel enters through
-$\phi/\theta$ and through $G_0$ in place of $F_0$. The steps above were
-checked numerically (the $k$ integral of step 4 against
-$\operatorname{terf}(R; r_0, \phi)/R$, the prefactor identity, and the two
-limits) with mpmath and sympy.
+$\phi/\theta$ and through $G_0$ in place of $F_0$. Claim [two-center-steps]
+of `scripts/terf_identities_sympy.py` checks the steps: the $k$ integral of
+step 4 against $\operatorname{erf}(\phi x)$ by quadrature, the prefactor
+identity, and the limits $S \to 0$ and $s = 0$.
 
 > **Verified equation {#eq:operators-terf-two-center}** · the $s$-$s$ terf integral is the kernel at sharpness $\phi$
 >
@@ -194,8 +186,8 @@ limits) with mpmath and sympy.
 ### Higher angular momentum
 
 McMurchie-Davidson builds every other integral from derivatives of the $s$
-integral with respect to $\mathbf R$ through the $R^n_{tuv}$ recursion of
-"McMurchie-Davidson three-center one-electron integrals", seeded with
+integral with respect to $\mathbf R$ through the $R^n_{tuv}$ recursion of section @sec:md-three-center, seeded
+with
 $R^n_{000} = (-2\alpha)^n F_n(\alpha R^2)$. Each derivative in $\mathbf R$
 brings down a factor through the chain rule. The dependence on $R$ is
 through $S$ alone at fixed $s$, and $\partial S/\partial R_x = 2\phi^2 R_x$,
@@ -204,7 +196,9 @@ $\phi^2$ and the seed
 
 $$ R^n_{000} = (-2\phi^2)^n\, \frac{\phi}{\theta}\, G_n(S, s), \qquad G_n(S, s) = \Big(-\frac{\partial}{\partial S}\Big)^n G_0(S, s) . $$
 
-The shim calls $A_n = (\phi/\theta)G_n(S, s)$ the Boys-replacement vector
+The MD superscript $n$ is the $S$-derivative order; the series below, the
+boxes and `terf_G_series` call the same order $m$. The shim calls
+$A_n = (\phi/\theta)G_n(S, s)$ the Boys-replacement vector
 (`terf_aux`). terfc integrals are Coulomb minus terf, built by the same
 McMurchie-Davidson pass so the two share ordering and normalization. The
 $R^n_{tuv}$ recursion is linear in its seeds and does not contain the exponent,
@@ -215,8 +209,8 @@ $$ R^n_{000} = (-2\theta^2)^n F_n(\theta^2 R^2) - (-2\phi^2)^n \frac{\phi}{\thet
 and run one recursion and one contraction (`md_terms` in the shim). The
 2-centre values subtract two passes.
 
-This is the seed loop of `md_terms::kernel_R` in
-`crates/ferric-integrals/shim/shim.cc`, with the table lookup above it
+The seed loop of `md_terms::kernel_R` in
+`crates/ferric-integrals/shim/shim.cc` follows, with the table lookup above it
 reduced to its arguments:
 
 ```cpp
@@ -255,13 +249,13 @@ Three points about this loop:
 
 ### The defining series
 
-The code evaluates $G_n$ from a Poisson series. With
+The code evaluates $G_m$ from a Poisson series. With
 $\pi_S(i) = e^{-S}S^i/i!$, $c_s(i) = \sum_{j \le i} e^{-s}s^j/j!$,
 $\nabla f(i) = f(i) - f(i-1)$ and $(2i)!!/(2i+1)!!$,
 
-$$ G_n(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{n}\pi_S]{}(i)\, c_s(i) . $$
+$$ G_m(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{m}\pi_S]{}(i)\, c_s(i) . $$
 
-For $n = 0$ the series is an average over the Poisson distribution
+For $m = 0$ the series is an average over the Poisson distribution
 $\pi_S(i)$, the probability of $i$ events at mean $S$, set by the distance
 between the centres. It averages the product of two weights: the
 double-factorial ratio, which is the weight of the Boys series, and
@@ -276,14 +270,15 @@ $\pi_S(-1) = 0$.
 
 Check $s = 0$. Then $c_0(i) = 1$ for every $i$, and with
 $(2i)!! = 2^i\,i!$ the term $(2i)!!/(2i+1)!!\cdot S^i/i!$ becomes
-$(2S)^i/(2i+1)!!$. The series is the Boys series
-$F_n(S) = e^{-S}\sum_i (2S)^i/(2i+1)!!$ differentiated $n$ times. Writing
+$(2S)^i/(2i+1)!!$. For $m = 0$ the series is
+$F_0(S) = e^{-S}\sum_i (2S)^i/(2i+1)!!$, and $m$ applications of $\nabla$
+give $F_m = (-\partial_S)^mF_0$. Writing
 $c_s = 1 - \tau_s$ with the Poisson tail $\tau_s(i) = \sum_{j > i} e^{-s}s^j/j!$
 splits it exactly:
 
-$$ G_n(S, s) = F_n(S) - \Delta_n(S, s), \qquad \Delta_n(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{n}\pi_S]{}(i)\, \tau_s(i) . $$
+$$ G_m(S, s) = F_m(S) - \Delta_m(S, s), \qquad \Delta_m(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{m}\pi_S]{}(i)\, \tau_s(i) . $$
 
-$\Delta_n$ is the terfc auxiliary itself, and its sum length is set by $s$, not
+$\Delta_m$ is the terfc auxiliary itself, and its sum length is set by $s$, not
 $S$, because $\tau_s(i)$ decays super-exponentially once $i > s$
 (`terf_delta`, `terf_G_tail`; the truncation index is `terf_tail_index`).
 
@@ -322,7 +317,10 @@ the separation. The tail form replaces it with a sum whose length depends
 on $s$ only. `terf_delta` builds $\tau_s(i)$ downward from the top, adding
 the smallest terms first, because $1 - c_s(i)$ cancels catastrophically:
 for $s \le 1/2$, $c_s(i)$ is within about $10^{-17}$ of 1 by $i \approx 14$.
-The truncation index is
+The sum still needs more terms than that. The bar is on $\Delta_m$, not on
+$G_m$ (an error on $G_m$ is divided by $F_m(S) = O(1)$), and
+$[\nabla^m\pi_S](i)$ grows with $m$, so terms with a negligible $\tau_s(i)$
+still matter at $10^{-14}$ relative. The truncation index is
 
 ```cpp
 inline int terf_tail_index(double s) {
@@ -336,7 +334,9 @@ inline int terf_tail_index(double s) {
 The shim comment above it records the measurement behind the rule: an
 mpmath reference needs $I \ge 32$ at $s = 0.5$ and $I \ge 172$ at $s = 80$
 to reach $10^{-14}$, and $1.80s + 40$ sits above those values over
-$s \in [0.01, 80]$.
+$s \in [0.01, 80]$. A Chernoff bound on the Poisson tail,
+$I \approx s + 8\sqrt s + 16$, was rejected: it gives 23 at $s = 0.5$, short
+of 32, and is also short at $s = 2$ and $s = 80$.
 
 > **Verified equation {#eq:operators-terf-series}** · the code's Poisson series is $(-\partial_S)^m G_0$
 >
@@ -358,10 +358,10 @@ $s \in [0.01, 80]$.
 
 **Far field.** For $\sqrt S - \sqrt s = \phi(R - r_0) \gg 1$ both error
 functions in $G_0$ are $1$ to within $\operatorname{erfc}(\sqrt S - \sqrt s)$
-and $G_n \to F_n(S)$. Physically, the two charge distributions are farther
+and $G_m \to F_m(S)$. Physically, the two charge distributions are farther
 apart than $r_0$ by many widths $1/\phi$, so the terf kernel is $1/r$ over
 all of them and the integral is the Coulomb one. The shim takes
-$G_n = F_n(S)$ when $S > 50$ and $\sqrt S - \sqrt s > 6$
+$G_m = F_m(S)$ when $S > 50$ and $\sqrt S - \sqrt s > 6$
 (`terf_far_field`). The second test matters when $\omega$ is free: $S > 50$
 alone admits pairs inside the $r_0$ shell.
 
@@ -403,12 +403,8 @@ $n = 0$. Outside every table the tail form above is summed directly.
 The top table limits a free $\omega$: $s \le 80$ means
 $r_0\omega \le$ about 8.9 (the `Operator::terfc_with_omega` doc comment).
 
-Proof of the identities of this section: `scripts/terf_identities_sympy.py`
-[two-center], [series], [boys-shape], [s-zero], [tail-form], [far-field],
-[s-bound], [terfc-split].
-
-This is the inner loop of `terf_aux` after the table and the Lagrange
-weights `wS`, `ws` have been chosen; only the hit counter has been removed:
+The inner loop of `terf_aux` runs after the table and the Lagrange
+weights `wS`, `ws` have been chosen (the hit counter is removed):
 
 ```cpp
 const int dimn = tbl->dimn;
@@ -514,13 +510,13 @@ $R_{\mathrm{terfc}} = R_{\mathrm{Coulomb}} - R_{\mathrm{terf}}$ before the
 contraction, from the combined seeds in three centres and from two $R$ tables
 in two (`md_kernel_R`), so both parts share the $E$ coefficients and the
 prefactor. The derivative reads $G$ one order higher than the value. The
-tables hold $m < 24$, so the engine refuses $L + 1 \ge 24$; with s..g
-auxiliaries and s..f orbitals, $L \le 11$.
+tables hold $m < 24$ and the seeds run to $m = L$, so the engine refuses
+$L \ge 24$; with s..g auxiliaries and s..f orbitals, $L \le 11$.
 
 **Term lists.** The three-centre kernels, for values and derivatives, write
 each Cartesian component as a list of Hermite terms $(c, t, u, v)$ and store
-$(t, u, v)$ as its flat index $(tS + u)S + v$ in an $R$ cube of side
-$S = L + 1$. The index is linear, so $R_{t'+t,\,u'+u,\,v'+v}$ is the cube
+$(t, u, v)$ as its flat index $(t(L+1) + u)(L+1) + v$ in an $R$ cube of side
+$L + 1$. The index is linear, so $R_{t'+t,\,u'+u,\,v'+v}$ is the cube
 entry at the sum of the two indices, and an integral is a double sum over the
 auxiliary list and the orbital-pair list. Pair lists are built once per
 primitive pair, auxiliary lists once per shell triple. The kernels they
@@ -563,7 +559,7 @@ by the Rust tests above.
 |---|---|
 | tables not found | engine construction errors; nothing falls back to Coulomb |
 | total angular momentum reaches the table depth (24) | the `_checked` calls return the refusal |
-| a derivative integral with $L + 1 \ge 24$ ($L = l_P + l_A + l_B + 1$) | refused (@sec:terf-table-engine-derivative-integrals) |
+| a derivative integral with $L \ge 24$ ($L = l_P + l_A + l_B + 1$) | refused (@sec:terf-table-engine-derivative-integrals) |
 | terf in a Schwarz or CSB table | refused (section @sec:schwarz) |
 
 Why no fallback to Coulomb? A Coulomb integral in place of a terfc one is
@@ -576,7 +572,7 @@ remove. Construction fails instead, before any integral is computed.
 |---|---|---|
 | terf and terfc $(P\vert\mu\nu)$, $(P\vert Q)$ against a Fourier-space construction sharing nothing with the MD driver (H2O, NH3 / cc-pVDZ; H2O / aug-cc-pVDZ; $r_0$ = 0.75 and 1.05 Å) | `crates/ferric-integrals/tests/validation_terfc_integrals.rs` | $2\times10^{-12}$ (3-index), $3\times10^{-11}$ (2-index) |
 | tail form against the series | `crates/ferric-integrals/tests/terf_tail_form.rs` | $10^{-9}$ relative on $\Delta_m$ |
-| far field against the series at the crossover | `crates/ferric-integrals/tests/terf_asymptotic_crossover.rs` | $10^{-4}$ over a sweep that includes $S = 25$ |
+| far field against the series at the crossover | `crates/ferric-integrals/tests/terf_asymptotic_crossover.rs` | $10^{-4}$ over a sweep that includes $S = 25$, below the crossover, where the far-field form is off by $2.5\times10^{-5}$; on the rows the code takes ($S \ge 50$) the test comment records about $10^{-13}$, which the bar does not pin |
 | $G_m(S, 0) = F_m(S)$ | `crates/ferric-integrals/tests/terfc_series_anchors.rs` | per test |
 
 ## Sources

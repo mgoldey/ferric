@@ -1313,6 +1313,23 @@ CASES = [
         ],
     ),
     (
+        "yukawa_geminal_sympy.py",
+        30,
+        [
+            (
+                "sla_book = 8 * sp.pi * z / (k**2 + z**2) ** 2",
+                "sla_book = 8 * sp.pi * z / (k**2 + z**2)",
+                "FAIL [transforms]",
+            ),
+            ("    g2 = gamma * gamma", "    g2 = gamma", "FAIL [stg-scaling]"),
+            (
+                "/ (kk**2 + zeta**2)",
+                "/ (kk**2 + zeta)",
+                "FAIL [tu-reduction]",
+            ),
+        ],
+    ),
+    (
         "robust_fit_sympy.py",
         10,
         [
