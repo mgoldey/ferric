@@ -1,0 +1,20 @@
+name: Install libxc
+description: >-
+  libxc from the sha256-pinned source tarball (scripts/wheels/native-pins.env),
+  built by scripts/install-libxc.sh into $LIBXC_PREFIX (SONAME set to the
+  absolute path, as for libint2) and cached on the script and the pin file.
+  Ubuntu 22.04's libxc-dev is 5.1.7, which lacks the r2SCAN hybrids.
+runs:
+  using: composite
+  steps:
+    - name: Cache libxc
+      id: libxc-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ env.LIBXC_PREFIX }}
+        key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+    - name: Build libxc
+      if: steps.libxc-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: scripts/install-libxc.sh "$LIBXC_PREFIX"

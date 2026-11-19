@@ -212,21 +212,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -562,21 +550,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -1093,21 +1069,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Verify libint2 capabilities
         run: |
@@ -1454,21 +1418,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
@@ -1609,21 +1561,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         # No target/ (see the push job's restore step); v3 key to match.
@@ -1837,21 +1777,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1998,21 +1926,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2126,21 +2042,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2839,21 +2743,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -3129,21 +3021,9 @@ jobs:
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
-      # same script developers use (scripts/install-libxc.sh; SONAME set to
-      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
-      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
-      # several minutes; the key follows the script and the pin file.
-      - name: Cache libxc
-        id: libxc-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBXC_PREFIX }}
-          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
-
+      # libxc 7.0.0 (.github/actions/install-libxc: pinned, cached build).
       - name: Install libxc
-        if: steps.libxc-cache.outputs.cache-hit != 'true'
-        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
+        uses: ./.github/actions/install-libxc
 
       # Same install step as slow-tests -- the action SHA is
       # pinned, the Rust version floats on `stable` by design (see the
