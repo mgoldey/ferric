@@ -144,7 +144,7 @@ This table is the consumer's summary.
 | Mulliken | $q_A = Z_A - \sum_{\mu\in A}(DS)_{\mu\mu}$ ({#eq:electrostatics-and-charges-mulliken}) | basis; unstable with diffuse functions |
 | Löwdin | $q_A = Z_A - \sum_{\mu\in A}(S^{1/2}DS^{1/2})_{\mu\mu}$ ({#eq:electrostatics-and-charges-l-wdin}) | basis, less strongly |
 | Hirshfeld | $q_A = Z_A - s\!\int w_A\rho$ ($s$ the electron-count rescaling below), $w_A = \rho^0_A/(\sum_B\rho^0_B + 10^{-12})$ ({#eq:electrostatics-and-charges-hirshfeld}) | proatoms, grid |
-| CHELPG | least-squares fit of point charges to $V(\mathbf r_g)$, $\sum_A q_A = $ molecular charge (@eq:electrostatics-and-charges-4) | point lattice |
+| CHELPG | least-squares fit of point charges to $V(\mathbf r_g)$, $\sum_A q_A = $ molecular charge (@eq:charges-chelpg-bordered) | point lattice |
 | RESP | CHELPG plus a hyperbolic restraint on non-H charges | point lattice, restraint |
 
 **Löwdin** forms $S^{1/2}$ from the eigendecomposition of $S$ and errors if an
@@ -159,28 +159,21 @@ factor $s = N_e/\sum_A\!\int w_A\rho$ rescales the integrated populations to
 the exact electron count. So $\sum_A q_A$ equals the molecular charge by
 construction, and the grid error goes into the individual charges only.
 
-**CHELPG** fits charges to the potential instead of dividing the density.
-It builds a cubic lattice in the lab frame with spacing 0.3 Bohr, extending
-2.8 Bohr beyond the molecule. A point is kept if it lies outside every
-atom's Bondi radius and within 2.8 Bohr of some atom's radius. Minimizing the
-squared misfit to $V(\mathbf r_g)$ with the total charge held fixed by a
-multiplier $\lambda$ gives the bordered normal equations (derived in section
-@sec:atomic-partitions-esp-fitted-charges as equation @eq:charges-chelpg-bordered):
-
-$$ \begin{pmatrix} A & \mathbf 1\\ \mathbf 1^{\mathsf T} & 0\end{pmatrix}\begin{pmatrix}\mathbf q\\ \lambda\end{pmatrix} = \begin{pmatrix}\mathbf b\\ Q\end{pmatrix}, \qquad A_{AB} = \sum_g \frac{1}{r_{gA}r_{gB}},\quad b_A = \sum_g \frac{V(\mathbf r_g)}{r_{gA}} , \label{eq:electrostatics-and-charges-4} $$
-
-with $Q$ the molecular charge. The environment variables
+**CHELPG** fits charges to the potential instead of dividing the density:
+a least-squares fit to $V(\mathbf r_g)$ on a cubic lab-frame lattice of
+points outside the molecule, with the total charge held fixed. Section
+@sec:atomic-partitions-esp-fitted-charges derives the bordered normal equations (@eq:charges-chelpg-bordered) and gives
+the lattice and its defaults. The environment variables
 `FERRIC_CHELPG_SPACING`, `FERRIC_CHELPG_MARGIN`, `FERRIC_CHELPG_VDW_SCALE` and
 `FERRIC_CHELPG_OUTER_CUTOFF` override the four lattice parameters. A dataset
 that sets them must record them, because the certificate does not.
 
-**RESP** adds the single-stage hyperbolic restraint
-$a\sum_{A\notin\mathrm H}(\sqrt{q_A^2+b^2}-b)$ with $a = 0.0005$ and
-$b = 0.1\,e$ (`FERRIC_RESP_RESTRAINT_WEIGHT`, `FERRIC_RESP_RESTRAINT_B`).
-It solves by fixed-point iteration: each pass adds $a/\sqrt{q_A^2+b^2}$ to
-the diagonal of the bordered matrix of (@eq:electrostatics-and-charges-4), evaluated at the previous
-charges. It is not two-stage or multi-conformer RESP. When both are
-requested, CHELPG and RESP share one lattice and one set of ESP values.
+**RESP** adds a hyperbolic restraint toward zero on the non-hydrogen charges
+and solves by fixed-point iteration (@eq:charges-resp-fixed-point). Its weight
+and width are read from `FERRIC_RESP_RESTRAINT_WEIGHT` and
+`FERRIC_RESP_RESTRAINT_B`, which fall under the same rule. It is not
+two-stage or multi-conformer RESP. When both are requested, CHELPG and RESP
+share one lattice and one set of ESP values.
 
 **Rotation.** Because the lattice is fixed in the lab frame, CHELPG and RESP
 charges move slightly when the molecule is rotated. Mulliken is invariant
@@ -242,8 +235,8 @@ surface points: (154, 3)  buried: 176  ESP range: -0.044758491203114925 0.041829
 
 Every scheme sums to the neutral charge to $10^{-14}$ or better. The oxygen
 charge runs from $-0.31$ (Mulliken) to $-0.74$ (CHELPG). CHELPG and RESP
-agree to the four printed decimals: on three atoms the restraint with
-$a = 0.0005$ barely moves the fit.
+agree to the four printed decimals: on three atoms the default restraint
+barely moves the fit.
 
 ## How well these are checked {#electrostatics-and-charges-well-these-checked}
 
@@ -283,7 +276,7 @@ a reference value for them.
 
 | Source | Used for |
 |---|---|
-| `crates/ferric-scf/src/properties.rs` | (@eq:electrostatics-and-charges-1)–(@eq:electrostatics-and-charges-mulliken), (@eq:electrostatics-and-charges-4), the lattice and restraint parameters, the effective-$Z$ pairing, the excerpt in @sec:electrostatics-and-charges-potential-field-nuclei |
+| `crates/ferric-scf/src/properties.rs` | (@eq:electrostatics-and-charges-1)–(@eq:electrostatics-and-charges-mulliken), the lattice and restraint environment variables, the effective-$Z$ pairing, the excerpt in @sec:electrostatics-and-charges-potential-field-nuclei |
 | `crates/ferric-scf/src/properties/hirshfeld_grid.rs` | (@eq:electrostatics-and-charges-hirshfeld), the grid, the proatoms and the rescaling |
 | `crates/ferric-pcm/src/radii.rs` | the Bondi radii |
 | `crates/ferric-python/ferric.pyi` | the Python names, `esp_on_surface` and argument units |

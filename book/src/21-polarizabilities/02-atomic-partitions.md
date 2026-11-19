@@ -437,7 +437,7 @@ molecule are dropped because there the potential is not what a neighbour
 feels, and far points because there every charge set looks like the total
 charge. The four numbers are read from `FERRIC_CHELPG_SPACING`,
 `FERRIC_CHELPG_MARGIN`, `FERRIC_CHELPG_VDW_SCALE` (default 1.0) and
-`FERRIC_CHELPG_OUTER_CUTOFF`; section @sec:electrostatics-and-charges-five-charge-schemes lists the defaults and why a
+`FERRIC_CHELPG_OUTER_CUTOFF`; section @sec:electrostatics-and-charges-five-charge-schemes says why a
 dataset must record them.
 
 **RESP.** The points see a buried atom mostly through its neighbours, so

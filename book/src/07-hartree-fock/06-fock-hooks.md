@@ -48,34 +48,15 @@ $E$ stationary: $FC_o = SC_o\varepsilon$ with the hooked $F$.
 
 ### The nuclear gradient
 
-Section @sec:fock-hook-gradient derives the gradient of the hooked energy
-from the Lagrangian of section @sec:hf-gradient. The orbital response drops
-out at convergence, and
-
-$$ \frac{dE}{d\mathbf R} = \left.\frac{\partial E_0}{\partial\mathbf R}\right|_D + \left.\frac{\partial E_h}{\partial\mathbf R}\right|_D - \operatorname{tr}\!\left[W\,\frac{\partial S}{\partial\mathbf R}\right], \qquad W = \tfrac12DFD \ \text{(closed shell)} . $$
-
-The first term is the built-in gradient's integral-derivative terms at the
-hooked density. The Pulay term needs nothing from the hook: $W$ is built from
-the converged orbitals and eigenvalues of the hooked $F$, so its $V$ part,
-$\tfrac12DVD$ for the closed shell, is already there (for ROHF,
-$W = \operatorname{sym}(D^\alpha F^\alpha D^\alpha + D^\alpha F^\beta D^\beta)$
-with the hooked spin Fock matrices). The middle term, the derivative of $E_h$
-at fixed AO density, only the hook knows, so the caller supplies it
-(`fock_hook_grad=` in Python, `gradient::with_fock_hook_gradient` in Rust). A
-hook of $D$ alone, such as $\lambda\sum_{\mu\nu}D_{\mu\nu}^2$, has an explicit
-term of zero. For $E_h = \lambda\operatorname{tr}[DS]$ the explicit term
-$\lambda\operatorname{tr}[D\,\partial S/\partial\mathbf R]$ and the Pulay part
-$-\lambda\operatorname{tr}[D\,\partial S/\partial\mathbf R]$ cancel exactly,
-because $DSD = 2D$ and $\lambda\operatorname{tr}[DS] = \lambda N$ is a
-constant; the Python tests use that hook as their exactness anchor. Section
-@sec:fock-hook-gradient lists what the explicit term must and must not
-include.
-
-The formula holds for the converged hooked solution only, with integer aufbau
-occupations of the hooked $F$, and only when $V$ is exactly
-$\partial E_h/\partial D$. A hook whose $V$ is not the derivative of its $E_h$
-converges to a non-stationary point of $E$, and no gradient of the reported
-energy follows from this formula.
+Section @sec:fock-hook-gradient derives the gradient of the hooked energy and
+proves it. Everything the hook does through the density is already in the
+built-in gradient, whose energy-weighted density comes from the hooked
+orbitals and eigenvalues. The one term the caller supplies is
+$\partial E_h/\partial\mathbf R\vert_D$, the derivative at fixed AO density
+(`fock_hook_grad=` in Python,
+`ferric-scf/src/gradient.rs::with_fock_hook_gradient` in Rust). That section
+lists what the term must and must not include, the exactness anchor
+$E_h = \lambda\operatorname{tr}[DS]$, and when the formula holds.
 
 ## Where the hook enters the iteration {#fock-hooks-hook-enters-iteration}
 

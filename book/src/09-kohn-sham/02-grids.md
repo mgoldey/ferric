@@ -227,7 +227,7 @@ $\mathbf r$ closer to $A$ than to $B$?".
    By the triangle inequality $\mu_{AB} \in [-1, 1]$: $-1$ at nucleus $A$,
    $+1$ at nucleus $B$, 0 on the bisecting plane.
 2. **Size adjustment.** Unequal atoms should not split at the midpoint. With
-   $\chi = R^{\rm BS}_A/R^{\rm BS}_B$ and $u = (\chi - 1)/(\chi + 1)$,
+   $\chi_{AB} = R^{\rm BS}_A/R^{\rm BS}_B$ and $u = (\chi_{AB} - 1)/(\chi_{AB} + 1)$,
    $$ a_{AB} = \operatorname{clip}_{[-1/2,\,1/2]}\frac{u}{u^2-1}, \qquad \nu_{AB} = \mu_{AB} + a_{AB}(1 - \mu_{AB}^2) . $$
    The radii $R^{\rm BS}$ are PySCF's (`pyscf.data.radii.BRAGG`) for every
    element except He, Ne and Ar, where ferric keeps its own 0.30, 0.45 and
@@ -272,7 +272,7 @@ p_cell[a] *= s_ab;
 
 | Symbol | Code |
 |---|---|
-| $\mu_{AB}$, $\chi$, $u$, $a_{AB}$, $\nu_{AB}$ | `mu`, `chi`, `u`, `a_corr`, `nu` |
+| $\mu_{AB}$, $\chi_{AB}$, $u$, $a_{AB}$, $\nu_{AB}$ | `mu`, `chi`, `u`, `a_corr`, `nu` |
 | $f^{(3)}(\nu)$ | `becke_smoothing(nu, 3)` |
 | $s_{AB}$, $P_A$ | `s_ab`, `p_cell[a]` |
 

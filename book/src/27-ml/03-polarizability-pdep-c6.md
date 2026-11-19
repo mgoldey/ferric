@@ -38,22 +38,16 @@ eigenvectors (@sec:polarizability-pdep-c6-pdep-eigenvectors) and the checks (@se
 
 ## The molecular polarizability {#polarizability-pdep-c6-molecular-polarizability}
 
-Section @sec:polarizabilities-from-dielectric-modes-dielectric-form builds the polarizability from the dielectric matrix; here is
-the result in the form the code evaluates. Let
+Section @sec:polarizabilities-from-dielectric-modes-dielectric-form derives the polarizability from the dielectric matrix,
+as (@eq:pol-kernel-vs-casida), and reads its uncoupled and screening terms;
+here it is in the notation of this section. Let
 $\mu^c_{ia} = \langle\phi_i\lvert r_c\rvert\phi_a\rangle$, let
 $\Delta_{ia} = \varepsilon_a - \varepsilon_i > 0$, and let $\tilde B_{P,ia}$
 be the density-fitted three-index factor of the auxiliary basis. The
 frequency enters only through
-$g_{ia}(u) = \Delta_{ia}/(u^2 + \Delta_{ia}^2)$, which is $1/\Delta_{ia}$ at
-$u = 0$ and falls off as $1/u^2$ at large $u$:
+$g_{ia}(u) = \Delta_{ia}/(u^2 + \Delta_{ia}^2)$:
 
 $$ \alpha_{cd}(iu) = 4\,\mu^{c\,\mathsf T}(g\circ\mu^d) - 16\,\big(\tilde B(g\circ\mu^c)\big)^{\mathsf T}\,\tilde\varepsilon(u)^{-1}\,\big(\tilde B(g\circ\mu^d)\big), \qquad \tilde\varepsilon(u) = I + 4\,\tilde B\,\mathrm{diag}(g)\,\tilde B^{\mathsf T} . \label{eq:polarizability-pdep-c6-1} $$
-
-Read it in two parts. The first term is the uncoupled sum over orbital pairs:
-each excitation $i \to a$ responds to the field on its own. The second term
-screens it with the direct-RPA dielectric matrix in the auxiliary basis: the
-induced density makes a Coulomb potential that opposes the applied field. Set
-$\tilde B = 0$ and only the first term is left, the uncoupled limit.
 
 For a label, three facts follow from the form of (@eq:polarizability-pdep-c6-1).
 
@@ -72,28 +66,23 @@ The result is symmetrized.
 ## The per-atom split and the charge-transfer remainder {#polarizability-pdep-c6-per-atom-split-charge}
 
 A per-atom polarizability is what a transferable model wants: one tensor per
-atom that it can predict from the atom's neighbourhood. The field still acts
-on the whole molecule, so the field side of (@eq:polarizability-pdep-c6-1) keeps the molecular
-dipole. What belongs to atom $A$ is the induced dipole inside $A$'s share of
-space, measured from $A$'s nucleus. The per-atom intrinsic polarizability of
-Krishtal, Senet and Van Alsenoy (J. Chem. Phys. 125, 034312 (2006))
-therefore replaces the molecular dipole on the other side of (@eq:polarizability-pdep-c6-1) by an
-atom-centred, partition-weighted dipole (section @sec:atomic-partitions-partition-unity-buys-polarizability derives it):
+atom that it can predict from the atom's neighbourhood. Section
+@sec:atomic-partitions-partition-unity-buys-polarizability defines it, after Krishtal, Senet and Van Alsenoy
+(J. Chem. Phys. 125, 034312 (2006)): the molecular dipole on one side of
+(@eq:polarizability-pdep-c6-1) is replaced by an atom-centred,
+partition-weighted dipole,
 
 $$ m^{A,d}_{ia} = \sum_{p\in A} w_p\,(\mathbf r_p-\mathbf R_A)_d\,\phi_i(\mathbf r_p)\phi_a(\mathbf r_p), \qquad \alpha^A_{de}(iu) = 4\,m^{A,d\,\mathsf T}(g\circ\mu^e) - 16\,\big(\tilde B(g\circ m^{A,d})\big)^{\mathsf T}\tilde\varepsilon^{-1}\big(\tilde B(g\circ\mu^e)\big) . \label{eq:ml-alpha-per-atom-kernel} $$
 
-For the Becke partition, the sum runs over the points of the flat 75 × 110
-Becke–Lebedev grid whose home atom is $A$, with the Becke weight folded into
-$w_p$. For the Hirshfeld partition, $w_p$ is the Hirshfeld weight on a cubic
-lattice of 0.20 Bohr spacing and 6 Bohr margin
-(`FERRIC_HIRSHFELD_SPACING`, `FERRIC_HIRSHFELD_MARGIN`). Each $\alpha^A$ is
+For the Becke partition, $w_p$ is the Becke weight on the flat 75 × 110
+grid points whose home atom is $A$; for the Hirshfeld partition, it is the
+Hirshfeld weight on the lattice of section @sec:atomic-partitions-hirshfeld-l-wdin-mulliken. Each $\alpha^A$ is
 symmetrized.
 
-Why is there anything left over? Sum $m^A$ over atoms. The weights sum to one
-at every point, so $\sum_A m^A = \mu - \sum_A \mathbf R_A w_A$. The
-$\mu$ part rebuilds the molecular α. The $\sum_A\mathbf R_A w_A$ part is
-the dipole of charge that has moved from one atom's cell to another's, which
-no atom-centred dipole sees. The code keeps that part as a separate array:
+The atoms do not add up to $\alpha$. The weights sum to one, so
+$\sum_A m^A = \mu - \sum_A \mathbf R_A w_A$, and the second part is the
+dipole of charge that the field moves between cells (@eq:part-ct-sum-rule).
+The code exports that part as a separate array:
 
 $$ \alpha_{\mathrm{CT}} = \alpha - \sum_A \alpha^A . \label{eq:ml-alpha-ct-sum-rule} $$
 

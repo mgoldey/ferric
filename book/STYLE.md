@@ -86,6 +86,11 @@ A rewrite changes the explanation, never the facts.
 - **Verified-equation boxes stay byte-identical**, including the
   `<!-- verified: ... -->` comment. Unverified-equation boxes stay as they
   are. You may move a box to sit after the derivation it certifies.
+- **Box titles.** A new box that states its own equation is titled
+  "Verified equation {#eq:name}" and carries the label. A box that
+  certifies an equation already displayed and labelled in the text is
+  titled "Verified equation @eq:name" and refers to it. Both forms pass the
+  build; the title tells the reader where the equation is.
 - **Label equations, reference by label; never write a number.** A display
   equation that anything refers to carries `\label{eq:name}`; a reference is
   `(@eq:name)`, `section @sec:name` or `chapter @sec:name`. The build writes

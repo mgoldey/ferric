@@ -178,12 +178,15 @@ positive definite. For the Coulomb operator that can't happen with a sound
 basis and correct integrals. So when it does fail, ferric stops instead of
 quietly fitting with a broken metric.
 
-The long-range operators erf and terf
-(chapter @sec:operators) give metrics that lose rank in a Coulomb-fitted
-auxiliary basis. For those, `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` switches to an
+The long-range erf operator (chapter @sec:operators) gives a metric that
+loses rank in a Coulomb-fitted auxiliary basis. For it,
+`ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` switches to an
 eigendecomposition that drops the tiny eigenvalues
 (`ferric-mp2/src/rimp2.rs::eigh_inverse_sqrt`). Using that path for the
 Coulomb metric would hide exactly the errors the Cholesky check catches.
+A terf metric is refused with an error: the terf kernel is not positive
+definite, so its metric is indefinite and has no inverse square root, and a
+terf interaction is formed instead as Coulomb RI minus terfc RI.
 
 > **Verified equation {#eq:df-quadratic-error}** · the fitting error is quadratic
 >

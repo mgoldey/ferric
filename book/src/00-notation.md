@@ -276,6 +276,14 @@ $p > q$ (module documentation of `crates/ferric-ci/src/casscf.rs`).
   orbital rotations, writes the regularization strength as
   $\kappa_{\mathrm{reg}}$, and writes the particle-hole kernel as
   $\mathbf K$ with $K_{ia,jb} = 2(ia|jb)$.
+- The letter $g$ has two other meanings. Section @sec:second-order writes
+  $g$ for the code's gradient $f_{ai}$, which is a quarter of
+  $\partial E/\partial\kappa_{ai}$ for RHF and a half for UHF; that page
+  states the scale in its symbol table. The scale cancels in a Newton step
+  and not in a predicted energy change. In the EDIIS and ADIIS models of
+  section @sec:diis-variants, $g$ is the linear coefficient vector of the
+  quadratic energy model $g^{\mathsf T}c + \tfrac12c^{\mathsf T}Hc$ over the
+  DIIS history (for EDIIS, $g_i = E_i$), not an orbital gradient.
 
 ## Density fitting {#notation-density-fitting}
 
@@ -391,6 +399,31 @@ the first two in the same equations. The book assigns:
 
 The range-separation parameter keeps $\omega$ because the CLI key, the Python
 keyword and the dissertation all use it.
+
+## Exchange-correlation quantities on the grid {#notation-xc-grid}
+
+The XC gradient (section @sec:xc-gradient) and the XC Hessian (section
+@sec:ks-hessian) differentiate the same grid sum, and name its pieces
+differently. The gradient follows the names of
+`ferric-dft/src/gradient.rs`; the Hessian follows those of
+`ferric-scf/src/ks_fixed_grid.rs`. The objects are the same:
+
+| Object | Section @sec:xc-gradient | Section @sec:ks-hessian |
+|---|---|---|
+| density matrix applied to the AOs | $m_\mu = (D\chi)_\mu$ | $P_\mu$ |
+| the same with an AO derivative | $(D\partial_b\chi)_\mu$ | $Q_{\mu\gamma}$ |
+| integrand | $e = \rho\epsilon$ | $f$ |
+| its first derivatives | $v_\rho$, $v_\sigma$ | $f_\rho$, $f_\sigma$ |
+| grid weight | $w_g$ | $W_g$ |
+| GGA weight | $c_b = 2wv_\sigma\partial_b\rho$ | $G_\gamma = 2Wf_\sigma g_\gamma$ |
+| nuclear coordinate | $R_{C,\alpha}$ | $x = (B,\alpha)$ |
+| electron direction | $b$ | $\gamma$ |
+| home atom of a grid point | $A$ | $h$ |
+
+In section @sec:ks-hessian, $W_g$ is the grid weight, not the
+energy-weighted density $W$ of section @sec:hf-gradient, and $F$ and
+$\mathbf G$ are per-point weights, not the Fock matrix. That section repeats
+the mapping in its own symbol table.
 
 ## Units {#notation-units}
 
