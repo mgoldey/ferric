@@ -129,10 +129,10 @@ fn supported_kinds_match_the_dispatch_arms_in_run() {
 fn unknown_task_message_lists_every_supported_task() {
     assert_eq!(
         ferric_cli::SUPPORTED_TASKS,
-        &["energy", "optimize", "frequencies"]
+        &["energy", "optimize", "frequencies", "md"]
     );
     assert_eq!(
         ferric_cli::unsupported_task_message("minimize"),
-        "unsupported method.task = \"minimize\"; expected energy, optimize, or frequencies"
+        "unsupported method.task = \"minimize\"; expected energy, optimize, frequencies, or md"
     );
 }

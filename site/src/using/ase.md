@@ -101,4 +101,7 @@ for the MP2 drivers): the analytic gradient assumes a stationary SCF, so its
 error follows the SCF's residual.
 
 Molecular dynamics through ASE has not been validated: per-step SCF cost and
-energy drift over long trajectories were not measured.
+energy drift over long trajectories were not measured. ferric's own drivers,
+`run_aimd` and the CLI's `task = "md"`, warm-start each step's SCF, report the
+conserved quantity and attach a certificate; see
+[Molecular dynamics](./md.md).

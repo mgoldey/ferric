@@ -39,12 +39,14 @@ auxbasis = "cc-pvdz-ri"
 | Key | Allowed values |
 | :--- | :--- |
 | `kind` | `rhf` `uhf` `rohf` `ksdft` `rimp2` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `ccd` `ccsd(t)` `eom-ccsd` `linlccd` `drpa` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` `casscf` `nevpt2` `opmp3` |
-| `task` | `energy` `optimize` `frequencies` |
+| `task` | `energy` `optimize` `frequencies` `md` |
 
 * Density-functional calculations use `kind = "ksdft"` (or `rhf`/`uhf`/`rohf`
   with `[dft] functional` set); there is no `kind = "dft"`.
 * There is no `task = "gradient"`. `optimize` runs for `rhf` `ksdft` `uhf`
-  `rohf` `rimp2` `pdep-rpa`; `frequencies` for `rhf` `ksdft` `uhf` `rohf`.
+  `rohf` `rimp2` `pdep-rpa`; `frequencies` for `rhf` `ksdft` `uhf` `rohf`;
+  `md` (Born-Oppenheimer molecular dynamics, configured by `[md]`) for `rhf`
+  `ksdft` `uhf` `rohf`.
 * `rimp2`, `drpa` and `linlccd` are exact by default; a local approximation is
   the `[local]` section, never a separate kind.
 * Any other `kind` or `task` is an error that lists the accepted values.
@@ -61,7 +63,7 @@ All keys, types, defaults and allowed values for each table are in the
 | `[dft]` | Functional, XC grid (`grid_radial`, `grid_angular`, `grid_prune`, `grid_weight_cut`), dispersion. |
 | `[mp2]` `[cc]` `[local]` | MP2 family, coupled cluster, local-correlation approximation. |
 | `[rpa]` `[gw]` `[tddft]` | PDEP-RPA and property export, GW/BSE, TDA/TDDFT. |
-| `[optimize]` `[frequencies]` | Geometry optimizer, harmonic frequencies. |
+| `[optimize]` `[frequencies]` `[md]` | Geometry optimizer, harmonic frequencies, molecular dynamics. |
 | `[memory]` `[gpu]` `[precision]` `[output]` | Resources, devices, mixed precision, JSON run log. |
 | `[qmmm]` `[pcm]` `[cosmo]` `[external_potential]` `[cell]` | Embedding, implicit solvent, point charges, periodic cell. |
 

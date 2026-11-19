@@ -236,7 +236,7 @@ fn keys() -> Vec<Key> {
         key!("basis", "name", "bundled basis name, case-insensitive (required unless path is set)", |_| Off("required")),
         key!("basis", "path", "Gaussian-94 basis file", |_| Off("read only when name is absent")),
         key!("method", "kind", "the method (required)", |_| Off("required")),
-        key!("method", "task", "energy | optimize | frequencies", |c| s(&c.task)),
+        key!("method", "task", "energy | optimize | frequencies | md", |c| s(&c.task)),
         // ---- [scf]
         key!("scf", "max_iter", "SCF iteration cap", |_| n("200")),
         key!("scf", "energy_conv", "energy-change bound, a sanity bound and not the convergence signal", |c| {
@@ -258,7 +258,7 @@ fn keys() -> Vec<Key> {
         key!("scf", "integral_thresh", "integral screening threshold", |_| n("1e-12")),
         key!("scf", "eri_precision", "libint primitive-screening precision, 0 to 1e-8 (omitted: FERRIC_ERI_PRECISION, else 1e-20)", |_| n("1e-20")),
         key!("scf", "jk_storage", "RI tensor storage: auto | memory | disk | direct | split", |c| if c.fitted_jk() || c.ri_default() || c.double_hybrid() { s("auto") } else { Off("only with RI-J or RI-K") }),
-        key!("scf", "ri_j_precision", "RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies)", |c| {
+        key!("scf", "ri_j_precision", "RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies/md)", |c| {
             if c.fitted_jk() || c.ri_default() || c.double_hybrid() { s(if c.energy() { "f32" } else { "f64" }) } else { Off("only with RI-J") }
         }),
         key!("scf", "ri_k_precision", "RI-K tensor storage precision: f64 | f32", |c| if c.fitted_jk() || c.ri_default() || c.double_hybrid() { s("f64") } else { Off("only with RI-K") }),

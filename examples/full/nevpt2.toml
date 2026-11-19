@@ -34,7 +34,7 @@ name = "sto-3g"  # bundled basis name, case-insensitive (required unless path is
 
 [method]
 kind = "nevpt2"  # the method (required) [minimal input]
-task = "energy"  # energy | optimize | frequencies
+task = "energy"  # energy | optimize | frequencies | md
 
 [scf]
 max_iter = 200       # SCF iteration cap
@@ -53,7 +53,7 @@ density_conv = 1e-6  # density-change threshold, the convergence signal
 # integral_thresh: integral screening threshold; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # eri_precision: libint primitive-screening precision, 0 to 1e-8 (omitted: FERRIC_ERI_PRECISION, else 1e-20); not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # jk_storage: RI tensor storage: auto | memory | disk | direct | split; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
-# ri_j_precision: RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies); not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
+# ri_j_precision: RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies/md); not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # ri_k_precision: RI-K tensor storage precision: f64 | f32; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # k_builder: exchange builder: direct | link | cosx; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv
 # screening: four-centre screening: schwarz | csb | csam; not read here: not read: this kind runs its own reference SCF, which reads only max_iter, energy_conv and density_conv

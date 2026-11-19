@@ -1,6 +1,6 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 94 TOML files.
+This page indexes every input file in `examples/`. There are 103 TOML files.
 Three Python scripts that build methods from `AoIntegrals` blocks are in
 `examples/python/` ([Python bindings](../using/python.md#building-blocks)).
 Run a TOML file from the repository root:
@@ -23,7 +23,7 @@ written at its default (see
 `full_examples_anchor.rs` runs each of them and the minimal input in its
 header, and requires identical run logs.
 
-Three examples are also executed by integration tests in
+Four examples are also executed by integration tests in
 `crates/ferric-cli/tests/`:
 
 | Example | Test | What the test asserts |
@@ -31,6 +31,7 @@ Three examples are also executed by integration tests in
 | `water-rhf.toml` | `epistemic_warning.rs`, `verbose_trace.rs`, `qmmm_reports_the_pqr_as_its_geometry.rs` | The run completes and prints no `[warning]` grade line. |
 | `water-tdhf-static-alpha.toml` | `epistemic_warning.rs` | The Smoke-grade warning goes to stderr and not to stdout. |
 | `water-qmmm.toml` | `qmmm_reports_the_pqr_as_its_geometry.rs` | The embedded energy `-74.9653197421` appears in the output. |
+| `water-rhf-md.toml` | `md_task.rs` | The run writes 21 trajectory frames and 21 CSV rows, and the conserved energy stays within 5e-5 Hartree of its start (measured 1.8e-5). |
 
 Every other number in the "Reference in header" column below is copied
 verbatim from that file's comment block, and CI does not re-check it. Where
@@ -64,6 +65,7 @@ See [SCF and DFT](../methods/scf.md).
 | `h2_opt.toml` | stretched H2 / STO-3G | `rhf` / optimize | — | |
 | `h2-rimp2-frequencies.toml` | H2 / cc-pVDZ | `rimp2` / frequencies | — | Central differences of the analytic RI-MP2 gradient (6 N gradients); also `scs-mp2`, `oo-rimp2`, `pdep-rpa`. |
 | `water-frequencies.toml` | H2O / STO-3G | `rhf` / frequencies | — | Finite-difference Hessian (`hessian = "fd"`). Check `Hessian asymmetry`. |
+| `water-rhf-md.toml` | H2O / STO-3G | `rhf` / md | "stays within 1.8e-5 Hartree of its start" (the conserved column) | Twenty NVE velocity Verlet steps of 0.25 fs from 300 K Maxwell-Boltzmann velocities; writes `water-rhf-md.md.xyz` and `.md.csv`. See [Molecular dynamics](../using/md.md). Run by `crates/ferric-cli/tests/md_task.rs`. |
 | `nh2-rohf-frequencies.toml` | NH2 doublet / cc-pVDZ | `rohf` / frequencies | `crates/ferric-scf/tests/validation_rohf_hessian.rs` | Analytic ROHF Hessian. |
 | `benzene-dfb3lyp.toml` | benzene / def2-SVP | `ksdft` B3LYP | — | RI-JK is on automatically for `ksdft`. |
 | `benzene-dfb3lyp-mpi.toml` | benzene / cc-pVDZ | `ksdft` B3LYP | — | Run under `mpirun` with the MPI build (see its header). |

@@ -1454,6 +1454,101 @@ class OptimizeResult:
         inherited. The gradient and optimizer settings are approximations; ``converged = False`` is ``"ungraded"``; a failed final-point SCF is ``"ungraded"`` with the reason as a warning."""
         ...
 
+class MdResult:
+    """Result of a molecular dynamics run (`run_aimd`, `run_ffmd`).
+
+    One entry per recorded frame: step 0 and every `stride`-th step. Energies in
+    Hartree, times in fs, positions in Angstrom, velocities in Angstrom/fs.
+    """
+
+    @property
+    def steps(self) -> list[int]:
+        """Step index of each recorded frame."""
+        ...
+
+    @property
+    def times_fs(self) -> NDArray[np.float64]:
+        """Simulation time of each frame, fs."""
+        ...
+
+    @property
+    def potential_energies(self) -> NDArray[np.float64]:
+        """Potential energy of each frame, Hartree."""
+        ...
+
+    @property
+    def kinetic_energies(self) -> NDArray[np.float64]:
+        """Kinetic energy of each frame, Hartree."""
+        ...
+
+    @property
+    def total_energies(self) -> NDArray[np.float64]:
+        """Potential plus kinetic energy of each frame, Hartree."""
+        ...
+
+    @property
+    def conserved(self) -> NDArray[np.float64]:
+        """Total energy minus the kinetic energy the thermostat put in, Hartree.
+
+        Equal to `total_energies` under NVE; constant up to integration error for
+        every thermostat.
+        """
+        ...
+
+    @property
+    def temperatures(self) -> NDArray[np.float64]:
+        """Instantaneous temperature of each frame, K (over `n_dof`)."""
+        ...
+
+    @property
+    def positions_angstrom(self) -> NDArray[np.float64]:
+        """Positions, shape `(n_frames, n_atoms, 3)`, Angstrom."""
+        ...
+
+    @property
+    def velocities(self) -> NDArray[np.float64]:
+        """Velocities, shape `(n_frames, n_atoms, 3)`, Angstrom/fs."""
+        ...
+
+    @property
+    def n_dof(self) -> int:
+        """Degrees of freedom of the temperatures: 3N - 3 with COM removal (NVE,
+        Berendsen, N > 1), else 3N."""
+        ...
+
+    @property
+    def n_force_evaluations(self) -> int:
+        """Energy/gradient evaluations (`n_steps + 1`)."""
+        ...
+
+    @property
+    def max_conserved_drift(self) -> float:
+        """Largest `|conserved - conserved[0]|`, Hartree."""
+        ...
+
+    @property
+    def label(self) -> str:
+        """The force provider's label (`"rhf/sto-3g"`, `"mm"`, ...)."""
+        ...
+
+    @property
+    def scf_iterations(self) -> list[int] | None:
+        """SCF iterations per force evaluation (`run_aimd`); `None` for `run_ffmd`."""
+        ...
+
+    @property
+    def certificate(self) -> dict[str, Any]:
+        """Validation certificate (same keys as ``RhfResult.certificate``).
+        ``capability`` is ``"md:<label>"`` and the grade is always ``"ungraded"``. The
+        integrator, thermostat, time step and seed are approximations; the maximum
+        conserved-quantity drift is a warning. For `run_aimd` the SCF at the final
+        geometry is folded in as the reference."""
+        ...
+
+    def mol(self) -> Molecule | None:
+        """The final geometry as a new Molecule (`run_aimd`); `None` for `run_ffmd`."""
+        ...
+
 class FrequencyResult:
     """Result of a harmonic vibrational frequency calculation."""
 
@@ -4786,6 +4881,77 @@ def run_xtb_frequencies(
     """Harmonic frequencies on a GFN-xTB surface (central differences of the xTB
     gradient, `delta` in Bohr, default 5e-3). Input should be an xTB minimum;
     check `.asymmetry`. Needs the `xtb` cargo feature.
+    """
+    ...
+
+def run_aimd(
+    mol: Molecule,
+    basis_name: str,
+    n_steps: int,
+    dt_fs: float = 0.5,
+    thermostat: str = "nve",
+    temperature_k: float | None = None,
+    init_temperature_k: float | None = None,
+    tau_fs: float | None = None,
+    friction_per_ps: float | None = None,
+    seed: int = 0,
+    remove_com_motion: bool = True,
+    stride: int = 1,
+    reference: str | None = None,
+    xc: str | None = None,
+    dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+    scf_warm_start: bool | None = None,
+    masses_amu: Sequence[float] | None = None,
+    trajectory_path: str | None = None,
+    energies_path: str | None = None,
+) -> MdResult:
+    """Born-Oppenheimer molecular dynamics on the SCF surface (HF, or KS with `xc`).
+
+    `thermostat`: `"nve"` (velocity Verlet), `"berendsen"` (needs `tau_fs` and
+    `temperature_k`; equilibration only, not canonical) or `"langevin"` (BAOAB;
+    needs `friction_per_ps` and `temperature_k`). A parameter of a thermostat that
+    was not chosen raises `ValueError`. Initial velocities are Maxwell-Boltzmann at
+    `init_temperature_k` (unset: `temperature_k`; neither: zero) from `seed`,
+    rescaled to that temperature exactly. `reference`, `xc`, `dispersion`,
+    `df_j_aux`/`df_k_aux` and the `scf_*` kwargs as in `run_optimize`;
+    `scf_warm_start` (default True) starts each SCF from the previous step's
+    orbitals. `masses_amu` overrides the standard masses (required beyond Z = 54).
+    `trajectory_path` / `energies_path` write a multi-frame XYZ (Angstrom) and an
+    energy CSV as the run proceeds. The CLI equivalent is `task = "md"`.
+    """
+    ...
+
+def run_ffmd(
+    topology: MmTopology,
+    symbols: Sequence[str],
+    coords_angstrom: Sequence[Sequence[float]] | NDArray[np.float64],
+    n_steps: int,
+    dt_fs: float = 1.0,
+    thermostat: str = "nve",
+    temperature_k: float | None = None,
+    init_temperature_k: float | None = None,
+    tau_fs: float | None = None,
+    friction_per_ps: float | None = None,
+    seed: int = 0,
+    remove_com_motion: bool = True,
+    stride: int = 1,
+    masses_amu: Sequence[float] | None = None,
+    cutoff_angstrom: float | None = None,
+    trajectory_path: str | None = None,
+    energies_path: str | None = None,
+) -> MdResult:
+    """Molecular dynamics on the AMBER-form force field of an `MmTopology`.
+
+    `symbols` and `coords_angstrom` give the atoms in topology order; the masses
+    come from the symbols unless `masses_amu` is given (the topology carries none).
+    `cutoff_angstrom` switches the nonbonded sum to OpenMM's `CutoffNonPeriodic`
+    (reaction-field Coulomb, truncated LJ); unset sums every pair. The MD kwargs
+    and the output files as in `run_aimd`. Python only (no CLI task).
     """
     ...
 

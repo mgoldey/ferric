@@ -83,6 +83,7 @@ use gamma::*;
 use geometry::*;
 use gw::*;
 use integrals::*;
+use md::*;
 use mp2::*;
 use opmp3::*;
 use properties::*;
@@ -1801,6 +1802,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCdftResult>()?;
     m.add_class::<PyCdftCouplingResult>()?;
     m.add_class::<PyOptimizeResult>()?;
+    m.add_class::<PyMdResult>()?;
     m.add_class::<PyQmmmSystem>()?;
     m.add_class::<PyQmmmResult>()?;
     m.add_class::<PyQmmmOptimizeResult>()?;
@@ -1866,6 +1868,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(run_xtb_energy_gradient, m)?)?;
     m.add_function(wrap_pyfunction!(run_xtb_optimize, m)?)?;
+    m.add_function(wrap_pyfunction!(run_aimd, m)?)?;
+    m.add_function(wrap_pyfunction!(run_ffmd, m)?)?;
     m.add_function(wrap_pyfunction!(run_xtb_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(run_saddle, m)?)?;
     m.add_function(wrap_pyfunction!(run_irc, m)?)?;

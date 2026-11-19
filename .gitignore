@@ -111,6 +111,9 @@ site/book/
 # timestamps). Three were committed by an `add -A` on 2026-09-19; they made
 # the working tree dirty on every example run.
 *.ferric.jsonl
+# task = "md" default outputs (<input stem>.md.xyz / .md.csv beside the input).
+*.md.xyz
+*.md.csv
 
 # Book build output (book/src is the source)
 /book/out/

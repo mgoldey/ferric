@@ -109,6 +109,7 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
         ("tddft", fields_of::<TddftCfg>()),
         ("optimize", fields_of::<OptimizeCfg>()),
         ("frequencies", fields_of::<FrequenciesCfg>()),
+        ("md", fields_of::<MdCfg>()),
         ("memory", fields_of::<MemoryCfg>()),
         ("parallel", fields_of::<ParallelCfg>()),
         ("gpu", fields_of::<GpuCfg>()),
