@@ -1893,6 +1893,37 @@ CASES = [
         ],
     ),
     (
+        "pbc_force_sympy.py",
+        120,
+        [
+            (
+                "two_e_pref=8.0,",
+                "two_e_pref=4.0,",
+                "[FAIL] (claim force-fixed-density)",
+            ),
+            (
+                "def analytic_stress(pos, das, volume_term=True):",
+                "def analytic_stress(pos, das, volume_term=False):",
+                "[FAIL] (claim stress-fixed-density)",
+            ),
+            (
+                "z_half=0.5,",
+                "z_half=1.0,",
+                "[FAIL] (claim force-fixed-density)",
+            ),
+            (
+                "lr_nucleus=True)",
+                "lr_nucleus=False)",
+                "[FAIL] (claim force-fixed-density)",
+            ),
+            (
+                "elif kept_dropped and keep[i] != keep[j]:",
+                "elif False:",
+                "[FAIL] (claim rsgdf-fit-derivative)",
+            ),
+        ],
+    ),
+    (
         "pbc_ewald_pairft_stress_sympy.py",
         60,
         [
@@ -1906,37 +1937,6 @@ CASES = [
                 "e_g0 = -math.pi * sum(q) ** 2 / (vol * omega**2)",
                 "[FAIL] S1 charged triclinic toy",
             ),
-        ],
-    ),
-    (
-        "pbc_rsgdf_sympy.py",
-        60,
-        [
-            (
-                "j3_split = j3_split - g0",
-                "j3_split = j3_split + 0 * g0",
-                "[FAIL] (claim split-j3)",
-            ),
-            (
-                "w = evecs[:, keep] / np.sqrt(evals[keep])",
-                "w = evecs[:, keep] / evals[keep]",
-                "[FAIL] (claim fit-trivial)",
-            ),
-        ],
-    ),
-    (
-        "pbc_kpoint_corr_sympy.py",
-        60,
-        [
-            (
-                "km[k] += mad * madelung_scale",
-                "km[k] += mad * madelung_scale / NK",
-                "[FAIL] (claim krhf-supercell)",
-            ),
-            (
-                "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=False):",
-                "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=True):",
-                "[FAIL] (claim krhf-supercell)",
             (
                 "vm = -2.0 * ewald(sc,",
                 "vm = -1.0 * ewald(sc,",
@@ -1962,16 +1962,57 @@ CASES = [
                 "return -math.fsum(acc)",
                 "[FAIL] S4 v_M^LR",
             ),
+        ],
+    ),
+    (
+        "pbc_rsgdf_sympy.py",
+        60,
+        [
+            (
+                "(g2 <= gcut * gcut) & (first > 0)",
+                "(g2 <= gcut * gcut) & (g2 > 0)",
+                "[FAIL] (claim auto-omega-gcount)",
+            ),
+            (
+                "j3_split = j3_split - g0",
+                "j3_split = j3_split + 0 * g0",
+                "[FAIL] (claim split-j3)",
+            ),
+            (
+                "w = evecs[:, keep] / np.sqrt(evals[keep])",
+                "w = evecs[:, keep] / evals[keep]",
+                "[FAIL] (claim fit-trivial)",
+            ),
+        ],
+    ),
+    (
+        "pbc_kpoint_corr_sympy.py",
+        60,
+        [
+            (
+                "np.conj(bloch_pair(kp, kv)),",
+                "bloch_pair(kp, kv),",
+                "[FAIL] (claim krsgdf-block-diagonal)",
+            ),
+            (
+                "np.conj(x), x, 4 * math.pi / kv**2",
+                "x, x, 4 * math.pi / kv**2",
+                "[FAIL] (claim krsgdf-block-diagonal)",
+            ),
+            (
+                "km[k] += mad * madelung_scale",
+                "km[k] += mad * madelung_scale / NK",
+                "[FAIL] (claim krhf-supercell)",
+            ),
+            (
+                "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=False):",
+                "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=True):",
+                "[FAIL] (claim krhf-supercell)",
             ),
             (
                 "kb = (ki + kj - ka) % NK",
                 "kb = (ki - kj + ka) % NK",
                 "[FAIL] (claim kmp2-supercell)",
-            ),
-            (
-                "(g2 <= gcut * gcut) & (first > 0)",
-                "(g2 <= gcut * gcut) & (g2 > 0)",
-                "[FAIL] (claim auto-omega-gcount)",
             ),
             (
                 "pi_q = (4.0 / NK) *",
@@ -1988,16 +2029,6 @@ CASES = [
                 "* (1 - 2 * ac * mu_ij) / 2",
                 "* (1 - 2 * ac * mu_ij)",
                 "[FAIL] 5. becke_weights_and_grad assembly",
-            ),
-            (
-                "np.conj(bloch_pair(kp, kv)),",
-                "bloch_pair(kp, kv),",
-                "[FAIL] (claim krsgdf-block-diagonal)",
-            ),
-            (
-                "np.conj(x), x, 4 * math.pi / kv**2",
-                "x, x, 4 * math.pi / kv**2",
-                "[FAIL] (claim krsgdf-block-diagonal)",
             ),
             (
                 "/ (rJ * Rij) + mu_ij / Rij**2 * vij[k])",

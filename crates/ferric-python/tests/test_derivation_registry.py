@@ -16,7 +16,14 @@ The method list is DERIVED from the code, never hand-listed:
 * ``py:<name>`` for every top-level ``def run_*`` in
   ``crates/ferric-python/ferric.pyi``, plus every top-level response or
   derivative function (name containing ``polariz``, ``gradient`` or
-  ``hessian``).
+  ``hessian``) or ending in ``_energy``;
+* ``py-gradient:<name>`` and ``py-stress:<name>`` for every periodic entry
+  point (``*_gamma``, ``*_kpts``) that takes ``with_gradient`` or
+  ``with_stress`` (the molecular gradients are their ``optimize:`` routes);
+* ``cell:<route>`` for every ``PeriodicRoute`` of the CLI ``[cell]`` section
+  (``crates/ferric-cli/src/config.rs``), and ``cell-optimize:<route>`` and
+  ``cell-stress:<route>`` for every route with a ``k_force_*`` or
+  ``k_stress_*`` arm in ``crates/ferric-cli/src/periodic.rs``.
 
 Every derived route must appear under ``routes``, mapping to one or more method
 ids. Each method id is either in ``methods`` (both pieces present: the book
@@ -36,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[3]
 REGISTRY = ROOT / "testdata" / "derivations" / "registry.json"
 CLI_LIB = ROOT / "crates" / "ferric-cli" / "src" / "lib.rs"
 CLI_CONFIG = ROOT / "crates" / "ferric-cli" / "src" / "config.rs"
+CLI_PERIODIC = ROOT / "crates" / "ferric-cli" / "src" / "periodic.rs"
 PYI = ROOT / "crates" / "ferric-python" / "ferric.pyi"
 TESTS = Path(__file__).resolve().parent
 
@@ -60,9 +68,34 @@ def derived_routes():
     md = re.search(r"MD_KINDS: &\[&str\] = &\[(.*?)\];", CLI_CONFIG.read_text(), re.S)
     routes |= {f"md:{k}" for k in re.findall(r'"([^"]+)"', md.group(1))}
     pyi = PYI.read_text()
-    for name in re.findall(r"^def ([A-Za-z_][A-Za-z0-9_]*)\(", pyi, re.M):
-        if name.startswith("run_") or re.search("polariz|gradient|hessian", name):
+    sig = re.compile(r"^def ([A-Za-z_][A-Za-z0-9_]*)\((.*?)\)\s*->", re.M | re.S)
+    for name, args in sig.findall(pyi):
+        if (
+            name.startswith("run_")
+            or re.search("polariz|gradient|hessian", name)
+            or name.endswith("_energy")
+        ):
             routes.add(f"py:{name}")
+            periodic = re.search(r"_(gamma|kpts)$", name)
+            if periodic and re.search(r"\bwith_gradient\b", args):
+                routes.add(f"py-gradient:{name}")
+            if periodic and re.search(r"\bwith_stress\b", args):
+                routes.add(f"py-stress:{name}")
+    routes |= _cell_routes()
+    return routes
+
+
+def _cell_routes():
+    """The periodic CLI routes: one per ``PeriodicRoute`` variant, plus the
+    variants the k-point force and stress dispatch accept."""
+    enum = re.search(r"pub enum PeriodicRoute \{(.*?)\}", CLI_CONFIG.read_text(), re.S)
+    routes = {f"cell:{v.lower()}" for v in re.findall(r"(\w+),", enum.group(1))}
+    src = CLI_PERIODIC.read_text()
+    for prefix, kind in (("k_force_", "cell-optimize"), ("k_stress_", "cell-stress")):
+        arm = re.compile(rf"((?:PeriodicRoute::\w+\s*\|?\s*)+)=>\s*{prefix}")
+        for m in arm.finditer(src):
+            for v in re.findall(r"PeriodicRoute::(\w+)", m.group(1)):
+                routes.add(f"{kind}:{v.lower()}")
     return routes
 
 
@@ -104,8 +137,17 @@ def test_derivation_is_not_vacuous():
         "frequencies:uhf",
         "md:ksdft",
         "py:run_rhf",
+        "py:d3bj_energy",
+        "py-gradient:run_rhf_gamma",
+        "py-stress:run_uks_kpts",
+        "cell:drpa",
+        "cell-optimize:rohf",
+        "cell-stress:roks",
     ):
         assert must in routes, must
+    # The periodic correlation routes have no analytic force or stress.
+    assert "cell-optimize:mp2" not in routes
+    assert "py-stress:run_mp2_kpts" not in routes
     assert len(routes) > 90
 
 
