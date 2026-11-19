@@ -125,7 +125,7 @@ tighter density threshold.
 | static and dynamic α | dRPA on the RHF reference, (@eq:polarizability-pdep-c6-1) | analytic linear response | `rpa-polarizability-c6` |
 | per-atom α, $\alpha_{\mathrm{CT}}$, $C_6$ | (@eq:ml-alpha-per-atom-kernel)–(@eq:ml-c6-cp-quadrature) | analytic | `rpa-polarizability-c6` |
 | relaxed RI-MP2 α | `ferric-mp2/src/cpks_polar.rs::mp2_polarizability_analytic`; finite-field `ferric-mp2/src/ff_polar.rs::mp2_polarizability_static` | both, library only | `mp2-polarizability` (section @sec:mp2-polarizability) |
-| statically screened TDHF α | `run_tdhf_static_polarizability` | analytic | Smoke; statically screened RPAx on an RKS reference, 46% below DOSD for water/cc-pVDZ at a 0.36 Ha scissor (`site/src/reference/validation.md`, "Known limits") |
+| statically screened TDHF α | `run_tdhf_static_polarizability` | analytic | Smoke; statically screened RPAx on an RKS reference, α set by basis and scissor: water/cc-pVDZ at a 0.36 Ha scissor is 3% below CP-PBE in the same basis (`site/src/reference/validation.md`, "Known limits") |
 
 The dRPA α has no exchange kernel. It is the response of the RHF reference
 to a field at the direct-RPA level, not a CPHF, CPKS or correlated
