@@ -153,7 +153,7 @@ is a product of the same shears, each symplectic.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-md/src/driver.rs::run_md` |
 >
-> <!-- verified: id=md.verlet.symplectic; script=scripts/md_integrators_sympy.py; claim=verlet-symplectic; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; registry=molecular-dynamics -->
+> <!-- verified: id=md.verlet.symplectic; script=scripts/md_integrators_sympy.py; claim=verlet-symplectic; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; rust_test=ferric-md/tests/integrator_harmonic.rs::velocity_verlet_matches_closed_form_discrete_solution; registry=molecular-dynamics -->
 
 **It is time reversible.** Flip the momentum after a step, take the same
 step, flip again: the second step lands on the starting point. In
@@ -182,7 +182,7 @@ symmetric, which removes every odd power of $\Delta t$ from its error.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-md/src/driver.rs::run_md` |
 >
-> <!-- verified: id=md.verlet.time-reversal; script=scripts/md_integrators_sympy.py; claim=verlet-time-reversal; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; registry=molecular-dynamics -->
+> <!-- verified: id=md.verlet.time-reversal; script=scripts/md_integrators_sympy.py; claim=verlet-time-reversal; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; rust_test=ferric-md/tests/integrator_harmonic.rs::reversing_velocities_retraces_the_trajectory; registry=molecular-dynamics -->
 
 **Its energy error is $O(\Delta t^2)$ and bounded.** Take the harmonic
 oscillator $V = \tfrac12 k x^2$ with $\omega^2 = k/m$, where the step is linear
@@ -232,7 +232,7 @@ finds $\tilde H$ constant to $2\times10^{-40}$ while $H$ spans $4\times10^{-3}$.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-md/src/driver.rs::run_md` |
 >
-> <!-- verified: id=md.verlet.shadow-energy; script=scripts/md_integrators_sympy.py; claim=verlet-shadow-energy; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; registry=molecular-dynamics -->
+> <!-- verified: id=md.verlet.shadow-energy; script=scripts/md_integrators_sympy.py; claim=verlet-shadow-energy; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; rust_test=ferric-md/tests/integrator_harmonic.rs::shadow_energy_is_conserved_while_true_energy_oscillates; registry=molecular-dynamics -->
 
 What does this mean for an ab-initio run? The bound on the energy
 fluctuation holds only if the gradient is the exact gradient of the energy the
@@ -278,7 +278,7 @@ smoothly.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-md/src/config.rs::Thermostat` |
 >
-> <!-- verified: id=md.berendsen.rate; script=scripts/md_integrators_sympy.py; claim=berendsen-rate; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/config.rs::Thermostat; registry=molecular-dynamics -->
+> <!-- verified: id=md.berendsen.rate; script=scripts/md_integrators_sympy.py; claim=berendsen-rate; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/config.rs::Thermostat; rust_test=ferric-md/tests/thermostats.rs::berendsen_relaxes_to_target_and_conserves_e_minus_q; registry=molecular-dynamics -->
 
 The Berendsen thermostat gives the right mean temperature but not the
 canonical ensemble. The rate equation drives $T$ to $T_0$ deterministically
@@ -336,7 +336,7 @@ Maxwell–Boltzmann distribution at every step.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-md/src/driver.rs::run_md` |
 >
-> <!-- verified: id=md.baoab.ou-variance; script=scripts/md_integrators_sympy.py; claim=baoab-ou-variance; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; registry=molecular-dynamics -->
+> <!-- verified: id=md.baoab.ou-variance; script=scripts/md_integrators_sympy.py; claim=baoab-ou-variance; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; rust_test=ferric-md/tests/thermostats.rs::langevin_samples_the_canonical_harmonic_ensemble; registry=molecular-dynamics -->
 
 Why BAOAB rather than another splitting? For the harmonic oscillator the
 whole step is a linear map $z' = M z + \eta$ on $z = (x, v)$, with $M$
@@ -372,7 +372,7 @@ error is $O(\Delta t^2)$ (literature result, not proved here).
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-md/src/driver.rs::run_md` |
 >
-> <!-- verified: id=md.baoab.harmonic-config; script=scripts/md_integrators_sympy.py; claim=baoab-harmonic-config; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; registry=molecular-dynamics -->
+> <!-- verified: id=md.baoab.harmonic-config; script=scripts/md_integrators_sympy.py; claim=baoab-harmonic-config; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-md/src/driver.rs::run_md; rust_test=ferric-md/tests/thermostats.rs::langevin_samples_the_canonical_harmonic_ensemble; registry=molecular-dynamics -->
 
 ## The conserved quantity {#molecular-dynamics-conserved}
 
