@@ -24,7 +24,8 @@
 #![allow(clippy::needless_range_loop)] // tensor/MO-index loops read clearer with explicit indices
 #![allow(clippy::excessive_precision)] // reference tables transcribed at full source precision
 
-/// AO-basis RPA correlation energy (Laplace-transform formulation).
+/// AO-basis RPA correlation energy (Laplace-transform formulation). Research route, feature `research`.
+#[cfg(feature = "research")]
 pub mod ao_rpa;
 /// Boys orbital localization for RPA seed construction.
 pub mod boys_localize;
@@ -42,7 +43,8 @@ pub mod davidson;
 pub mod diagnostics;
 /// Dispersion coefficients: isotropic/anisotropic C6 via Casimir-Polder integration.
 pub mod dispersion;
-/// DLPNO-RPA (domain-based local pair natural orbital RPA).
+/// DLPNO-RPA (domain-based local pair natural orbital RPA). Research route, feature `research`.
+#[cfg(feature = "research")]
 pub mod dlpno_rpa;
 /// Imaginary-frequency quadrature evaluation and RPA correlation energy.
 pub mod energy;
@@ -61,7 +63,8 @@ pub mod laplace_chi0;
 pub mod mpi_rpa;
 /// Geometry optimization using RPA gradients.
 pub mod optimize;
-/// PNO truncation for local RPA.
+/// PNO truncation for local RPA (OSV/DNV). Research route, feature `research`.
+#[cfg(feature = "research")]
 pub mod pno;
 /// Post-RPA properties: polarizability, Hirshfeld/Lowdin charges, ESP, electric field.
 pub mod properties;

@@ -24,6 +24,12 @@ mpi = { workspace = true, optional = true }
 
 [features]
 default = []
+# Parked research routes with no CLI / Python caller: the AO imaginary-time
+# chi0 (`ao_rpa`), OSV/DNV (`pno`) and pair-PNO (`dlpno_rpa`) RPA. Each lane's
+# verdict is recorded in project memory (ao-minimax-pdep-rpa-loses-on-dense,
+# pno-osv-no-small-molecule-win, rpa-cannot-consume-pair-indexed-bases).
+# Off by default; one CI job (`ferric-rpa-research`) builds and tests it.
+research = []
 # Same transitive-feature-edge lesson T9 documented for ferric-mp2/Cargo.toml:
 # ferric-core/mpi alone makes ParallelContext report a real multi-rank world,
 # but does NOT compile in the #[cfg(feature = "mpi")] Allreduce blocks that
@@ -38,3 +44,20 @@ mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi", "ferric-mp2/mpi"]
 ferric-pcm = { path = "../ferric-pcm" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+# Integration tests / examples that exercise only the `research` modules.
+[[test]]
+name = "dlpno_rpa_localized_occupied"
+required-features = ["research"]
+
+[[test]]
+name = "occupied_localization_pseudo_density_invariance"
+required-features = ["research"]
+
+[[test]]
+name = "pv_sparsity_diagnostic"
+required-features = ["research"]
+
+[[example]]
+name = "run_h2o_ao_rpa"
+required-features = ["research"]
