@@ -76,8 +76,10 @@ pub const COSX_K_BUILDER: &str = "cosx";
 /// The RIJCOSX rule for the RI-K auxiliary basis: an `explicit` choice
 /// always wins; otherwise the frontend's `default` applies, except under
 /// `k_builder = "cosx"`, where COSX replaces RI-K and no RI-K default is
-/// applied (`None`, so an explicit `df_k_aux` next to COSX stays the conflict
-/// the SCF refuses). RI-J is unaffected.
+/// applied (`None`; a NAMED `df_k_aux` next to COSX, with HF exchange or a
+/// global hybrid, stays the conflict the SCF refuses, while `df_k_aux = ""`
+/// is fine and pure or range-separated functionals ignore COSX). RI-J is
+/// unaffected.
 ///
 /// Generic over the aux representation; the Python KS entry points and the
 /// CLI `[scf]` lowering both pass [`AuxBasis`].

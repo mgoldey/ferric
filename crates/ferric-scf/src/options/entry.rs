@@ -280,8 +280,10 @@ impl ScfEntryPoint {
             _ => None,
         };
         // Kohn-Sham: RI-J / RI-K on by default (PySCF's density_fit
-        // convention), with the RIJCOSX rule for RI-K. Hartree-Fock: exact
-        // J and K unless named.
+        // convention), with the RIJCOSX rule for RI-K (under k_builder="cosx"
+        // no RI-K default; a NAMED df_k_aux with HF exchange or a global
+        // hybrid is the SCF's conflict). Hartree-Fock: exact J and K unless
+        // named.
         let (df_j_aux, df_k_aux) = if ks {
             (
                 Some(
