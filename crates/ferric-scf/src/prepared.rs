@@ -35,15 +35,16 @@ pub struct PreparedSystem {
 }
 
 impl PreparedSystem {
-    /// Apply the basis set's ECP core counts to `mol`
-    /// ([`Molecule::apply_ecp`], a no-op without an ECP), prepare `basis` on
-    /// it, and compute the Coulomb Schwarz bounds of that basis with a default
+    /// Set `mol`'s ECP core counts to what `basis` implies
+    /// ([`Molecule::apply_ecp`]: the basis set's `n_core` on each ECP atom, 0
+    /// elsewhere, whatever counts `mol` arrived with), prepare `basis` on it,
+    /// and compute the Coulomb Schwarz bounds of that basis with a default
     /// [`ParallelContext`].
     ///
-    /// The ECP is applied unconditionally: [`PreparedBasis::new`] always
-    /// reduces each ECP atom's nuclear charge to `Z - n_core` and the core
-    /// Hamiltonian adds `V_ECP`, so the molecule's `n_core_ecp` (and with it
-    /// `nelec()` and `nuclear_repulsion()`) must agree.
+    /// The counts are set unconditionally: [`PreparedBasis::new`] derives
+    /// each atom's nuclear charge (`Z - n_core` on an ECP atom) and `V_ECP`
+    /// from the basis set alone, so the molecule's `n_core_ecp` (and with it
+    /// `nelec()` and `nuclear_repulsion()`) must agree with the same basis.
     ///
     /// Errors are those of [`PreparedBasis::new`] (e.g. an element the basis
     /// does not cover, or a shell the ECP integrals cannot handle) and of
@@ -167,6 +168,27 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let sys = PreparedSystem::new(mol.clone(), &bs).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    #[test]
+    fn an_already_applied_molecule_prepares_like_a_fresh_one() {
+        let ecp = basis::bundled("def2-svp").unwrap();
+        let fresh = PreparedSystem::new(hi(), &ecp).unwrap();
+        let again = PreparedSystem::new(fresh.mol().clone(), &ecp).unwrap();
+        assert_eq!(again.mol().nelec(), fresh.mol().nelec());
+        assert_eq!(
+            again.mol().nuclear_repulsion(),
+            fresh.mol().nuclear_repulsion()
+        );
+        assert_eq!(again.bounds().q, fresh.bounds().q);
+        // The same molecule in an all-electron basis is all-electron again.
+        let sto = basis::bundled("sto-3g").unwrap();
+        let all_electron = PreparedSystem::new(fresh.mol().clone(), &sto).unwrap();
+        assert_eq!(all_electron.mol().nelec(), 54);
+        assert_eq!(
+            all_electron.mol().nuclear_repulsion(),
+            hi().nuclear_repulsion()
+        );
+    }
+
         assert_eq!(sys.mol().nelec(), mol.nelec());
         assert_eq!(sys.basis().nbasis(), prep.nbasis());
         assert_eq!(sys.op(), Operator::coulomb());

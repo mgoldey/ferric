@@ -204,3 +204,13 @@ def test_linlccd_reference_is_run_rhf_and_drpa_refuses_the_ecp():
     # basis, which ECP atoms break: it refuses rather than mis-count.
     with pytest.raises(RuntimeError, match="ECP atoms"):
         ferric.run_drpa(hi(), bs, aux)
+
+
+def test_a_molecule_reused_from_an_ecp_run_is_all_electron_in_sto3g():
+    # run_aimd returns its molecule with def2-SVP's ECP counts on I; run in
+    # STO-3G (no ECP) it must be the all-electron HI a fresh parse gives.
+    moved = ferric.run_aimd(hi(), "def2-svp", 1).mol()
+    sto = ferric.BasisSet.bundled("sto-3g")
+    fresh = ferric.Molecule.from_xyz_string(moved.to_xyz_string())
+    e_fresh = ferric.run_rhf(fresh, sto).energy
+    assert abs(ferric.run_rhf(moved, sto).energy - e_fresh) < 1e-8
