@@ -44,13 +44,18 @@
 //! | CLI `[scf]` | the kind's default: `JK` for Kohn-Sham, RPA/response and TDA/TDDFT kinds, else unset | as `df_j_aux`; no RI-K under COSX | `[scf] guess`, else SAD | `[scf] cosx_*` and the `[gpu]` fp64 router | from `method.task`: geometry for `optimize` / `frequencies` / `md`, else energy | the kind's functional (`[dft]`, `[rpa] xc`, `[tddft] xc`), else unset |
 //!
 //! The CLI column is `Config::scf_xc_and_aux_defaults` and `ri_j_task_for`
-//! in `ferric-cli`; each Python row is the `ScfOptions` literal of that
-//! binding in `ferric-python` (`scf.rs`, `dft.rs`).
+//! in `ferric-cli`; the Python rows are
+//! [`ScfEntryPoint::options`](crate::options::entry::ScfEntryPoint::options),
+//! which all six bindings call, and which also lists the knobs each entry
+//! point refuses because its solver cannot honour them
+//! ([`ScfEntryPoint::refused`](crate::options::entry::ScfEntryPoint::refused)).
 
 use ferric_core::FerricError;
 use ndarray::Array2;
 
 use crate::rhf::RhfConfig;
+
+pub mod entry;
 
 /// Default SCF iteration cap ([`RhfConfig::max_iter`]).
 pub const DEFAULT_SCF_MAX_ITER: usize = 200;
@@ -485,6 +490,7 @@ mod tests {
     //! `PartialEq` (several nested types lack it), so configs are compared
     //! through their `Debug` text, which prints every field and every f64 in
     //! shortest round-trip form.
+    use super::entry::{ScfEntryPoint, ScfKwargs};
     use super::*;
     use crate::cosx_k::CosxConfig;
     use crate::df_j::RiJPrecision;
@@ -688,161 +694,126 @@ mod tests {
         }
     }
 
-    // ── the new path: what each Python entry point now puts in ScfOptions ──
+    // ── the new path: the production policy, ScfEntryPoint::options ──
+    //
+    // `kwargs` is the one test-side step: it turns a `Kw` (the parsed
+    // values of every kwarg) into the `ScfKwargs` the binding of `entry`
+    // hands to `ScfEntryPoint::options` for a call that passes only the
+    // kwargs that binding took before this refactor: a kwarg the entry point
+    // does not take stays at the value its binding passes when it is omitted.
+    // Everything after that is the production code path.
 
-    fn aux(v: Option<&str>) -> Option<AuxBasis> {
-        v.map(AuxBasis::parse)
-    }
-
-    fn guess(sad: Option<bool>) -> Option<Guess> {
-        Some(if sad.unwrap_or(true) {
+    fn guess(sad: Option<bool>) -> Guess {
+        if sad.unwrap_or(true) {
             Guess::Sad
         } else {
             Guess::Core
-        })
-    }
-
-    fn stability(descent: Option<bool>) -> Option<Stability> {
-        descent.map(|d| {
-            if d {
-                Stability::Descend
-            } else {
-                Stability::Off
-            }
-        })
+        }
     }
 
     fn trah(t: Option<f64>) -> Option<TrahTrigger> {
         t.map(|v| TrahTrigger::new(v).unwrap())
     }
 
-    fn new_run_rhf(k: Kw) -> RhfConfig {
-        ScfOptions {
+    /// The `functional=` an open-shell KS call passes (required there).
+    const OPEN_KS_DEFAULT_FUNCTIONAL: &str = "PBE";
+
+    fn kwargs(entry: ScfEntryPoint, k: &Kw) -> ScfKwargs<'static> {
+        use ScfEntryPoint as E;
+        let is = |es: &[E]| es.contains(&entry);
+        let hf = !entry.is_kohn_sham();
+        ScfKwargs {
             max_iter: k.max_iter,
             energy_conv: k.energy_conv,
             density_conv: k.density_conv,
-            diis_size: k.diis_size,
-            diis_flavor: Some(k.diis.unwrap_or(DiisFlavor::Pulay)),
-            integral_thresh: k.integral_thresh,
-            k_builder: k.k_builder.map(str::to_string),
-            cosx: k.cosx,
-            df_j_aux: aux(k.df_j_aux),
-            df_k_aux: aux(k.df_k_aux),
+            diis_size: if hf { k.diis_size } else { None },
+            diis_flavor: is(&[E::Rhf]).then(|| k.diis.unwrap_or(DiisFlavor::Pulay)),
+            integral_thresh: if hf { k.integral_thresh } else { None },
+            k_builder: k.k_builder,
+            cosx: if is(&[E::Rhf, E::Uhf, E::Dft]) {
+                k.cosx.clone()
+            } else {
+                None
+            },
+            df_j_aux: k.df_j_aux,
+            df_k_aux: k.df_k_aux,
             ri_j_precision: k.ri_j_precision,
             ri_k_precision: k.ri_k_precision,
             level_shift: k.level_shift,
             mom_after_iter: k.mom_after_iter,
-            mom_reference: None,
-            smearing_sigma: k.smearing_sigma,
-            soscf: k.soscf,
-            guess: guess(k.guess_sad),
-            guess_basis: k.guess_basis,
-            init_guess_density: k.init_guess_density,
-            external_potential: k.external_potential,
-            pcm: k.pcm,
+            mom_reference: is(&[E::Uhf]).then(|| k.mom_reference.unwrap_or_default()),
+            smearing_sigma: if is(&[E::Rhf]) {
+                k.smearing_sigma
+            } else {
+                None
+            },
+            soscf: if is(&[E::Rhf]) { k.soscf } else { None },
+            guess: match entry {
+                E::Rhf | E::Uhf | E::Uks => Some(guess(k.guess_sad)),
+                E::Roks => Some(Guess::Sad),
+                E::Rohf | E::Dft => None,
+            },
+            guess_basis: if is(&[E::Uks, E::Roks]) {
+                None
+            } else {
+                k.guess_basis.clone()
+            },
+            init_guess_density: if is(&[E::Rhf, E::Dft]) {
+                k.init_guess_density.clone()
+            } else {
+                None
+            },
+            external_potential: k.external_potential.clone(),
+            pcm: if is(&[E::Rhf]) { k.pcm.clone() } else { None },
             three_index_budget_bytes: k.budget_bytes,
-            stability: stability(k.stability_descent),
-            symmetry: Some(k.symmetry),
-            irrep_nelec: k.irrep_nelec,
-            eri: Some(k.eri.unwrap_or(EriMode::Auto)),
+            stability_descent: if is(&[E::Rhf, E::Uhf]) {
+                k.stability_descent
+            } else {
+                None
+            },
+            symmetry: is(&[E::Rhf, E::Dft]) && k.symmetry,
+            irrep_nelec: if is(&[E::Rhf, E::Dft]) {
+                k.irrep_nelec.clone()
+            } else {
+                None
+            },
+            eri: hf.then(|| k.eri.unwrap_or(EriMode::Auto)),
             relativistic: k.relativistic,
-            aurora: k.aurora,
-            trah_trigger: trah(k.trah_trigger),
-            xc: None,
-            dft_grid: None,
-            diis_switch_thresh: None,
-            ri_j_task: None,
-            screening: None,
-            verbose: None,
+            aurora: if is(&[E::Rhf]) { k.aurora } else { None },
+            trah_trigger: if is(&[E::Rhf, E::Uhf]) {
+                trah(k.trah_trigger)
+            } else {
+                None
+            },
+            functional: match entry {
+                E::Dft => k.functional,
+                E::Uks | E::Roks => Some(k.functional.unwrap_or(OPEN_KS_DEFAULT_FUNCTIONAL)),
+                _ => None,
+            },
+            dft_grid: if hf { None } else { k.dft_grid.clone() },
         }
-        .into_rhf_config()
-        .unwrap()
+    }
+
+    /// `entry` called with `k` (see [`kwargs`]), through the production
+    /// policy and lowering.
+    fn new_config(entry: ScfEntryPoint, k: &Kw) -> RhfConfig {
+        entry
+            .options(kwargs(entry, k))
+            .unwrap()
+            .into_rhf_config()
+            .unwrap()
+    }
+
+    fn new_run_rhf(k: Kw) -> RhfConfig {
+        new_config(ScfEntryPoint::Rhf, &k)
     }
 
     fn new_run_uhf(k: Kw) -> RhfConfig {
-        ScfOptions {
-            max_iter: k.max_iter,
-            energy_conv: k.energy_conv,
-            density_conv: k.density_conv,
-            diis_size: k.diis_size,
-            diis_flavor: None,
-            integral_thresh: k.integral_thresh,
-            k_builder: k.k_builder.map(str::to_string),
-            cosx: k.cosx,
-            df_j_aux: aux(k.df_j_aux),
-            df_k_aux: aux(k.df_k_aux),
-            ri_j_precision: k.ri_j_precision,
-            ri_k_precision: k.ri_k_precision,
-            level_shift: k.level_shift,
-            mom_after_iter: k.mom_after_iter,
-            mom_reference: Some(k.mom_reference.unwrap_or_default()),
-            smearing_sigma: None,
-            soscf: None,
-            guess: guess(k.guess_sad),
-            guess_basis: k.guess_basis,
-            init_guess_density: None,
-            external_potential: k.external_potential,
-            pcm: None,
-            three_index_budget_bytes: k.budget_bytes,
-            stability: stability(k.stability_descent),
-            symmetry: None,
-            irrep_nelec: None,
-            eri: Some(k.eri.unwrap_or(EriMode::Auto)),
-            relativistic: k.relativistic,
-            aurora: None,
-            trah_trigger: trah(k.trah_trigger),
-            xc: None,
-            dft_grid: None,
-            diis_switch_thresh: None,
-            ri_j_task: None,
-            screening: None,
-            verbose: None,
-        }
-        .into_rhf_config()
-        .unwrap()
+        new_config(ScfEntryPoint::Uhf, &k)
     }
 
     fn new_run_rohf(k: Kw) -> RhfConfig {
-        ScfOptions {
-            max_iter: k.max_iter,
-            energy_conv: k.energy_conv,
-            density_conv: k.density_conv,
-            diis_size: k.diis_size,
-            diis_flavor: None,
-            integral_thresh: k.integral_thresh,
-            k_builder: k.k_builder.map(str::to_string),
-            cosx: None,
-            df_j_aux: aux(k.df_j_aux),
-            df_k_aux: aux(k.df_k_aux),
-            ri_j_precision: k.ri_j_precision,
-            ri_k_precision: k.ri_k_precision,
-            level_shift: k.level_shift,
-            mom_after_iter: k.mom_after_iter,
-            mom_reference: None,
-            smearing_sigma: None,
-            soscf: None,
-            guess: None,
-            guess_basis: k.guess_basis,
-            init_guess_density: None,
-            external_potential: k.external_potential,
-            pcm: None,
-            three_index_budget_bytes: k.budget_bytes,
-            stability: None,
-            symmetry: None,
-            irrep_nelec: None,
-            eri: Some(k.eri.unwrap_or(EriMode::Auto)),
-            relativistic: k.relativistic,
-            aurora: None,
-            trah_trigger: None,
-            xc: None,
-            dft_grid: None,
-            diis_switch_thresh: None,
-            ri_j_task: None,
-            screening: None,
-            verbose: None,
-        }
-        .into_rhf_config()
-        .unwrap()
+        new_config(ScfEntryPoint::Rohf, &k)
     }
 
     /// Field-by-field equality via `Debug` text, except `guess_basis`: its
@@ -1122,141 +1093,58 @@ mod tests {
         config
     }
 
-    /// The KS `df_*_aux` kwarg: a parsed spelling, or the JK-fit default.
-    fn ks_aux(v: Option<&str>) -> AuxBasis {
-        v.map(AuxBasis::parse).unwrap_or_else(AuxBasis::default_jk)
-    }
-
-    /// What `run_dft` now puts in `ScfOptions` (mirrors `dft.rs`).
     fn new_run_dft(k: Kw) -> RhfConfig {
-        let symmetric = k.symmetry || k.irrep_nelec.is_some();
-        ScfOptions {
-            max_iter: k.max_iter,
-            energy_conv: k.energy_conv,
-            density_conv: k.density_conv,
-            diis_size: None,
-            diis_flavor: None,
-            integral_thresh: None,
-            k_builder: k.k_builder.map(str::to_string),
-            cosx: k.cosx,
-            df_j_aux: Some(ks_aux(k.df_j_aux)),
-            df_k_aux: df_k_aux_or_default(
-                k.k_builder,
-                k.df_k_aux.map(AuxBasis::parse),
-                Some(AuxBasis::default_jk()),
-            ),
-            ri_j_precision: k.ri_j_precision,
-            ri_k_precision: k.ri_k_precision,
-            level_shift: k.level_shift,
-            mom_after_iter: k.mom_after_iter,
-            mom_reference: None,
-            smearing_sigma: None,
-            soscf: None,
-            guess: None,
-            guess_basis: k.guess_basis,
-            init_guess_density: k.init_guess_density,
-            external_potential: k.external_potential,
-            pcm: None,
-            three_index_budget_bytes: k.budget_bytes,
-            stability: None,
-            symmetry: symmetric.then_some(true),
-            irrep_nelec: k.irrep_nelec,
-            eri: None,
-            relativistic: k.relativistic,
-            aurora: None,
-            trah_trigger: None,
-            xc: Some(k.functional.unwrap_or("LDA").to_string()),
-            dft_grid: k.dft_grid,
-            diis_switch_thresh: None,
-            ri_j_task: None,
-            screening: None,
-            verbose: None,
-        }
-        .into_rhf_config()
-        .unwrap()
+        new_config(ScfEntryPoint::Dft, &k)
     }
 
-    /// What `run_open_ks` now puts in `ScfOptions` (mirrors `dft.rs`).
-    fn new_run_open_ks(k: Kw, functional: &str, use_sad_guess: bool) -> RhfConfig {
-        ScfOptions {
-            max_iter: k.max_iter,
-            energy_conv: k.energy_conv,
-            density_conv: k.density_conv,
-            diis_size: None,
-            diis_flavor: None,
-            integral_thresh: None,
-            k_builder: k.k_builder.map(str::to_string),
-            cosx: None,
-            df_j_aux: Some(ks_aux(k.df_j_aux)),
-            df_k_aux: df_k_aux_or_default(
-                k.k_builder,
-                k.df_k_aux.map(AuxBasis::parse),
-                Some(AuxBasis::default_jk()),
-            ),
-            ri_j_precision: k.ri_j_precision,
-            ri_k_precision: k.ri_k_precision,
-            level_shift: k.level_shift,
-            mom_after_iter: k.mom_after_iter,
-            mom_reference: None,
-            smearing_sigma: None,
-            soscf: None,
-            guess: Some(if use_sad_guess {
-                Guess::Sad
-            } else {
-                Guess::Core
-            }),
-            guess_basis: None,
-            init_guess_density: None,
-            external_potential: k.external_potential,
-            pcm: None,
-            three_index_budget_bytes: k.budget_bytes,
-            stability: None,
-            symmetry: None,
-            irrep_nelec: None,
-            eri: None,
-            relativistic: k.relativistic,
-            aurora: None,
-            trah_trigger: None,
-            xc: Some(functional.to_string()),
-            dft_grid: k.dft_grid,
-            diis_switch_thresh: None,
-            ri_j_task: None,
-            screening: None,
-            verbose: None,
-        }
-        .into_rhf_config()
-        .unwrap()
+    /// `run_uks` with `functional` and `guess` given by `use_sad_guess`.
+    fn new_run_open_ks(k: Kw, functional: &'static str, use_sad_guess: bool) -> RhfConfig {
+        let k = Kw {
+            functional: Some(functional),
+            guess_sad: Some(use_sad_guess),
+            ..k
+        };
+        new_config(ScfEntryPoint::Uks, &k)
     }
 
-    /// One KS call checked against its oracle: `run_dft` as given, and
-    /// `run_uks` (with and without `guess="hcore"`) / `run_roks` (guess
-    /// always MINAO) for `functional` (default `"PBE"`; required there).
+    /// One KS call checked against its oracle: `run_dft` as given, `run_uks`
+    /// with and without `guess="hcore"` and `run_roks` (guess always MINAO),
+    /// for `functional` (default `"PBE"`; required there).
     fn check_ks(k: &Kw, msg: &str) {
         same_msg(
             &old_run_dft(k.clone()),
             &new_run_dft(k.clone()),
             &format!("run_dft, {msg}"),
         );
-        let f = k.functional.unwrap_or("PBE");
-        for sad in [true, false] {
+        let f = k.functional.unwrap_or(OPEN_KS_DEFAULT_FUNCTIONAL);
+        let open = [
+            (ScfEntryPoint::Uks, Some(true)),
+            (ScfEntryPoint::Uks, Some(false)),
+            (ScfEntryPoint::Uks, None),
+            (ScfEntryPoint::Roks, k.guess_sad),
+        ];
+        for (entry, guess_sad) in open {
+            let k = Kw {
+                functional: Some(f),
+                guess_sad,
+                ..k.clone()
+            };
+            let sad = entry == ScfEntryPoint::Roks || guess_sad.unwrap_or(true);
             let old = old_run_open_ks(k.clone(), f, sad);
-            let new = new_run_open_ks(k.clone(), f, sad);
-            if open_ks_takes_rijcosx_rule(k) {
+            let new = new_config(entry, &k);
+            let who = format!("{} (guess_sad={guess_sad:?}), {msg}", entry.name());
+            if open_ks_takes_rijcosx_rule(&k) {
                 // The one intended change (see
                 // `open_ks_cosx_drops_the_ri_k_default`): everything but
                 // df_k_aux is the old construction.
-                assert_eq!(new.df_k_aux, None, "{msg}");
+                assert_eq!(new.df_k_aux, None, "{who}");
                 let old = RhfConfig {
                     df_k_aux: None,
                     ..old
                 };
-                same_msg(
-                    &old,
-                    &new,
-                    &format!("run_uks/run_roks cosx (sad={sad}), {msg}"),
-                );
+                same_msg(&old, &new, &format!("cosx: {who}"));
             } else {
-                same_msg(&old, &new, &format!("run_uks/run_roks (sad={sad}), {msg}"));
+                same_msg(&old, &new, &who);
             }
         }
     }

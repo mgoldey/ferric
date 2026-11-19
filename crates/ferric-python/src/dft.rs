@@ -1,15 +1,8 @@
 //! KS-DFT and double-hybrid bindings: moved verbatim from `lib.rs`.
 
 use super::*;
-use ferric_scf::options::{df_k_aux_or_default, AuxBasis, ScfOptions};
-
-/// A Kohn-Sham `df_j_aux` / `df_k_aux` kwarg: the parsed spelling (opt-outs
-/// are [`AuxBasis::Off`]), or `def2-universal-jkfit` when unset.
-fn ks_aux(requested: Option<&str>) -> AuxBasis {
-    requested
-        .map(AuxBasis::parse)
-        .unwrap_or_else(AuxBasis::default_jk)
-}
+use crate::scf::scf_options_from_kwargs;
+use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
 
 // ── KS-DFT ──
 
@@ -561,7 +554,9 @@ pub(crate) fn run_dft(
     // construction evaluated them, so a call with several bad kwargs raises
     // the same (first) error.
     let relativistic = crate::scf::parse_relativistic(relativistic)?;
-    let xc_name = functional.unwrap_or("LDA").to_string();
+    let xc_name = functional
+        .unwrap_or(ferric_scf::options::entry::DEFAULT_DFT_FUNCTIONAL)
+        .to_string();
     // Rung 0 starts from dm0; later rungs carry the previous rung's density.
     let init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_dft")?;
     // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
@@ -593,61 +588,34 @@ pub(crate) fn run_dft(
             fock_hook.is_some(),
         )?;
     }
-    // run_dft's policy is the set of fields below; every `None` keeps the
-    // `RhfConfig` default (ferric_scf::options).
-    let options = ScfOptions {
+    // run_dft's policy (RI-J / RI-K on by default, the RIJCOSX rule, the
+    // "LDA" default) is `ScfEntryPoint::Dft`'s (ferric_scf::options::entry).
+    let kw = ScfKwargs {
         max_iter,
         energy_conv,
         density_conv,
-        diis_size: None,
-        diis_flavor: None,
-        integral_thresh: None,
-        k_builder: k_builder.map(str::to_string),
+        k_builder,
         cosx: Some(cosx),
-        // RI-J on by DEFAULT (PySCF's density_fit convention), overridable:
-        // a caller comparing against an exact-Coulomb code would otherwise
-        // measure the RI-J FITTING ERROR as a ferric defect (PBE/STO-3G vs
-        // conventional J: water 0.28, benzene 1.16, 71-atom drug 9.5
-        // kcal/mol). `df_j_aux=""` selects conventional J.
-        df_j_aux: Some(ks_aux(df_j_aux)),
-        // RI-K only matters for ω = 0 hybrids and HF (`solve_rhf` skips the
-        // DfK for a pure functional or an RSH). RIJCOSX: under
-        // k_builder="cosx" COSX replaces RI-K, so no RI-K default applies (an
-        // explicit df_k_aux next to COSX is a conflict the SCF refuses).
-        df_k_aux: df_k_aux_or_default(
-            k_builder,
-            df_k_aux.map(AuxBasis::parse),
-            Some(AuxBasis::default_jk()),
-        ),
+        df_j_aux,
+        df_k_aux,
         ri_j_precision,
         ri_k_precision,
         // An explicit level_shift (0 included) turns off the meta-GGA
         // automatic shift.
         level_shift,
         mom_after_iter,
-        mom_reference: None,
-        smearing_sigma: None,
-        soscf: None,
-        guess: None,
         guess_basis,
         init_guess_density,
         external_potential: build_external_potential(point_charges, external_field),
-        pcm: None,
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        stability: None,
-        symmetry: symmetric.then_some(true),
+        symmetry,
         irrep_nelec: irrep_nelec.map(|m| m.into_iter().collect()),
-        eri: None,
         relativistic,
-        aurora: None,
-        trah_trigger: None,
-        xc: Some(xc_name),
+        functional,
         dft_grid,
-        diis_switch_thresh: None,
-        ri_j_task: None,
-        screening: None,
-        verbose: None,
+        ..ScfKwargs::default()
     };
+    let options = scf_options_from_kwargs(ScfEntryPoint::Dft, kw)?;
     let mut cfg = options.into_rhf_config().py()?;
     if symmetric {
         return solve_symmetric_outcome(py, "run_dft", &ctx, &emol, &prep, op, &bounds, &cfg);
@@ -1181,59 +1149,34 @@ fn run_open_ks(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let dft_grid =
         resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?;
-    // run_uks / run_roks policy: run_dft's KS defaults minus what these entry
-    // points do not offer (COSX knobs, symmetry, guess_basis). `run_roks`
-    // passes `guess = None`, i.e. MINAO, the default.
-    let options = ScfOptions {
+    // run_uks / run_roks policy (run_dft's KS defaults, including the
+    // RIJCOSX rule) is `ScfEntryPoint::Uks` / `Roks`'s
+    // (ferric_scf::options::entry). `run_roks` passes `guess = None`, i.e.
+    // MINAO, the default.
+    let entry = match kind {
+        OpenKs::Uks => ScfEntryPoint::Uks,
+        OpenKs::Roks => ScfEntryPoint::Roks,
+    };
+    let kw = ScfKwargs {
         max_iter,
         energy_conv,
         density_conv,
-        diis_size: None,
-        diis_flavor: None,
-        integral_thresh: None,
-        k_builder: k_builder.map(str::to_string),
-        cosx: None,
-        // RI-J / RI-K on by default for a KS SCF, as in run_dft and the CLI.
-        // RIJCOSX, as in run_dft: under k_builder="cosx" COSX replaces RI-K,
-        // so no RI-K default applies (an explicit df_k_aux next to COSX is
-        // the conflict the SCF refuses). Before this rule the RI-K default
-        // applied whatever `k_builder` said, so k_builder="cosx" with HF
-        // exchange or a global hybrid (where COSX takes the exchange) and
-        // df_k_aux unset failed with a df_k_aux conflict the caller never
-        // wrote.
-        df_j_aux: Some(ks_aux(df_j_aux)),
-        df_k_aux: df_k_aux_or_default(
-            k_builder,
-            df_k_aux.map(AuxBasis::parse),
-            Some(AuxBasis::default_jk()),
-        ),
+        k_builder,
+        df_j_aux,
+        df_k_aux,
         ri_j_precision,
         ri_k_precision,
         level_shift,
         mom_after_iter,
-        mom_reference: None,
-        smearing_sigma: None,
-        soscf: None,
         guess: Some(crate::scf::guess_from_use_sad(use_sad_guess)),
-        guess_basis: None,
-        init_guess_density: None,
         external_potential: build_external_potential(point_charges, external_field),
-        pcm: None,
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        stability: None,
-        symmetry: None,
-        irrep_nelec: None,
-        eri: None,
         relativistic,
-        aurora: None,
-        trah_trigger: None,
-        xc: Some(functional.to_string()),
+        functional: Some(functional),
         dft_grid,
-        diis_switch_thresh: None,
-        ri_j_task: None,
-        screening: None,
-        verbose: None,
+        ..ScfKwargs::default()
     };
+    let options = scf_options_from_kwargs(entry, kw)?;
     let mut config = options.into_rhf_config().py()?;
     let (solver, gradient_kind) = match kind {
         OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),

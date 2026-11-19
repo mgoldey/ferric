@@ -1,7 +1,8 @@
 //! RHF, UHF, ROHF drivers: moved verbatim from `lib.rs`.
 
 use super::*;
-use ferric_scf::options::{AuxBasis, Guess, ScfOptions, Stability, TrahTrigger};
+use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
+use ferric_scf::options::{Guess, ScfOptions, TrahTrigger};
 
 // ── RHF ──
 
@@ -375,16 +376,21 @@ pub(crate) fn guess_from_use_sad(use_sad_guess: bool) -> Guess {
     }
 }
 
-/// The `stability_descent=` kwarg: `True` checks stability and descends from
-/// a saddle (both halves: the descent needs a verdict to act on).
-pub(crate) fn stability_from_kwarg(stability_descent: Option<bool>) -> Option<Stability> {
-    stability_descent.map(|d| {
-        if d {
-            Stability::Descend
-        } else {
-            Stability::Off
-        }
-    })
+/// The one keyword-to-[`ScfOptions`] step of the six SCF entry points
+/// (`run_rhf` / `run_uhf` / `run_rohf` here, `run_dft` / `run_uks` /
+/// `run_roks` in `dft.rs`): each parses its keywords into `kw` in its own
+/// order (which fixes the first error of a call with several bad ones), then
+/// calls this. The per-entry-point policy (Kohn-Sham JK-fit defaults, the
+/// RIJCOSX rule, the knobs a solver cannot honour) is
+/// [`ScfEntryPoint::options`]; a refusal is a `ValueError` (the signatures do
+/// not offer a refused knob, so it is a backstop).
+pub(crate) fn scf_options_from_kwargs(
+    entry: ScfEntryPoint,
+    kw: ScfKwargs<'_>,
+) -> PyResult<ScfOptions> {
+    entry
+        .options(kw)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
 /// The non-convergence RuntimeWarning of `run_rhf` (no control-flow change).
@@ -653,24 +659,22 @@ pub(crate) fn run_rhf(
     let relativistic = parse_relativistic(relativistic)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     // Defaults come from ferric_scf::options, the lowering the CLI `[scf]`
-    // section also goes through; the CLI-only knobs stay `None` here.
-    let options = ScfOptions {
+    // section also goes through.
+    let kw = ScfKwargs {
         max_iter,
         energy_conv,
         density_conv,
         diis_size,
         diis_flavor: Some(diis_flavor),
         integral_thresh,
-        k_builder: k_builder.map(str::to_string),
+        k_builder,
         cosx: Some(cosx),
-        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(AuxBasis::parse),
-        df_k_aux: df_k_aux.map(AuxBasis::parse),
+        df_j_aux,
+        df_k_aux,
         ri_j_precision,
         ri_k_precision,
         level_shift,
         mom_after_iter,
-        mom_reference: None,
         smearing_sigma,
         soscf,
         guess: Some(guess_from_use_sad(use_sad_guess)),
@@ -685,21 +689,16 @@ pub(crate) fn run_rhf(
         // None = "unset -> auto" (ferric_scf::rhf::resolve_three_index_budget),
         // so an omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        stability: stability_from_kwarg(stability_descent),
-        symmetry: Some(symmetry),
+        stability_descent,
+        symmetry,
         irrep_nelec: irrep_nelec.map(|m| m.into_iter().collect()),
         eri: Some(eri),
         relativistic,
         aurora,
         trah_trigger,
-        // Hartree-Fock: no functional, no KS grid.
-        xc: None,
-        dft_grid: None,
-        diis_switch_thresh: None,
-        ri_j_task: None,
-        screening: None,
-        verbose: None,
+        ..ScfKwargs::default()
     };
+    let options = scf_options_from_kwargs(ScfEntryPoint::Rhf, kw)?;
     let mut config = options.into_rhf_config().py()?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
@@ -1516,53 +1515,32 @@ pub(crate) fn run_uhf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same default values as run_rhf (and the CLI `[scf]` section, which
-    // shares this lowering).
-    let options = ScfOptions {
+    let kw = ScfKwargs {
         max_iter,
         energy_conv,
         density_conv,
         diis_size,
-        diis_flavor: None,
         integral_thresh,
-        k_builder: k_builder.map(str::to_string),
+        k_builder,
         cosx: Some(cosx),
-        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(AuxBasis::parse),
-        df_k_aux: df_k_aux.map(AuxBasis::parse),
+        df_j_aux,
+        df_k_aux,
         ri_j_precision,
         ri_k_precision,
         level_shift,
         mom_after_iter,
         mom_reference: Some(mom_reference),
-        smearing_sigma: None,
-        soscf: None,
         guess: Some(guess_from_use_sad(use_sad_guess)),
         guess_basis,
-        init_guess_density: None,
         external_potential: build_external_potential(point_charges, external_field),
-        pcm: None,
-        // None = "unset -> auto" (resolve_three_index_budget), so an
-        // omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        // The descent needs a stability verdict to act on, so the kwarg turns
-        // on both halves; `scf_stability_descent` alone only prints a SKIPPED
-        // notice.
-        stability: stability_from_kwarg(stability_descent),
-        symmetry: None,
-        irrep_nelec: None,
+        stability_descent,
         eri: Some(eri),
         relativistic,
-        aurora: None,
         trah_trigger,
-        // Hartree-Fock: no functional, no KS grid.
-        xc: None,
-        dft_grid: None,
-        diis_switch_thresh: None,
-        ri_j_task: None,
-        screening: None,
-        verbose: None,
+        ..ScfKwargs::default()
     };
+    let options = scf_options_from_kwargs(ScfEntryPoint::Uhf, kw)?;
     let config: UhfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(
         py,
@@ -1655,52 +1633,27 @@ pub(crate) fn run_rohf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same default values as run_rhf / run_uhf (and the CLI `[scf]` section,
-    // which shares this lowering). `None` for a knob run_rohf does not take
-    // keeps the RhfConfig default.
-    let options = ScfOptions {
+    let kw = ScfKwargs {
         max_iter,
         energy_conv,
         density_conv,
         diis_size,
-        diis_flavor: None,
         integral_thresh,
-        k_builder: k_builder.map(str::to_string),
-        // run_rohf takes no cosx_* kwargs: the RhfConfig default COSX knobs.
-        cosx: None,
-        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(AuxBasis::parse),
-        df_k_aux: df_k_aux.map(AuxBasis::parse),
+        k_builder,
+        df_j_aux,
+        df_k_aux,
         ri_j_precision,
         ri_k_precision,
         level_shift,
         mom_after_iter,
-        mom_reference: None,
-        smearing_sigma: None,
-        soscf: None,
-        guess: None,
         guess_basis,
-        init_guess_density: None,
         external_potential: build_external_potential(point_charges, external_field),
-        pcm: None,
-        // None = "unset -> auto" (resolve_three_index_budget), so an
-        // omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        stability: None,
-        symmetry: None,
-        irrep_nelec: None,
         eri: Some(eri),
         relativistic,
-        aurora: None,
-        trah_trigger: None,
-        // Hartree-Fock: no functional, no KS grid.
-        xc: None,
-        dft_grid: None,
-        diis_switch_thresh: None,
-        ri_j_task: None,
-        screening: None,
-        verbose: None,
+        ..ScfKwargs::default()
     };
+    let options = scf_options_from_kwargs(ScfEntryPoint::Rohf, kw)?;
     let config: RohfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(
         py,
