@@ -436,6 +436,24 @@ CASES = [
         ],
     ),
     (
+        "hessian_one_electron_ops_sympy.py",
+        10,
+        [
+            (
+                "if self.op and vx_in_fx:",
+                "if self.op and vx_in_fx and False:",
+                "FAIL O1 skeleton",
+            ),
+            (
+                "3.0 * np.outer(d, d) / r5",
+                "2.0 * np.outer(d, d) / r5",
+                "FAIL O1 skeleton",
+            ),
+            ("in (1, 2)", "in (1,)", "FAIL O5 masked stencil"),
+            ("if a == b:", "if a == b and k == 0:", "FAIL O5 masked stencil"),
+        ],
+    ),
+    (
         "df_jk_gradient_sympy.py",
         10,
         [
