@@ -259,3 +259,18 @@ def test_dipole_and_charges_refusals():
         cell.get_dipole_moment()
     with pytest.raises(PropertyNotImplementedError, match="molecular-only"):
         cell.get_charges()
+
+
+def test_charges_refuse_a_symmetry_frame_result():
+    # run_rhf(symmetry=True) returns a SymmetricRhfResult, which the charge
+    # functions do not accept: refused as unsupported, not a TypeError.
+    from ferric.ase import _charges
+
+    xyz = "3\n\n" + "\n".join(
+        f"{s} {x} {y} {z}" for s, (x, y, z) in zip("OHH", WATER_POS)
+    )
+    mol = ferric.Molecule.from_xyz_string(xyz, 0, 1)
+    basis = ferric.BasisSet.bundled("sto-3g")
+    result = ferric.run_rhf(mol, basis, symmetry=True)
+    with pytest.raises(PropertyNotImplementedError, match="symmetry-frame"):
+        _charges(mol, basis, result, "mulliken")

@@ -34,6 +34,8 @@ def default_multiplicity(
     n = len(symbols)
     if n == 0:
         return 1
+    if ghost is not None and len(ghost) != n:
+        raise ValueError(f"ghost has {len(ghost)} flags for {n} atoms")
     probe = Molecule.from_arrays(list(symbols), np.zeros((n, 3)), ghost=[True] * n)
     zs = probe.atomic_numbers()
     total = sum(int(z) for i, z in enumerate(zs) if ghost is None or not ghost[i])

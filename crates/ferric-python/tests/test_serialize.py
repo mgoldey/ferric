@@ -115,6 +115,11 @@ def test_read_run_log(tmp_path):
     p.write_text("{bad\n" + json.dumps(recs[0]) + "\n")
     with pytest.raises(ValueError, match="line 1"):
         fs.read_run_log(p)
+    # A complete (newline-terminated) malformed last record is an error, not a
+    # truncated write.
+    p.write_text(json.dumps(recs[0]) + '\n{"record": nope}\n')
+    with pytest.raises(ValueError, match="line 2"):
+        fs.read_run_log(p)
 
 
 def test_multiplicity_round_trip_and_old_dict_fallback():
@@ -141,3 +146,10 @@ def test_molecule_from_dict_parity_default_is_direct():
     # A bad symbol names the real cause instead of retrying another multiplicity.
     with pytest.raises(ValueError, match="unknown element"):
         fs.molecule_from_dict({**base, "symbols": ["H", "H", "Xx"]})
+
+
+def test_default_multiplicity_rejects_mismatched_ghost_flags():
+    from ferric._util import default_multiplicity
+
+    with pytest.raises(ValueError, match="ghost has 0 flags for 1 atoms"):
+        default_multiplicity(["He"], 0, [])

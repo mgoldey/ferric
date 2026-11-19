@@ -402,6 +402,10 @@ def _dipole(mol, basis, result):
 
 
 def _charges(mol, basis, result, scheme):
+    if isinstance(result, ferric.SymmetricRhfResult):
+        raise PropertyNotImplementedError(
+            "FerricCalculator: charges are not available for a symmetry-frame result"
+        )
     fn = getattr(ferric, f"{str(scheme).lower()}_charges")
     try:
         return np.asarray(fn(mol, basis, result), dtype=float)

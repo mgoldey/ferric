@@ -12,8 +12,12 @@ RDKit is an optional dependency, imported inside each function::
 Coordinates travel as Angstrom floats and are handed to
 ``Molecule.from_arrays`` as float64 (no text round trip), so they are
 preserved exactly; ferric converts to Bohr once, as for any Angstrom input.
-Charge and multiplicity are read from the ``ferric.Molecule`` by default
-(``to_rdkit``); ``from_rdkit`` takes the formal charge and the radical count.
+``to_rdkit`` takes the charge from the ``ferric.Molecule`` (for bond
+perception) and stores the charge and multiplicity on the RDKit ``Mol`` as the
+integer properties ``ferric_charge`` and ``ferric_multiplicity``, because a
+bare RDKit ``Mol`` cannot carry a spin state. ``from_rdkit`` reads those
+properties when present, and otherwise takes the formal charge and the radical
+count.
 """
 
 from __future__ import annotations
@@ -38,6 +42,12 @@ def _rdkit():
     except ImportError as err:
         raise ImportError(_INSTALL_HINT) from err
     return Chem
+
+
+# Integer properties ``to_rdkit`` writes so ``from_rdkit`` can restore the
+# charge and spin state a bare RDKit ``Mol`` cannot represent.
+_CHARGE_PROP = "ferric_charge"
+_MULT_PROP = "ferric_multiplicity"
 
 
 def from_rdkit(
@@ -72,9 +82,15 @@ def from_rdkit(
     coords = np.asarray(conf.GetPositions(), dtype=float)
     symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
     if charge is None:
-        charge = Chem.GetFormalCharge(mol)
+        if mol.HasProp(_CHARGE_PROP):
+            charge = mol.GetIntProp(_CHARGE_PROP)
+        else:
+            charge = Chem.GetFormalCharge(mol)
     if multiplicity is None:
-        multiplicity = sum(a.GetNumRadicalElectrons() for a in mol.GetAtoms()) + 1
+        if mol.HasProp(_MULT_PROP):
+            multiplicity = mol.GetIntProp(_MULT_PROP)
+        else:
+            multiplicity = sum(a.GetNumRadicalElectrons() for a in mol.GetAtoms()) + 1
     return ferric.Molecule.from_arrays(
         symbols,
         coords,
@@ -146,6 +162,8 @@ def to_rdkit(
     conf.Set3D(True)
     rw.AddConformer(conf, assignId=True)
     out = rw.GetMol()
+    out.SetIntProp(_CHARGE_PROP, int(charge))
+    out.SetIntProp(_MULT_PROP, int(mol.multiplicity))
     if perceive_bonds:
         try:
             from rdkit.Chem import rdDetermineBonds

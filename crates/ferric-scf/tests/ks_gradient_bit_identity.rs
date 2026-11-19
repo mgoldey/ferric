@@ -20,7 +20,7 @@
 //! the check to run on the machine that recorded the table when refactoring.
 //!
 //! Re-record (only when a numerical change is intended):
-//!   cargo test -p ferric-scf --test ks_gradient_bit_identity -- --nocapture
+//!   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf --test ks_gradient_bit_identity -- --nocapture
 //! with `EXPECTED` emptied, and paste the printed table.
 
 use ferric_core::basis::{bundled, BasisSet};
@@ -901,6 +901,11 @@ fn ks_gradients_match_recorded() {
     assert_eq!(cases.len(), EXPECTED.len(), "case count");
     for ((name, g), (ename, ebits)) in cases.iter().zip(EXPECTED) {
         assert_eq!(name, ename);
+        assert_eq!(
+            g.ncols(),
+            3,
+            "{name}: gradient must have three Cartesian columns"
+        );
         if bit_exact {
             assert_eq!(bits(g).as_slice(), *ebits, "{name}: gradient bits changed");
             continue;

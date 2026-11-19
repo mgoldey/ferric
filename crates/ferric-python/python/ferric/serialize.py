@@ -156,8 +156,8 @@ def molecule_from_dict(
 def read_run_log(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
     """Records of a ferric CLI JSON Lines run log, in file order.
 
-    A malformed line raises ``ValueError`` naming it, except a truncated LAST
-    line (a job killed mid-write), which is dropped.
+    A malformed line raises ``ValueError`` naming it, except an unterminated
+    LAST line (no trailing newline: a job killed mid-write), which is dropped.
     """
     with open(path, encoding="utf-8") as fh:
         lines = [(i, ln) for i, ln in enumerate(fh, 1) if ln.strip()]
@@ -166,7 +166,7 @@ def read_run_log(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
         try:
             rec = json.loads(text)
         except json.JSONDecodeError as err:
-            if pos == len(lines) - 1:
+            if pos == len(lines) - 1 and not text.endswith("\n"):
                 break
             raise ValueError(f"{path}: line {num} is not valid JSON: {err}") from err
         if not isinstance(rec, dict):

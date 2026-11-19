@@ -99,3 +99,15 @@ def test_radical_smiles_defaults_to_doublet_and_explicit_overrides():
     assert mol.multiplicity == 2
     assert fr.from_smiles("[CH3]", multiplicity=4).multiplicity == 4
     assert fr.from_smiles("CCO").multiplicity == 1
+
+
+def test_to_rdkit_round_trip_keeps_spin_state():
+    m = ferric.Molecule.from_arrays(
+        ["O", "O"], [[0, 0, 0], [0, 0, 1.2]], multiplicity=3
+    )
+    rd = fr.to_rdkit(m)
+    assert rd.GetIntProp("ferric_multiplicity") == 3
+    assert rd.GetIntProp("ferric_charge") == 0
+    back = fr.from_rdkit(rd)
+    assert back.multiplicity == 3
+    assert back.charge == 0

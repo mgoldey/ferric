@@ -136,9 +136,10 @@ impl TrahTrigger {
     }
 }
 
-/// User-tunable SCF knobs, already parsed into typed values. `None` (or an
-/// empty value) keeps the [`RhfConfig::default`] value of the field it
-/// lowers to; see [`ScfOptions::into_rhf_config`] for the mapping.
+/// User-tunable SCF knobs, already parsed into typed values. `None` keeps the
+/// [`RhfConfig::default`] value of the field it lowers to; a `Some` is passed
+/// through as given (so `irrep_nelec: Some(vec![])` lowers to `Some([])`, not
+/// the default `None`). See [`ScfOptions::into_rhf_config`] for the mapping.
 #[derive(Debug, Clone, Default)]
 pub struct ScfOptions {
     /// [`RhfConfig::max_iter`].
@@ -416,6 +417,7 @@ mod tests {
         relativistic: Option<Relativistic>,
         aurora: Option<bool>,
         trah_trigger: Option<f64>,
+        guess_basis: Option<crate::basis2::GuessBasis>,
     }
 
     fn all_knobs() -> Kw {
@@ -424,6 +426,7 @@ mod tests {
             ..CosxConfig::default()
         };
         Kw {
+            guess_basis: Some(crate::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap()),
             max_iter: Some(77),
             energy_conv: Some(1e-7),
             density_conv: Some(3e-9),
@@ -489,7 +492,7 @@ mod tests {
             smearing_sigma: k.smearing_sigma,
             newton_trigger: if k.soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
             use_sad_guess: k.guess_sad.unwrap_or(true),
-            guess_basis: None,
+            guess_basis: k.guess_basis,
             init_guess_density: k.init_guess_density,
             external_potential: k.external_potential,
             pcm: k.pcm,
@@ -529,7 +532,7 @@ mod tests {
             external_potential: k.external_potential,
             three_index_budget_bytes: k.budget_bytes.unwrap_or(0),
             use_sad_guess: k.guess_sad.unwrap_or(true),
-            guess_basis: None,
+            guess_basis: k.guess_basis,
             eri: k.eri.unwrap_or(EriMode::Auto),
             relativistic: k.relativistic,
             trah_trigger: k.trah_trigger,
@@ -611,7 +614,7 @@ mod tests {
             smearing_sigma: k.smearing_sigma,
             soscf: k.soscf,
             guess: guess(k.guess_sad),
-            guess_basis: None,
+            guess_basis: k.guess_basis,
             init_guess_density: k.init_guess_density,
             external_potential: k.external_potential,
             pcm: k.pcm,
@@ -648,7 +651,7 @@ mod tests {
             smearing_sigma: None,
             soscf: None,
             guess: guess(k.guess_sad),
-            guess_basis: None,
+            guess_basis: k.guess_basis,
             init_guess_density: None,
             external_potential: k.external_potential,
             pcm: None,
@@ -702,8 +705,19 @@ mod tests {
         .unwrap()
     }
 
+    /// Field-by-field equality via `Debug` text, except `guess_basis`: its
+    /// `BasisSet` keeps shells in a `HashMap`, whose `Debug` order differs
+    /// between two equal values, so it is compared with `PartialEq` instead.
+    fn same_msg(a: &RhfConfig, b: &RhfConfig, msg: &str) {
+        assert_eq!(a.guess_basis, b.guess_basis, "{msg}: guess_basis");
+        let (mut a, mut b) = (a.clone(), b.clone());
+        a.guess_basis = None;
+        b.guess_basis = None;
+        assert_eq!(format!("{a:#?}"), format!("{b:#?}"), "{msg}");
+    }
+
     fn same(a: &RhfConfig, b: &RhfConfig) {
-        assert_eq!(format!("{a:#?}"), format!("{b:#?}"));
+        same_msg(a, b, "lowering differs from the old literal");
     }
 
     /// The Python side always resolves `cosx=` for run_rhf/run_uhf (to the
@@ -849,6 +863,10 @@ mod tests {
             relativistic: r.maybe(|_| Relativistic::X2c1e),
             aurora: r.maybe(Rng::coin),
             trah_trigger: r.maybe(Rng::pos),
+            guess_basis: r.maybe(|r| {
+                let proj = r.pick(&["fock", "overlap"]);
+                crate::basis2::GuessBasis::bundled("sto-3g", proj).unwrap()
+            }),
         }
     }
 
@@ -861,11 +879,11 @@ mod tests {
             let k = random_kw(&mut r);
             let msg = |who: &str| format!("{who}, case {case}");
             let (a, b) = (old_run_rhf(k.clone()), new_run_rhf(k.clone()));
-            assert_eq!(format!("{a:?}"), format!("{b:?}"), "{}", msg("run_rhf"));
+            same_msg(&a, &b, &msg("run_rhf"));
             let (a, b) = (old_run_uhf(k.clone()), new_run_uhf(k.clone()));
-            assert_eq!(format!("{a:?}"), format!("{b:?}"), "{}", msg("run_uhf"));
+            same_msg(&a, &b, &msg("run_uhf"));
             let (a, b) = (old_run_rohf(k.clone()), new_run_rohf(k));
-            assert_eq!(format!("{a:?}"), format!("{b:?}"), "{}", msg("run_rohf"));
+            same_msg(&a, &b, &msg("run_rohf"));
         }
     }
 
