@@ -2801,6 +2801,9 @@
       }
      ]
     },
+    "charge": {
+     "kind": "attribute"
+    },
     "coords": {
      "kind": "method",
      "signature": [
@@ -2898,6 +2901,9 @@
        "name": "self"
       }
      ]
+    },
+    "multiplicity": {
+     "kind": "attribute"
     },
     "natoms": {
      "kind": "method",

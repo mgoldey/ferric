@@ -241,6 +241,26 @@ class Molecule:
         """Per-atom ghost (basis-only, zero-charge) flags, in atom order."""
         ...
 
+    def to_xyz_string(self) -> str:
+        """XYZ-format string (Angstrom). The comment line records charge and
+        multiplicity, but from_xyz_string does not parse them back."""
+        ...
+
+    @property
+    def charge(self) -> int:
+        """Net molecular charge in elementary charges (read-only)."""
+        ...
+
+    @property
+    def multiplicity(self) -> int:
+        """Spin multiplicity 2S+1 (read-only)."""
+        ...
+
+    def __repr__(self) -> str:
+        """``Molecule(H2O, 3 atoms, charge=0, multiplicity=1)``: Hill formula of the
+        non-ghost atoms, then the atom count including ghosts."""
+        ...
+
 class QmmmSystem:
     """A QM/MM partition: full structure split into a QM region and fixed MM point charges.
 

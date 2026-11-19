@@ -273,6 +273,42 @@ impl Molecule {
         z_sum - self.charge
     }
 
+    /// Hill-order formula of the real atoms: C first, then H, then the rest
+    /// alphabetically (all alphabetically when there is no C), counts of 1
+    /// omitted. Ghost (basis-only) centres are excluded; `"-"` when there
+    /// are no real atoms. Symbols are taken as written in the input.
+    ///
+    /// ```
+    /// use ferric_core::mol::Molecule;
+    ///
+    /// let mol = Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0 1\nH 0 1 0\n", 0, 1).unwrap();
+    /// assert_eq!(mol.hill_formula(), "H2O");
+    /// ```
+    pub fn hill_formula(&self) -> String {
+        let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+        for a in self.atoms.iter().filter(|a| !a.ghost) {
+            *counts.entry(a.symbol.as_str()).or_default() += 1;
+        }
+        if counts.is_empty() {
+            return "-".to_string();
+        }
+        let hill = counts.contains_key("C");
+        let first: &[&str] = if hill { &["C", "H"] } else { &[] };
+        let order: Vec<&str> = first
+            .iter()
+            .copied()
+            .filter(|s| counts.contains_key(s))
+            .chain(counts.keys().copied().filter(|s| !first.contains(s)))
+            .collect();
+        order
+            .iter()
+            .map(|s| match counts[s] {
+                1 => (*s).to_string(),
+                k => format!("{s}{k}"),
+            })
+            .collect()
+    }
+
     /// Number of core orbitals the standard small-core convention freezes for
     /// this molecule: `Σ core_orbitals(z)` over the real atoms, minus the core
     /// orbitals an ECP has already removed from the MO space.
@@ -427,6 +463,31 @@ impl FromStr for Molecule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hill_formula_orders_c_h_then_alphabetical_and_skips_ghosts() {
+        let f = |xyz: &str| Molecule::parse_xyz(xyz, 0, 1).unwrap().hill_formula();
+        assert_eq!(f("3\n\nO 0 0 0\nH 0 0 1\nH 0 1 0\n"), "H2O");
+        assert_eq!(
+            f("5\n\nH 0 0 0\nC 0 0 1.1\nH 1 0 1.5\nH 0 1 1.5\nH -1 -1 1.5\n"),
+            "CH4"
+        );
+        // Ethanol written O-first: C, H, then O.
+        assert_eq!(
+            f("9\n\nO 0 0 0\nH 0 0 1\nC 1 0 0\nC 2 0 0\nH 1 1 0\nH 1 -1 0\nH 2 1 0\nH 2 -1 0\nH 3 0 0\n"),
+            "C2H6O"
+        );
+        // No carbon: purely alphabetical (H before N).
+        assert_eq!(f("4\n\nN 0 0 0\nH 0 0 1\nH 0 1 0\nH 1 0 0\n"), "H3N");
+        // Ghost centres are excluded (parsed `@` ghosts and flagged atoms
+        // alike); all-ghost gives "-".
+        let ghost = Molecule::parse_xyz("3\n\nO 0 0 0\nH 0 0 1\n@H 0 1 0\n", 0, 2).unwrap();
+        assert!(ghost.atoms[2].ghost);
+        assert_eq!(ghost.hill_formula(), "HO");
+        let mut all = Molecule::parse_xyz("1\n\nHe 0 0 0\n", 0, 1).unwrap();
+        all.atoms[0].ghost = true;
+        assert_eq!(all.hill_formula(), "-");
+    }
 
     #[test]
     fn test_parse_water() {
