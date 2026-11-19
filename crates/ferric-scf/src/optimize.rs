@@ -565,7 +565,7 @@ fn print_warm_start_summary(warm: &ScfWarmStart) {
 /// rules of [`optimize_geometry_with_correction`]: `(0.0, None)` adds nothing
 /// (no floating-point operation), an energy without a gradient and a
 /// mis-shaped gradient are errors.
-fn add_correction(
+pub(crate) fn add_correction(
     e: f64,
     mut g: Array2<f64>,
     de: f64,
@@ -1768,7 +1768,7 @@ pub fn optimize_geometry_with_energy_gradient(
 
 /// Closed-shell SCF energy, its nuclear gradient, and the converged SCF
 /// result that produced both (handed to density-dependent corrections).
-fn compute_energy_gradient_and_result(
+pub(crate) fn compute_energy_gradient_and_result(
     ctx: &ParallelContext,
     mol: &Molecule,
     basis_name: &str,
@@ -1816,7 +1816,7 @@ fn compute_energy_gradient_and_result(
     Ok((res.energy, grad, res))
 }
 
-fn compute_energy_and_gradient_uhf(
+pub(crate) fn compute_energy_and_gradient_uhf(
     ctx: &ParallelContext,
     mol: &Molecule,
     basis_name: &str,
@@ -1857,7 +1857,7 @@ fn compute_energy_and_gradient_uhf(
     Ok((res.energy, grad, res))
 }
 
-fn compute_energy_and_gradient_rohf(
+pub(crate) fn compute_energy_and_gradient_rohf(
     ctx: &ParallelContext,
     mol: &Molecule,
     basis_name: &str,

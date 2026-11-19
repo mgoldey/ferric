@@ -271,8 +271,9 @@ mod hessian_smeared;
 /// Harmonic infrared intensities from dipole derivatives along the normal modes.
 pub mod infrared;
 pub mod irc;
-/// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod md;
+pub use md::{run_aimd, AimdConfig, AimdResult, ScfCorrection, ScfForceProvider};
+/// Geometry optimization via L-BFGS with energy/gradient convergence.
 pub mod optimize;
 pub mod raw_handoff;
 pub mod response_jk;

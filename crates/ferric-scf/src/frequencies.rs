@@ -176,13 +176,11 @@ use crate::warm_start::{
     solve_rhf_warm, solve_rohf_warm, solve_uhf_warm, ScfWarmStart, WarmStartRecord,
 };
 
-/// Electron masses per unified atomic mass unit (u).
-///
-/// CODATA 2018: the electron mass is 5.485 799 090 65(16) x 10^-4 u, so one u
-/// is the reciprocal of that. Masses must be converted to electron masses
-/// (a.u.) before mass-weighting so the Hessian eigenvalues come out in atomic
-/// units of angular-frequency-squared.
-const AMU_TO_ELECTRON_MASS: f64 = 1.0 / 5.485_799_090_65e-4;
+// Electron masses per unified atomic mass unit (u), CODATA 2018 (one
+// definition, shared with molecular dynamics). Masses must be converted to
+// electron masses (a.u.) before mass-weighting so the Hessian eigenvalues
+// come out in atomic units of angular-frequency-squared.
+use ferric_md::AMU_TO_ELECTRON_MASS;
 
 /// Hartree-atomic-unit angular frequency expressed in wavenumbers (cm^-1).
 ///
