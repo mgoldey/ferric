@@ -1682,7 +1682,7 @@ struct OpenShellRun {
 fn solve_open_shell_entry(
     py: Python<'_>,
     shell: blocks::OpenShell,
-    // TODO(ARCHITECTURE.md roadmap 7: PreparedSystem)
+    // TODO(ARCHITECTURE.md roadmap: PreparedSystem)
     emol: &Molecule,
     prep: &PreparedBasis,
     basis: &ferric_core::basis::BasisSet,
