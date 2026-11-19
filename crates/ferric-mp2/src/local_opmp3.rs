@@ -28,7 +28,7 @@
 //!
 //! The pattern solves are ragged (one block per retained pair), but the
 //! residual `R(c1)` is evaluated by the canonical spin-blocked MP3 residual
-//! ([`crate::u_mp3_residual`]) over the localized orbitals — dense
+//! (`u_mp3_residual`) over the localized orbitals — dense
 //! `(no·nv)²` amplitudes and RI factors — and only its pattern part is kept.
 //! The cost is therefore that of canonical RI-MP3 plus the solves: no cost
 //! or scaling claim attaches to this module; it is the correctness
