@@ -56,7 +56,8 @@ use crate::lmp2_amplitude::{
 };
 use crate::lmp2_direct::{assemble_ragged_direct_local, DirectConfig, DirectStats};
 use crate::ragged::{
-    apply_pattern, matvec_indexed, ring_product, ring_product_planned, Ragged, RingPlan,
+    apply_pattern, kept_fraction, matvec_indexed, ring_product, ring_product_planned, Ragged,
+    RingPlan,
 };
 use crate::rimp2::{active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt};
 use ferric_integrals::threeindex::coulomb_metric_2c;
@@ -411,17 +412,12 @@ fn amplitude_drpa_from_basis(
     } else {
         f64::NAN
     };
-    let n = lb.no * lb.nv;
-    let kept: usize = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
-        .sum();
+    let keep_fraction = kept_fraction(&rg, lb.no, lb.nv);
     Ok(AmplitudeDrpaResult {
         e_corr,
         e_total: rhf.energy + e_corr,
         e_corr_plasmon_canonical: e_ref,
-        keep_fraction: kept as f64 / (n * n) as f64,
+        keep_fraction,
         pair_fraction: rg.pairs.len() as f64 / (lb.no * lb.no) as f64,
         iterations: it,
         relres,
@@ -704,18 +700,13 @@ pub fn amplitude_drpa_direct_with_virtuals(
     } else {
         f64::NAN
     };
-    let n = spaces.no * spaces.nv;
-    let kept: usize = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
-        .sum();
+    let keep_fraction = kept_fraction(&rg, spaces.no, spaces.nv);
     Ok((
         AmplitudeDrpaResult {
             e_corr,
             e_total: rhf.energy + e_corr,
             e_corr_plasmon_canonical: e_ref,
-            keep_fraction: kept as f64 / (n * n) as f64,
+            keep_fraction,
             pair_fraction: rg.pairs.len() as f64 / (spaces.no * spaces.no) as f64,
             iterations: it,
             relres,

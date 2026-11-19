@@ -67,7 +67,9 @@ use ferric_mp2::lmp2_direct::{
     DirectStats, OoGram, PpFitted,
 };
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_vv};
-use ferric_mp2::ragged::{apply_pattern, gather_into, matvec_indexed, solve_ragged_with, Ragged};
+use ferric_mp2::ragged::{
+    apply_pattern, gather_into, kept_fraction, matvec_indexed, solve_ragged_with, Ragged,
+};
 use ferric_mp2::rimp2::metric_inverse_sqrt;
 
 /// Configuration for amplitude-threshold LinLCCD.
@@ -250,16 +252,11 @@ pub fn amplitude_linlccd_with_virtuals(
     };
     let (e_corr, it, relres) = linlccd_masked_solve(&rg, &lb.f_oo, oo.as_ref(), pp, cfg)?;
 
-    let n = no * nv;
-    let kept: usize = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
-        .sum();
+    let keep_fraction = kept_fraction(&rg, no, nv);
     Ok(AmplitudeLinLccdResult {
         e_corr,
         e_total: rhf.energy + e_corr,
-        keep_fraction: kept as f64 / (n * n) as f64,
+        keep_fraction,
         cg_iterations: it,
         cg_relres: relres,
         cg_converged: true,
@@ -502,17 +499,12 @@ pub fn amplitude_linlccd_direct_with_virtuals(
         None => PpSource::None,
     };
     let (e_corr, it, relres) = linlccd_masked_solve(&rg, &spaces.f_oo, oo.as_ref(), pp, cfg)?;
-    let n = spaces.no * spaces.nv;
-    let kept: usize = rg
-        .pairs
-        .iter()
-        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
-        .sum();
+    let keep_fraction = kept_fraction(&rg, spaces.no, spaces.nv);
     Ok((
         AmplitudeLinLccdResult {
             e_corr,
             e_total: rhf.energy + e_corr,
-            keep_fraction: kept as f64 / (n * n) as f64,
+            keep_fraction,
             cg_iterations: it,
             cg_relres: relres,
             cg_converged: true,

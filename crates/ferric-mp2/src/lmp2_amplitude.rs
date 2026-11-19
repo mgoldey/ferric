@@ -393,13 +393,10 @@ pub(crate) struct RaggedCounters {
 
 impl RaggedCounters {
     pub(crate) fn new(rg: &Ragged, no: usize, nv: usize) -> Self {
-        let total_el = (no * nv) as u64 * (no * nv) as u64;
-        let mut kept = 0u64;
         let (mut dens_sum, mut dens_min) = (0.0f64, f64::INFINITY);
         let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
         for pb in &rg.pairs {
             let k = pb.pat.iter().filter(|&&x| x).count();
-            kept += k as u64;
             let dens = k as f64 / pb.pat.len().max(1) as f64;
             dens_sum += dens;
             dens_min = dens_min.min(dens);
@@ -413,7 +410,7 @@ impl RaggedCounters {
             .collect();
         let npb = rg.pairs.len();
         Self {
-            keep_fraction: kept as f64 / total_el as f64,
+            keep_fraction: crate::ragged::kept_fraction(rg, no, nv),
             pair_fraction: npb as f64 / (no * no) as f64,
             dom_mean: if no > 0 {
                 dom.iter().sum::<usize>() as f64 / no as f64

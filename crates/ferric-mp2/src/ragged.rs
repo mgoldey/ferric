@@ -355,6 +355,18 @@ pub fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
     }
 }
 
+/// Fraction of the full `(no·nv)²` amplitude space the pattern keeps:
+/// retained `(ia, jb)` entries over every pair block, divided by `(no·nv)²`.
+pub fn kept_fraction(rg: &Ragged, no: usize, nv: usize) -> f64 {
+    let kept: u64 = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as u64)
+        .sum();
+    let total = (no * nv) as u64 * (no * nv) as u64;
+    kept as f64 / total as f64
+}
+
 /// Element-wise dot product summed over a slice of block matrices.
 pub fn dot_blocks(x: &[Array2<f64>], y: &[Array2<f64>]) -> f64 {
     x.iter().zip(y).map(|(a, b)| (a * b).sum()).sum()
@@ -1512,6 +1524,16 @@ mod tests {
             by_i: HashMap::from([(0, vec![0])]),
             by_j: HashMap::from([(0, vec![0])]),
         }
+    }
+
+    /// `kept_fraction` counts retained entries over the FULL `(no·nv)²`
+    /// space: one 1×5 block with 4 of 5 kept, in a no = 1, nv = 5 space, is
+    /// 4/25 exactly (a per-block or per-pair denominator gives 4/5).
+    #[test]
+    fn kept_fraction_is_over_the_full_amplitude_space() {
+        let mut rg = diag_block(&[1.0; 5]);
+        rg.pairs[0].pat[2] = false;
+        assert_eq!(kept_fraction(&rg, 1, 5).to_bits(), (4.0f64 / 25.0).to_bits());
     }
 
     /// The CG-coefficient κ estimate on an operator with a KNOWN spectrum:
