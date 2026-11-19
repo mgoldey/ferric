@@ -7,7 +7,8 @@
       "u-att-rimp2-gradient",
       "u-attenuated-mp2",
       "terfc-rimp2-gradient",
-      "scs-2terfc-gradient"
+      "scs-2terfc-gradient",
+      "local-mp2"
     ],
     "cli:b2plyp": [
       "double-hybrid",
@@ -563,10 +564,12 @@
       "geometry-search"
     ],
     "cli:opmp3": [
-      "opmp3"
+      "opmp3",
+      "local-opmp3"
     ],
     "py:run_opmp3": [
-      "opmp3"
+      "opmp3",
+      "local-opmp3"
     ],
     "py:run_aimd": [
       "hf-gradient",
@@ -1649,10 +1652,12 @@
     "local-mp2": {
       "book": [
         "book/src/13-local-mp2/index.md#local-mp2",
+        "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2",
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-fock-screen",
-        "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-combined-truncation",
+        "book/src/13-local-mp2/05-combined-truncation.md#amplitude-lmp2-combined-truncation",
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys",
-        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0"
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0",
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-domain-local-fit"
       ],
       "scripts": [
         "scripts/lmp2_combined_sympy.py",

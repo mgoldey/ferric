@@ -27,6 +27,7 @@ The derivations, proofs and measurements for `ferric-integrals` are in the ferri
 | Attenuated MP2: erfc and terfc | `attenuated-mp2` | [`book/src/10-mp2/04-attenuated-mp2.md`](../../book/src/10-mp2/04-attenuated-mp2.md) | `scripts/mp2_family_sympy.py` | `mp2.att.terfc-kernel` |
 | The four-step algorithm, 2014 and now | `four-step-algorithm` | [`book/src/11-rimp2-algorithms/01-four-step-algorithm.md`](../../book/src/11-rimp2-algorithms/01-four-step-algorithm.md) | — | — |
 | The memory budget, the admission checks and the shared pool | `memory-budget` | [`book/src/11-rimp2-algorithms/04-memory-budget.md`](../../book/src/11-rimp2-algorithms/04-memory-budget.md) | — | — |
+| Amplitude-threshold local MP2 | `amplitude-lmp2` | [`book/src/13-local-mp2/01-amplitude-lmp2.md`](../../book/src/13-local-mp2/01-amplitude-lmp2.md) | — | — |
 | Gradients of density-fitted J and K | `df-jk-gradient` | [`book/src/14-derivatives/02-df-jk-gradient.md`](../../book/src/14-derivatives/02-df-jk-gradient.md) | — | — |
 | RI-MP2 gradient with exact and RI-JK references; SCS-MP2 | `rimp2-gradient` | [`book/src/15-correlated-gradients/02-rimp2-gradient.md`](../../book/src/15-correlated-gradients/02-rimp2-gradient.md) | — | — |
 | Export schemas | `export-schemas` | [`book/src/21-polarizabilities/03-export-schemas.md`](../../book/src/21-polarizabilities/03-export-schemas.md) | — | — |

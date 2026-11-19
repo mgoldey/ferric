@@ -617,6 +617,16 @@ CASES = [
                 "return w_i.T @ w_i",
                 "FAIL L1 whitened Gram product",
             ),
+            (
+                "return float(np.sum((comp @ t) ** 2) + np.sum((t @ comp) ** 2))",
+                "return float(np.sum((comp @ t) ** 2))",
+                "FAIL L5 dropped PNO occupations",
+            ),
+            (
+                "y = a_b - v_bd * v_dd.inv() * a_d",
+                "y = a_b",
+                "FAIL L6 domain restriction",
+            ),
         ],
     ),
     (
@@ -1075,6 +1085,11 @@ CASES = [
                 "e_ss = np.sum(giajb * (giajb - gibja) / d)",
                 "e_ss = np.sum(giajb * (giajb + gibja) / d)",
                 "FAIL E_SS spatial",
+            ),
+            (
+                "rhs = np.sum(gab**2 / dpos) + 0.5 * np.sum((gab - gab.T) ** 2 / dpos)",
+                "rhs = np.sum(gab**2 / dpos) + np.sum((gab - gab.T) ** 2 / dpos)",
+                "FAIL pair-energy sign split",
             ),
             (
                 "def same_spin(bs, eo, ev, scale=0.25):",

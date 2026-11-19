@@ -4,24 +4,23 @@
 
 The method of section @sec:amplitude-lmp2 builds the global three-index tensor, of shape
 $(N_{\mathrm{aux}}, n_on_v)$, before it truncates anything. That tensor is
-$O(N^3)$ in memory, and the whitening product behind it is $O(N^5)$ in
-time. Dropping amplitudes afterwards cannot reduce a cost that has already
+$O(N^3)$ in memory, whitening it is $O(N^4)$, and the Gram product that
+turns it into pair integrals, $J_{ij} = \tilde B_i^{\mathsf T}\tilde B_j$
+for every pair, is $O(N^5)$ in time. Dropping amplitudes afterwards cannot reduce a cost that has already
 been paid. Yet a charge distribution $\phi_i\phi_a$ from a localized pair
 lives near $i$ and $a$, and only auxiliary functions nearby can describe
 it. The integral-direct path uses this. It evaluates only the three-index
 integrals that the retained pairs need, half-transforms them into one small
 strip per occupied orbital, and fits each pair in a local auxiliary basis.
-The solve and the energy are the unchanged ragged machinery of 13.1.
+The solve and the energy are the unchanged ragged machinery of section
+@sec:amplitude-lmp2.
 
 The section derives the local fit (@sec:integral-direct-domain-local-fit), walks through the stages and
 the truncation each locality map makes (@sec:integral-direct-algorithm-each-map-truncates), and then states the
 exactness anchor, the cost of the stages and what is measured.
 
-The construction is
-also documented in the module header of `crates/ferric-mp2/src/lmp2_direct.rs`
-and in the user guide. The fit identities are machine-checked below. The
-locality maps are definitions, not equations, and the trivial-limit tests
-check them.
+The fit identities are machine-checked below. The locality maps are
+definitions, not equations, and the trivial-limit tests check them.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -92,12 +91,28 @@ sign. Write $\bar D$ for the auxiliary functions outside $D$, $S$ for the
 Schur complement $V_{\bar D\bar D} - V_{\bar DD}V_{DD}^{-1}V_{D\bar D}$ and
 $y = A_{\bar D} - V_{\bar DD}V_{DD}^{-1}A_D$. Block elimination of $V$ gives
 
-$$ A^{\mathsf T}V^{-1}A - A_D^{\mathsf T}V_{DD}^{-1}A_D = y^{\mathsf T}S^{-1}y \ \ge\ 0 , $$
+$$ A^{\mathsf T}V^{-1}A - A_D^{\mathsf T}V_{DD}^{-1}A_D = y^{\mathsf T}S^{-1}y \ \ge\ 0 , \label{eq:lmp2-aux-restriction} $$
 
 because $S$ is positive definite. So each fitted $(ia\vert ia)$ can only
 fall when the domain shrinks. Off-diagonal elements have no such sign, and
 neither has the energy error. The fit radius changes $J$ values, so the
 one-sided argument of @sec:amplitude-lmp2-amplitude-equations-energy does not cover it.
+
+> **Verified equation @eq:lmp2-aux-restriction** · restricting the fit domain lowers each fitted diagonal
+>
+> The block-elimination identity in symbols for a generic symmetric
+> $3\times3$ metric with a two-function domain, and numerically on a $4+3$
+> block with two densities, where the left side is also positive
+> semidefinite (claim L6).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/local_mp2_fit_pno_sympy.py`, claim L6 |
+> | Negative control | the runner drops $V_{\bar DD}V_{DD}^{-1}A_D$ from $y$ (claim L6 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/lmp2_direct.rs::fit_domain_group` |
+>
+> <!-- verified: id=lmp2.aux-restriction; script=scripts/local_mp2_fit_pno_sympy.py; claim=L6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/lmp2_direct.rs::fit_domain_group; registry=local-mp2 -->
 
 **The code.** `ferric-mp2/src/lmp2_direct.rs::fit_domain_group` handles all
 pairs that share one domain $D_{ij}$. It factors $V_{DD}$ once, whitens
@@ -120,19 +135,21 @@ let g = if i == j {
 | `ws[&j].select(cij)` | $W_j$ on the same columns |
 | `g` | $J_{ia,jb}$ over $a,b\in C_{ij}$, passed to the $\varepsilon$ mask of section @sec:amplitude-lmp2 (`mask_pair`) |
 
-Grouping by domain pays because pairs repeat domains: on the C20–C48 maps
-there are 6–9 times more surviving pairs than distinct pair domains, <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> so one
-Cholesky factor serves several pairs (`fit_pairs`).
+Grouping by domain pays because pairs repeat domains, so one Cholesky
+factor serves several pairs (`fit_pairs`). On C20–C48 there were 6–9 times
+more surviving pairs than distinct pair domains, measured 2026-09-05 at the
+earlier maps (virtual radius 12 Bohr, AO tail $10^{-3}$, pair gate on). The
+ratio has not been re-measured at the current defaults.
 
 ## The algorithm and what each map truncates {#integral-direct-algorithm-each-map-truncates}
 
 | Stage | Work | Function |
 |---|---|---|
-| 1 | the pair gate of 13.1, giving surviving pairs and per-occupied partner lists | `ferric-mp2/src/lmp2_amplitude.rs::pair_gate_keep` |
+| 1 | the pair gate of section @sec:amplitude-lmp2-algorithm (off by default), giving surviving pairs and per-occupied partner lists | `ferric-mp2/src/lmp2_amplitude.rs::pair_gate_keep` |
 | 2 | the maps: $D_i$, $V_i$ and each orbital's AO-shell support (`ao_tail`, on the per-shell maximum $\lvert C\rvert$; truncation is exactly zeroing small coefficients) | `ferric-mp2/src/lmp2_direct.rs::build_locality_maps` |
 | 3 | occupieds grouped by nearest atom to their Boys centroid; per batch, evaluate only the $(\mu\nu\vert P)$ shell triples needed and half-transform into per-occupied strips $A_i$ over $\tilde D_i\times\tilde V_i$ | `ferric-mp2/src/lmp2_direct.rs::collect_strips`, `ferric-mp2/src/lmp2_direct.rs::eval_batch` |
 | 4 | the metric, only for $(P\vert Q)$ shell pairs inside some $\tilde D_i^2$. This is exact for the domain-local fit, which never reads a metric element outside a pair domain | `ferric-mp2/src/lmp2_direct.rs::strips_and_metric` |
-| 5 | per pair-domain group: Cholesky once, whiten each distinct occupied once, $J_{ij} = W_i^{\mathsf T}W_j$, the Eq-8 mask, the `PairBlock` | `ferric-mp2/src/lmp2_direct.rs::fit_pairs` |
+| 5 | per pair-domain group: Cholesky once, whiten each distinct occupied once, $J_{ij} = W_i^{\mathsf T}W_j$, the Eq-8 mask and the Fock-propagated screen, the `PairBlock` | `ferric-mp2/src/lmp2_direct.rs::fit_pairs` |
 | 6 | PCG, tolerance policy and Hylleraas energy, unchanged | section @sec:amplitude-lmp2 |
 
 **Strips.** A pair $(i,j)$ reads rows $D_i\cup D_j$ and columns
@@ -149,7 +166,7 @@ leaves every kept $J$ value alone, or it changes the $J$ values.
 - *Pattern maps* can only raise the energy relative to the same run without
   them, up to the solver error of @sec:amplitude-lmp2-accurate-solve, because $E_H$ is then minimized
   over fewer amplitudes on a swap-closed pattern.
-  - The pair gate (`gate_cal`), as in 13.1.
+  - The pair gate (`gate_cal`), as in section @sec:amplitude-lmp2-algorithm.
   - The virtual domains (`virt_radius`). The candidate set
     $C_{ij} = V_i\cup V_j$ restricts rows and columns of pair $(i,j)$ alike,
     so the pattern stays swap-closed, and selecting columns of $W_i$ and
@@ -158,10 +175,10 @@ leaves every kept $J$ value alone, or it changes the $J$ values.
     it removes $a$ from $C_{ij}$ unless $q_{ia}q^{\max}_j \ge \kappa\varepsilon$
     or $q_{ja}q^{\max}_i \ge \kappa\varepsilon$, where
     $q_{ia} = \sqrt{A_{ia}^{\mathsf T}V_{D_iD_i}^{-1}A_{ia}}$ is the fitted
-    diagonal in $i$'s own domain. On a global Gram fit this is the exact
+    diagonal in $i$'s own domain. On a global Gram fit it is the exact
     Cauchy–Schwarz screen of @sec:amplitude-lmp2-algorithm for $\kappa \le 1$. On the domain-local fit
-    it is not a proven bound; the `DirectConfig` documentation records it as
-    measured escape-free at $\kappa \le 1$, both operators, on C8. A
+    it is not a proven bound. It was measured escape-free at
+    $\kappa \le 1$, both operators, on C8 only (provisional). A
     $\kappa$ above 1 drops elements that would pass the Eq-8 test. It
     bounds the bare integrals only, so it is refused with the Fock screen on
     (section @sec:amplitude-lmp2-fock-screen-candidates); set
@@ -182,7 +199,7 @@ leaves every kept $J$ value alone, or it changes the $J$ values.
     shell, so the cut stays conservative at shell granularity.
 
 The pair candidates of stage 5 come from `ferric-mp2/src/lmp2_direct.rs::pair_candidates`.
-This is the body of its per-pair closure, unchanged except for the
+The body of its per-pair closure, unchanged except for the
 comments:
 
 ```rust
@@ -223,7 +240,10 @@ do not add.
 
 Write the Hylleraas functional as $E(t) = 2\langle t, J\rangle + \langle t, \mathcal A t\rangle$,
 with $\mathcal A$ the positive definite Fock superoperator of @sec:amplitude-lmp2
-and $J$ the fitted pair integrals. Its minimum is $E^\star = -\langle J, \mathcal A^{-1}J\rangle$
+and $J$ the fitted pair integrals. The exchange weight $2-\mathcal S$ of
+(@eq:lmp2-hylleraas) is absorbed into the inner product: it commutes with
+$\mathcal A$ and with a swap-closed projection, so it changes no step
+below. Its minimum is $E^\star = -\langle J, \mathcal A^{-1}J\rangle$
 at $t^\star = -\mathcal A^{-1}J$.
 
 **A pattern map.** Split the amplitudes into a kept block $K$ and a dropped
@@ -250,7 +270,13 @@ The leading term is linear in $\delta J$ and has the sign of
 $\langle t^\star, \delta J\rangle$, which no map controls. A negative
 $\varepsilon = 0$ error therefore comes from a value map. Truncating an
 orbital's AO expansion also leaves the occupied and virtual spaces of the
-strips no longer orthogonal.
+strips no longer orthogonal, so a fitted $(ia)$ density can carry a small
+net charge (the mechanism of section @sec:local-laplace-sos-truncations).
+Three things bound it here. The cut is on coefficient magnitude, not
+distance, so only small coefficients go. The damage is confined to $J$:
+the Fock blocks and the mask use the full orbitals. And `probe_tail_mass`
+reports the coefficient mass each orbital loses. Its measured size is the
+`ao_tail` row of the table below.
 
 **Both on.** Solve the restricted problem with the perturbed integrals and
 subtract $E^\star$. Adding and subtracting $E_K(J)$ splits the result into
@@ -290,6 +316,23 @@ per orbital.
 
 The proof covers the algebra of a fixed $\mathcal A$ and $J$. It does not
 bound the size of $\delta J$ for any map. The sizes come from measurement.
+Measured 2026-11-17 (provisional) with `probe_map_ablation`, 6-31G with
+cc-pVDZ-RI at $\varepsilon = 0$, one map on at a time from the trivial
+limit, error against canonical RI-MP2 in Ha:
+
+| Map | n-C$_{20}$H$_{42}$, extended | A202, a folded C$_{20}$H$_{42}$ conformer | adamantane |
+|---|---|---|---|
+| `ao_tail` $10^{-3}$ | $-1.4\times10^{-4}$ | $+9.4\times10^{-5}$ | $-4.55\times10^{-5}$ |
+| `virt_radius` 12 Bohr | $+9.7\times10^{-5}$ | $+2.5\times10^{-5}$ | |
+| `aux_radius` 10 Bohr | about $10^{-6}$ | | |
+| `schwarz_skip` $10^{-5}$ | about $10^{-7}$ | | |
+
+`virt_radius`, a pattern map, is positive in every column, as
+(@eq:lmp2-map-pattern) requires. `ao_tail`, a value map, changes sign with
+the geometry. The two cancel on the extended chain and add on the folded
+conformer, which put up to 0.38 kJ/mol into the conformer energies of 13
+ACONF20 conformers. At `virt_radius` 20 Bohr and `ao_tail` $10^{-4}$ that
+error is 0.0031 kJ/mol, which is why those are the defaults.
 
 ## The exactness anchor and the artifact hypothesis {#integral-direct-exactness-anchor-artifact-hypothesis}
 
@@ -342,14 +385,24 @@ eps=  1e-03  in-core  96.5805%  direct (default maps)  96.5812%
 advance:
 
 - If the locality is real, then at fixed radii and thresholds the extra
-  error against the $\varepsilon$-only path stays flat as an alkane grows,
-  and the strip sizes saturate past the onset.
+  error against the $\varepsilon$-only path stays flat per CH$_2$ as an
+  alkane grows (it is size-extensive), and the strip sizes saturate past
+  the onset.
 - If a map is mis-constructed by mixing two orbital index sets, exactness
   will instead demand radii that track the molecular diameter. A domain
   mask that mixed two index sets did this in an AO-sparse Laplace
   implementation (section @sec:local-laplace-sos).
 
-The two predictions differ, so the sweep can tell them apart.
+The two predictions differ, so the sweep can tell them apart. Measured
+2026-09-05 at the earlier maps (virtual radius 12 Bohr, AO tail
+$10^{-3}$; provisional): the strip maxima are flat from C16 to C32 (1092
+rows and 127 columns with erfc), the pair domains are flat, and the strip
+means still grow by about 6% per 12 carbons. That is the first prediction,
+with the union tail not yet past the onset at C32. At the current maps the
+extra error is $+0.9$ to $+3.2\times10^{-6}$ Ha from C12 to C20 (section
+@sec:amplitude-lmp2-fock-screen-default): it grows with the chain, as a
+size-extensive error must, and three sizes are too few to test whether the
+amount per CH$_2$ is constant.
 
 ## Memory and determinism {#integral-direct-memory-determinism}
 
@@ -379,9 +432,12 @@ The two predictions differ, so the sweep can tell them apart.
 | `fock_screen` | `false` (plain Eq-8 mask) | `true` (κ = 1) | the Fock-propagated screen of section @sec:amplitude-lmp2-fock-screen; inert at $\varepsilon = 0$ |
 | `batch_merge` | 1 | 4 | batches merged per integral pass |
 
-The Rust `DirectConfig` defaults are the trivial limits for every option in
-the table except `aux_radius_bohr`, which defaults to 10.0 Bohr as in the
-CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
+The first six rows and `batch_merge` are fields of
+`ferric-mp2/src/lmp2_direct.rs::DirectConfig`. `gate_cal` and `fock_screen`
+are fields of `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config`
+(`pair_gate_cal`, `fock_screen`), whose Rust default is `None` for both.
+The `DirectConfig` defaults are the trivial limits of its rows except
+`aux_radius_bohr`, which defaults to 10.0 Bohr as in the CLI. They differ from the CLI defaults for `virt_radius`, `ao_tail`,
 `schwarz_skip` and `batch_merge`. `DirectConfig::production()` holds the
 CLI defaults, and the CLI `[local]` section and Python
 `run_rimp2(integral_direct=True)` both build their configs from it, so the
@@ -393,20 +449,17 @@ two entry points cannot drift apart. The CLI defaults are in
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, trivial maps, integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri) | PySCF `DFMP2`, same auxiliary basis | at most $1.38\times10^{-11}$ Ha over the 24 comparisons of the validation page, bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `crates/ferric-mp2/tests/lmp2_direct.rs` |
-| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.999%, 99.89%, 96.6% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ at the default maps (virtual radius 20 Bohr, AO tail 1e-4, no pair gate, Fock screen κ = 1), against 99.999%, 99.89%, 96.6% in core (λ-Boys, λ = 10, Fock screen κ = 1 on both). At the old maps (virtual radius 12 Bohr, AO tail 1e-3, gate 0.7, Fock screen off) direct recovered 99.98%, 99.72%, 95.2% | same |
+| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.999%, 99.89%, 96.6% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ at the default maps (virtual radius 20 Bohr, AO tail 1e-4, no pair gate, Fock screen κ = 1), against 99.999%, 99.89%, 96.6% in core (λ-Boys, λ = 10, Fock screen κ = 1 on both) | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
 On this molecule the integral-direct defaults and the in-core path, both
 with the Fock screen, agree to 0.001 percentage points at $\varepsilon =
-10^{-5}$, $10^{-4}$, $10^{-3}$ (all electrons; 2026-11-18). Before the
-in-core path ran the screen, direct exceeded it by 0.007, 0.16 and 1.38
-points; at the old maps, with the screen off on both, the difference was
-0.01 to 0.02 points.
+10^{-5}$, $10^{-4}$, $10^{-3}$ (all electrons; 2026-11-18).
 
 **Cost and scaling (provisional).** On n-alkanes C20, C32 and C48 (6-31G
 with cc-pVDZ-RI, frozen carbon cores, a calibrated pair gate of 0.7 for
-Coulomb and 0.02 for erfc with $\omega = 1.0$, every other map at its
+Coulomb and 0.02 for erfc with $\omega = 1.0$ Bohr$^{-1}$, every other map at its
 default, Fock screen $\kappa = 1$ and λ-Boys $\lambda = 10$; 2026-11-18),
 the correlation stage (assembly and solve) grew as about $N^{1.45}$ with
 the Coulomb kernel and $N^{1.35}$ with the erfc kernel at $\varepsilon =
@@ -414,9 +467,14 @@ the Coulomb kernel and $N^{1.35}$ with the erfc kernel at $\varepsilon =
 fitted to the three sizes. The slope falls from the first size interval to
 the second (Coulomb at $10^{-4}$: 1.56 from C20 to C32, 1.31 from C32 to
 C48), so the large-$N$ exponent is not settled. With the Fock screen and
-λ-Boys both off, the time is 0 to 10% lower at each size, with no trend in
-$N$; one repeat per point resolves the exponent to about $\pm 0.1$, and
-the two settings do not differ by more than that.
+λ-Boys both off, the time is between 2% higher and 13% lower at each size
+(3 to 9% lower at C48), with no trend in $N$; one repeat per point
+resolves the exponent to about $\pm 0.1$, and the two settings do not
+differ by more than that. These exponents replace the ones measured
+2026-09-07 at the earlier maps ($N^{1.24}$ erfc, $N^{1.39}$ to $N^{1.40}$
+Coulomb, with a crossover against canonical RI-MP2 near C20); those
+describe the earlier maps only, and no crossover has been measured at the
+current defaults.
 
 The limits of that measurement:
 
@@ -424,7 +482,9 @@ The limits of that measurement:
   basis**. It is not shown to be linear.
 - It is not measured on three-dimensional or diffuse systems.
 - It excludes the dense $O(N^3)$ VV-HV virtual-space build (`t_spaces_s`),
-  whose cost the fitted exponents do not cover.
+  whose cost the fitted exponents do not cover. `virtual_space = "local"`
+  (section @sec:amplitude-lmp2-algorithm, step 2) is the opt-in build that
+  removes the dense steps; it is not part of this measurement.
 
 Local MP2 without `integral_direct` still builds the global tensor and
 makes no scaling claim. The measurement runs the CLI (`rimp2` and
@@ -435,7 +495,8 @@ makes no scaling claim. The measurement runs the CLI (`rimp2` and
 | Source | Used for |
 |---|---|
 | `crates/ferric-mp2/src/lmp2_direct.rs` module documentation, `fit_domain_group`, `DirectConfig` | the pipeline, the maps, the exactness anchor and the artifact hypothesis |
-| `scripts/local_mp2_fit_pno_sympy.py`, claims L1, L2 | verified equation @eq:lmp2-domain-fit |
+| `crates/ferric-mp2/tests/lmp2_map_ablation.rs` (`probe_map_ablation`), measured 2026-11-17 | the per-map $\varepsilon = 0$ errors |
+| `scripts/local_mp2_fit_pno_sympy.py`, claims L1, L2, L6 | verified equations @eq:lmp2-domain-fit and @eq:lmp2-aux-restriction |
 | `scripts/lmp2_direct_maps_sympy.py`, claims 1 to 3 | verified equations @eq:lmp2-map-pattern, @eq:lmp2-map-value, @eq:lmp2-map-both |
 | `crates/ferric-mp2/tests/lmp2_map_ablation.rs` | the $\varepsilon = 0$ anchors at octane and C$_{20}$H$_{42}$ size, and the ablation probes |
 | `site/src/methods/mp2.md`, "Exact and local MP2" | the user-facing description and the measured scaling |

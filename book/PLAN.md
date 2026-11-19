@@ -216,10 +216,11 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 
 | Label | Section | Sources | Code | Status |
 |---|---|---|---|---|
-| `amplitude-lmp2` | Amplitude-threshold local MP2 | S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 *gap* | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
+| `amplitude-lmp2` | Amplitude-threshold local MP2 | S `lmp2_hylleraas_vs_wshg23_sympy.py`; W §14; R local-mp2 | `ferric-mp2/src/lmp2_amplitude.rs::{amplitude_lmp2,build_vvhv,hylleraas_energy}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
 | `integral-direct` | The integral-direct path | M mp2 "Exact and local MP2" | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct` | ready |
 | `pno-dlpno` | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | ready |
 | `local-opmp3` | Amplitude-threshold local OP-MP3 | S `local_opmp3_sympy.py`; P `prototypes/local_opmp3_proto.py`; R local-opmp3 | `ferric-mp2/src/opmp3.rs::{pade_trace,ssd_opmp3}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
+| `amplitude-lmp2-combined-truncation` | Combining the screen, the embedding and λ-Boys orbitals | S `lmp2_combined_sympy.py`; R local-mp2 | `ferric-mp2/src/ragged.rs::{pair_blocks_screened,fock_dressed_gate}` | ready |
 
 ### Part VI. Derivatives
 
@@ -450,7 +451,7 @@ registry row and are the largest block of `gap` sections.
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
 | III. Self-consistent field | 8 | 3 | 0 | 0 | 11 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 19 | 3 | 1 | 5 | 28 |
+| V. The MP2 family | 20 | 3 | 1 | 5 | 29 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 7 | 1 | 0 | 0 | 8 |
 | VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
@@ -463,9 +464,9 @@ registry row and are the largest block of `gap` sections.
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | XVI. Dynamics | 0 | 1 | 0 | 0 | 1 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **100** | **51** | **8** | **6** | **165** |
+| **Total** | **101** | **51** | **8** | **6** | **166** |
 
-165 sections: 61% `ready`, 31% `edit`, 5% `gap` and 4% `verify`.
+166 sections: 61% `ready`, 31% `edit`, 5% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

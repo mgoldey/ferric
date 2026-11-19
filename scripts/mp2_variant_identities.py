@@ -14,6 +14,8 @@ it. Exits nonzero on the first failure.
      1/4 sum |<ij||ab>|^2/D, and the unique-pair sum (j >= i, off-diagonal
      weight 2) equals the full (i, j) sum. Controls: E_SS without the
      exchange term; the unique-pair sum with off-diagonal weight 1.
+     1b: each pair's sum g(2g - g^T)/Delta (Delta > 0) splits as
+     sum g^2/Delta + 1/2 sum (g - g^T)^2/Delta, so every e_ij <= 0.
   2  Unrestricted components (u_rimp2.rs same_spin_block_energy :586,
      opposite_spin_block_energy :624): with independent alpha/beta orbitals
      1/4 sum_{j>=i} fac sum_ab K^2/D (K = (ia|jb) - (ib|ja)) is the
@@ -92,6 +94,8 @@ Mutations (each turns the script red with the named failing check):
   * claim 2, same-spin kernel prefactor 0.25 -> 0.5 ("FAIL same-spin kernel").
   * claim 3, Laplace half-exponent of B(t), -0.5 t -> -1.0 t
     ("FAIL sum_PQ J_PQ(t)^2").
+  * claim 1b, the 1/2 of the same-spin square dropped
+    ("FAIL pair-energy sign split").
   * claim 4, cross-term coefficient 4 s l -> 2 s l ("FAIL E[s+l]").
   * claim 5, (4J - K - K^T) -> (4J - K) in the matvec ("FAIL (4J-K-K^T)").
   * claim 7, the OBS rows scattered without the minus sign
@@ -240,6 +244,28 @@ def claim1():
     check("unique-pair (j>=i, fac 2) E_SS == full sum", p_ss, e_ss)
     check_differs("E_SS without exchange", np.sum(giajb**2 / d), so_ss)
     check_differs("unique-pair with off-diagonal weight 1", pair_sum(1.0)[0], e_os)
+
+    # Claim 1b: the sign split of each pair energy (book 13.3, pair
+    # screening). With Delta = -d > 0 symmetric in (a, b),
+    # sum g(2g - g^T)/Delta = sum g^2/Delta + 1/2 sum (g - g^T)^2/Delta >= 0,
+    # so e_ij <= 0 for every pair (OS part plus SS part).
+    worst = 0.0
+    most_positive = -np.inf
+    for i in range(no):
+        for j in range(no):
+            gab = giajb[i, j]
+            dpos = -d[i, j]
+            lhs = np.sum(gab * (2.0 * gab - gibja[i, j]) / dpos)
+            rhs = np.sum(gab**2 / dpos) + 0.5 * np.sum((gab - gab.T) ** 2 / dpos)
+            worst = max(worst, abs(lhs - rhs) / max(1.0, abs(lhs)))
+            most_positive = max(most_positive, -lhs)
+    check("pair-energy sign split (claim 1b)", worst, 0.0)
+    ok = most_positive <= 0.0
+    print(
+        f"  {'ok  ' if ok else 'FAIL'} every pair energy e_ij <= 0 (claim 1b): max e_ij {most_positive:.1e}"
+    )
+    if not ok:
+        FAILED.append("every pair energy e_ij <= 0 (claim 1b)")
 
 
 # ---------------------------------------------------------------- claim 2

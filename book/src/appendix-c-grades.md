@@ -31,7 +31,7 @@ The Energy column is the kind's grade. `task = "optimize"` and `task = "frequenc
 | `rimp2` | [10](10-mp2/index.md), [13](13-local-mp2/index.md) | `run_rimp2` (UHF + UMP2 when multiplicity > 1), `run_optimize(method="rimp2")`, `run_frequencies(method="rimp2")` (RHF, or UHF when multiplicity > 1) | Proven | Proven | Proven (narrow) |
 | `mp3` | [10](10-mp2/index.md) | `run_mp3` | Proven | not graded | not graded |
 | `oo-rimp2` | MP2 | `run_oo_rimp2` (closed shell only), `run_optimize(method="oo-rimp2")`, `run_frequencies(method="oo-rimp2")` (closed shell) | Proven (narrow) | Proven (narrow) | not graded |
-| `att-rimp2` | [4](04-operators/index.md), [10](10-mp2/index.md), [15](15-correlated-gradients/index.md) | `run_attenuated_rimp2`, `run_optimize(method="att-rimp2")`, `run_frequencies(method="att-rimp2")` (RHF or UHF) | Proven | Proven (narrow) | not graded |
+| `att-rimp2` | [4](04-operators/index.md), [10](10-mp2/index.md), [13](13-local-mp2/index.md), [15](15-correlated-gradients/index.md) | `run_attenuated_rimp2`, `run_optimize(method="att-rimp2")`, `run_frequencies(method="att-rimp2")` (RHF or UHF) | Proven | Proven (narrow) | not graded |
 | `mp2-v` | [9](09-kohn-sham/index.md), [10](10-mp2/index.md) | `run_mp2_v` (closed shell only) | Proven (narrow) | not graded | not graded |
 | `scs-mp2` | [10](10-mp2/index.md) | `run_scs_mp2`, `run_optimize(method="scs-mp2")`, `run_frequencies(method="scs-mp2")` (closed shell) | Proven | Proven (narrow) | not graded |
 | `scs-mp2-2terfc` | [10](10-mp2/index.md), [15](15-correlated-gradients/index.md) | `run_scs_mp2_2terfc`, `run_optimize(method="scs-mp2-2terfc")`, `run_frequencies(method="scs-mp2-2terfc")` (RHF or UHF) | Proven (narrow) | Proven (narrow) | not graded |
@@ -55,4 +55,4 @@ The Energy column is the kind's grade. `task = "optimize"` and `task = "frequenc
 | `tddft` | [19](19-tddft/index.md) | `run_tddft(method="casida")` | Proven (narrow) | not graded | not graded |
 | `casscf` | [17](17-multireference/index.md) | `run_casscf` | Proven | not graded | not graded |
 | `nevpt2` | [17](17-multireference/index.md) | `run_nevpt2` | Proven | not graded | not graded |
-| `opmp3` | [10](10-mp2/index.md) | `run_opmp3` | Smoke | not graded | not graded |
+| `opmp3` | [10](10-mp2/index.md), [13](13-local-mp2/index.md) | `run_opmp3` | Smoke | not graded | not graded |
