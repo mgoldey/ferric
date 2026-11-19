@@ -5,6 +5,7 @@
 # Format: page<TAB>matched text (whitespace collapsed). Keep this list short.
 book/src/00-notation.md	Eq. 1.23
 book/src/01-second-quantization/02-wick.md	Eq. 1.23
+book/src/03-integrals/03-derivatives.md	chapter 12
 book/src/04-operators/01-erf-terf.md	chapter 4
 book/src/04-operators/01-erf-terf.md	Eqs. 4.1
 book/src/04-operators/03-yukawa-geminal.md	(2.7.2)

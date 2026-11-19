@@ -999,6 +999,36 @@ CASES = [
                 "+ mpmath.pi * mpmath.exp(-pv * dv**2) / pv**2",
                 "FAIL s/s",
             ),
+            (
+                "resid = abs(-lb - cf - rem)",
+                "resid = abs(lb - cf - rem)",
+                "FAIL bra-bra",
+            ),
+            ("zv * av * na * nb", "zv * bv * na * nb", "FAIL bra-bra"),
+            (
+                "mpmath.exp(-pv * dv**2) / pv\n",
+                "mpmath.exp(-pv * dv**2) / pv * (dv > 0)\n",
+                "FAIL bra-bra",
+            ),
+        ],
+    ),
+    (
+        "x2c_sympy.py",
+        15,
+        [
+            ("spin = I * sum(", "spin = sum(", "FAIL [dirac-identity]"),
+            ("metric = 2 * c**2", "metric = 4 * c**2", "FAIL [modified-dirac]"),
+            (
+                "lag = Vm + T * X + X.T * T - X.T * T * X",
+                "lag = Vm + T * X + X.T * T + X.T * T * X",
+                "FAIL [decoupling]",
+            ),
+            ("xx.T @ w @ xx * k", "xx.T @ w @ xx * 2 * k", "FAIL [spectrum]"),
+            (
+                "r = sym_pow(s, -0.5) @ inner @ sym_pow(s, 0.5)",
+                "r = sym_pow(s, -0.5) @ sym_pow(s, 0.5)",
+                "FAIL [renorm]",
+            ),
         ],
     ),
     (

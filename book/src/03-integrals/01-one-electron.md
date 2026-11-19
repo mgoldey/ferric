@@ -31,16 +31,18 @@ The plan:
 
 ## Basis functions and the integrals {#one-electron-basis-functions-integrals}
 
-A contracted Cartesian Gaussian on centre $\mathbf A$ is a polynomial times a
-fixed linear combination of Gaussians of different widths:
+Section @sec:basis-sets-contracted-shell defines a contracted shell
+(@eq:basis-sets-1): an angular factor times a fixed linear combination of
+Gaussians with exponents $\alpha_k$ and contraction coefficients $c_k$. This
+chapter needs two things from it: the Cartesian form of one component, and
+the normalization factor $N(\alpha, l)$ that the code multiplies into each
+primitive. With $\mathbf r_A = \mathbf r - \mathbf A$ and
+$l = l_x + l_y + l_z$,
 
-$$ \chi_\mu(\mathbf r) = x_A^{l_x} y_A^{l_y} z_A^{l_z} \sum_k d_k\, N(\alpha_k, l)\, e^{-\alpha_k r_A^2}, \qquad \mathbf r_A = \mathbf r - \mathbf A, \quad l = l_x + l_y + l_z, $$
-
-$$ N(\alpha, l) = \Big(\frac{2\alpha}{\pi}\Big)^{3/4} \frac{(4\alpha)^{l/2}}{\sqrt{(2l-1)!!}} . $$
+$$ \chi_\mu(\mathbf r) = x_A^{l_x} y_A^{l_y} z_A^{l_z} \sum_k c_k\, N(\alpha_k, l)\, e^{-\alpha_k r_A^2}, \qquad N(\alpha, l) = \Big(\frac{2\alpha}{\pi}\Big)^{3/4} \frac{(4\alpha)^{l/2}}{\sqrt{(2l-1)!!}}, $$
 
 The polynomial carries the angular momentum: $l = 0$ is an $s$ function,
-$l = 1$ a $p$ function, and so on. The exponents $\alpha_k$ set the widths,
-and the contraction coefficients $d_k$ are fixed by the basis set.
+$l = 1$ a $p$ function, and so on.
 
 **One normalization serves the whole shell.** Square a primitive and
 integrate. The integral factorizes into three one-dimensional Gaussian
@@ -57,9 +59,10 @@ shell keeps every component a fixed multiple of the same radial function,
 which is the convention libint2 uses, so ferric's blocks and libint2's agree
 without a per-component rescale.
 
-The stored contraction coefficients $d_k$ do not contain $N$. The basis loader
+The stored coefficients $c_k$ do not contain $N$. The basis loader
 renormalizes each contraction to unit self-overlap
-(`ferric-core/src/basis.rs::parse_bse_json`).
+(`ferric-core/src/basis.rs::parse_bse_json`, section
+@sec:basis-sets-normalization).
 
 **Ordering.** Shells with $l \ge 2$ may be pure (solid harmonics, ordered
 $m = -l, \dots, l$). $s$ and $p$ shells are always Cartesian, with $p$ ordered
@@ -74,9 +77,9 @@ and the two-electron integrals over a kernel $\hat w$ (section @sec:two-electron
 
 $$ (\mu\nu|\hat w|\lambda\sigma) = \iint \chi_\mu(1)\chi_\nu(1)\, w(r_{12})\, \chi_\lambda(2)\chi_\sigma(2), \qquad (P|\hat w|\mu\nu), \qquad V_{PQ} = (P|\hat w|Q) . $$
 
-$Z_C$ is the effective nuclear charge: $Z - n_{\mathrm{core}}$ on an ECP atom
-and $0$ on a ghost atom. A ghost atom keeps its basis functions and loses its
-nucleus, which is what a counterpoise calculation needs.
+$Z_C$ is the effective charge $Z^{\mathrm{eff}}_C$ of (@eq:molecule-1). A
+ghost atom keeps its basis functions and loses its nucleus, which is what a
+counterpoise calculation needs.
 
 ### Why Gaussians: the product theorem
 
@@ -151,7 +154,7 @@ Three points about it:
 The multipole integrals are taken about an origin $\mathbf O$, with no
 electron charge applied (the sign of the electron is the caller's to add):
 
-$$ d^{p}_{\mu\nu} = \langle\mu|(r - O)_p|\nu\rangle, \qquad Q^{pq}_{\mu\nu} = \langle\mu|(r - O)_p (r - O)_q|\nu\rangle . $$
+$$ r^{a}_{\mu\nu} = \langle\mu|(x_a - O_a)|\nu\rangle, \qquad Q^{ab}_{\mu\nu} = \langle\mu|(x_a - O_a)(x_b - O_b)|\nu\rangle, \qquad x_a, x_b \in \{x, y, z\} . $$
 
 `ferric-integrals/src/oneelectron.rs::dipole` returns three matrices,
 `ferric-integrals/src/oneelectron.rs::second_moment` returns six in the order
@@ -160,13 +163,13 @@ is $Q^{xx} + Q^{yy} + Q^{zz}$, the operator from which orbital spreads
 $\sigma^2 = \langle r^2\rangle - \langle r\rangle^2$ are built.
 
 How do the moments change when the origin moves? Put
-$\mathbf O' = \mathbf O + \mathbf d$. Then $(r - O')_p = (r - O)_p - d_p$, and
-expanding the product of two such factors inside the integral gives
+$\mathbf O' = \mathbf O + \mathbf t$. Then $x_a - O'_a = (x_a - O_a) - t_a$,
+and expanding the product of two such factors inside the integral gives
 
-$$ Q^{pq}_{O'} = Q^{pq}_O - d_p\, d^q_O - d_q\, d^p_O + d_p d_q\, S . $$
+$$ Q^{ab}_{O'} = Q^{ab}_O - t_a\, r^b_O - t_b\, r^a_O + t_a t_b\, S . $$
 
-The same expansion with one factor gives $d^p_{O'} = d^p_O - d_p S$. Check the
-limit $\mathbf d = 0$: both rules return the unshifted matrices. The shift rule
+The same expansion with one factor gives $r^a_{O'} = r^a_O - t_a S$. Check the
+limit $\mathbf t = 0$: both rules return the unshifted matrices. The shift rule
 connects three engines (overlap, dipole, second moment), so a test that
 shifts the origin and compares pins every second-moment component against
 the other two. The crate's tests do this.
@@ -175,7 +178,7 @@ the other two. The crate's tests do this.
 
 | Option | Effect |
 |---|---|
-| ECP atoms (`mol.apply_ecp`) | $Z_C \to Z_C - n_{\mathrm{core}}$ in $V$; $\hat U_{\mathrm{ECP}}$ added by `hcore_ecp` (section @sec:ecp) |
+| ECP atoms (`mol.apply_ecp`) | $Z_C = Z - n^{\mathrm{ECP}}_C$ in $V$; $\hat U_{\mathrm{ECP}}$ added by `hcore_ecp` (section @sec:ecp) |
 | ghost atoms | $Z_C = 0$; the basis functions stay |
 | external point charges and field | folded into $h$ once before the SCF (`ferric-integrals/src/oneelectron.rs::hcore_with_external`); `None` leaves $h$ bit-identical |
 

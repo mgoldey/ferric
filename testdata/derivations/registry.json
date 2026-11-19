@@ -823,6 +823,19 @@
         "scripts/pvp_ss_sympy.py"
       ]
     },
+    "x2c1e": {
+      "entry_points": [
+        "[scf] relativistic = \"x2c1e\" (every molecular RHF/UHF/ROHF/RKS/UKS/ROKS solve)",
+        "Python relativistic= on the SCF drivers",
+        "AoIntegrals.hcore_x2c"
+      ],
+      "book": [
+        "book/src/03-integrals/06-pvp-x2c.md#pvp-x2c-spin-free-x2c-1e"
+      ],
+      "scripts": [
+        "scripts/x2c_sympy.py"
+      ]
+    },
     "rhf": {
       "book": [
         "book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals",
