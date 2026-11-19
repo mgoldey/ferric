@@ -114,6 +114,8 @@ import numpy as np
 
 import ferric
 
+from ._util import _plain, default_multiplicity
+
 __all__ = [
     "SCHEMA_VERSION",
     "molecule_from_qcschema",
@@ -542,23 +544,7 @@ def _molecule(mol):
         return ferric.Molecule.from_arrays(
             list(symbols), coords, multiplicity=mult, **common
         ), mult
-    try:
-        return ferric.Molecule.from_arrays(
-            list(symbols), coords, multiplicity=1, **common
-        ), 1
-    except ValueError:
-        return ferric.Molecule.from_arrays(
-            list(symbols), coords, multiplicity=2, **common
-        ), 2
-
-
-def _plain(obj):
-    if isinstance(obj, dict):
-        return {str(k): _plain(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_plain(v) for v in obj]
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, np.generic):
-        return obj.item()
-    return obj
+    mult = default_multiplicity(symbols, common["charge"], ghost)
+    return ferric.Molecule.from_arrays(
+        list(symbols), coords, multiplicity=mult, **common
+    ), mult
