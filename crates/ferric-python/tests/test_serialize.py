@@ -10,7 +10,7 @@ import pytest
 
 ferric = pytest.importorskip("ferric", reason="the compiled extension is not built")
 
-import ferric.serialize as fs
+import ferric.serialize as fs  # noqa: E402
 
 XYZ = "3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n"
 
@@ -52,7 +52,7 @@ def test_molecule_charge_ghost_round_trip():
         ghost=[False] * 5 + [True],
     )
     d = fs.to_dict(m)
-    assert d["charge"] == 1 and d["ghost"][-1] is True
+    assert d["charge"] == 1 and d["multiplicity"] == 1 and d["ghost"][-1] is True
     back = fs.molecule_from_dict(d)
     assert back.nelec() == m.nelec() and back.is_ghost() == m.is_ghost()
     with pytest.raises(ValueError):
@@ -115,3 +115,15 @@ def test_read_run_log(tmp_path):
     p.write_text("{bad\n" + json.dumps(recs[0]) + "\n")
     with pytest.raises(ValueError, match="line 1"):
         fs.read_run_log(p)
+
+
+def test_multiplicity_round_trip_and_old_dict_fallback():
+    m = ferric.Molecule.from_arrays(
+        ["O", "O"], [[0, 0, 0], [0, 0, 1.2]], multiplicity=3
+    )
+    d = fs.to_dict(m)
+    assert d["multiplicity"] == 3
+    assert fs.molecule_from_dict(d).multiplicity == 3
+    assert fs.molecule_from_dict(d, multiplicity=1).multiplicity == 1
+    old = {k: v for k, v in d.items() if k != "multiplicity"}
+    assert fs.molecule_from_dict(old).multiplicity == 1  # parity fallback

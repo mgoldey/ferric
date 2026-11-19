@@ -495,16 +495,18 @@ def molecule_from_qcschema(d: dict[str, Any]) -> ferric.Molecule:
 
 
 def molecule_to_qcschema(
-    mol: ferric.Molecule, charge: int = 0, multiplicity: int = 1
+    mol: ferric.Molecule, charge: int | None = None, multiplicity: int | None = None
 ) -> dict[str, Any]:
     """A QCSchema molecule dict for a ``ferric.Molecule``.
 
     ``geometry`` is flat (3N) in Bohr, ``real`` carries the ghost flags.
-    ``charge`` and ``multiplicity`` are not stored on a ``Molecule``, so they
-    are the arguments; ``molecule_from_qcschema`` reads them back. The
+    ``charge`` and ``multiplicity`` default to the Molecule's own; explicit
+    values override. ``molecule_from_qcschema`` reads them back. The
     coordinates are ferric's own Bohr numbers, so the round trip is exact.
     """
     coords = np.asarray(mol.coords_bohr(), dtype=float)
+    charge = mol.charge if charge is None else charge
+    multiplicity = mol.multiplicity if multiplicity is None else multiplicity
     return {
         "schema_name": "qcschema_molecule",
         "schema_version": 2,

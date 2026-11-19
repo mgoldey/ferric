@@ -14,9 +14,7 @@ the original keys stay), the ``certificate`` when the result has one, and
 ``"ferric_build"`` (``ferric.__build__``). ``arrays=True`` adds the result's
 array accessors (density, MO coefficients, orbital energies, gradient) as
 nested lists. A ``ferric.Molecule`` becomes ``symbols``, ``coords_bohr`` and
-``ghost``, plus ``charge`` derived as sum(Z) - nelec of the real atoms
-(ferric does not store a Molecule's charge; with ECP core electrons this
-derivation is not meaningful). ``molecule_from_dict`` reverses it.
+``ghost``, ``charge`` and ``multiplicity`` (the Molecule's getters). ``molecule_from_dict`` reverses it.
 
 ``read_run_log`` parses the CLI's JSON Lines run log (``--json`` /
 ``<input>.ferric.jsonl``): one object per line, each with ``record`` (kind),
@@ -61,13 +59,13 @@ def _build() -> Any:
 
 def _molecule_dict(mol: Any) -> dict[str, Any]:
     ghost = [bool(g) for g in mol.is_ghost()]
-    z_real = sum(z for z, g in zip(mol.atomic_numbers(), ghost, strict=True) if not g)
     return {
         "type": "Molecule",
         "symbols": list(mol.symbols()),
         "coords_bohr": [list(map(float, xyz)) for xyz in mol.coords_bohr()],
         "ghost": ghost,
-        "charge": int(z_real - mol.nelec()),
+        "charge": int(mol.charge),
+        "multiplicity": int(mol.multiplicity),
         "ferric_build": _build(),
     }
 
@@ -83,7 +81,7 @@ def to_dict(obj: Any, arrays: bool = False) -> dict[str, Any]:
             continue
         try:
             value = getattr(obj, name)
-        except Exception:  # noqa: BLE001, S112 - a getter that refuses is not a field
+        except (AttributeError, RuntimeError, ValueError, TypeError):  # noqa: S112 - not a field
             continue
         if callable(value):
             continue
@@ -108,7 +106,7 @@ def to_dict(obj: Any, arrays: bool = False) -> dict[str, Any]:
                 continue
             try:
                 value = accessor() if callable(accessor) else accessor
-            except Exception:  # noqa: BLE001, S112 - not available for this result
+            except (RuntimeError, ValueError, TypeError):  # noqa: S112 - not for this result
                 continue
             if isinstance(value, (np.ndarray, list, tuple)):
                 out[name] = _plain(np.asarray(value, dtype=float))
@@ -137,17 +135,20 @@ def molecule_from_dict(
 ) -> ferric.Molecule:
     """A ``ferric.Molecule`` from ``to_dict(molecule)``. Coordinates are taken as
     Bohr, so the round trip is exact. ``charge`` defaults to ``d["charge"]``
-    (else 0); ``multiplicity`` is not recorded, so it defaults to 1 for an even
-    electron count and 2 otherwise."""
+    (else 0) and ``multiplicity`` to ``d["multiplicity"]``; a dict from before
+    multiplicity was recorded falls back to 1 for an even electron count and 2
+    otherwise."""
     if "symbols" not in d or "coords_bohr" not in d:
         raise ValueError("molecule_from_dict needs 'symbols' and 'coords_bohr'")
     if charge is None:
         charge = int(d.get("charge", 0))
+    if multiplicity is None:
+        multiplicity = d.get("multiplicity")
     kw = {"units": "bohr", "charge": charge, "ghost": d.get("ghost") or None}
     coords = np.asarray(d["coords_bohr"], dtype=float)
     if multiplicity is not None:
         return ferric.Molecule.from_arrays(
-            d["symbols"], coords, multiplicity=multiplicity, **kw
+            d["symbols"], coords, multiplicity=int(multiplicity), **kw
         )
     try:
         return ferric.Molecule.from_arrays(d["symbols"], coords, multiplicity=1, **kw)

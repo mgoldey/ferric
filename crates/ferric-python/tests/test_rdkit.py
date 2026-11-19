@@ -8,8 +8,8 @@ import pytest
 ferric = pytest.importorskip("ferric", reason="the compiled extension is not built")
 Chem = pytest.importorskip("rdkit.Chem", reason="RDKit is an optional dependency")
 
-import ferric.rdkit as fr
-from rdkit.Chem import AllChem
+import ferric.rdkit as fr  # noqa: E402
+from rdkit.Chem import AllChem  # noqa: E402
 
 
 def _embedded(smiles):
@@ -80,7 +80,7 @@ def test_round_trip_symbols_and_coords():
 def test_to_rdkit_without_bonds_and_charge():
     mol = fr.from_smiles("[NH4+]")
     assert fr.to_rdkit(mol, perceive_bonds=False).GetNumBonds() == 0
-    rd = fr.to_rdkit(mol, charge=1)
+    rd = fr.to_rdkit(mol)  # charge taken from the Molecule
     assert Chem.GetFormalCharge(rd) == 1
 
 

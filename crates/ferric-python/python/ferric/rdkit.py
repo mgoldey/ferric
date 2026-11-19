@@ -12,8 +12,7 @@ RDKit is an optional dependency, imported inside each function::
 Coordinates travel as Angstrom floats and are handed to
 ``Molecule.from_arrays`` as float64 (no text round trip), so they are
 preserved exactly; ferric converts to Bohr once, as for any Angstrom input.
-A ``ferric.Molecule`` does not store its charge or multiplicity, so they are
-arguments here.
+Charge and multiplicity are read from the ``ferric.Molecule`` by default.
 """
 
 from __future__ import annotations
@@ -113,17 +112,21 @@ def from_smiles(
     return from_rdkit(mol, charge=charge, multiplicity=multiplicity)
 
 
-def to_rdkit(mol: ferric.Molecule, charge: int = 0, perceive_bonds: bool = True) -> Any:
+def to_rdkit(
+    mol: ferric.Molecule, charge: int | None = None, perceive_bonds: bool = True
+) -> Any:
     """An RDKit ``Mol`` (one 3-D conformer, Angstrom) from a ``ferric.Molecule``.
 
     With ``perceive_bonds`` the connectivity, bond orders and formal charges
-    come from ``rdDetermineBonds.DetermineBonds`` (total ``charge`` required;
+    come from ``rdDetermineBonds.DetermineBonds`` (total ``charge``, default ``mol.charge``;
     needs a closed-shell-like valence assignment). If that fails, or RDKit
     lacks it, connectivity alone is tried (``DetermineConnectivity``), and
     failing that the molecule has no bonds. Ghost atoms are rejected:
     ``ValueError``.
     """
     Chem = _rdkit()
+    if charge is None:
+        charge = mol.charge
     if any(mol.is_ghost()):
         raise ValueError("to_rdkit: ghost atoms have no RDKit equivalent")
     symbols = mol.symbols()

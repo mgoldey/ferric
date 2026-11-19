@@ -6,7 +6,7 @@ import pytest
 
 ferric = pytest.importorskip("ferric", reason="the compiled extension is not built")
 
-import ferric.units as u
+import ferric.units as u  # noqa: E402
 
 
 def test_bohr_to_angstrom_is_the_ratio_molecule_applies():
@@ -34,3 +34,15 @@ def test_values_match_rust_constants():
 def test_viz_uses_the_units_constant():
     viz = pytest.importorskip("ferric.viz")
     assert viz.BOHR_TO_ANGSTROM is u.BOHR_TO_ANGSTROM
+
+
+def test_units_round_trip():
+    assert abs(u.ANGSTROM_TO_BOHR * u.BOHR_TO_ANGSTROM - 1.0) <= 2 * 2.0**-52
+    xyz = [[0.1, -0.2, 0.3], [1.5, 0.0, -2.25]]
+    mol = ferric.Molecule.from_arrays(["He", "He"], xyz)
+    for ang, bohr in zip(mol.coords(), mol.coords_bohr(), strict=True):
+        for a, b in zip(ang, bohr, strict=True):
+            assert b * u.BOHR_TO_ANGSTROM == pytest.approx(a, rel=1e-14)
+    for orig, row in zip(xyz, mol.coords_bohr(), strict=True):
+        for o, b in zip(orig, row, strict=True):
+            assert o * u.ANGSTROM_TO_BOHR == pytest.approx(b, rel=1e-14)

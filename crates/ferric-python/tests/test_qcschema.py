@@ -483,3 +483,16 @@ def test_molecule_from_qcschema_charge_and_errors():
         qcs.molecule_from_qcschema({"symbols": ["H"], "geometry": [0, 0]})
     with pytest.raises(ValueError):
         qcs.molecule_from_qcschema("nope")
+
+
+def test_molecule_to_qcschema_defaults_from_molecule():
+    import ferric.qcschema as qcs
+
+    mol = ferric.Molecule.from_arrays(
+        ["O", "O"], [[0, 0, 0], [0, 0, 2.3]], units="bohr", multiplicity=3
+    )
+    d = qcs.molecule_to_qcschema(mol)
+    assert d["molecular_charge"] == 0 and d["molecular_multiplicity"] == 3
+    d = qcs.molecule_to_qcschema(mol, multiplicity=1)
+    assert d["molecular_multiplicity"] == 1
+    assert qcs.molecule_from_qcschema(qcs.molecule_to_qcschema(mol)).multiplicity == 3
