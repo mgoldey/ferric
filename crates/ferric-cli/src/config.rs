@@ -13,7 +13,7 @@ pub const DEFAULT_CORRELATION_AUX: &str = "cc-pvdz-ri";
 pub const TDDFT_DEFAULT_AUX: &str = "cc-pvdz-rifit";
 /// JK-fit auxiliary basis the CLI defaults RI-J/RI-K to for KS-DFT and the
 /// RPA/GW/TDDFT references.
-pub const DEFAULT_SCF_JK_AUX: &str = "def2-universal-jkfit";
+pub const DEFAULT_SCF_JK_AUX: &str = ferric_scf::options::DEFAULT_JK_AUX;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3665,7 +3665,7 @@ impl Config {
             (s.mom_after_iter > 0, "[scf] mom_after_iter"),
             (s.mom_reference.is_some(), "[scf] mom_reference"),
             (
-                s.k_builder.as_deref() == Some("cosx"),
+                s.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER),
                 "[scf] k_builder = \"cosx\"",
             ),
         ];
@@ -3943,8 +3943,8 @@ impl ScfCfg {
         router_allowed: bool,
     ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
-        let is_cosx =
-            self.k_builder.as_deref() == Some("cosx") || self.jk.as_deref() == Some("rijcosx");
+        let is_cosx = self.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
+            || self.jk.as_deref() == Some("rijcosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
@@ -4210,16 +4210,16 @@ fn default_max_iter() -> usize {
 // tight energy_conv is met only by chance once dE reaches its noise floor
 // (see `ferric_scf::noise_floor`), so it costs iterations.
 fn default_energy_conv() -> f64 {
-    1e-3
+    ferric_scf::options::DEFAULT_SCF_ENERGY_CONV
 }
 fn default_density_conv() -> f64 {
-    1e-6
+    ferric_scf::options::DEFAULT_SCF_DENSITY_CONV
 }
 fn default_diis_size() -> usize {
-    8
+    ferric_scf::options::DEFAULT_DIIS_SIZE
 }
 fn default_integral_thresh() -> f64 {
-    1e-12
+    ferric_scf::options::DEFAULT_INTEGRAL_THRESH
 }
 
 /// One `[[scf.ladder]]` rung. Every field is optional and overrides the
@@ -4292,7 +4292,7 @@ impl ScfCfg {
     /// Whether this run computes the stability verdict (`check_stability`
     /// or `stability_descent`; see [`ScfCfg::stability`]).
     pub fn runs_stability_check(&self) -> bool {
-        self.stability() != ferric_scf::options::Stability::Off
+        self.stability().checks()
     }
 
     /// Build the SCF convergence ladder. If no `[[scf.ladder]]` rungs are
@@ -4607,9 +4607,15 @@ impl Config {
     /// * TDA/TDDFT: `[tddft] xc` (None = HF), RI-JK.
     /// * Everything else (plain HF, the MP2/CC family): no functional, no DF
     ///   default.
-    pub fn scf_xc_and_aux_defaults(&self) -> (Option<String>, Option<String>, Option<String>) {
+    pub fn scf_xc_and_aux_defaults(
+        &self,
+    ) -> (
+        Option<String>,
+        Option<ferric_scf::options::AuxBasis>,
+        Option<ferric_scf::options::AuxBasis>,
+    ) {
         let kind = self.method.kind.as_str();
-        let jk = || Some(DEFAULT_SCF_JK_AUX.to_string());
+        let jk = || Some(ferric_scf::options::AuxBasis::named(DEFAULT_SCF_JK_AUX));
         if let Some(functional) = self.ks_functional() {
             (Some(functional), jk(), jk())
         } else if RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some() {
@@ -4934,7 +4940,7 @@ impl Config {
         }
         self.validate_cli_wired_keys()?;
         if task != "energy"
-            && self.scf.k_builder.as_deref() == Some("cosx")
+            && self.scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
             && !COSX_GRADIENT_KINDS.contains(&kind)
         {
             return Err(format!(
@@ -5871,7 +5877,7 @@ mod compat_guard_tests {
 
         // Every KS SCF kind gets the same RI-JK default, so `uhf` + PBE and
         // `ksdft` + PBE on the same doublet are the same calculation.
-        let jk = Some(DEFAULT_SCF_JK_AUX.to_string());
+        let jk = Some(ferric_scf::options::AuxBasis::named(DEFAULT_SCF_JK_AUX));
         assert_eq!(
             cfg("uhf", "energy", pbe).scf_xc_and_aux_defaults(),
             (Some("PBE".to_string()), jk.clone(), jk.clone())

@@ -24,6 +24,28 @@
 //! an [`ScfOptions`](crate::options::ScfOptions) live here as pure functions
 //! (e.g. [`df_k_aux_or_default`](crate::options::df_k_aux_or_default), the
 //! RIJCOSX "no RI-K default under COSX" rule).
+//!
+//! # Per-frontend defaults
+//!
+//! What each frontend puts in the [`ScfOptions`](crate::options::ScfOptions)
+//! fields that differ between them when the caller says nothing ("unset" =
+//! the field is `None`, so the [`RhfConfig::default`](crate::rhf::RhfConfig::default)
+//! value applies). `JK` is [`DEFAULT_JK_AUX`](crate::options::DEFAULT_JK_AUX);
+//! "no RI-K under COSX" is [`df_k_aux_or_default`](crate::options::df_k_aux_or_default).
+//! A caller's explicit value always wins (aux spellings through
+//! [`AuxBasis::parse`](crate::options::AuxBasis::parse)).
+//!
+//! | Frontend | `df_j_aux` | `df_k_aux` | `guess` | `cosx` | `ri_j_task` | `xc` |
+//! |---|---|---|---|---|---|---|
+//! | `run_rhf` / `run_uhf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | unset (HF) |
+//! | `run_rohf` | unset (exact J) | unset (exact K) | unset (SAD) | unset (`CosxConfig::default`) | unset (energy) | unset (HF) |
+//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | unset (SAD) | the `cosx_*` kwargs | unset (energy) | the functional, default `"LDA"` |
+//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `run_uks`: `guess=` kwarg, else SAD; `run_roks`: SAD | unset (`CosxConfig::default`) | unset (energy) | the functional (required) |
+//! | CLI `[scf]` | the kind's default: `JK` for Kohn-Sham, RPA/response and TDA/TDDFT kinds, else unset | as `df_j_aux`; no RI-K under COSX | `[scf] guess`, else SAD | `[scf] cosx_*` and the `[gpu]` fp64 router | from `method.task`: geometry for `optimize` / `frequencies` / `md`, else energy | the kind's functional (`[dft]`, `[rpa] xc`, `[tddft] xc`), else unset |
+//!
+//! The CLI column is `Config::scf_xc_and_aux_defaults` and `ri_j_task_for`
+//! in `ferric-cli`; each Python row is the `ScfOptions` literal of that
+//! binding in `ferric-python` (`scf.rs`, `dft.rs`).
 
 use ferric_core::FerricError;
 use ndarray::Array2;
@@ -53,9 +75,8 @@ pub const COSX_K_BUILDER: &str = "cosx";
 /// applied (`None`, so an explicit `df_k_aux` next to COSX stays the conflict
 /// the SCF refuses). RI-J is unaffected.
 ///
-/// Generic over the aux representation so the Python KS entry points
-/// ([`AuxBasis`]) and the CLI `[scf]` lowering (resolved strings) share the
-/// one rule.
+/// Generic over the aux representation; the Python KS entry points and the
+/// CLI `[scf]` lowering both pass [`AuxBasis`].
 pub fn df_k_aux_or_default<T>(
     k_builder: Option<&str>,
     explicit: Option<T>,
@@ -76,6 +97,8 @@ pub enum AuxBasis {
     /// the `Some("")` sentinel `RhfConfig` uses for an explicit opt-out.
     Off,
     /// A named auxiliary basis (trimmed; validated later by `basis::bundled`).
+    /// Build it with [`AuxBasis::named`] or [`AuxBasis::parse`], which
+    /// normalise the spelling; the variant is public for pattern matching.
     Named(String),
 }
 
@@ -93,10 +116,17 @@ impl AuxBasis {
         }
     }
 
+    /// A basis named by a frontend (a default, not user input), through the
+    /// same trim / opt-out normalisation as [`AuxBasis::parse`], so a name
+    /// cannot reach [`AuxBasis::Named`] untrimmed or as an opt-out spelling.
+    pub fn named(name: &str) -> Self {
+        Self::parse(name)
+    }
+
     /// [`DEFAULT_JK_AUX`], the auxiliary basis the Kohn-Sham entry points
     /// fit with when the caller names none.
     pub fn default_jk() -> Self {
-        Self::Named(DEFAULT_JK_AUX.to_string())
+        Self::named(DEFAULT_JK_AUX)
     }
 
     /// The `RhfConfig` string form (`""` for [`AuxBasis::Off`]).
@@ -121,6 +151,14 @@ pub enum Stability {
     /// [`RhfConfig::check_stability`] and [`RhfConfig::scf_stability_descent`]
     /// (the descent needs a verdict to act on).
     Descend,
+}
+
+impl Stability {
+    /// Whether the stability analysis runs ([`Stability::Check`] or
+    /// [`Stability::Descend`]; the descent acts on its verdict).
+    pub fn checks(self) -> bool {
+        matches!(self, Stability::Check | Stability::Descend)
+    }
 }
 
 /// Initial-guess family ([`RhfConfig::use_sad_guess`]).
@@ -394,13 +432,8 @@ impl ScfOptions {
             c.three_index_budget_bytes = v;
         }
         if let Some(st) = stability {
-            let (check, descend) = match st {
-                Stability::Off => (false, false),
-                Stability::Check => (true, false),
-                Stability::Descend => (true, true),
-            };
-            c.check_stability = check;
-            c.scf_stability_descent = descend;
+            c.check_stability = st.checks();
+            c.scf_stability_descent = st == Stability::Descend;
         }
         if let Some(v) = symmetry {
             c.symmetry = v;
@@ -1155,7 +1188,11 @@ mod tests {
             k_builder: k.k_builder.map(str::to_string),
             cosx: None,
             df_j_aux: Some(ks_aux(k.df_j_aux)),
-            df_k_aux: Some(ks_aux(k.df_k_aux)),
+            df_k_aux: df_k_aux_or_default(
+                k.k_builder,
+                k.df_k_aux.map(AuxBasis::parse),
+                Some(AuxBasis::default_jk()),
+            ),
             ri_j_precision: k.ri_j_precision,
             ri_k_precision: k.ri_k_precision,
             level_shift: k.level_shift,
@@ -1202,11 +1239,68 @@ mod tests {
         );
         let f = k.functional.unwrap_or("PBE");
         for sad in [true, false] {
-            same_msg(
-                &old_run_open_ks(k.clone(), f, sad),
-                &new_run_open_ks(k.clone(), f, sad),
-                &format!("run_uks/run_roks (sad={sad}), {msg}"),
-            );
+            let old = old_run_open_ks(k.clone(), f, sad);
+            let new = new_run_open_ks(k.clone(), f, sad);
+            if open_ks_takes_rijcosx_rule(k) {
+                // The one intended change (see
+                // `open_ks_cosx_drops_the_ri_k_default`): everything but
+                // df_k_aux is the old construction.
+                assert_eq!(new.df_k_aux, None, "{msg}");
+                let old = RhfConfig {
+                    df_k_aux: None,
+                    ..old
+                };
+                same_msg(
+                    &old,
+                    &new,
+                    &format!("run_uks/run_roks cosx (sad={sad}), {msg}"),
+                );
+            } else {
+                same_msg(&old, &new, &format!("run_uks/run_roks (sad={sad}), {msg}"));
+            }
+        }
+    }
+
+    /// Where `run_uks` / `run_roks` now differ from their old construction:
+    /// `k_builder = "cosx"` with no explicit `df_k_aux`. The old body applied
+    /// the RI-K default regardless, so COSX always met a df_k_aux conflict
+    /// the caller never set; it now takes the RIJCOSX rule, as `run_dft`.
+    fn open_ks_takes_rijcosx_rule(k: &Kw) -> bool {
+        k.k_builder == Some(COSX_K_BUILDER) && k.df_k_aux.is_none()
+    }
+
+    #[test]
+    fn open_ks_cosx_drops_the_ri_k_default() {
+        let k = Kw {
+            k_builder: Some(COSX_K_BUILDER),
+            ..Kw::default()
+        };
+        for sad in [true, false] {
+            let c = new_run_open_ks(k.clone(), "PBE0", sad);
+            assert_eq!(c.k_builder.as_deref(), Some(COSX_K_BUILDER));
+            assert_eq!(c.df_k_aux, None);
+            assert_eq!(c.df_j_aux.as_deref(), Some(DEFAULT_JK_AUX));
+            // The old construction kept the RI-K default (the bug).
+            let old = old_run_open_ks(k.clone(), "PBE0", sad);
+            assert_eq!(old.df_k_aux.as_deref(), Some(DEFAULT_JK_AUX));
+        }
+        // An explicit df_k_aux still wins (and stays the SCF's conflict).
+        let k = Kw {
+            df_k_aux: Some("def2-universal-jkfit"),
+            ..k
+        };
+        assert_eq!(
+            new_run_open_ks(k, "PBE0", true).df_k_aux.as_deref(),
+            Some(DEFAULT_JK_AUX)
+        );
+        // Without COSX the RI-K default is unchanged.
+        for kb in [None, Some("direct"), Some("link")] {
+            let k = Kw {
+                k_builder: kb,
+                ..Kw::default()
+            };
+            let c = new_run_open_ks(k, "PBE0", true);
+            assert_eq!(c.df_k_aux.as_deref(), Some(DEFAULT_JK_AUX), "{kb:?}");
         }
     }
 
@@ -1249,7 +1343,7 @@ mod tests {
 
     #[test]
     fn rijcosx_rule_drops_only_the_ri_k_default() {
-        let named = |s: &str| Some(AuxBasis::Named(s.into()));
+        let named = |s: &str| Some(AuxBasis::named(s));
         let d = named(DEFAULT_JK_AUX);
         assert_eq!(df_k_aux_or_default(Some("cosx"), None, d.clone()), None);
         assert_eq!(
@@ -1275,6 +1369,21 @@ mod tests {
             AuxBasis::parse(" def2-universal-jkfit "),
             AuxBasis::Named("def2-universal-jkfit".into())
         );
+        // `named` normalises exactly as `parse` does.
+        for s in [" def2-svp-jkfit ", "EXACT", "", DEFAULT_JK_AUX] {
+            assert_eq!(AuxBasis::named(s), AuxBasis::parse(s), "{s:?}");
+        }
+        assert_eq!(
+            AuxBasis::default_jk(),
+            AuxBasis::Named(DEFAULT_JK_AUX.into())
+        );
+    }
+
+    #[test]
+    fn stability_checks_unless_off() {
+        assert!(!Stability::Off.checks());
+        assert!(Stability::Check.checks());
+        assert!(Stability::Descend.checks());
     }
 
     #[test]

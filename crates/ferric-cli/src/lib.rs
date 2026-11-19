@@ -418,13 +418,6 @@ struct ScfConfigInputs<'a> {
     /// The `[gpu]` side of the COSX fp64 router: `precision = "mixed"` with
     /// `cosx-kern` allowed (`GpuSettings::mixed_allows(MixedKernel::CosxKern)`).
     cosx_router_allowed: bool,
-    /// The SCF functional ([`Config::scf_xc_and_aux_defaults`]).
-    xc: Option<String>,
-    /// The kind's RI-J aux default, used when `[scf] df_j_aux` is unset.
-    df_j_default: Option<String>,
-    /// The kind's RI-K aux default, used when `[scf] df_k_aux` is unset and
-    /// `k_builder` is not `"cosx"`.
-    df_k_default: Option<String>,
     /// `[dft] grid_prune`, already parsed.
     grid_prune: Option<ferric_dft::prune::PruneScheme>,
     /// The resolved `[memory]` budget (`None` = auto-detect).
@@ -455,15 +448,17 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     let ScfConfigInputs {
         task,
         cosx_router_allowed,
-        xc,
-        df_j_default,
-        df_k_default,
         grid_prune,
         budget_bytes,
         screening,
         qmmm_system,
     } = inputs;
     let s = &cfg.scf;
+    // The SCF functional and the kind's RI-J / RI-K aux defaults (any
+    // Kohn-Sham SCF, including rhf/uhf/rohf promoted by `[dft] functional`,
+    // gets RI-JK via def2-universal-jkfit): a pure function of `cfg`. See
+    // `Config::scf_xc_and_aux_defaults` for the per-kind table and why.
+    let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
     let guess_basis = s.guess_basis_config()?;
     let diis_flavor = s.diis_flavor()?;
     let cosx = s.cosx_config(cosx_router_allowed)?;
@@ -528,22 +523,17 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // `Config::validate_cli_wired_keys`.
     let relativistic = s.relativistic_resolved()?;
 
-    // A kind default is a basis name, taken verbatim; a written key goes
-    // through the shared spelling parser ("exact"/"none"/"off"/... mean no
-    // density fitting, as in the Python bindings).
-    let kind_default = |d: Option<String>| d.map(AuxBasis::Named);
-    let df_j_aux = s
-        .df_j_aux
-        .as_deref()
-        .map(AuxBasis::parse)
-        .or_else(|| kind_default(df_j_default));
+    // A written key goes through the shared spelling parser
+    // ("exact"/"none"/"off"/... mean no density fitting, as in the Python
+    // bindings); the kind default is already an `AuxBasis`.
+    let df_j_aux = s.df_j_aux.as_deref().map(AuxBasis::parse).or(df_j_default);
     // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default is not
     // applied under it (the shared rule; an explicit `df_k_aux` next to COSX
     // is refused by the SCF as a conflict).
     let df_k_aux = df_k_aux_or_default(
         s.k_builder.as_deref(),
         s.df_k_aux.as_deref().map(AuxBasis::parse),
-        kind_default(df_k_default),
+        df_k_default,
     );
     let options = ScfOptions {
         max_iter: Some(s.max_iter),
@@ -945,11 +935,6 @@ pub fn run(args: Vec<String>) {
             std::process::exit(1);
         });
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, screening_kind).or_exit();
-    // The SCF functional and the RI-J/RI-K aux defaults for this kind (any
-    // Kohn-Sham SCF, including rhf/uhf/rohf promoted by `[dft] functional`,
-    // gets RI-JK via def2-universal-jkfit). See
-    // `Config::scf_xc_and_aux_defaults` for the per-kind table and why.
-    let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
     refuse_tddft_xc_without_kernel(&cfg, method);
     // Unified memory budget from [memory] (bytes), threaded into EVERY method
     // config below. `None` → each method's resolver auto-detects (0.8 × RAM).
@@ -996,9 +981,6 @@ pub fn run(args: Vec<String>) {
             task,
             cosx_router_allowed: ferric_core::gpu::settings()
                 .mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
-            xc,
-            df_j_default,
-            df_k_default,
             grid_prune,
             budget_bytes,
             screening: screening_kind,
@@ -2155,7 +2137,10 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
     };
     let (exchange_used, rsh) = (route.k_consumed, route.omega > 0.0);
     let df_j = route.j_aux.as_deref();
-    if scf.k_builder.as_deref() == Some("cosx") && exchange_used && !rsh {
+    if scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
+        && exchange_used
+        && !rsh
+    {
         let j = df_j.filter(|s| !s.is_empty()).map_or_else(
             || "exact J (four-centre)".to_string(),
             |a| format!("RI-J via {a}"),
@@ -9122,7 +9107,16 @@ mod scf_config_lowering_tests {
                 ferric_scf::screening::ScreeningKind::parse_config_str(s)
             })
             .ok()?;
+        // The defaults `run` computed, in the `Option<String>` form the
+        // literal consumed (`scf_xc_and_aux_defaults` now returns `AuxBasis`).
         let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
+        let as_string = |a: Option<ferric_scf::options::AuxBasis>| {
+            a.map(|a| match a {
+                ferric_scf::options::AuxBasis::Named(n) => n,
+                ferric_scf::options::AuxBasis::Off => String::new(),
+            })
+        };
+        let (df_j_default, df_k_default) = (as_string(df_j_default), as_string(df_k_default));
         Some(Pre {
             xc,
             df_j_default,
@@ -9133,7 +9127,12 @@ mod scf_config_lowering_tests {
         })
     }
 
-    fn old_literal(cfg: &Config, task: &str, router_allowed: bool) -> RhfConfig {
+    fn old_literal(
+        cfg: &Config,
+        task: &str,
+        router_allowed: bool,
+        qmmm_system: Option<&ferric_scf::qmmm::QmmmSystem>,
+    ) -> RhfConfig {
         let Pre {
             xc,
             df_j_default,
@@ -9142,7 +9141,10 @@ mod scf_config_lowering_tests {
             screening_kind,
             budget_bytes,
         } = pre(cfg).unwrap();
-        let qmmm_system: Option<ferric_scf::qmmm::QmmmSystem> = None;
+        // `run` held `Option<QmmmSystem>` and the literal borrowed it
+        // (`match &qmmm_system`, `qmmm_system.as_ref()`); here the caller
+        // hands in that borrow.
+        let qmmm_system = qmmm_system.cloned();
         RhfConfig {
             guess_basis: guess_basis_or_exit(cfg),
             xc_omega: None,
@@ -9203,7 +9205,7 @@ mod scf_config_lowering_tests {
             pcm: resolve_pcm(cfg),
             polarizable: resolve_polarizable(cfg, qmmm_system.as_ref()),
             verbose: cfg.scf.verbose,
-            check_stability: cfg.scf.runs_stability_check(),
+            check_stability: cfg.scf.check_stability || cfg.scf.stability_descent,
             screening: screening_kind,
             irrep_nelec: cfg.scf.irrep_nelec.as_ref().map(|m| {
                 m.iter()
@@ -9218,33 +9220,67 @@ mod scf_config_lowering_tests {
         }
     }
 
+    /// The error `run` exited with while evaluating [`old_literal`], or
+    /// `None` if the literal was built: the literal's fallible resolvers, in
+    /// its field order, each mapped to the text its `or_exit` / bespoke exit
+    /// printed after `error: `.
+    fn old_first_error(
+        cfg: &Config,
+        router_allowed: bool,
+        qmmm_system: Option<&ferric_scf::qmmm::QmmmSystem>,
+    ) -> Option<String> {
+        fn text<T, E: std::fmt::Display>(r: Result<T, E>) -> Result<(), String> {
+            r.map(|_| ()).map_err(|e| e.to_string())
+        }
+        let grid_prune = pre(cfg)?.grid_prune;
+        let first = || -> Result<(), String> {
+            text(cfg.scf.guess_basis_config())?; // guess_basis
+            text(cfg.scf.diis_flavor())?; // diis_flavor
+            text(cfg.scf.cosx_config(router_allowed))?; // cosx
+            text(cfg.scf.ri_j_precision_resolved())?; // ri_j_precision
+            text(cfg.scf.ri_k_precision_resolved())?; // ri_k_precision
+            text(cfg.main_dft_grid(grid_prune))?; // dft_grid
+            text(cfg.scf.mom_reference_resolved())?; // mom_reference
+            text(cfg.scf.use_density_guess())?; // use_sad_guess
+            if let Some(pcm) = cfg.pcm.as_ref() {
+                text(pcm.to_pcm_config())?; // pcm
+            }
+            if let Some((q, sys)) = cfg.qmmm.as_ref().zip(qmmm_system) {
+                text(q.polarizable_embedding(sys))?; // polarizable
+            }
+            if let Some(eri) = cfg.scf.eri.as_deref() {
+                // eri: `scf_eri_mode`'s own message
+                ferric_scf::incore_jk::EriMode::parse_config_str(eri)
+                    .map_err(|e| format!("[scf] eri: {e}"))?;
+            }
+            text(cfg.scf.relativistic_resolved()) // relativistic
+        };
+        first().err()
+    }
+
     // ── the new path, fed exactly what `run` now passes ──
 
     fn new_lowering(
         cfg: &Config,
         task: &str,
         router_allowed: bool,
+        qmmm_system: Option<&ferric_scf::qmmm::QmmmSystem>,
     ) -> Option<Result<RhfConfig, CliError>> {
         let Pre {
-            xc,
-            df_j_default,
-            df_k_default,
             grid_prune,
             screening_kind,
             budget_bytes,
+            ..
         } = pre(cfg)?;
         Some(try_scf_config(
             cfg,
             ScfConfigInputs {
                 task,
                 cosx_router_allowed: router_allowed,
-                xc,
-                df_j_default,
-                df_k_default,
                 grid_prune,
                 budget_bytes,
                 screening: screening_kind,
-                qmmm_system: None,
+                qmmm_system,
             },
         ))
     }
@@ -9272,22 +9308,55 @@ mod scf_config_lowering_tests {
         )
     }
 
-    /// Assert old == new for every task and router state; returns how many
-    /// combinations the new lowering accepted.
+    /// The `[qmmm]` system `run` builds (`resolve_geometry`), if any.
+    fn qmmm_system_of(cfg: &Config) -> Option<ferric_scf::qmmm::QmmmSystem> {
+        let q = cfg.qmmm.as_ref()?;
+        Some(
+            q.to_system(cfg.molecule.charge, cfg.molecule.multiplicity)
+                .unwrap(),
+        )
+    }
+
+    /// Whether `[scf] trah_trigger` is one `TrahTrigger::new` refuses.
+    fn bad_trah_trigger(cfg: &Config) -> bool {
+        cfg.scf
+            .trah_trigger
+            .is_some_and(|t| ferric_scf::options::TrahTrigger::new(t).is_err())
+    }
+
+    /// Assert old == new for every task and router state -- the config when
+    /// both build one, the first error text when either refuses; returns how
+    /// many combinations the new lowering accepted.
+    ///
+    /// The one difference allowed: `try_scf_config` checks `trah_trigger`
+    /// (`TrahTrigger::new`), which the old literal copied unchecked. That
+    /// check is unreachable in production: before `try_scf_config`, `run`
+    /// calls `Config::validate_task_compat`, which runs the same rule
+    /// (`ScfCfg::validate_accelerators`, via `validate_cli_wired_keys`) and
+    /// exits. So where the two sides disagree, the config must have a bad
+    /// `trah_trigger` AND be one that validation refuses -- the run never
+    /// got here.
     fn check_all(toml_text: &str, label: &str) -> usize {
         let cfg = parse(toml_text);
+        let sys = qmmm_system_of(&cfg);
         let mut ok = 0;
         for task in TASKS {
             for router in [false, true] {
                 let msg = format!("{label}, task = {task}, router = {router}\n{toml_text}");
-                let Some(new) = new_lowering(&cfg, task, router) else {
+                let Some(new) = new_lowering(&cfg, task, router, sys.as_ref()) else {
                     continue;
                 };
-                // An error is where the old literal would have exited; there
-                // is no config to compare (the stderr text is checked by
-                // the binary comparison).
+                let old_err = old_first_error(&cfg, router, sys.as_ref());
+                let new_err = new.as_ref().err().map(ToString::to_string);
+                if new_err != old_err {
+                    assert!(
+                        bad_trah_trigger(&cfg) && cfg.validate_task_compat().is_err(),
+                        "{msg}: error differs: new {new_err:?}, old {old_err:?}"
+                    );
+                    continue;
+                }
                 if let Ok(new) = new {
-                    same(&old_literal(&cfg, task, router), &new, &msg);
+                    same(&old_literal(&cfg, task, router, sys.as_ref()), &new, &msg);
                     ok += 1;
                 }
             }
@@ -9384,9 +9453,65 @@ solvent = \"water\"
             "[scf]\nk_builder = \"cosx\"\ncosx_screen_thresh = 1e-7\n",
         ));
         for task in TASKS {
-            let new = new_lowering(&cfg, task, router).unwrap().unwrap();
-            same(&old_literal(&cfg, task, router), &new, task);
+            let new = new_lowering(&cfg, task, router, None).unwrap().unwrap();
+            same(&old_literal(&cfg, task, router, None), &new, task);
         }
+    }
+
+    /// The bundled Thole fixture: a QM water and three MM point charges.
+    const QMMM_PQR: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/water_thole_sites.pqr"
+    );
+
+    /// `[qmmm]`: the MM point charges reach `external_potential` and the
+    /// Thole sites `polarizable` (with the default and an explicit `thole_a`,
+    /// and `thole_a = 0` = undamped), on the plain and the all-keys `[scf]`;
+    /// a polarizability list with no MM entry is the polarizable error path.
+    #[test]
+    fn qmmm_matches_old_literal() {
+        let base = format!("[qmmm]\npqr = {QMMM_PQR:?}\nqm_indices = [0, 1, 2]\n");
+        let alphas = "polarizabilities_angstrom3 = \
+                      [0.0, 0.0, 0.0, 0.0740923557432, 0.0740923557432, 0.163003182635]\n";
+        let qmmm = [
+            base.clone(),
+            format!("{base}{alphas}"),
+            format!("{base}{alphas}thole_a = 2.1304\n"),
+            format!("{base}{alphas}thole_a = 0.0\n"),
+        ];
+        for (kind, extra) in KINDS {
+            for q in &qmmm {
+                for scf in ["", ALL_KEYS] {
+                    let text = header(kind, &format!("{extra}{scf}{q}"));
+                    let cfg = parse(&text);
+                    let sys = qmmm_system_of(&cfg).unwrap();
+                    assert!(!sys.mm_charge_positions().is_empty());
+                    let ok = check_all(&text, &format!("qmmm {kind}"));
+                    let want = if scf.is_empty() { 2 } else { 1 } * TASKS.len();
+                    assert_eq!(ok, want, "{kind}\n{text}");
+                    let new = new_lowering(&cfg, "energy", true, Some(&sys))
+                        .unwrap()
+                        .unwrap();
+                    assert!(new.external_potential.is_some(), "{text}");
+                    assert_eq!(
+                        new.polarizable.is_some(),
+                        q.contains("polarizabilities"),
+                        "{text}"
+                    );
+                }
+            }
+        }
+        // No positive polarizability on an MM atom: the polarizable error,
+        // which both sides must report identically.
+        let text = header(
+            "rhf",
+            &format!("{base}polarizabilities_angstrom3 = [0.1, 0.1, 0.1, 0.0, 0.0, 0.0]\n"),
+        );
+        let cfg = parse(&text);
+        let sys = qmmm_system_of(&cfg).unwrap();
+        let old = old_first_error(&cfg, false, Some(&sys)).unwrap();
+        assert!(old.contains("nothing would polarize"), "{old}");
+        assert_eq!(check_all(&text, "qmmm no MM alpha"), 0);
     }
 
     /// splitmix64, as in `ferric_scf::options`' tests (no rand dependency).

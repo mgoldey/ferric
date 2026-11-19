@@ -1211,7 +1211,8 @@ fn rohf_pluggable_k<'a>(
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, omega);
     crate::cosx_schedule::refuse(pluggable_k_kind, &config.cosx, "ROHF/ROKS")?;
-    if pluggable_k_kind == Some("cosx") && config.cosx.final_grid.is_some() {
+    if pluggable_k_kind == Some(crate::options::COSX_K_BUILDER) && config.cosx.final_grid.is_some()
+    {
         // The COSX final-grid pass is implemented for RHF/RKS and UHF/UKS
         // only. An explicit request is refused; the default one is skipped,
         // so the reported energy is the SCF-grid energy.

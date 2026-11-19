@@ -1194,10 +1194,17 @@ fn run_open_ks(
         k_builder: k_builder.map(str::to_string),
         cosx: None,
         // RI-J / RI-K on by default for a KS SCF, as in run_dft and the CLI.
-        // No RIJCOSX rule here: these entry points take no COSX knobs, and
-        // the RI-K default has always applied whatever `k_builder` says.
+        // RIJCOSX, as in run_dft: under k_builder="cosx" COSX replaces RI-K,
+        // so no RI-K default applies (an explicit df_k_aux next to COSX is
+        // the conflict the SCF refuses). Before this rule the RI-K default
+        // applied whatever `k_builder` said, so k_builder="cosx" always
+        // failed with a df_k_aux conflict the caller never wrote.
         df_j_aux: Some(ks_aux(df_j_aux)),
-        df_k_aux: Some(ks_aux(df_k_aux)),
+        df_k_aux: df_k_aux_or_default(
+            k_builder,
+            df_k_aux.map(AuxBasis::parse),
+            Some(AuxBasis::default_jk()),
+        ),
         ri_j_precision,
         ri_k_precision,
         level_shift,
@@ -1270,8 +1277,10 @@ fn run_open_ks(
 /// meta-GGAs run (energy and gradient); for a VV10 functional (`wB97X-V`) the
 /// gradient agrees with finite differences of the energy to 6e-6 Ha/Bohr
 /// (NH2/6-31G), against ~1e-7 for the others. `run_dft` stays the
-/// closed-shell entry point and refuses `multiplicity > 1`. Not offered here: dispersion,
-/// COSX, symmetry, `fock_hook`.
+/// closed-shell entry point and refuses `multiplicity > 1`. `k_builder="cosx"`
+/// runs RIJCOSX (COSX replaces RI-K; no RI-K default, as in `run_dft`) on the
+/// default COSX settings, which are not tunable here. Not offered here:
+/// dispersion, the COSX knobs, symmetry, `fock_hook`.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, functional, k_builder=None, with_gradient=false,

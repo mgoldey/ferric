@@ -727,17 +727,21 @@ pub(crate) fn run_rhf(
     );
     let user_set = energy_conv.is_some();
     if with_gradient {
-        let hooked = fock_hook.zip(hook_grad.as_ref());
-        return solve_rhf_with_gradient(
-            py,
-            &ctx,
-            &emol,
-            &prep,
-            &basis_set.inner,
-            &bounds,
+        let hooked = fock_hook
+            .zip(hook_grad.as_ref())
+            .map(|(hook, grad)| RhfGradientHook {
+                hook,
+                grad,
+                user_set_energy_conv: user_set,
+            });
+        let args = RhfGradientArgs {
+            mol: &emol,
+            prep: &prep,
+            bounds: &bounds,
             config,
-            hooked.map(|h| (h, user_set)),
-        );
+            hooked,
+        };
+        return solve_rhf_with_gradient(py, &ctx, args);
     }
     solve_rhf_outcome(
         py, &ctx, &emol, &prep, op, &bounds, config, fock_hook, user_set,
@@ -843,39 +847,60 @@ pub(crate) fn scf_gradient(
     .map_err(make_err)
 }
 
+/// A `fock_hook` with its `fock_hook_grad`, for [`solve_rhf_with_gradient`].
+pub(crate) struct RhfGradientHook<'a, 'py> {
+    pub(crate) hook: &'a Bound<'py, PyAny>,
+    pub(crate) grad: &'a blocks::PyFockHookGrad,
+    /// The caller passed `energy_conv=` (for [`warn_hook_noise_floor`]).
+    pub(crate) user_set_energy_conv: bool,
+}
+
+/// What [`solve_rhf_with_gradient`] solves and differentiates. There is no
+/// separate orbital basis: the result uses `prep`'s
+/// ([`PreparedBasis::basis_set`]), as [`solve_open_shell_entry`] does.
+pub(crate) struct RhfGradientArgs<'a, 'py> {
+    pub(crate) mol: &'a Molecule,
+    pub(crate) prep: &'a PreparedBasis,
+    pub(crate) bounds: &'a SchwarzBounds,
+    pub(crate) config: RhfConfig,
+    /// `Some`: the solve is the hooked one and the gradient gains the hook's
+    /// explicit term.
+    pub(crate) hooked: Option<RhfGradientHook<'a, 'py>>,
+}
+
 /// `run_rhf(with_gradient=True)`: the closed-shell solve (the refusals of
-/// [`scf_gradient_config`] already ran) and its analytic gradient. `hooked`:
-/// the `fock_hook` and its `fock_hook_grad`, with whether `energy_conv` was
-/// passed (for [`warn_hook_noise_floor`]); the solve is then the hooked one
-/// and the gradient gains the hook's explicit term.
-#[allow(clippy::too_many_arguments)]
+/// [`scf_gradient_config`] already ran) and its analytic gradient.
 pub(crate) fn solve_rhf_with_gradient(
     py: Python<'_>,
     ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    basis: &ferric_core::basis::BasisSet,
-    bounds: &SchwarzBounds,
-    config: RhfConfig,
-    hooked: Option<((&Bound<'_, PyAny>, &blocks::PyFockHookGrad), bool)>,
+    args: RhfGradientArgs<'_, '_>,
 ) -> PyResult<PyObject> {
+    let RhfGradientArgs {
+        mol,
+        prep,
+        bounds,
+        config,
+        hooked,
+    } = args;
     let op = Operator::coulomb();
-    let r = match hooked {
+    let r = match &hooked {
         None => py
             .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
             .map_err(make_err)?,
-        Some(((hook, _), user_set)) => {
+        Some(h) => {
             let (r, term) =
-                blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
+                blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, h.hook)?;
             let family = SolverFamily::ClosedShell;
+            let user_set = h.user_set_energy_conv;
             warn_hook_noise_floor(py, "run_rhf", family, user_set, mol, prep, &config, term);
             r
         }
     };
     let mut g = scf_gradient(py, ScfGradientKind::Rhf, mol, prep, bounds, &config, &r)?;
-    if let Some(((_, grad), _)) = hooked {
-        g = grad.add_to(py, g, &r, false, mol)?;
+    if let Some(h) = &hooked {
+        g = h.grad.add_to(py, g, &r, false, mol)?;
     }
+    let basis = prep.basis_set();
     let mut result = PyRhfResult::from_scf(mol, basis, r, config, hooked.is_some());
     result.gradient_data = Some(g);
     Ok(Py::new(py, result)?.into_any())
