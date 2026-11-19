@@ -1081,10 +1081,11 @@ fn refuse_dm0_with_guess(
     )))
 }
 
-/// `run_uhf`'s `mom_reference=`: `None` is `"previous"`. `"initial"` applies
+/// `who`'s (`run_uhf`, `run_uks`) `mom_reference=`: `None` is `"previous"`. `"initial"` applies
 /// MOM from the first iteration, so it is refused next to `mom_after_iter > 0`
 /// (a later start) and `stability_descent` (which leaves the start's state).
 fn parse_mom_reference(
+    who: &str,
     value: Option<&str>,
     mom_after_iter: Option<usize>,
     stability_descent: Option<bool>,
@@ -1102,10 +1103,11 @@ fn parse_mom_reference(
             stability_descent.unwrap_or(false),
         )
         .map_err(|_conflict| {
-            pyo3::exceptions::PyValueError::new_err(
-                "run_uhf: mom_reference=\"initial\" applies MOM from the first iteration and \
-                 holds the starting occupation; pass neither mom_after_iter nor stability_descent",
-            )
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{who}: mom_reference=\"initial\" applies MOM from the first iteration and \
+                     holds the starting occupation; pass neither mom_after_iter nor \
+                     stability_descent"
+            ))
         })?;
     Ok(reference)
 }

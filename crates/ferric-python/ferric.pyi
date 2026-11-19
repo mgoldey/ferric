@@ -4499,6 +4499,10 @@ def run_uhf(
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: SpinFockHookGrad | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell). with_gradient=True: the
     analytic gradient in result.gradient() under run_rhf's rules (a
@@ -4543,6 +4547,12 @@ def run_uhf(
     checks internal stability and follows a downhill orbital-Hessian mode off a
     saddle (e.g. O2 triplet/STO-3G, whose default-guess solution is a saddle
     1.33 mHa above the UHF minimum).
+
+    soscf, smeared_charges, solvent, pcm_lebedev_order: as for run_rhf
+    (solve_uhf honours them; with_gradient=True includes the smeared-charge
+    and IEF-PCM terms). Not offered (solve_uhf cannot honour them): diis,
+    smearing_sigma, aurora (closed-shell solver only) and symmetry (the
+    blocked open-shell solve has no Python result type yet).
     """
     ...
 
@@ -4572,6 +4582,15 @@ def run_rohf(
     eri: Literal["auto", "direct", "incore"] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: SpinFockHookGrad | None = None,
+    guess: str | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock. with_gradient=True: the analytic
     gradient in result.gradient() under run_rhf's rules (a fock_hook needs
@@ -4583,7 +4602,15 @@ def run_rohf(
     set: the doubly occupied orbitals are the leading natural orbitals of
     D_beta, the singly occupied ones those of D_alpha in the rest of the
     space, so a converged ROHF pair is reproduced on the first iteration.
-    dm0 with guess_basis= raises ValueError."""
+    dm0 with guess= or guess_basis= raises ValueError.
+
+    guess, soscf, smeared_charges, solvent, pcm_lebedev_order and the cosx_*
+    knobs: as for run_uhf (solve_rohf honours them; soscf is the ROHF Newton
+    step, with_gradient=True includes the smeared-charge and IEF-PCM terms,
+    and the COSX overlap fit is refused there). Not offered (solve_rohf cannot
+    honour them): stability_descent (no ROHF stability analysis), trah_trigger
+    (no ROHF TRAH step), mom_reference ("initial" is UHF/UKS only), diis,
+    smearing_sigma, aurora and symmetry."""
     ...
 
 def run_uks(
@@ -4611,6 +4638,24 @@ def run_uks(
     guess: str | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    trah_trigger: float | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
+    mom_reference: Literal["previous", "initial"] | None = None,
+    fock_hook: SpinFockHook | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
 ) -> UhfResult:
     """Unrestricted Kohn-Sham (open-shell DFT): solve_uhf with RhfConfig.xc set,
     the route the CLI takes for kind="ksdft" on an open-shell molecule.
@@ -4629,8 +4674,19 @@ def run_uks(
     VV10 functional (wB97X-V) the gradient agrees with finite differences of the
     energy to 6e-6 Ha/Bohr (NH2/6-31G), against ~1e-7 for the others.
     dm0 is a pair (D_alpha, D_beta) with run_uhf's checks; guess is
-    "minao" (default) or "hcore". Not offered (use run_dft or run_uhf): dispersion,
-    COSX, symmetry, fock_hook. run_dft raises for multiplicity > 1."""
+    "minao" (default) or "hcore". run_dft raises for multiplicity > 1.
+
+    The keywords after relativistic are run_uhf's, with its meaning (solve_uhf
+    honours them with a functional too): diis_size, integral_thresh, eri,
+    soscf (range-separated hybrids stay on DIIS), smeared_charges, solvent /
+    pcm_lebedev_order (IEF-PCM, with its gradient), stability_descent (the UKS
+    stability analysis; a functional it cannot analyse is skipped with a
+    printed reason), the cosx_* knobs (with k_builder="cosx"), trah_trigger
+    (not for meta-GGAs or range-separated hybrids), guess_basis /
+    guess_projection, mom_reference and fock_hook / fock_hook_grad. Not
+    offered: diis, smearing_sigma, aurora (closed-shell solver only), symmetry
+    (the blocked open-shell solve has no Python result type yet) and
+    dispersion (UhfResult has no dispersion fields)."""
     ...
 
 def run_roks(
@@ -4657,6 +4713,22 @@ def run_roks(
     grid_weight_cut: float | None = None,
     dm0: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    soscf: bool | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    cosx_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_final_pass: bool | None = None,
+    cosx_final_grid: tuple[int, int] | tuple[int, int, str] | None = None,
+    cosx_overlap_fit: bool | None = None,
+    guess_basis: str | None = None,
+    guess_projection: str | None = None,
+    fock_hook: SpinFockHook | None = None,
+    fock_hook_grad: SpinFockHookGrad | None = None,
 ) -> UhfResult:
     """Restricted open-shell Kohn-Sham: solve_rohf with RhfConfig.xc set, the
     route the CLI takes for kind="rohf" with [dft] functional.
@@ -4664,7 +4736,10 @@ def run_roks(
     One set of spin-pure MOs: multiplicity - 1 singly occupied orbitals, the
     rest doubly occupied (run_rohf's occupations and Guest-Saunders coupling).
     Settings, result, gradient (ks_gradient_roks) and exclusions as for
-    run_uks, without guess=. dm0 is run_rohf's pair."""
+    run_uks; guess= ("minao" default, or "hcore") comes after relativistic
+    here. dm0 is run_rohf's pair. As in run_rohf, solve_rohf has no TRAH step,
+    no stability analysis and no mom_reference="initial", so trah_trigger,
+    stability_descent and mom_reference are not offered."""
     ...
 
 def run_cdft(
@@ -5791,6 +5866,16 @@ def run_dft(
     dm0: NDArray[np.float64] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: FockHookGrad | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). fock_hook: as for run_rhf; with a
     hook every convergence-ladder rung runs with the hook applied and SOSCF
@@ -5799,6 +5884,16 @@ def run_dft(
     with_gradient=True without fock_hook_grad (as for run_rhf; the KS
     gradient of the hooked SCF plus grad(D, mol)). dm0: as for run_rhf; ladder rung 0 starts from it. Note: the final_* residuals, unmet_criteria and the
     non-convergence RuntimeWarning are RHF-only today (this result has exit_reason and iterations).
+
+    diis_size, integral_thresh, eri, guess, smeared_charges, solvent /
+    pcm_lebedev_order, stability_descent, aurora, trah_trigger: as for run_rhf
+    (solve_rhf honours them with a functional too, on every ladder rung).
+    aurora takes effect only for a hybrid with at least the validated
+    exact-exchange fraction (the solver keeps other functionals on DIIS);
+    trah_trigger is skipped for meta-GGAs and range-separated hybrids. dm0
+    with guess= raises ValueError.
+    Not offered: diis, smearing_sigma and soscf (the convergence ladder sets
+    them per rung) and mom_reference ("initial" is UHF/UKS only).
 
 
     cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit: COSX
@@ -5938,6 +6033,16 @@ def run_dft(
     dm0: None = None,
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
 ) -> SymmetricRhfResult:
     """Point-group-blocked closed-shell RKS (see the ``symmetry=True``
     paragraph of the DftResult overload). Same density-fitting defaults:
@@ -6016,6 +6121,16 @@ def run_dft(
     dm0: NDArray[np.float64] | None = None,
     relativistic: Literal["x2c1e"] | None = None,
     fock_hook_grad: FockHookGrad | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    eri: Literal["auto", "direct", "incore"] | None = None,
+    guess: str | None = None,
+    smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
+    stability_descent: bool | None = None,
+    aurora: bool | None = None,
+    trah_trigger: float | None = None,
 ) -> DftResult | SymmetricRhfResult: ...
 def dft_grid_point_count(
     mol: Molecule,

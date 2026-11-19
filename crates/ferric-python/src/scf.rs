@@ -1430,6 +1430,14 @@ impl PyUhfResult {
 ///                   DIIS error drops below it. A convergence RESCUE: it wins
 ///                   iterations but costs wall time. Same as the CLI
 ///                   `[scf] trah_trigger`.
+///   soscf, smeared_charges, solvent, pcm_lebedev_order
+///                   As for `run_rhf` (`solve_uhf` honours them; a gradient
+///                   includes the smeared-charge and IEF-PCM terms).
+///
+/// Not offered, because `solve_uhf` cannot honour them
+/// (`ferric_scf::options::entry::ScfEntryPoint::refused`): `diis`,
+/// `smearing_sigma`, `aurora` (closed-shell solver only) and `symmetry` (the
+/// blocked open-shell solve has no Python result type yet).
 ///
 /// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today; non-convergence raises.
 /// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
@@ -1445,6 +1453,7 @@ impl PyUhfResult {
     trah_trigger=None, fock_hook=None, guess_basis=None, guess_projection=None, ri_j_precision=None,
     dm0=None, with_gradient=false, mom_reference=None, eri=None, relativistic=None,
     fock_hook_grad=None,
+    soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_uhf(
@@ -1482,10 +1491,15 @@ pub(crate) fn run_uhf(
     eri: Option<&str>,
     relativistic: Option<&str>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    soscf: Option<bool>,
+    smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
+    solvent: Option<&Bound<'_, PyAny>>,
+    pcm_lebedev_order: Option<usize>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
     let hook_grad = parse_fock_hook_grad("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
-    let mom_reference = parse_mom_reference(mom_reference, mom_after_iter, stability_descent)?;
+    let mom_reference =
+        parse_mom_reference("run_uhf", mom_reference, mom_after_iter, stability_descent)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The shared strict parser (same as run_rhf and the CLI): a typo must not
@@ -1515,6 +1529,7 @@ pub(crate) fn run_uhf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
+    let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1530,9 +1545,15 @@ pub(crate) fn run_uhf(
         level_shift,
         mom_after_iter,
         mom_reference: Some(mom_reference),
+        soscf,
         guess: Some(guess_from_use_sad(use_sad_guess)),
         guess_basis,
-        external_potential: build_external_potential(point_charges, external_field),
+        external_potential: build_external_potential_with_smeared(
+            point_charges,
+            smeared_charges,
+            external_field,
+        ),
+        pcm,
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         stability_descent,
         eri: Some(eri),
@@ -1570,8 +1591,14 @@ pub(crate) fn run_uhf(
 /// density and orbital-energy accessors carry the doubly + singly occupied
 /// α set and the doubly-occupied-only β set respectively (single set of
 /// spin-pure MOs, so `mos_alpha`/`mos_beta` coincide internally but the
-/// occupied-orbital semantics differ from UHF). Exposes the same SCF knob
-/// set as `run_rhf`/`run_uhf`.
+/// occupied-orbital semantics differ from UHF). Takes `run_uhf`'s SCF
+/// knobs that `solve_rohf` honours (`guess`, `soscf` (the ROHF Newton step),
+/// `smeared_charges`, `solvent` / `pcm_lebedev_order` and the `cosx_*` knobs
+/// come after `fock_hook_grad`), not those it cannot: `stability_descent`
+/// (no ROHF stability analysis), `trah_trigger` (no ROHF TRAH step),
+/// `mom_reference` (`"initial"` is UHF/UKS only), `diis`, `smearing_sigma`,
+/// `aurora` and `symmetry` (see
+/// `ferric_scf::options::entry::ScfEntryPoint::refused`).
 ///
 /// Note: the exit report (final_* residuals, unmet_criteria, non-convergence RuntimeWarning) is RHF-only today.
 /// A user-set energy_conv below the estimated (rounding-level) noise floor of dE emits one RuntimeWarning before the SCF starts.
@@ -1584,6 +1611,8 @@ pub(crate) fn run_uhf(
     point_charges=None, external_field=None, memory_budget_gb=None, fock_hook=None,
     guess_basis=None, guess_projection=None, ri_j_precision=None, dm0=None,
     with_gradient=false, eri=None, relativistic=None, fock_hook_grad=None,
+    guess=None, soscf=None, smeared_charges=None, solvent=None, pcm_lebedev_order=None,
+    cosx_grid=None, cosx_final_pass=None, cosx_final_grid=None, cosx_overlap_fit=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rohf(
@@ -1613,8 +1642,17 @@ pub(crate) fn run_rohf(
     eri: Option<&str>,
     relativistic: Option<&str>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    guess: Option<&str>,
+    soscf: Option<bool>,
+    smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
+    solvent: Option<&Bound<'_, PyAny>>,
+    pcm_lebedev_order: Option<usize>,
+    cosx_grid: Option<&Bound<'_, PyAny>>,
+    cosx_final_pass: Option<bool>,
+    cosx_final_grid: Option<&Bound<'_, PyAny>>,
+    cosx_overlap_fit: Option<bool>,
 ) -> PyResult<PyUhfResult> {
-    refuse_dm0_with_guess("run_rohf", dm0.is_some(), None, guess_basis)?;
+    refuse_dm0_with_guess("run_rohf", dm0.is_some(), guess, guess_basis)?;
     let hook_grad = parse_fock_hook_grad("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let mut emol = mol.inner.clone();
@@ -1633,6 +1671,15 @@ pub(crate) fn run_rohf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
+    let cosx = resolve_cosx_kwargs(
+        k_builder,
+        cosx_grid,
+        cosx_final_pass,
+        cosx_final_grid,
+        cosx_overlap_fit,
+    )?;
+    let use_sad_guess = parse_guess(guess)?;
+    let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1640,14 +1687,22 @@ pub(crate) fn run_rohf(
         diis_size,
         integral_thresh,
         k_builder,
+        cosx: Some(cosx),
         df_j_aux,
         df_k_aux,
         ri_j_precision,
         ri_k_precision,
         level_shift,
         mom_after_iter,
+        soscf,
+        guess: Some(guess_from_use_sad(use_sad_guess)),
         guess_basis,
-        external_potential: build_external_potential(point_charges, external_field),
+        external_potential: build_external_potential_with_smeared(
+            point_charges,
+            smeared_charges,
+            external_field,
+        ),
+        pcm,
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         eri: Some(eri),
         relativistic,

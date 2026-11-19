@@ -37,10 +37,9 @@
 //!
 //! | Frontend | `df_j_aux` | `df_k_aux` | `guess` | `cosx` | `ri_j_task` | `xc` |
 //! |---|---|---|---|---|---|---|
-//! | `run_rhf` / `run_uhf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | unset (HF) |
-//! | `run_rohf` | unset (exact J) | unset (exact K) | unset (SAD) | unset (`CosxConfig::default`) | unset (energy) | unset (HF) |
-//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | unset (SAD) | the `cosx_*` kwargs | unset (energy) | the functional, default `"LDA"` |
-//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `run_uks`: `guess=` kwarg, else SAD; `run_roks`: SAD | unset (`CosxConfig::default`) | unset (energy) | the functional (required) |
+//! | `run_rhf` / `run_uhf` / `run_rohf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | unset (HF) |
+//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | the functional, default `"LDA"` |
+//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | the functional (required) |
 //! | CLI `[scf]` | the kind's default: `JK` for Kohn-Sham, RPA/response and TDA/TDDFT kinds, else unset | as `df_j_aux`; no RI-K under COSX | `[scf] guess`, else SAD | `[scf] cosx_*` and the `[gpu]` fp64 router | from `method.task`: geometry for `optimize` / `frequencies` / `md`, else energy | the kind's functional (`[dft]`, `[rpa] xc`, `[tddft] xc`), else unset |
 //!
 //! The CLI column is `Config::scf_xc_and_aux_defaults` and `ri_j_task_for`
@@ -699,9 +698,11 @@ mod tests {
     // `kwargs` is the one test-side step: it turns a `Kw` (the parsed
     // values of every kwarg) into the `ScfKwargs` the binding of `entry`
     // hands to `ScfEntryPoint::options` for a call that passes only the
-    // kwargs that binding took before this refactor: a kwarg the entry point
-    // does not take stays at the value its binding passes when it is omitted.
-    // Everything after that is the production code path.
+    // kwargs that binding took before the lowering existed (the oracles'
+    // surface): a kwarg it did not take then, including one added since
+    // (roadmap 6b), stays at the value the binding passes when it is
+    // omitted. Everything after that is the production code path. The 6b
+    // kwargs are checked by `kwargs_added_in_6b_lower_to_their_fields`.
 
     fn guess(sad: Option<bool>) -> Guess {
         if sad.unwrap_or(true) {
@@ -730,29 +731,34 @@ mod tests {
             diis_flavor: is(&[E::Rhf]).then(|| k.diis.unwrap_or(DiisFlavor::Pulay)),
             integral_thresh: if hf { k.integral_thresh } else { None },
             k_builder: k.k_builder,
-            cosx: if is(&[E::Rhf, E::Uhf, E::Dft]) {
-                k.cosx.clone()
+            // The bindings always resolve the `cosx_*` kwargs: the default
+            // COSX settings when none is passed.
+            cosx: Some(if is(&[E::Rhf, E::Uhf, E::Dft]) {
+                k.cosx.clone().unwrap_or_default()
             } else {
-                None
-            },
+                CosxConfig::default()
+            }),
             df_j_aux: k.df_j_aux,
             df_k_aux: k.df_k_aux,
             ri_j_precision: k.ri_j_precision,
             ri_k_precision: k.ri_k_precision,
             level_shift: k.level_shift,
             mom_after_iter: k.mom_after_iter,
-            mom_reference: is(&[E::Uhf]).then(|| k.mom_reference.unwrap_or_default()),
+            mom_reference: match entry {
+                E::Uhf => Some(k.mom_reference.unwrap_or_default()),
+                E::Uks => Some(MomReference::default()),
+                _ => None,
+            },
             smearing_sigma: if is(&[E::Rhf]) {
                 k.smearing_sigma
             } else {
                 None
             },
             soscf: if is(&[E::Rhf]) { k.soscf } else { None },
-            guess: match entry {
-                E::Rhf | E::Uhf | E::Uks => Some(guess(k.guess_sad)),
-                E::Roks => Some(Guess::Sad),
-                E::Rohf | E::Dft => None,
-            },
+            guess: Some(match entry {
+                E::Rhf | E::Uhf | E::Uks => guess(k.guess_sad),
+                E::Rohf | E::Dft | E::Roks => Guess::Sad,
+            }),
             guess_basis: if is(&[E::Uks, E::Roks]) {
                 None
             } else {
@@ -777,7 +783,11 @@ mod tests {
             } else {
                 None
             },
-            eri: hf.then(|| k.eri.unwrap_or(EriMode::Auto)),
+            eri: Some(if hf {
+                k.eri.unwrap_or(EriMode::Auto)
+            } else {
+                EriMode::Auto
+            }),
             relativistic: k.relativistic,
             aurora: if is(&[E::Rhf]) { k.aurora } else { None },
             trah_trigger: if is(&[E::Rhf, E::Uhf]) {
@@ -1226,6 +1236,150 @@ mod tests {
         for case in 0..256 {
             let k = random_kw(&mut r);
             check_ks(&k, &format!("case {case}"));
+        }
+    }
+
+    /// The kwargs roadmap 6b added to each entry point (the drift a sibling
+    /// with the same solver already took), each set to a non-default value:
+    /// every one reaches its `RhfConfig` field.
+    #[test]
+    fn kwargs_added_in_6b_lower_to_their_fields() {
+        use ScfEntryPoint as E;
+        let added: [(E, &[&str]); 5] = [
+            (E::Uhf, &["soscf", "smeared_charges", "solvent"]),
+            (
+                E::Rohf,
+                &["guess", "soscf", "smeared_charges", "solvent", "cosx"],
+            ),
+            (
+                E::Dft,
+                &[
+                    "diis_size",
+                    "integral_thresh",
+                    "eri",
+                    "guess",
+                    "smeared_charges",
+                    "solvent",
+                    "stability_descent",
+                    "aurora",
+                    "trah_trigger",
+                ],
+            ),
+            (
+                E::Uks,
+                &[
+                    "diis_size",
+                    "integral_thresh",
+                    "eri",
+                    "soscf",
+                    "smeared_charges",
+                    "solvent",
+                    "stability_descent",
+                    "cosx",
+                    "trah_trigger",
+                    "guess_basis",
+                    "mom_reference",
+                ],
+            ),
+            (
+                E::Roks,
+                &[
+                    "diis_size",
+                    "integral_thresh",
+                    "eri",
+                    "guess",
+                    "soscf",
+                    "smeared_charges",
+                    "solvent",
+                    "cosx",
+                    "guess_basis",
+                ],
+            ),
+        ];
+        let flipped_cosx = CosxConfig {
+            overlap_fit: !CosxConfig::default().overlap_fit,
+            ..CosxConfig::default()
+        };
+        let smeared = ExternalPotential {
+            smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
+                q: -0.5,
+                x: 0.0,
+                y: 0.0,
+                z: 4.0,
+                width: 1.0,
+            }],
+            ..Default::default()
+        };
+        let gb = crate::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap();
+        for (entry, names) in added {
+            let has = |n: &str| names.contains(&n);
+            let mut kw = kwargs(entry, &Kw::default());
+            if has("diis_size") {
+                kw.diis_size = Some(5);
+            }
+            if has("integral_thresh") {
+                kw.integral_thresh = Some(1e-10);
+            }
+            if has("eri") {
+                kw.eri = Some(EriMode::Direct);
+            }
+            if has("guess") {
+                kw.guess = Some(Guess::Core);
+            }
+            if has("soscf") {
+                kw.soscf = Some(true);
+            }
+            if has("smeared_charges") {
+                kw.external_potential = Some(smeared.clone());
+            }
+            if has("solvent") {
+                kw.pcm = Some(ferric_pcm::PcmConfig::default());
+            }
+            if has("stability_descent") {
+                kw.stability_descent = Some(true);
+            }
+            if has("cosx") {
+                kw.cosx = Some(flipped_cosx.clone());
+            }
+            if has("aurora") {
+                kw.aurora = Some(true);
+            }
+            if has("trah_trigger") {
+                kw.trah_trigger = trah(Some(0.1));
+            }
+            if has("guess_basis") {
+                kw.guess_basis = Some(gb.clone());
+            }
+            if has("mom_reference") {
+                kw.mom_reference = Some(MomReference::Initial);
+            }
+            let c = entry.options(kw).unwrap().into_rhf_config().unwrap();
+            let d = RhfConfig::default();
+            let who = entry.name();
+            let check = |n: &str, ok: bool| assert!(!has(n) || ok, "{who}: {n}");
+            check("diis_size", c.diis_size == 5 && d.diis_size != 5);
+            check("integral_thresh", c.integral_thresh == 1e-10);
+            check("eri", c.eri == EriMode::Direct && d.eri != EriMode::Direct);
+            check("guess", !c.use_sad_guess && d.use_sad_guess);
+            check("soscf", c.newton_trigger == SOSCF_NEWTON_TRIGGER);
+            check(
+                "smeared_charges",
+                c.external_potential.as_ref() == Some(&smeared),
+            );
+            check("solvent", c.pcm.is_some());
+            check(
+                "stability_descent",
+                c.check_stability && c.scf_stability_descent,
+            );
+            check(
+                "cosx",
+                format!("{:?}", c.cosx) == format!("{flipped_cosx:?}"),
+            );
+            check("aurora", c.aurora.enabled);
+            check("trah_trigger", c.trah_trigger == Some(0.1));
+            check("guess_basis", c.guess_basis.as_ref() == Some(&gb));
+            check("mom_reference", c.mom_reference == MomReference::Initial);
+            assert!(c.xc.is_some() == entry.is_kohn_sham(), "{who}");
         }
     }
 
