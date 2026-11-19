@@ -242,7 +242,7 @@ impl ScfJk {
             ScfJkMode::RiJCosx => {
                 cfg.df_j_aux = self.aux.clone();
                 cfg.df_k_aux = None;
-                cfg.k_builder = Some("cosx".to_string());
+                cfg.k_builder = Some(crate::options::COSX_K_BUILDER.to_string());
             }
         }
     }
@@ -273,7 +273,8 @@ pub fn effective_jk(cfg: &RhfConfig) -> EffectiveJk {
     let fit = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
     let (j_aux, k_aux) = (fit(&cfg.df_j_aux), fit(&cfg.df_k_aux));
     let kb = cfg.k_builder.as_deref().filter(|k| *k != "direct");
-    let overridden = k_aux.is_some() || (j_aux.is_some() && kb != Some("cosx"));
+    let overridden =
+        k_aux.is_some() || (j_aux.is_some() && kb != Some(crate::options::COSX_K_BUILDER));
     let k_builder = if overridden {
         None
     } else {
@@ -282,7 +283,7 @@ pub fn effective_jk(cfg: &RhfConfig) -> EffectiveJk {
     let mode = match (&j_aux, &k_aux, k_builder.as_deref()) {
         (None, None, _) => "exact",
         (Some(j), Some(k), _) if j == k => "rijk",
-        (Some(_), None, Some("cosx")) => "rijcosx",
+        (Some(_), None, Some(crate::options::COSX_K_BUILDER)) => "rijcosx",
         (Some(_), None, _) => "ri-j",
         _ => "mixed",
     };
@@ -305,7 +306,7 @@ fn check_k_builder(
             "{kbk} = \"{kb}\" conflicts with {m} = \"rijk\": RI-K builds the exchange, so \
              {kbk} would be ignored. Remove {kbk}, or use {m} = \"rijcosx\" for COSX"
         )),
-        (ScfJkMode::RiJCosx, Some(kb)) if kb != "cosx" => Err(format!(
+        (ScfJkMode::RiJCosx, Some(kb)) if kb != crate::options::COSX_K_BUILDER => Err(format!(
             "{kbk} = \"{kb}\" conflicts with {m} = \"rijcosx\", whose exchange is COSX. \
              Remove {kbk}"
         )),

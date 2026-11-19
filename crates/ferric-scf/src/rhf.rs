@@ -3549,7 +3549,7 @@ impl RhfState {
         // `k_buf` holds K_scf(d) from this iteration's build, so only
         // the final grid is built here.
         let (energy, cosx_final) = match (inp.route.pluggable_k, config.cosx.final_grid.as_ref()) {
-            (Some("cosx"), Some(fg)) => {
+            (Some(crate::options::COSX_K_BUILDER), Some(fg)) => {
                 let rec = crate::cosx_k::run_final_pass(
                     ctx,
                     inp.mol,

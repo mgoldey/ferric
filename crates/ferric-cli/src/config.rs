@@ -3665,7 +3665,7 @@ impl Config {
             (s.mom_after_iter > 0, "[scf] mom_after_iter"),
             (s.mom_reference.is_some(), "[scf] mom_reference"),
             (
-                s.k_builder.as_deref() == Some("cosx"),
+                s.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER),
                 "[scf] k_builder = \"cosx\"",
             ),
         ];
@@ -3943,8 +3943,8 @@ impl ScfCfg {
         router_allowed: bool,
     ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
-        let is_cosx =
-            self.k_builder.as_deref() == Some("cosx") || self.jk.as_deref() == Some("rijcosx");
+        let is_cosx = self.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
+            || self.jk.as_deref() == Some("rijcosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
@@ -4940,7 +4940,7 @@ impl Config {
         }
         self.validate_cli_wired_keys()?;
         if task != "energy"
-            && self.scf.k_builder.as_deref() == Some("cosx")
+            && self.scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
             && !COSX_GRADIENT_KINDS.contains(&kind)
         {
             return Err(format!(

@@ -235,7 +235,7 @@ pub fn scf_exchange_is_cosx(
     open_shell: bool,
 ) -> Result<bool, FerricError> {
     let _ = open_shell;
-    if config.k_builder.as_deref() != Some("cosx") {
+    if config.k_builder.as_deref() != Some(crate::options::COSX_K_BUILDER) {
         return Ok(false);
     }
     let has_xc = config.xc.is_some();

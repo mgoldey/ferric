@@ -141,7 +141,11 @@ pub(crate) fn start(
     k_kind: Option<&str>,
     cfg: &CosxConfig,
 ) -> Result<Option<ScheduleRun>, FerricError> {
-    let Some(s) = cfg.schedule.as_ref().filter(|_| k_kind == Some("cosx")) else {
+    let Some(s) = cfg
+        .schedule
+        .as_ref()
+        .filter(|_| k_kind == Some(crate::options::COSX_K_BUILDER))
+    else {
         return Ok(None);
     };
     s.validate()?;
@@ -160,7 +164,7 @@ pub(crate) fn refuse(
     cfg: &CosxConfig,
     solver: &str,
 ) -> Result<(), FerricError> {
-    if k_kind == Some("cosx") && cfg.schedule.is_some() {
+    if k_kind == Some(crate::options::COSX_K_BUILDER) && cfg.schedule.is_some() {
         return Err(FerricError::General(format!(
             "COSX grid schedule is implemented for RHF/RKS and UHF/UKS, not {solver}; \
              unset it for {solver} runs"

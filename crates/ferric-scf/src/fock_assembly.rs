@@ -254,10 +254,11 @@ impl JkRoute {
     pub fn pluggable_k(&self, k_builder: Option<&str>) -> Option<&'static str> {
         let kind = match k_builder {
             Some("link") => "link",
-            Some("cosx") => "cosx",
+            Some(crate::options::COSX_K_BUILDER) => crate::options::COSX_K_BUILDER,
             _ => return None,
         };
-        let overridden = self.k_df_routed || (self.j_aux.is_some() && kind != "cosx");
+        let overridden =
+            self.k_df_routed || (self.j_aux.is_some() && kind != crate::options::COSX_K_BUILDER);
         (!overridden && self.k_consumed && self.omega <= 0.0).then_some(kind)
     }
 }
@@ -814,13 +815,13 @@ pub(crate) fn resolve_k_builder(
     let Some(kb) = k_builder else {
         return Ok(None);
     };
-    if kb != "direct" && kb != "link" && kb != "cosx" {
+    if kb != "direct" && kb != "link" && kb != crate::options::COSX_K_BUILDER {
         return Err(FerricError::General(format!(
             "unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'"
         )));
     }
-    let pluggable = matches!(kb, "link" | "cosx").then_some(kb);
-    let overridden = df_k_active || (df_j_active && kb != "cosx");
+    let pluggable = matches!(kb, "link" | crate::options::COSX_K_BUILDER).then_some(kb);
+    let overridden = df_k_active || (df_j_active && kb != crate::options::COSX_K_BUILDER);
     if overridden {
         if let Some(msg) = k_builder_ignored_warning(kb, df_k_active, df_k_present, need_k, omega) {
             eprintln!("{msg}");
@@ -889,7 +890,7 @@ pub(crate) fn cosx_replaces_df_k(
     df_k_aux: Option<&str>,
     k_consumed_w0: bool,
 ) -> Result<bool, FerricError> {
-    if k_builder != Some("cosx") || !k_consumed_w0 {
+    if k_builder != Some(crate::options::COSX_K_BUILDER) || !k_consumed_w0 {
         return Ok(false);
     }
     if let Some(name) = df_k_aux.filter(|s| !s.is_empty()) {
@@ -972,7 +973,7 @@ pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
             integral_thresh,
             ooc_budget,
         )) as Box<dyn KBuilder + 'a>)),
-        Some("cosx") => {
+        Some(crate::options::COSX_K_BUILDER) => {
             // Seminumerical exchange is defined against the 1/r kernel only;
             // an attenuated (erf/erfc) or geminal operator has no COSX form
             // here. Refused rather than silently computing Coulomb exchange.

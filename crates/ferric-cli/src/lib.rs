@@ -2137,7 +2137,10 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
     };
     let (exchange_used, rsh) = (route.k_consumed, route.omega > 0.0);
     let df_j = route.j_aux.as_deref();
-    if scf.k_builder.as_deref() == Some("cosx") && exchange_used && !rsh {
+    if scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
+        && exchange_used
+        && !rsh
+    {
         let j = df_j.filter(|s| !s.is_empty()).map_or_else(
             || "exact J (four-centre)".to_string(),
             |a| format!("RI-J via {a}"),

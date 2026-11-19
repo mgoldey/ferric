@@ -920,7 +920,9 @@ fn refuse_final_pass_result(result: &ScfResult) -> Result<(), FerricError> {
 pub fn gradient_task_config(
     config: &crate::rhf::RhfConfig,
 ) -> std::borrow::Cow<'_, crate::rhf::RhfConfig> {
-    if config.k_builder.as_deref() == Some("cosx") && config.cosx.final_grid.is_some() {
+    if config.k_builder.as_deref() == Some(crate::options::COSX_K_BUILDER)
+        && config.cosx.final_grid.is_some()
+    {
         if config.verbose {
             eprintln!(
                 "[ferric] COSX final-grid pass skipped for the geometry driver: energies and \
