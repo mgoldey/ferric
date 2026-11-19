@@ -42,8 +42,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 XYZ = "testdata/molecules/alkane_4.xyz"
 
 # Model fields both entry points report (certificate fields).
-MODEL_KEYS = ("eps", "integral_direct", "gate_cal", "fock_screen", "frozen_core",
-              "lambda_boys", "maps", "operator", "precision")
+MODEL_KEYS = (
+    "eps",
+    "integral_direct",
+    "gate_cal",
+    "fock_screen",
+    "frozen_core",
+    "lambda_boys",
+    "maps",
+    "operator",
+    "precision",
+)
 
 # Same code on the same orbitals: measured dE_corr = 0.0 exactly (bit for
 # bit, 2026-11-18, same rayon width). The bar leaves room for a reduction-order
@@ -80,7 +89,11 @@ def _cli_result(tmp_path, basis):
     env.setdefault("OPENBLAS_NUM_THREADS", "1")
     out = subprocess.run(
         [str(cli), str(toml), "--json", str(log)],
-        cwd=ROOT, env=env, capture_output=True, text=True, check=False,
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert out.returncode == 0, out.stderr
     recs = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
