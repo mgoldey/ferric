@@ -418,13 +418,6 @@ struct ScfConfigInputs<'a> {
     /// The `[gpu]` side of the COSX fp64 router: `precision = "mixed"` with
     /// `cosx-kern` allowed (`GpuSettings::mixed_allows(MixedKernel::CosxKern)`).
     cosx_router_allowed: bool,
-    /// The SCF functional ([`Config::scf_xc_and_aux_defaults`]).
-    xc: Option<String>,
-    /// The kind's RI-J aux default, used when `[scf] df_j_aux` is unset.
-    df_j_default: Option<String>,
-    /// The kind's RI-K aux default, used when `[scf] df_k_aux` is unset and
-    /// `k_builder` is not `"cosx"`.
-    df_k_default: Option<String>,
     /// `[dft] grid_prune`, already parsed.
     grid_prune: Option<ferric_dft::prune::PruneScheme>,
     /// The resolved `[memory]` budget (`None` = auto-detect).
@@ -455,15 +448,17 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     let ScfConfigInputs {
         task,
         cosx_router_allowed,
-        xc,
-        df_j_default,
-        df_k_default,
         grid_prune,
         budget_bytes,
         screening,
         qmmm_system,
     } = inputs;
     let s = &cfg.scf;
+    // The SCF functional and the kind's RI-J / RI-K aux defaults (any
+    // Kohn-Sham SCF, including rhf/uhf/rohf promoted by `[dft] functional`,
+    // gets RI-JK via def2-universal-jkfit): a pure function of `cfg`. See
+    // `Config::scf_xc_and_aux_defaults` for the per-kind table and why.
+    let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
     let guess_basis = s.guess_basis_config()?;
     let diis_flavor = s.diis_flavor()?;
     let cosx = s.cosx_config(cosx_router_allowed)?;
@@ -528,22 +523,17 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // `Config::validate_cli_wired_keys`.
     let relativistic = s.relativistic_resolved()?;
 
-    // A kind default is a basis name, taken verbatim; a written key goes
-    // through the shared spelling parser ("exact"/"none"/"off"/... mean no
-    // density fitting, as in the Python bindings).
-    let kind_default = |d: Option<String>| d.map(AuxBasis::Named);
-    let df_j_aux = s
-        .df_j_aux
-        .as_deref()
-        .map(AuxBasis::parse)
-        .or_else(|| kind_default(df_j_default));
+    // A written key goes through the shared spelling parser
+    // ("exact"/"none"/"off"/... mean no density fitting, as in the Python
+    // bindings); the kind default is already an `AuxBasis`.
+    let df_j_aux = s.df_j_aux.as_deref().map(AuxBasis::parse).or(df_j_default);
     // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default is not
     // applied under it (the shared rule; an explicit `df_k_aux` next to COSX
     // is refused by the SCF as a conflict).
     let df_k_aux = df_k_aux_or_default(
         s.k_builder.as_deref(),
         s.df_k_aux.as_deref().map(AuxBasis::parse),
-        kind_default(df_k_default),
+        df_k_default,
     );
     let options = ScfOptions {
         max_iter: Some(s.max_iter),
@@ -945,11 +935,6 @@ pub fn run(args: Vec<String>) {
             std::process::exit(1);
         });
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, screening_kind).or_exit();
-    // The SCF functional and the RI-J/RI-K aux defaults for this kind (any
-    // Kohn-Sham SCF, including rhf/uhf/rohf promoted by `[dft] functional`,
-    // gets RI-JK via def2-universal-jkfit). See
-    // `Config::scf_xc_and_aux_defaults` for the per-kind table and why.
-    let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
     refuse_tddft_xc_without_kernel(&cfg, method);
     // Unified memory budget from [memory] (bytes), threaded into EVERY method
     // config below. `None` → each method's resolver auto-detects (0.8 × RAM).
@@ -996,9 +981,6 @@ pub fn run(args: Vec<String>) {
             task,
             cosx_router_allowed: ferric_core::gpu::settings()
                 .mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
-            xc,
-            df_j_default,
-            df_k_default,
             grid_prune,
             budget_bytes,
             screening: screening_kind,
@@ -9122,7 +9104,16 @@ mod scf_config_lowering_tests {
                 ferric_scf::screening::ScreeningKind::parse_config_str(s)
             })
             .ok()?;
+        // The defaults `run` computed, in the `Option<String>` form the
+        // literal consumed (`scf_xc_and_aux_defaults` now returns `AuxBasis`).
         let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
+        let as_string = |a: Option<ferric_scf::options::AuxBasis>| {
+            a.map(|a| match a {
+                ferric_scf::options::AuxBasis::Named(n) => n,
+                ferric_scf::options::AuxBasis::Off => String::new(),
+            })
+        };
+        let (df_j_default, df_k_default) = (as_string(df_j_default), as_string(df_k_default));
         Some(Pre {
             xc,
             df_j_default,
@@ -9273,21 +9264,16 @@ mod scf_config_lowering_tests {
         qmmm_system: Option<&ferric_scf::qmmm::QmmmSystem>,
     ) -> Option<Result<RhfConfig, CliError>> {
         let Pre {
-            xc,
-            df_j_default,
-            df_k_default,
             grid_prune,
             screening_kind,
             budget_bytes,
+            ..
         } = pre(cfg)?;
         Some(try_scf_config(
             cfg,
             ScfConfigInputs {
                 task,
                 cosx_router_allowed: router_allowed,
-                xc,
-                df_j_default,
-                df_k_default,
                 grid_prune,
                 budget_bytes,
                 screening: screening_kind,

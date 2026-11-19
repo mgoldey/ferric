@@ -4292,7 +4292,7 @@ impl ScfCfg {
     /// Whether this run computes the stability verdict (`check_stability`
     /// or `stability_descent`; see [`ScfCfg::stability`]).
     pub fn runs_stability_check(&self) -> bool {
-        self.stability() != ferric_scf::options::Stability::Off
+        self.stability().checks()
     }
 
     /// Build the SCF convergence ladder. If no `[[scf.ladder]]` rungs are
@@ -4607,9 +4607,15 @@ impl Config {
     /// * TDA/TDDFT: `[tddft] xc` (None = HF), RI-JK.
     /// * Everything else (plain HF, the MP2/CC family): no functional, no DF
     ///   default.
-    pub fn scf_xc_and_aux_defaults(&self) -> (Option<String>, Option<String>, Option<String>) {
+    pub fn scf_xc_and_aux_defaults(
+        &self,
+    ) -> (
+        Option<String>,
+        Option<ferric_scf::options::AuxBasis>,
+        Option<ferric_scf::options::AuxBasis>,
+    ) {
         let kind = self.method.kind.as_str();
-        let jk = || Some(DEFAULT_SCF_JK_AUX.to_string());
+        let jk = || Some(ferric_scf::options::AuxBasis::named(DEFAULT_SCF_JK_AUX));
         if let Some(functional) = self.ks_functional() {
             (Some(functional), jk(), jk())
         } else if RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some() {
@@ -5871,7 +5877,7 @@ mod compat_guard_tests {
 
         // Every KS SCF kind gets the same RI-JK default, so `uhf` + PBE and
         // `ksdft` + PBE on the same doublet are the same calculation.
-        let jk = Some(DEFAULT_SCF_JK_AUX.to_string());
+        let jk = Some(ferric_scf::options::AuxBasis::named(DEFAULT_SCF_JK_AUX));
         assert_eq!(
             cfg("uhf", "energy", pbe).scf_xc_and_aux_defaults(),
             (Some("PBE".to_string()), jk.clone(), jk.clone())

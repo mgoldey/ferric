@@ -76,6 +76,8 @@ pub enum AuxBasis {
     /// the `Some("")` sentinel `RhfConfig` uses for an explicit opt-out.
     Off,
     /// A named auxiliary basis (trimmed; validated later by `basis::bundled`).
+    /// Build it with [`AuxBasis::named`] or [`AuxBasis::parse`], which
+    /// normalise the spelling; the variant is public for pattern matching.
     Named(String),
 }
 
@@ -93,10 +95,17 @@ impl AuxBasis {
         }
     }
 
+    /// A basis named by a frontend (a default, not user input), through the
+    /// same trim / opt-out normalisation as [`AuxBasis::parse`], so a name
+    /// cannot reach [`AuxBasis::Named`] untrimmed or as an opt-out spelling.
+    pub fn named(name: &str) -> Self {
+        Self::parse(name)
+    }
+
     /// [`DEFAULT_JK_AUX`], the auxiliary basis the Kohn-Sham entry points
     /// fit with when the caller names none.
     pub fn default_jk() -> Self {
-        Self::Named(DEFAULT_JK_AUX.to_string())
+        Self::named(DEFAULT_JK_AUX)
     }
 
     /// The `RhfConfig` string form (`""` for [`AuxBasis::Off`]).
@@ -121,6 +130,14 @@ pub enum Stability {
     /// [`RhfConfig::check_stability`] and [`RhfConfig::scf_stability_descent`]
     /// (the descent needs a verdict to act on).
     Descend,
+}
+
+impl Stability {
+    /// Whether the stability analysis runs ([`Stability::Check`] or
+    /// [`Stability::Descend`]; the descent acts on its verdict).
+    pub fn checks(self) -> bool {
+        matches!(self, Stability::Check | Stability::Descend)
+    }
 }
 
 /// Initial-guess family ([`RhfConfig::use_sad_guess`]).
@@ -394,13 +411,8 @@ impl ScfOptions {
             c.three_index_budget_bytes = v;
         }
         if let Some(st) = stability {
-            let (check, descend) = match st {
-                Stability::Off => (false, false),
-                Stability::Check => (true, false),
-                Stability::Descend => (true, true),
-            };
-            c.check_stability = check;
-            c.scf_stability_descent = descend;
+            c.check_stability = st.checks();
+            c.scf_stability_descent = st == Stability::Descend;
         }
         if let Some(v) = symmetry {
             c.symmetry = v;
@@ -1249,7 +1261,7 @@ mod tests {
 
     #[test]
     fn rijcosx_rule_drops_only_the_ri_k_default() {
-        let named = |s: &str| Some(AuxBasis::Named(s.into()));
+        let named = |s: &str| Some(AuxBasis::named(s));
         let d = named(DEFAULT_JK_AUX);
         assert_eq!(df_k_aux_or_default(Some("cosx"), None, d.clone()), None);
         assert_eq!(
@@ -1275,6 +1287,21 @@ mod tests {
             AuxBasis::parse(" def2-universal-jkfit "),
             AuxBasis::Named("def2-universal-jkfit".into())
         );
+        // `named` normalises exactly as `parse` does.
+        for s in [" def2-svp-jkfit ", "EXACT", "", DEFAULT_JK_AUX] {
+            assert_eq!(AuxBasis::named(s), AuxBasis::parse(s), "{s:?}");
+        }
+        assert_eq!(
+            AuxBasis::default_jk(),
+            AuxBasis::Named(DEFAULT_JK_AUX.into())
+        );
+    }
+
+    #[test]
+    fn stability_checks_unless_off() {
+        assert!(!Stability::Off.checks());
+        assert!(Stability::Check.checks());
+        assert!(Stability::Descend.checks());
     }
 
     #[test]
