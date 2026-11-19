@@ -42,7 +42,17 @@
 //! defect** (~2e-4 Ha on OH/STO-3G, while OH/PBE matches PySCF to 3e-8 and
 //! closed-shell SCAN matches to ~1e-8) limits the open-shell gradient to ~5e-4
 //! agreement with PySCF. That defect is in the energy path, not here.
+//!
+//! Structure: every public `ks_gradient_{closed,uks,roks}*` entry point is a
+//! thin shim over one spin-generic core — `KsGradInputs::scf_gradient` (the
+//! SCF's own densities, optional polarizable term) and
+//! `KsGradInputs::gradient_at` (the gradient expression at given densities),
+//! with the reference selected by [`Spin`] and the densities carried as a
+//! [`TwoElectronDensity`]. The closed and open paths keep their own kernels
+//! and summation order, so each entry point's result is bit-identical to the
+//! former per-reference implementations (`tests/ks_gradient_bit_identity.rs`).
 
+use crate::df_gradient::TwoElectronDensity;
 use crate::gradient::{
     build_energy_weighted_density, build_energy_weighted_density_uhf, oneelectron_gradient,
 };
@@ -60,6 +70,7 @@ use ferric_dft::libxc::{xc_def_from_name, FunctionalFamily};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ndarray::Array2;
+use std::borrow::Cow;
 
 /// The XC grids a KS gradient is differentiated on.
 ///
@@ -128,7 +139,6 @@ pub fn ks_gradient_closed(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
     ks_gradient_closed_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
 }
 
@@ -157,18 +167,9 @@ pub fn ks_gradient_closed_with_exchange(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     cosx: Option<&crate::cosx_k::CosxConfig>,
 ) -> Result<Array2<f64>, FerricError> {
-    ks_gradient_closed_with_exchange_on_grids(
-        mol,
-        prep,
-        bs,
-        op,
-        bounds,
-        xc_name,
-        result,
-        ext,
-        cosx,
-        &KsGradGrids::default(),
-    )
+    let grids = KsGradGrids::default();
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::Restricted, &KsGradOpts::exchange(cosx, &grids))
 }
 
 /// [`ks_gradient_closed_with_exchange`] on the XC grids the SCF ran on: `grids` is
@@ -187,13 +188,8 @@ pub fn ks_gradient_closed_with_exchange_on_grids(
     cosx: Option<&crate::cosx_k::CosxConfig>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    let nocc = (mol.nelec() / 2) as usize;
-    let w = build_energy_weighted_density(result, nocc);
-    let d = result.density_r().clone();
-    ks_gradient_closed_for_density(
-        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, &d, &w, grids,
-    )
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::Restricted, &KsGradOpts::exchange(cosx, grids))
 }
 
 /// The closed-shell KS gradient EXPRESSION evaluated at an arbitrary density
@@ -223,111 +219,14 @@ pub fn ks_gradient_closed_for_density(
     w: &Array2<f64>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    if let Some(cfg) = cosx {
-        crate::cosx_gradient::check_gradient_supported(cfg)?;
-        // Fitted COSX + KS needs the XC Fock derivative in its Z-vector term,
-        // which ferric does not have: refused, never an inexact gradient.
-        crate::cosx_gradient::check_fitted_ks_supported(cfg, Some(xc_name))?;
-    }
-    if mol.atoms.iter().any(|a| a.ghost) {
-        return Err(FerricError::General(
-            "ks_gradient_closed is not implemented for molecules containing ghost atoms".into(),
-        ));
-    }
-    assert!(
-        matches!(result.spin, Spin::Restricted),
-        "ks_gradient_closed: ScfResult.spin must be Restricted"
-    );
-
-    // Validate functional family. LDA + GGA + plain HybridGga + RangeSepGga
-    // are supported (semilocal piece). VV10 nonlocal correlation is NOT
-    // included in the gradient — wB97X-V gradients drop the VV10 term and
-    // therefore have an extra ~mHa/Bohr error vs the full PySCF gradient.
-    let xc =
-        xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-    let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
-    let d = d.clone();
-
-    // 1e + nuclear repulsion gradient — identical to HF.
-    let t = ferric_core::timing::Stage::start("ks-grad:1e+ecp");
-    let mut grad = oneelectron_gradient(mol, prep, &d, w, ext)?;
-    // ECP term Σ D dV_ECP/dR (zero for an all-electron basis): V_ECP is in
-    // the KS hcore (driver::prepare), so its derivative belongs here too.
-    grad += &crate::gradient::ecp_gradient(mol, prep, &d)?;
-    t.end();
-    let t = ferric_core::timing::Stage::start("ks-grad:2e");
-
-    // 2e gradient. When the SCF density-fitted J and/or K (RI-J is the
-    // default for every functional; RSH exchange is ALWAYS fitted), the
-    // recorded route differentiates that fitted energy — see
-    // `crate::df_gradient`. Otherwise (all-exact SCF) the original path:
-    //   * J piece always uses full Coulomb with Γ_J = 0.5·D·D
-    //   * For plain hybrids (ω=0): single K with c_K = k_mix.sr
-    //   * For RSH (ω>0): two K pieces with c_SR · K[erfc] + c_LR · K[erf]
-    if let Some(cfg) = cosx {
-        if k_mix.omega > 0.0 {
-            return Err(FerricError::General(format!(
-                "COSX exchange gradient: range-separated functional '{xc_name}' (omega = {}) has no \
-                 COSX form (k_builder = \"cosx\" supports the Coulomb operator only)",
-                k_mix.omega
-            )));
-        }
-        // J piece from the Coulomb builder the SCF used: RI-J when the route
-        // recorded one (the RIJCOSX composite), else the four-centre
-        // integrals (Γ_J = ½·D·D, c_K = 0). Never the routed J+K path, which
-        // would differentiate EXACT exchange next to it ...
-        match crate::gradient::active_df_route(result) {
-            Some(route) => {
-                if route.k_aux.is_some() || route.rsh_k.is_some() {
-                    return Err(FerricError::General(
-                        "COSX gradient: the SCF recorded a density-fitted exchange route next to \
-                         COSX exchange; RIJCOSX fits Coulomb only"
-                            .into(),
-                    ));
-                }
-                grad += &crate::df_gradient::df_j_gradient(mol, prep, route, &d)?;
-            }
-            None => grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?,
-        }
-        // ... and E_x = −(c_x/4)·tr[D K_COSX(D)] differentiated on the COSX grid.
-        if k_mix.sr != 0.0 {
-            grad += &crate::cosx_gradient::cosx_exchange_gradient(
-                mol,
-                prep,
-                cfg,
-                &[(&d, -0.25 * k_mix.sr)],
-            )?;
-        }
-    } else if let Some(route) = crate::gradient::active_df_route(result) {
-        grad += &crate::df_gradient::routed_two_electron_gradient(
-            mol,
-            prep,
-            op,
-            bounds,
-            crate::df_gradient::TwoElectronDensity::Closed(&d),
-            route,
-            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
-        )?;
-    } else if k_mix.omega > 0.0 {
-        // J piece (Coulomb, no K).
-        grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?;
-        // K_SR (erfc(ω)) scaled by c_SR.
-        grad += &twoelectron_k_gradient(prep, Operator::erfc(k_mix.omega), bounds, &d, k_mix.sr)?;
-        // K_LR (erf(ω)) scaled by c_LR.
-        grad += &twoelectron_k_gradient(prep, Operator::erf(k_mix.omega), bounds, &d, k_mix.lr)?;
-    } else {
-        // Plain hybrid or pure DFT: single Γ = 0.5·D·D − (c_K/4)·D·D.
-        grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, k_mix.sr)?;
-    }
-
-    t.end();
-
-    let t = ferric_core::timing::Stage::start("ks-grad:xc");
-    add_xc_gradient_closed(&mut grad, mol, prep, bs, xc_name, &d, grids)?;
-    t.end();
-
-    Ok(grad)
+    let density = TwoElectronDensity::Closed(d);
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext).gradient_at(
+        Spin::Restricted,
+        density,
+        w,
+        cosx,
+        grids,
+    )
 }
 
 /// [`ks_gradient_closed`] plus the QM-atom-centre Fock-term contribution of
@@ -358,18 +257,9 @@ pub fn ks_gradient_closed_with_polarizable(
     sites: Option<&crate::polarizable::PolarizableSites>,
     dipoles: Option<&Array2<f64>>,
 ) -> Result<Array2<f64>, FerricError> {
+    let grids = KsGradGrids::default();
     ks_gradient_closed_with_polarizable_on_grids(
-        mol,
-        prep,
-        bs,
-        op,
-        bounds,
-        xc_name,
-        result,
-        ext,
-        sites,
-        dipoles,
-        &KsGradGrids::default(),
+        mol, prep, bs, op, bounds, xc_name, result, ext, sites, dipoles, &grids,
     )
 }
 
@@ -388,20 +278,288 @@ pub fn ks_gradient_closed_with_polarizable_on_grids(
     dipoles: Option<&Array2<f64>>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    let mut grad = ks_gradient_closed_with_exchange_on_grids(
-        mol, prep, bs, op, bounds, xc_name, result, ext, None, grids,
-    )?;
-    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
-        grad += &crate::polarizable::polarizable_gradient_term(
-            mol,
-            prep,
-            sites,
-            dipoles,
-            result.density_total(),
-        )?;
-    }
-    Ok(grad)
+    let opts = KsGradOpts {
+        polarizable: sites.zip(dipoles),
+        ..KsGradOpts::exchange(None, grids)
+    };
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::Restricted, &opts)
+}
+
+/// Spin-polarized (UKS) Kohn-Sham nuclear gradient.
+///
+/// Composition mirrors `ks_gradient_closed`:
+///
+/// ```text
+///   ∇E_UKS = ∇E_nn + ∇E_1e + ∇E_2e_scaled_k + ∇E_xc[α,β] + ∇E_vv10[total]
+/// ```
+///
+/// Range-separated hybrids (ω > 0) take their exchange gradient as
+/// c_SR·K[erfc(ω)] + c_LR·K[erf(ω)] per spin, the open-shell form of
+/// `ks_gradient_closed`'s RSH path.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_uks_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
+}
+
+/// [`ks_gradient_uks`] with the exact-exchange term taken from the builder the
+/// SCF actually used: the open-shell sibling of
+/// [`ks_gradient_closed_with_exchange`].
+///
+/// `cosx = None` is exactly [`ks_gradient_uks`] (same code path, so an exact-K
+/// gradient is unchanged bit for bit). `cosx = Some(cfg)` is for a UKS SCF run
+/// with `k_builder = "cosx"`: the Coulomb term comes from the builder the SCF
+/// recorded (four-centre, or RI-J for RIJCOSX) and the exchange
+/// `−½·c_x·Σ_σ tr[D_σ K_COSX(D_σ)]` is differentiated on the COSX grid by
+/// [`crate::cosx_gradient::cosx_exchange_gradient`], per spin, with the grid
+/// riding its atoms and the Becke weight response. Refused for range-separated
+/// functionals and for `overlap_fit = true` (see
+/// [`crate::cosx_gradient::check_fitted_ks_supported`]).
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_with_exchange(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+) -> Result<Array2<f64>, FerricError> {
+    let grids = KsGradGrids::default();
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::Unrestricted, &KsGradOpts::exchange(cosx, &grids))
+}
+
+/// [`ks_gradient_uks_with_exchange`] on the XC grids the SCF ran on: `grids` is
+/// normally [`KsGradGrids::from_config`] of the SCF's config. The plain entry
+/// point differentiates the default grids.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_with_exchange_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::Unrestricted, &KsGradOpts::exchange(cosx, grids))
+}
+
+/// The UKS gradient EXPRESSION evaluated at arbitrary spin densities `d_a`,
+/// `d_b` and energy-weighted density `w` (the Pulay term is −Σ w ∂S/∂R): the
+/// open-shell sibling of [`ks_gradient_closed_for_density`]. With the SCF's
+/// spin densities and `w` from `build_energy_weighted_density_uhf` this IS
+/// [`ks_gradient_uks`].
+///
+/// `result` supplies only the two-electron route and the spin check; `cosx`
+/// selects the COSX exchange derivative exactly as in
+/// [`ks_gradient_uks_with_exchange`]. Linear in `w`; the one-electron, ECP and
+/// two-electron parts (COSX exchange included: `tr[D_σ K_COSX(D_σ)]` is a
+/// quadratic form) are linear or bilinear in (`d_a`, `d_b`). The unrestricted
+/// Z-vector relaxation term
+/// ([`crate::zvector_ks::relaxation_gradient_unrestricted`]) takes its
+/// directional derivative along a spin-density perturbation.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_for_density(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    w: &Array2<f64>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    let density = TwoElectronDensity::Open {
+        alpha: d_a,
+        beta: d_b,
+    };
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext).gradient_at(
+        Spin::Unrestricted,
+        density,
+        w,
+        cosx,
+        grids,
+    )
+}
+
+/// [`ks_gradient_uks`] plus the QM-atom-centre Fock-term contribution of
+/// Thole-damped polarizable embedding — the UKS sibling of
+/// [`ks_gradient_closed_with_polarizable`] /
+/// [`crate::gradient::uhf_gradient_with_polarizable`]. Same None/empty ⇒
+/// bit-identical-to-plain-`ks_gradient_uks` contract, via
+/// `result.density_total()` (`= density_alpha + density_beta` for UKS).
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_with_polarizable(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+) -> Result<Array2<f64>, FerricError> {
+    let grids = KsGradGrids::default();
+    ks_gradient_uks_with_polarizable_on_grids(
+        mol, prep, bs, op, bounds, xc_name, result, ext, sites, dipoles, &grids,
+    )
+}
+
+/// [`ks_gradient_uks_with_polarizable`] on the XC grids the SCF ran on.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_uks_with_polarizable_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    sites: Option<&crate::polarizable::PolarizableSites>,
+    dipoles: Option<&Array2<f64>>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    let opts = KsGradOpts {
+        polarizable: sites.zip(dipoles),
+        ..KsGradOpts::exchange(None, grids)
+    };
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::Unrestricted, &opts)
+}
+
+/// Restricted-open-shell KS (ROKS) nuclear gradient.
+///
+/// Structure mirrors `ks_gradient_uks` but uses the ROHF energy-weighted
+/// density (`crate::gradient::rohf_energy_weighted_density`, built from the
+/// spin Focks, which include `V_xc^σ`) and the same UKS XC gradient via
+/// `xc_gradient_uks_from_density`.
+/// The per-spin densities from a ROKS `ScfResult` already satisfy the
+/// projector structure so the UKS XC path applies verbatim.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_roks(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_roks_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
+}
+
+/// [`ks_gradient_roks`] with the exact-exchange term taken from the builder
+/// the SCF actually used. `cosx = None` is exactly [`ks_gradient_roks`];
+/// `cosx = Some(cfg)` (an SCF with `k_builder = "cosx"`) differentiates
+/// `−½·c_x·Σ_σ tr[D_σ K_COSX(D_σ)]` on the COSX grid, as
+/// [`ks_gradient_uks_with_exchange`] does. Nothing else changes: the ROKS
+/// energy is the UKS functional at the ROKS spin densities, the fit-off COSX
+/// exchange is a quadratic form whose `D_σ`-derivative is the `K_COSX(D_σ)` the
+/// SCF put in its spin Focks, and the energy-weighted density is built from
+/// those Focks (`ScfResult::rohf_spin_focks`). Refused for range-separated
+/// functionals and for `overlap_fit = true`.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_roks_with_exchange(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+) -> Result<Array2<f64>, FerricError> {
+    let grids = KsGradGrids::default();
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::RestrictedOpen, &KsGradOpts::exchange(cosx, &grids))
+}
+
+/// [`ks_gradient_roks_with_exchange`] on the XC grids the SCF ran on: `grids` is
+/// normally [`KsGradGrids::from_config`] of the SCF's config. The plain entry
+/// point differentiates the default grids.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_roks_with_exchange_on_grids(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext)
+        .scf_gradient(Spin::RestrictedOpen, &KsGradOpts::exchange(cosx, grids))
+}
+
+/// The ROKS gradient EXPRESSION evaluated at arbitrary spin densities `d_a`,
+/// `d_b` and energy-weighted density `w` (the Pulay term is −Σ w ∂S/∂R): the
+/// restricted-open-shell sibling of [`ks_gradient_uks_for_density`]. With the
+/// SCF's spin densities and `w` from the ROHF energy-weighted density this IS
+/// [`ks_gradient_roks`].
+///
+/// `result` supplies only the two-electron route and the spin check; `cosx`
+/// selects the COSX exchange derivative as in
+/// [`ks_gradient_roks_with_exchange`]. Linear in `w`; the one-electron, ECP
+/// and two-electron parts are linear or bilinear in (`d_a`, `d_b`). The ROKS
+/// Z-vector relaxation term ([`crate::zvector_ks::relaxation_gradient_roks`])
+/// takes its directional derivative along a shared-orbital rotation.
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_roks_for_density(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    w: &Array2<f64>,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    let density = TwoElectronDensity::Open {
+        alpha: d_a,
+        beta: d_b,
+    };
+    KsGradInputs::new(mol, prep, bs, op, bounds, xc_name, result, ext).gradient_at(
+        Spin::RestrictedOpen,
+        density,
+        w,
+        cosx,
+        grids,
+    )
 }
 
 /// 2e K-only gradient with a chosen Coulomb-like operator (Coulomb, erfc, erf).
@@ -439,275 +597,6 @@ pub fn twoelectron_gradient_scaled_k(
     })
 }
 
-/// Spin-polarized (UKS) Kohn-Sham nuclear gradient.
-///
-/// Composition mirrors `ks_gradient_closed`:
-///
-/// ```text
-///   ∇E_UKS = ∇E_nn + ∇E_1e + ∇E_2e_scaled_k + ∇E_xc[α,β] + ∇E_vv10[total]
-/// ```
-///
-/// Range-separated hybrids (ω > 0) take their exchange gradient as
-/// c_SR·K[erfc(ω)] + c_LR·K[erf(ω)] per spin, the open-shell form of
-/// `ks_gradient_closed`'s RSH path.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_uks(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    ks_gradient_uks_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
-}
-
-/// [`ks_gradient_uks`] with the exact-exchange term taken from the builder the
-/// SCF actually used: the open-shell sibling of
-/// [`ks_gradient_closed_with_exchange`].
-///
-/// `cosx = None` is exactly [`ks_gradient_uks`] (same code path, so an exact-K
-/// gradient is unchanged bit for bit). `cosx = Some(cfg)` is for a UKS SCF run
-/// with `k_builder = "cosx"`: the Coulomb term comes from the builder the SCF
-/// recorded (four-centre, or RI-J for RIJCOSX) and the exchange
-/// `−½·c_x·Σ_σ tr[D_σ K_COSX(D_σ)]` is differentiated on the COSX grid by
-/// [`crate::cosx_gradient::cosx_exchange_gradient`], per spin, with the grid
-/// riding its atoms and the Becke weight response. Refused for range-separated
-/// functionals and for `overlap_fit = true` (see
-/// [`crate::cosx_gradient::check_fitted_ks_supported`]).
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_uks_with_exchange(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    cosx: Option<&crate::cosx_k::CosxConfig>,
-) -> Result<Array2<f64>, FerricError> {
-    ks_gradient_uks_with_exchange_on_grids(
-        mol,
-        prep,
-        bs,
-        op,
-        bounds,
-        xc_name,
-        result,
-        ext,
-        cosx,
-        &KsGradGrids::default(),
-    )
-}
-
-/// [`ks_gradient_uks_with_exchange`] on the XC grids the SCF ran on: `grids` is
-/// normally [`KsGradGrids::from_config`] of the SCF's config. The plain entry
-/// point differentiates the default grids.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_uks_with_exchange_on_grids(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    cosx: Option<&crate::cosx_k::CosxConfig>,
-    grids: &KsGradGrids,
-) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    assert!(
-        matches!(result.spin, Spin::Unrestricted),
-        "ks_gradient_uks: ScfResult.spin must be Unrestricted"
-    );
-
-    let nelec = mol.nelec() as i64;
-    let two_s = mol.multiplicity as i64 - 1;
-    let nocc_a = ((nelec + two_s) / 2) as usize;
-    let nocc_b = ((nelec - two_s) / 2) as usize;
-
-    let d_a = &result.density_alpha;
-    let d_b = result
-        .density_beta
-        .as_ref()
-        .expect("ks_gradient_uks: missing density_beta");
-    let w = build_energy_weighted_density_uhf(result, prep, nocc_a, nocc_b)?;
-    ks_gradient_uks_for_density(
-        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, d_a, d_b, &w, grids,
-    )
-}
-
-/// The UKS gradient EXPRESSION evaluated at arbitrary spin densities `d_a`,
-/// `d_b` and energy-weighted density `w` (the Pulay term is −Σ w ∂S/∂R): the
-/// open-shell sibling of [`ks_gradient_closed_for_density`]. With the SCF's
-/// spin densities and `w` from `build_energy_weighted_density_uhf` this IS
-/// [`ks_gradient_uks`].
-///
-/// `result` supplies only the two-electron route and the spin check; `cosx`
-/// selects the COSX exchange derivative exactly as in
-/// [`ks_gradient_uks_with_exchange`]. Linear in `w`; the one-electron, ECP and
-/// two-electron parts (COSX exchange included: `tr[D_σ K_COSX(D_σ)]` is a
-/// quadratic form) are linear or bilinear in (`d_a`, `d_b`). The unrestricted
-/// Z-vector relaxation term
-/// ([`crate::zvector_ks::relaxation_gradient_unrestricted`]) takes its
-/// directional derivative along a spin-density perturbation.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_uks_for_density(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    cosx: Option<&crate::cosx_k::CosxConfig>,
-    d_a: &Array2<f64>,
-    d_b: &Array2<f64>,
-    w: &Array2<f64>,
-    grids: &KsGradGrids,
-) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    assert!(
-        matches!(result.spin, Spin::Unrestricted),
-        "ks_gradient_uks: ScfResult.spin must be Unrestricted"
-    );
-
-    let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
-        .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-    // Meta-GGA: the τ-dependent AO-derivative + grid-response terms are handled
-    // by `xc_gradient_uks_mgga_from_density`.
-    let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
-    let c_k: f64 = k_mix.sr;
-
-    let d_total = d_a + d_b;
-
-    // 1e + nn gradient.
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, w, ext)?;
-    // ECP term (zero for an all-electron basis), as in ks_gradient_closed.
-    grad += &crate::gradient::ecp_gradient(mol, prep, &d_total)?;
-
-    // 2e gradient:
-    //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
-    //   * ω > 0 (RSH): J (Coulomb, c_K=0) + c_SR·K_UHF[erfc(ω)] + c_LR·K_UHF[erf(ω)]
-    // unless the SCF density-fitted J/K, in which case the recorded route
-    // differentiates that fitted energy (`crate::df_gradient`), or built its
-    // exchange with COSX (then J from the SCF's Coulomb builder and K on the
-    // COSX grid).
-    if let Some(cfg) = cosx {
-        grad += &open_shell_cosx_two_electron_gradient(
-            mol, prep, op, bounds, xc_name, &k_mix, result, cfg, d_a, d_b,
-        )?;
-    } else if let Some(route) = crate::gradient::active_df_route(result) {
-        grad += &crate::df_gradient::routed_two_electron_gradient(
-            mol,
-            prep,
-            op,
-            bounds,
-            crate::df_gradient::TwoElectronDensity::Open {
-                alpha: d_a,
-                beta: d_b,
-            },
-            route,
-            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
-        )?;
-    } else if k_mix.omega > 0.0 {
-        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
-        grad += &twoelectron_k_gradient_uhf(
-            prep,
-            Operator::erfc(k_mix.omega),
-            bounds,
-            d_a,
-            d_b,
-            k_mix.sr,
-        )?;
-        grad += &twoelectron_k_gradient_uhf(
-            prep,
-            Operator::erf(k_mix.omega),
-            bounds,
-            d_a,
-            d_b,
-            k_mix.lr,
-        )?;
-    } else {
-        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
-    }
-
-    add_xc_gradient_open(&mut grad, mol, prep, bs, xc_name, (d_a, d_b), grids)?;
-
-    Ok(grad)
-}
-
-/// [`ks_gradient_uks`] plus the QM-atom-centre Fock-term contribution of
-/// Thole-damped polarizable embedding — the UKS sibling of
-/// [`ks_gradient_closed_with_polarizable`] /
-/// [`crate::gradient::uhf_gradient_with_polarizable`]. Same None/empty ⇒
-/// bit-identical-to-plain-`ks_gradient_uks` contract, via
-/// `result.density_total()` (`= density_alpha + density_beta` for UKS).
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_uks_with_polarizable(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    sites: Option<&crate::polarizable::PolarizableSites>,
-    dipoles: Option<&Array2<f64>>,
-) -> Result<Array2<f64>, FerricError> {
-    ks_gradient_uks_with_polarizable_on_grids(
-        mol,
-        prep,
-        bs,
-        op,
-        bounds,
-        xc_name,
-        result,
-        ext,
-        sites,
-        dipoles,
-        &KsGradGrids::default(),
-    )
-}
-
-/// [`ks_gradient_uks_with_polarizable`] on the XC grids the SCF ran on.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_uks_with_polarizable_on_grids(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    sites: Option<&crate::polarizable::PolarizableSites>,
-    dipoles: Option<&Array2<f64>>,
-    grids: &KsGradGrids,
-) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    let mut grad = ks_gradient_uks_with_exchange_on_grids(
-        mol, prep, bs, op, bounds, xc_name, result, ext, None, grids,
-    )?;
-    if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
-        grad += &crate::polarizable::polarizable_gradient_term(
-            mol,
-            prep,
-            sites,
-            dipoles,
-            result.density_total(),
-        )?;
-    }
-    Ok(grad)
-}
-
 /// Scaled-K UHF 2e gradient: same as `twoelectron_gradient_uhf` but the
 /// exchange piece is multiplied by `c_K`. Used by UKS where hybrids include
 /// a fraction of exact exchange.
@@ -730,237 +619,6 @@ pub fn twoelectron_gradient_uhf_scaled_k(
     })
 }
 
-/// Restricted-open-shell KS (ROKS) nuclear gradient.
-///
-/// Structure mirrors `ks_gradient_uks` but uses the ROHF energy-weighted
-/// density (`crate::gradient::rohf_energy_weighted_density`, built from the
-/// spin Focks, which include `V_xc^σ`) and the same UKS XC gradient via
-/// `xc_gradient_uks_from_density`.
-/// The per-spin densities from a ROKS `ScfResult` already satisfy the
-/// projector structure so the UKS XC path applies verbatim.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_roks(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    ks_gradient_roks_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
-}
-
-/// [`ks_gradient_roks`] with the exact-exchange term taken from the builder
-/// the SCF actually used. `cosx = None` is exactly [`ks_gradient_roks`];
-/// `cosx = Some(cfg)` (an SCF with `k_builder = "cosx"`) differentiates
-/// `−½·c_x·Σ_σ tr[D_σ K_COSX(D_σ)]` on the COSX grid, as
-/// [`ks_gradient_uks_with_exchange`] does. Nothing else changes: the ROKS
-/// energy is the UKS functional at the ROKS spin densities, the fit-off COSX
-/// exchange is a quadratic form whose `D_σ`-derivative is the `K_COSX(D_σ)` the
-/// SCF put in its spin Focks, and the energy-weighted density is built from
-/// those Focks (`ScfResult::rohf_spin_focks`). Refused for range-separated
-/// functionals and for `overlap_fit = true`.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_roks_with_exchange(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    cosx: Option<&crate::cosx_k::CosxConfig>,
-) -> Result<Array2<f64>, FerricError> {
-    ks_gradient_roks_with_exchange_on_grids(
-        mol,
-        prep,
-        bs,
-        op,
-        bounds,
-        xc_name,
-        result,
-        ext,
-        cosx,
-        &KsGradGrids::default(),
-    )
-}
-
-/// [`ks_gradient_roks_with_exchange`] on the XC grids the SCF ran on: `grids` is
-/// normally [`KsGradGrids::from_config`] of the SCF's config. The plain entry
-/// point differentiates the default grids.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_roks_with_exchange_on_grids(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    cosx: Option<&crate::cosx_k::CosxConfig>,
-    grids: &KsGradGrids,
-) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    assert!(
-        matches!(result.spin, Spin::RestrictedOpen),
-        "ks_gradient_roks: ScfResult.spin must be RestrictedOpen"
-    );
-    let d_a = &result.density_alpha;
-    let d_b = result
-        .density_beta
-        .as_ref()
-        .expect("ks_gradient_roks: missing density_beta");
-    let w = crate::gradient::rohf_energy_weighted_density(result)?;
-    ks_gradient_roks_for_density(
-        mol, prep, bs, op, bounds, xc_name, result, ext, cosx, d_a, d_b, &w, grids,
-    )
-}
-
-/// The ROKS gradient EXPRESSION evaluated at arbitrary spin densities `d_a`,
-/// `d_b` and energy-weighted density `w` (the Pulay term is −Σ w ∂S/∂R): the
-/// restricted-open-shell sibling of [`ks_gradient_uks_for_density`]. With the
-/// SCF's spin densities and `w` from the ROHF energy-weighted density this IS
-/// [`ks_gradient_roks`].
-///
-/// `result` supplies only the two-electron route and the spin check; `cosx`
-/// selects the COSX exchange derivative as in
-/// [`ks_gradient_roks_with_exchange`]. Linear in `w`; the one-electron, ECP
-/// and two-electron parts are linear or bilinear in (`d_a`, `d_b`). The ROKS
-/// Z-vector relaxation term ([`crate::zvector_ks::relaxation_gradient_roks`])
-/// takes its directional derivative along a shared-orbital rotation.
-#[allow(clippy::too_many_arguments)]
-pub fn ks_gradient_roks_for_density(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    result: &ScfResult,
-    ext: Option<&ferric_core::external_potential::ExternalPotential>,
-    cosx: Option<&crate::cosx_k::CosxConfig>,
-    d_a: &Array2<f64>,
-    d_b: &Array2<f64>,
-    w: &Array2<f64>,
-    grids: &KsGradGrids,
-) -> Result<Array2<f64>, FerricError> {
-    crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
-    assert!(
-        matches!(result.spin, Spin::RestrictedOpen),
-        "ks_gradient_roks: ScfResult.spin must be RestrictedOpen"
-    );
-
-    let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
-        .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-    // Meta-GGA: handled by the polarized τ-aware driver, same as UKS.
-    let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
-    let c_k: f64 = k_mix.sr;
-
-    let d_total = d_a + d_b;
-
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, w, ext)?;
-    // ECP term (zero for an all-electron basis), as in ks_gradient_closed.
-    grad += &crate::gradient::ecp_gradient(mol, prep, &d_total)?;
-
-    // 2e gradient:
-    //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
-    //   * ω > 0 (RSH): J (Coulomb, c_K=0) + c_SR·K_UHF[erfc(ω)] + c_LR·K_UHF[erf(ω)]
-    // unless the SCF density-fitted J/K, in which case the recorded route
-    // differentiates that fitted energy (`crate::df_gradient`), or built its
-    // exchange with COSX (then J from the SCF's Coulomb builder and K on the
-    // COSX grid).
-    if let Some(cfg) = cosx {
-        grad += &open_shell_cosx_two_electron_gradient(
-            mol, prep, op, bounds, xc_name, &k_mix, result, cfg, d_a, d_b,
-        )?;
-    } else if let Some(route) = crate::gradient::active_df_route(result) {
-        grad += &crate::df_gradient::routed_two_electron_gradient(
-            mol,
-            prep,
-            op,
-            bounds,
-            crate::df_gradient::TwoElectronDensity::Open {
-                alpha: d_a,
-                beta: d_b,
-            },
-            route,
-            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
-        )?;
-    } else if k_mix.omega > 0.0 {
-        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
-        grad += &twoelectron_k_gradient_uhf(
-            prep,
-            Operator::erfc(k_mix.omega),
-            bounds,
-            d_a,
-            d_b,
-            k_mix.sr,
-        )?;
-        grad += &twoelectron_k_gradient_uhf(
-            prep,
-            Operator::erf(k_mix.omega),
-            bounds,
-            d_a,
-            d_b,
-            k_mix.lr,
-        )?;
-    } else {
-        grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
-    }
-
-    add_xc_gradient_open(&mut grad, mol, prep, bs, xc_name, (d_a, d_b), grids)?;
-
-    Ok(grad)
-}
-
-/// Open-shell (UKS / ROKS) two-electron gradient of an SCF whose exchange
-/// came from COSX: the Coulomb term `½ J'(D, D)` (`D = D_α + D_β`) from the
-/// builder the SCF used (four-centre, or the RI-J route of RIJCOSX) and the
-/// exchange `−½·c_x·Σ_σ tr[D_σ K_COSX(D_σ)]` differentiated on the COSX grid
-/// (one density term per spin, `[(D_α, −c_x/2), (D_β, −c_x/2)]`).
-///
-/// Refused, never approximated: a configuration the COSX gradient cannot
-/// differentiate (`check_gradient_supported`), the overlap fit with a
-/// functional (its Z-vector needs the XC Fock nuclear derivative), and a
-/// range-separated functional (COSX has no erf/erfc form).
-#[allow(clippy::too_many_arguments)]
-fn open_shell_cosx_two_electron_gradient(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    xc_name: &str,
-    k_mix: &ferric_dft::xc_trait::KMix,
-    result: &ScfResult,
-    cfg: &crate::cosx_k::CosxConfig,
-    d_a: &Array2<f64>,
-    d_b: &Array2<f64>,
-) -> Result<Array2<f64>, FerricError> {
-    crate::cosx_gradient::check_gradient_supported(cfg)?;
-    crate::cosx_gradient::check_fitted_ks_supported(cfg, Some(xc_name))?;
-    if k_mix.omega > 0.0 {
-        return Err(FerricError::General(format!(
-            "COSX exchange gradient: range-separated functional '{xc_name}' (omega = {}) has no \
-             COSX form (k_builder = \"cosx\" supports the Coulomb operator only)",
-            k_mix.omega
-        )));
-    }
-    let d_total = d_a + d_b;
-    let mut grad =
-        crate::gradient::cosx_run_coulomb_gradient(mol, prep, op, bounds, result, &d_total, None)?;
-    if k_mix.sr != 0.0 {
-        let c = -0.5 * k_mix.sr;
-        grad +=
-            &crate::cosx_gradient::cosx_exchange_gradient(mol, prep, cfg, &[(d_a, c), (d_b, c)])?;
-    }
-    Ok(grad)
-}
-
 /// UHF K-only gradient with a chosen operator: Σ Γ_K · d(μν|λσ)/dR with
 /// `Γ_K = -0.5 · c_K · (D_α·D_α + D_β·D_β)`. Used by RSH UKS gradients to
 /// build the c_SR·K[erfc(ω)] and c_LR·K[erf(ω)] pieces separately.
@@ -977,6 +635,354 @@ pub fn twoelectron_k_gradient_uhf(
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         -0.5 * c_k * (d_alpha[(mu, la)] * d_alpha[(nu, sg)] + d_beta[(mu, la)] * d_beta[(nu, sg)])
     })
+}
+
+/// The arguments every KS gradient entry point shares: the system, its
+/// integrals context, the functional and the converged SCF.
+#[derive(Clone, Copy)]
+struct KsGradInputs<'a> {
+    mol: &'a Molecule,
+    prep: &'a PreparedBasis,
+    bs: &'a ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &'a SchwarzBounds,
+    xc_name: &'a str,
+    result: &'a ScfResult,
+    ext: Option<&'a ferric_core::external_potential::ExternalPotential>,
+}
+
+/// The optional pieces of a KS gradient taken from the SCF's own setup: the
+/// COSX exchange builder, the XC grids, and the polarizable-embedding sites
+/// with their induced dipoles.
+struct KsGradOpts<'a> {
+    cosx: Option<&'a crate::cosx_k::CosxConfig>,
+    grids: &'a KsGradGrids,
+    polarizable: Option<(&'a crate::polarizable::PolarizableSites, &'a Array2<f64>)>,
+}
+
+impl<'a> KsGradOpts<'a> {
+    fn exchange(cosx: Option<&'a crate::cosx_k::CosxConfig>, grids: &'a KsGradGrids) -> Self {
+        Self {
+            cosx,
+            grids,
+            polarizable: None,
+        }
+    }
+}
+
+/// The public entry point named in panics for a `spin` reference.
+fn entry_name(spin: Spin) -> &'static str {
+    match spin {
+        Spin::Restricted => "ks_gradient_closed",
+        Spin::Unrestricted => "ks_gradient_uks",
+        Spin::RestrictedOpen => "ks_gradient_roks",
+    }
+}
+
+fn assert_spin(result: &ScfResult, spin: Spin) {
+    let name = entry_name(spin);
+    assert!(
+        result.spin == spin,
+        "{name}: ScfResult.spin must be {spin:?}"
+    );
+}
+
+/// The total density `D` (`D_α + D_β` for an open shell).
+fn total_density(density: TwoElectronDensity<'_>) -> Cow<'_, Array2<f64>> {
+    match density {
+        TwoElectronDensity::Closed(d) => Cow::Borrowed(d),
+        TwoElectronDensity::Open { alpha, beta } => Cow::Owned(alpha + beta),
+    }
+}
+
+impl<'a> KsGradInputs<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        mol: &'a Molecule,
+        prep: &'a PreparedBasis,
+        bs: &'a ferric_core::basis::BasisSet,
+        op: Operator,
+        bounds: &'a SchwarzBounds,
+        xc_name: &'a str,
+        result: &'a ScfResult,
+        ext: Option<&'a ferric_core::external_potential::ExternalPotential>,
+    ) -> Self {
+        Self {
+            mol,
+            prep,
+            bs,
+            op,
+            bounds,
+            xc_name,
+            result,
+            ext,
+        }
+    }
+
+    /// The `spin`-reference KS gradient at the SCF's own densities and
+    /// energy-weighted density, plus the polarizable-embedding term when
+    /// `opts` carries one.
+    fn scf_gradient(&self, spin: Spin, opts: &KsGradOpts) -> Result<Array2<f64>, FerricError> {
+        let (mol, prep, result) = (self.mol, self.prep, self.result);
+        crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
+        let (density, w) = if spin == Spin::Restricted {
+            let w = build_energy_weighted_density(result, (mol.nelec() / 2) as usize);
+            (TwoElectronDensity::Closed(result.density_r()), w)
+        } else {
+            assert_spin(result, spin);
+            let alpha = &result.density_alpha;
+            let beta = result.density_beta.as_ref();
+            let beta = beta.unwrap_or_else(|| panic!("{}: missing density_beta", entry_name(spin)));
+            let w = if spin == Spin::Unrestricted {
+                let nelec = mol.nelec() as i64;
+                let two_s = mol.multiplicity as i64 - 1;
+                let nocc_a = ((nelec + two_s) / 2) as usize;
+                let nocc_b = ((nelec - two_s) / 2) as usize;
+                build_energy_weighted_density_uhf(result, prep, nocc_a, nocc_b)?
+            } else {
+                crate::gradient::rohf_energy_weighted_density(result)?
+            };
+            (TwoElectronDensity::Open { alpha, beta }, w)
+        };
+        let mut grad = self.gradient_at(spin, density, &w, opts.cosx, opts.grids)?;
+        if let Some((sites, dipoles)) = opts.polarizable {
+            let d_total = result.density_total();
+            grad +=
+                &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, d_total)?;
+        }
+        Ok(grad)
+    }
+
+    /// The KS gradient EXPRESSION of the `spin` reference at `density` and
+    /// energy-weighted density `w`: one-electron + ECP + two-electron (by the
+    /// route `result` recorded) + XC + VV10.
+    fn gradient_at(
+        &self,
+        spin: Spin,
+        density: TwoElectronDensity,
+        w: &Array2<f64>,
+        cosx: Option<&crate::cosx_k::CosxConfig>,
+        grids: &KsGradGrids,
+    ) -> Result<Array2<f64>, FerricError> {
+        let Self {
+            mol,
+            prep,
+            bs,
+            xc_name,
+            result,
+            ext,
+            ..
+        } = *self;
+        crate::x2c::refuse_relativistic(result.relativistic, "analytic nuclear gradient")?;
+        if spin == Spin::Restricted {
+            if let Some(cfg) = cosx {
+                crate::cosx_gradient::check_gradient_supported(cfg)?;
+                // Fitted COSX + KS needs the XC Fock derivative in its
+                // Z-vector term, which ferric does not have: refused, never an
+                // inexact gradient.
+                crate::cosx_gradient::check_fitted_ks_supported(cfg, Some(xc_name))?;
+            }
+            refuse_ghosts(mol, "ks_gradient_closed")?;
+        }
+        assert_spin(result, spin);
+
+        let xc =
+            xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+        let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
+        let d_total = total_density(density);
+
+        // 1e + nuclear repulsion gradient — identical to HF — and the ECP
+        // term Σ D dV_ECP/dR (zero for an all-electron basis): V_ECP is in the
+        // KS hcore (driver::prepare), so its derivative belongs here too.
+        let t = ferric_core::timing::Stage::start("ks-grad:1e+ecp");
+        let mut grad = oneelectron_gradient(mol, prep, &d_total, w, ext)?;
+        grad += &crate::gradient::ecp_gradient(mol, prep, &d_total)?;
+        t.end();
+
+        let t = ferric_core::timing::Stage::start("ks-grad:2e");
+        self.add_two_electron_gradient(&mut grad, density, &d_total, &k_mix, cosx)?;
+        t.end();
+
+        let t = ferric_core::timing::Stage::start("ks-grad:xc");
+        add_xc_gradient(&mut grad, mol, prep, bs, xc_name, density, grids)?;
+        t.end();
+
+        Ok(grad)
+    }
+
+    /// `grad += ∇E_2e`. When the SCF density-fitted J and/or K (RI-J is the
+    /// default for every functional; RSH exchange is ALWAYS fitted), the
+    /// recorded route differentiates that fitted energy — see
+    /// `crate::df_gradient`. With COSX exchange, J comes from the SCF's
+    /// Coulomb builder and K from the COSX grid. Otherwise (all-exact SCF):
+    ///   * ω = 0: Γ = ½·D·D minus the exchange scaled by c_K = k_mix.sr
+    ///     (closed `(c_K/4)·D·D`, open `½·c_K·(D_α·D_α + D_β·D_β)`)
+    ///   * ω > 0 (RSH): J (Coulomb, c_K = 0) + c_SR·K[erfc(ω)] + c_LR·K[erf(ω)]
+    fn add_two_electron_gradient(
+        &self,
+        grad: &mut Array2<f64>,
+        density: TwoElectronDensity,
+        d_total: &Array2<f64>,
+        k_mix: &ferric_dft::xc_trait::KMix,
+        cosx: Option<&crate::cosx_k::CosxConfig>,
+    ) -> Result<(), FerricError> {
+        let Self {
+            mol,
+            prep,
+            op,
+            bounds,
+            result,
+            ..
+        } = *self;
+        if let Some(cfg) = cosx {
+            return match density {
+                TwoElectronDensity::Closed(d) => {
+                    self.add_closed_cosx_two_electron_gradient(grad, d, k_mix, cfg)
+                }
+                TwoElectronDensity::Open { alpha, beta } => {
+                    *grad +=
+                        &self.open_shell_cosx_two_electron_gradient(k_mix, cfg, alpha, beta)?;
+                    Ok(())
+                }
+            };
+        }
+        if let Some(route) = crate::gradient::active_df_route(result) {
+            let mix = crate::df_gradient::ExchangeMix::from_k_mix(k_mix);
+            *grad += &crate::df_gradient::routed_two_electron_gradient(
+                mol, prep, op, bounds, density, route, mix,
+            )?;
+        } else if k_mix.omega > 0.0 {
+            let (erfc, erf) = (Operator::erfc(k_mix.omega), Operator::erf(k_mix.omega));
+            *grad += &scaled_k_gradient(prep, op, bounds, density, d_total, 0.0)?;
+            *grad += &k_only_gradient(prep, erfc, bounds, density, k_mix.sr)?;
+            *grad += &k_only_gradient(prep, erf, bounds, density, k_mix.lr)?;
+        } else {
+            *grad += &scaled_k_gradient(prep, op, bounds, density, d_total, k_mix.sr)?;
+        }
+        Ok(())
+    }
+
+    /// Closed-shell `grad += ∇E_2e` of an SCF whose exchange came from COSX:
+    /// J from the Coulomb builder the SCF used — RI-J when the route recorded
+    /// one (the RIJCOSX composite), else the four-centre integrals
+    /// (Γ_J = ½·D·D, c_K = 0), never the routed J+K path, which would
+    /// differentiate EXACT exchange next to it — then
+    /// E_x = −(c_x/4)·tr[D K_COSX(D)] differentiated on the COSX grid.
+    fn add_closed_cosx_two_electron_gradient(
+        &self,
+        grad: &mut Array2<f64>,
+        d: &Array2<f64>,
+        k_mix: &ferric_dft::xc_trait::KMix,
+        cfg: &crate::cosx_k::CosxConfig,
+    ) -> Result<(), FerricError> {
+        let (mol, prep) = (self.mol, self.prep);
+        refuse_cosx_range_separated(self.xc_name, k_mix)?;
+        match crate::gradient::active_df_route(self.result) {
+            Some(route) => {
+                if route.k_aux.is_some() || route.rsh_k.is_some() {
+                    return Err(FerricError::General(
+                        "COSX gradient: the SCF recorded a density-fitted exchange route next to \
+                         COSX exchange; RIJCOSX fits Coulomb only"
+                            .into(),
+                    ));
+                }
+                *grad += &crate::df_gradient::df_j_gradient(mol, prep, route, d)?;
+            }
+            None => *grad += &twoelectron_gradient_scaled_k(prep, self.op, self.bounds, d, 0.0)?,
+        }
+        if k_mix.sr != 0.0 {
+            let terms = [(d, -0.25 * k_mix.sr)];
+            *grad += &crate::cosx_gradient::cosx_exchange_gradient(mol, prep, cfg, &terms)?;
+        }
+        Ok(())
+    }
+
+    /// Open-shell (UKS / ROKS) two-electron gradient of an SCF whose exchange
+    /// came from COSX: the Coulomb term `½ J'(D, D)` (`D = D_α + D_β`) from the
+    /// builder the SCF used (four-centre, or the RI-J route of RIJCOSX) and the
+    /// exchange `−½·c_x·Σ_σ tr[D_σ K_COSX(D_σ)]` differentiated on the COSX grid
+    /// (one density term per spin, `[(D_α, −c_x/2), (D_β, −c_x/2)]`).
+    ///
+    /// Refused, never approximated: a configuration the COSX gradient cannot
+    /// differentiate (`check_gradient_supported`), the overlap fit with a
+    /// functional (its Z-vector needs the XC Fock nuclear derivative), and a
+    /// range-separated functional (COSX has no erf/erfc form).
+    fn open_shell_cosx_two_electron_gradient(
+        &self,
+        k_mix: &ferric_dft::xc_trait::KMix,
+        cfg: &crate::cosx_k::CosxConfig,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<Array2<f64>, FerricError> {
+        let (mol, prep, xc_name) = (self.mol, self.prep, self.xc_name);
+        crate::cosx_gradient::check_gradient_supported(cfg)?;
+        crate::cosx_gradient::check_fitted_ks_supported(cfg, Some(xc_name))?;
+        refuse_cosx_range_separated(xc_name, k_mix)?;
+        let d_total = d_a + d_b;
+        let (op, bounds, result) = (self.op, self.bounds, self.result);
+        let mut grad = crate::gradient::cosx_run_coulomb_gradient(
+            mol, prep, op, bounds, result, &d_total, None,
+        )?;
+        if k_mix.sr != 0.0 {
+            let c = -0.5 * k_mix.sr;
+            grad += &crate::cosx_gradient::cosx_exchange_gradient(
+                mol,
+                prep,
+                cfg,
+                &[(d_a, c), (d_b, c)],
+            )?;
+        }
+        Ok(grad)
+    }
+}
+
+/// COSX supports the Coulomb operator only: no erf/erfc exchange form.
+fn refuse_cosx_range_separated(
+    xc_name: &str,
+    k_mix: &ferric_dft::xc_trait::KMix,
+) -> Result<(), FerricError> {
+    if k_mix.omega > 0.0 {
+        return Err(FerricError::General(format!(
+            "COSX exchange gradient: range-separated functional '{xc_name}' (omega = {}) has no \
+             COSX form (k_builder = \"cosx\" supports the Coulomb operator only)",
+            k_mix.omega
+        )));
+    }
+    Ok(())
+}
+
+/// The J + scaled-K four-centre gradient of `density`; `d_total` is its
+/// total density.
+fn scaled_k_gradient(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    density: TwoElectronDensity,
+    d_total: &Array2<f64>,
+    c_k: f64,
+) -> Result<Array2<f64>, FerricError> {
+    match density {
+        TwoElectronDensity::Closed(d) => twoelectron_gradient_scaled_k(prep, op, bounds, d, c_k),
+        TwoElectronDensity::Open { alpha, beta } => {
+            twoelectron_gradient_uhf_scaled_k(prep, op, bounds, d_total, alpha, beta, c_k)
+        }
+    }
+}
+
+/// The K-only four-centre gradient of `density` with operator `op`.
+fn k_only_gradient(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    density: TwoElectronDensity,
+    c_k: f64,
+) -> Result<Array2<f64>, FerricError> {
+    match density {
+        TwoElectronDensity::Closed(d) => twoelectron_k_gradient(prep, op, bounds, d, c_k),
+        TwoElectronDensity::Open { alpha, beta } => {
+            twoelectron_k_gradient_uhf(prep, op, bounds, alpha, beta, c_k)
+        }
+    }
 }
 
 /// Family flags of an XC definition: `(needs_gga, needs_mgga)`.
@@ -1013,10 +1019,7 @@ pub fn xc_gradient_closed(
     d: &Array2<f64>,
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
-    refuse_ghosts(mol)?;
-    let mut grad = Array2::zeros((mol.atoms.len(), 3));
-    add_xc_gradient_closed(&mut grad, mol, prep, bs, xc_name, d, grids)?;
-    Ok(grad)
+    xc_gradient(mol, prep, bs, xc_name, TwoElectronDensity::Closed(d), grids)
 }
 
 /// Open-shell twin of [`xc_gradient_closed`] at fixed `(d_a, d_b)`, as the
@@ -1029,150 +1032,90 @@ pub fn xc_gradient_open(
     (d_a, d_b): (&Array2<f64>, &Array2<f64>),
     grids: &KsGradGrids,
 ) -> Result<Array2<f64>, FerricError> {
-    refuse_ghosts(mol)?;
+    let density = TwoElectronDensity::Open {
+        alpha: d_a,
+        beta: d_b,
+    };
+    xc_gradient(mol, prep, bs, xc_name, density, grids)
+}
+
+fn xc_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    xc_name: &str,
+    density: TwoElectronDensity,
+    grids: &KsGradGrids,
+) -> Result<Array2<f64>, FerricError> {
+    refuse_ghosts(mol, "the XC gradient")?;
     let mut grad = Array2::zeros((mol.atoms.len(), 3));
-    add_xc_gradient_open(&mut grad, mol, prep, bs, xc_name, (d_a, d_b), grids)?;
+    add_xc_gradient(&mut grad, mol, prep, bs, xc_name, density, grids)?;
     Ok(grad)
 }
 
-fn refuse_ghosts(mol: &Molecule) -> Result<(), FerricError> {
+fn refuse_ghosts(mol: &Molecule, what: &str) -> Result<(), FerricError> {
     if mol.atoms.iter().any(|a| a.ghost) {
-        return Err(FerricError::General(
-            "the XC gradient is not implemented for molecules containing ghost atoms".into(),
-        ));
+        return Err(FerricError::General(format!(
+            "{what} is not implemented for molecules containing ghost atoms"
+        )));
     }
     Ok(())
 }
 
-/// `grad += XC; grad += VV10`, the two separate additions the full
-/// closed-shell gradient always made, so its result is bit-identical.
-fn add_xc_gradient_closed(
+/// `grad += XC; grad += VV10`, the two separate additions the full KS
+/// gradient always made, so its result is bit-identical. Closed shell
+/// dispatches on the functional family (LDA fast path, GGA needs Hessians);
+/// open shell (UKS and ROKS) uses the polarized drivers. VV10 is a function
+/// of the total density, identical in both cases.
+fn add_xc_gradient(
     grad: &mut Array2<f64>,
     mol: &Molecule,
     prep: &PreparedBasis,
     bs: &ferric_core::basis::BasisSet,
     xc_name: &str,
-    d: &Array2<f64>,
+    density: TwoElectronDensity,
     grids: &KsGradGrids,
 ) -> Result<(), FerricError> {
     let xc =
         xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
     let (needs_gga, needs_mgga) = xc_families(&xc);
-    // XC gradient: dispatch on functional family (LDA fast path, GGA needs Hessians).
-    let grid_cfg = &grids.main;
-    let xc_grad = if needs_mgga {
-        xc_gradient_closed_mgga_from_density(
-            mol,
-            bs,
-            d,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    } else if needs_gga {
-        xc_gradient_closed_gga_from_density(
-            mol,
-            bs,
-            d,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    } else {
-        xc_gradient_closed_lda_from_density(
-            mol,
-            bs,
-            d,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    }
-    .map_err(|e| FerricError::General(format!("xc gradient: {e:?}")))?;
+    let (grid_cfg, s2a, offs, dims) = (
+        &grids.main,
+        prep.shell_to_atom(),
+        prep.shell_offsets(),
+        prep.shell_dims(),
+    );
+    let xc_grad = match density {
+        TwoElectronDensity::Closed(d) => if needs_mgga {
+            xc_gradient_closed_mgga_from_density(mol, bs, d, xc_name, grid_cfg, s2a, offs, dims)
+        } else if needs_gga {
+            xc_gradient_closed_gga_from_density(mol, bs, d, xc_name, grid_cfg, s2a, offs, dims)
+        } else {
+            xc_gradient_closed_lda_from_density(mol, bs, d, xc_name, grid_cfg, s2a, offs, dims)
+        }
+        .map_err(|e| FerricError::General(format!("xc gradient: {e:?}")))?,
+        TwoElectronDensity::Open { alpha, beta } => if needs_mgga {
+            xc_gradient_uks_mgga_from_density(
+                mol, bs, alpha, beta, xc_name, grid_cfg, s2a, offs, dims,
+            )
+        } else {
+            xc_gradient_uks_from_density(mol, bs, alpha, beta, xc_name, grid_cfg, s2a, offs, dims)
+        }
+        .map_err(|e| FerricError::General(format!("uks xc gradient: {e:?}")))?,
+    };
     *grad += &xc_grad;
 
     // VV10 nonlocal-correlation gradient (only if the functional advertises it).
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = &grids.nlc;
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
             mol,
             bs,
-            d,
+            &total_density(density),
             &vv10_params,
-            nlc_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-        .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
-        *grad += &vv10_grad;
-    }
-
-    Ok(())
-}
-
-/// Open-shell twin of [`add_xc_gradient_closed`] (UKS and ROKS).
-fn add_xc_gradient_open(
-    grad: &mut Array2<f64>,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bs: &ferric_core::basis::BasisSet,
-    xc_name: &str,
-    (d_a, d_b): (&Array2<f64>, &Array2<f64>),
-    grids: &KsGradGrids,
-) -> Result<(), FerricError> {
-    let xc = ferric_dft::libxc::xc_def_from_name(xc_name)
-        .map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
-    let (_, needs_mgga) = xc_families(&xc);
-    let d_total = d_a + d_b;
-    // XC gradient (polarized).
-    let grid_cfg = &grids.main;
-    let xc_grad = if needs_mgga {
-        xc_gradient_uks_mgga_from_density(
-            mol,
-            bs,
-            d_a,
-            d_b,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    } else {
-        xc_gradient_uks_from_density(
-            mol,
-            bs,
-            d_a,
-            d_b,
-            xc_name,
-            grid_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
-        )
-    }
-    .map_err(|e| FerricError::General(format!("uks xc gradient: {e:?}")))?;
-    *grad += &xc_grad;
-
-    // VV10: function of ρ_tot, identical to the closed-shell formula.
-    if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = &grids.nlc;
-        let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
-            mol,
-            bs,
-            &d_total,
-            &vv10_params,
-            nlc_cfg,
-            prep.shell_to_atom(),
-            prep.shell_offsets(),
-            prep.shell_dims(),
+            &grids.nlc,
+            s2a,
+            offs,
+            dims,
         )
         .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
         *grad += &vv10_grad;
