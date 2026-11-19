@@ -126,7 +126,8 @@
       "harmonic-frequencies",
       "rrho-thermo",
       "ir-intensities",
-      "cosx-gradient"
+      "cosx-gradient",
+      "vv10-gradient"
     ],
     "frequencies:rhf": [
       "hf-hessian",
@@ -180,7 +181,8 @@
       "geometry-search",
       "ks-zvector",
       "mbd",
-      "cosx-gradient"
+      "cosx-gradient",
+      "vv10-gradient"
     ],
     "optimize:oo-rimp2": [
       "oo-rimp2-gradient",
@@ -258,7 +260,8 @@
       "ks-zvector",
       "mbd",
       "fock-hook-gradient",
-      "cosx-gradient"
+      "cosx-gradient",
+      "vv10-gradient"
     ],
     "py:run_double_hybrid": [
       "double-hybrid",
@@ -288,7 +291,8 @@
       "ir-intensities",
       "mbd",
       "terfc-rimp2-gradient",
-      "scs-2terfc-gradient"
+      "scs-2terfc-gradient",
+      "vv10-gradient"
     ],
     "py:run_gw": [
       "gw"
@@ -296,14 +300,16 @@
     "py:run_irc": [
       "hf-gradient",
       "ks-gradient",
-      "geometry-search"
+      "geometry-search",
+      "vv10-gradient"
     ],
     "py:run_ksdft": [
       "ks-semilocal",
       "ks-mgga",
       "ks-hybrid-rsh",
       "ks-vv10",
-      "ks-grid"
+      "ks-grid",
+      "vv10-gradient"
     ],
     "py:run_laplace_mp2": [
       "laplace-mp2"
@@ -350,7 +356,8 @@
       "mbd",
       "terfc-rimp2-gradient",
       "scs-2terfc-gradient",
-      "fock-hook-gradient"
+      "fock-hook-gradient",
+      "vv10-gradient"
     ],
     "py:run_optimize_qmmm": [
       "qmmm",
@@ -407,7 +414,8 @@
       "ks-semilocal",
       "ks-mgga",
       "ks-hybrid-rsh",
-      "ks-grid"
+      "ks-grid",
+      "vv10-gradient"
     ],
     "py:run_roks_gamma": [
       "pbc-ks"
@@ -422,7 +430,8 @@
     "py:run_saddle": [
       "hf-gradient",
       "ks-gradient",
-      "geometry-search"
+      "geometry-search",
+      "vv10-gradient"
     ],
     "py:run_scs_mp2": [
       "scs-mp2",
@@ -460,7 +469,8 @@
       "ks-semilocal",
       "ks-mgga",
       "ks-hybrid-rsh",
-      "ks-grid"
+      "ks-grid",
+      "vv10-gradient"
     ],
     "py:run_uks_gamma": [
       "pbc-ks"
@@ -490,7 +500,8 @@
     "py:run_aimd": [
       "hf-gradient",
       "ks-gradient",
-      "molecular-dynamics"
+      "molecular-dynamics",
+      "vv10-gradient"
     ],
     "py:run_ffmd": [
       "mm",
@@ -1339,6 +1350,16 @@
       ],
       "scripts": [
         "scripts/cosx_gradient_sympy.py"
+      ]
+    },
+    "vv10-gradient": {
+      "book": [
+        "book/src/14-derivatives/03-xc-gradient.md#xc-gradient-vv10",
+        "book/src/09-kohn-sham/05-vv10.md#vv10-energy-potentials"
+      ],
+      "scripts": [
+        "scripts/dft_vv10_gradient_sympy.py",
+        "scripts/dft_vv10_potential_sympy.py"
       ]
     }
   },

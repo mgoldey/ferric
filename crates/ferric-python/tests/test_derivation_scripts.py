@@ -516,6 +516,27 @@ CASES = [
         ],
     ),
     (
+        "dft_vv10_gradient_sympy.py",
+        10,
+        [
+            (
+                "    vsig = 1.5 * w * dw0_dg",
+                "    vsig = 1.5 * u * dw0_dg",
+                "FAIL G1",
+            ),
+            (
+                "            pref = wr[sl, None] * dphi",
+                "            pref = 0.5 * wr[sl, None] * dphi",
+                "FAIL G2",
+            ),
+            (
+                "rho * (BETA + f), dW)",
+                "rho * (BETA + 0.5 * f), dW)",
+                "FAIL G2",
+            ),
+        ],
+    ),
+    (
         "df_jk_gradient_sympy.py",
         10,
         [
