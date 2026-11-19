@@ -38,6 +38,11 @@ pub struct Config {
     pub optimize: OptimizeCfg,
     #[serde(default)]
     pub frequencies: FrequenciesCfg,
+    /// Optional `[md]` section: Born-Oppenheimer molecular dynamics
+    /// (`method.task = "md"`, see [`MdCfg`]). Required by that task, refused
+    /// by every other.
+    #[serde(default)]
+    pub md: Option<MdCfg>,
     #[serde(default)]
     pub rpa: RpaCfg,
     #[serde(default)]
@@ -1001,6 +1006,155 @@ pub struct OptimizeCfg {
     /// displaced RHFs of its finite-difference gradient, each started from
     /// that step's reference RHF).
     pub scf_warm_start: Option<bool>,
+}
+
+/// `[md]` -- Born-Oppenheimer molecular dynamics (`method.task = "md"`) on
+/// the RHF/RKS, UHF/UKS or ROHF/ROKS surface (`ferric_scf::run_aimd`, the
+/// `ferric-md` integrators). User units: fs, K, ps^-1.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct MdCfg {
+    /// Number of time steps (required).
+    pub n_steps: Option<usize>,
+    /// Time step in fs (default 0.5).
+    pub dt_fs: Option<f64>,
+    /// `"nve"` (default, velocity Verlet), `"berendsen"` (needs `tau_fs`) or
+    /// `"langevin"` (BAOAB, needs `friction_per_ps`). Strict.
+    pub thermostat: Option<String>,
+    /// Target temperature in K; required by berendsen and langevin.
+    pub temperature_k: Option<f64>,
+    /// Maxwell-Boltzmann initial-velocity temperature in K (unset:
+    /// `temperature_k`; neither: zero initial velocities).
+    pub init_temperature_k: Option<f64>,
+    /// Berendsen coupling time in fs (berendsen only).
+    pub tau_fs: Option<f64>,
+    /// Langevin friction in 1/ps (langevin only).
+    pub friction_per_ps: Option<f64>,
+    /// Seed of the initial velocities and the Langevin noise (default 0).
+    pub seed: Option<u64>,
+    /// Remove the centre-of-mass motion (default true).
+    pub remove_com_motion: Option<bool>,
+    /// Record every `stride`-th step (default 1).
+    pub stride: Option<usize>,
+    /// Start each step's SCF from the previous step's orbitals (default true).
+    pub scf_warm_start: Option<bool>,
+    /// Multi-frame XYZ trajectory (Angstrom); default `<input stem>.md.xyz`
+    /// beside the input file.
+    pub trajectory: Option<String>,
+    /// Energy CSV; default `<input stem>.md.csv` beside the input file.
+    pub energies: Option<String>,
+}
+
+/// The `method.kind`s `task = "md"` runs: the SCF surfaces with an analytic
+/// gradient (`ferric_scf::run_aimd`).
+pub const MD_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft"];
+
+impl MdCfg {
+    /// The `ferric_md::MdConfig` these keys describe, validated (thermostat
+    /// parameters, temperatures, time step, stride).
+    ///
+    /// # Errors
+    ///
+    /// A message prefixed `[md]` naming the bad key.
+    pub fn md_config(&self) -> Result<ferric_md::MdConfig, String> {
+        let n_steps = self.n_steps.ok_or(
+            "[md] n_steps is required with method.task = \"md\" (the number of time steps)",
+        )?;
+        let thermostat = ferric_md::Thermostat::parse_config_str(
+            self.thermostat.as_deref().unwrap_or("nve"),
+            self.tau_fs,
+            self.friction_per_ps,
+        )
+        .map_err(|e| format!("[md] {e}"))?;
+        let d = ferric_md::MdConfig::default();
+        let config = ferric_md::MdConfig {
+            n_steps,
+            dt_fs: self.dt_fs.unwrap_or(d.dt_fs),
+            thermostat,
+            temperature_k: self.temperature_k,
+            init_temperature_k: self.init_temperature_k,
+            initial_velocities: None,
+            seed: self.seed.unwrap_or(d.seed),
+            remove_com_motion: self.remove_com_motion.unwrap_or(d.remove_com_motion),
+            stride: self.stride.unwrap_or(d.stride),
+            keep_trajectory: false,
+        };
+        config
+            .validate(1)
+            .map_err(|e| format!("[md] {}", ferric_msg(e)))?;
+        Ok(config)
+    }
+
+    /// The trajectory and energy file paths: the keys as written, else
+    /// `<input stem>.md.xyz` / `.md.csv` beside `toml_path`.
+    #[must_use]
+    pub fn output_paths(
+        &self,
+        toml_path: &std::path::Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let beside = |ext: &str| toml_path.with_extension(ext);
+        (
+            self.trajectory
+                .as_ref()
+                .map_or_else(|| beside("md.xyz"), std::path::PathBuf::from),
+            self.energies
+                .as_ref()
+                .map_or_else(|| beside("md.csv"), std::path::PathBuf::from),
+        )
+    }
+}
+
+impl Config {
+    /// The `[md]` / `task = "md"` rules, checked at load time: the section
+    /// and the task go together, `n_steps` is set, the kind has an analytic
+    /// SCF gradient ([`MD_KINDS`]), the keys are consistent
+    /// ([`MdCfg::md_config`]), and no feature the AIMD driver does not
+    /// differentiate is present.
+    pub fn validate_md(&self) -> Result<(), String> {
+        let task = self.method.task.as_str();
+        let kind = self.method.kind.as_str();
+        let Some(md) = self.md.as_ref().filter(|_| task == "md") else {
+            return match (task, &self.md) {
+                ("md", None) => Err(
+                    "method.task = \"md\" needs an [md] section with n_steps (the number of \
+                     time steps)"
+                        .to_string(),
+                ),
+                (_, Some(_)) => Err(format!(
+                    "[md] is read by method.task = \"md\" only; task = \"{task}\" would \
+                     silently ignore it"
+                )),
+                _ => Ok(()),
+            };
+        };
+        if !MD_KINDS.contains(&kind) {
+            return Err(format!(
+                "method.task = \"md\" is supported for method.kind = {} only (got \"{kind}\"): \
+                 molecular dynamics follows the analytic SCF gradient",
+                MD_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        let refused = [
+            ("[cell]", self.cell.is_some()),
+            ("[qmmm]", self.qmmm.is_some()),
+            ("[cosmo]", self.cosmo.is_some()),
+            ("[pcm]", self.pcm.is_some()),
+            ("[scf] relativistic", self.scf.relativistic.is_some()),
+            ("[scf] symmetry", self.scf.symmetry),
+        ];
+        if let Some((what, _)) = refused.iter().find(|(_, set)| *set) {
+            return Err(format!(
+                "{what} is not supported with method.task = \"md\": the molecular dynamics \
+                 driver follows the gas-phase molecular SCF gradient only (no periodic, QM/MM, \
+                 solvated, relativistic or symmetry-blocked dynamics). Remove {what}."
+            ));
+        }
+        md.md_config().map(|_| ())
+    }
 }
 
 /// Parse the `[optimize] initial_hessian` key (strict).
@@ -4858,6 +5012,7 @@ impl Config {
     /// SCF, `[mp2] linlccd_variant` and the `[local]` values, then the
     /// CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
+        self.validate_md()?;
         self.memory.validate()?;
         self.parallel.validate()?;
         self.gpu.validate()?;

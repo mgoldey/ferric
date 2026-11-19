@@ -31,7 +31,7 @@ name = "sto-3g"  # bundled basis name, case-insensitive (required unless path is
 
 [method]
 kind = "dsd-pbep86"  # the method (required) [minimal input]
-task = "energy"      # energy | optimize | frequencies
+task = "energy"      # energy | optimize | frequencies | md
 
 [scf]
 max_iter = 200           # SCF iteration cap
@@ -44,7 +44,7 @@ soscf = false            # second-order (Newton) step in the SCF tail
 integral_thresh = 1e-12  # integral screening threshold
 eri_precision = 1e-20    # libint primitive-screening precision, 0 to 1e-8 (omitted: FERRIC_ERI_PRECISION, else 1e-20)
 jk_storage = "auto"      # RI tensor storage: auto | memory | disk | direct | split
-ri_j_precision = "f32"   # RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies)
+ri_j_precision = "f32"   # RI-J tensor storage precision: f32 | f64 (omitted: f32 for energy, f64 for optimize/frequencies/md)
 ri_k_precision = "f64"   # RI-K tensor storage precision: f64 | f32
 mom_after_iter = 0       # maximum-overlap pinning after this many iterations; 0 = aufbau
 verbose = false          # one line per SCF iteration

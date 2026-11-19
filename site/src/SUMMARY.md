@@ -14,6 +14,7 @@
 - [Choosing a method](./using/choosing-a-method.md)
 - [For PySCF users](./using/pyscf-users.md)
 - [QM/MM](./using/qmmm.md)
+- [Molecular dynamics](./using/md.md)
 - [Export: cube, Molden and NPZ](./using/export.md)
 - [Avogadro plugin](./using/avogadro.md)
 - [ASE calculator](./using/ase.md)

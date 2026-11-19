@@ -28,6 +28,7 @@
 
 pub mod cutoff;
 pub mod energy;
+pub mod md;
 pub mod topology;
 pub mod units;
 
@@ -35,4 +36,5 @@ pub use cutoff::{energy_with, gradient_with, neighbor_pairs, CutoffParams, Nonbo
 pub use energy::{
     energy, gradient, qm_mm_lj_energy_gradient, qm_mm_lj_energy_gradient_scaled, MmEnergy,
 };
+pub use md::{run_ffmd, MmForceProvider};
 pub use topology::{Angle, Bond, LjParams, MmTopology, Torsion};

@@ -22,6 +22,7 @@ pub use ferric_dft as dft;
 pub use ferric_export as export;
 pub use ferric_gw as gw;
 pub use ferric_integrals as integrals;
+pub use ferric_md as md;
 pub use ferric_mp2 as mp2;
 pub use ferric_pcm as pcm;
 pub use ferric_quadrature as quadrature;

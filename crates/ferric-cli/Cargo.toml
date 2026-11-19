@@ -37,6 +37,7 @@ path = "src/bin/ferric-batch.rs"
 [dependencies]
 ferric-build-info = { path = "../ferric-build-info" }
 ferric-core = { path = "../ferric-core" }
+ferric-md = { path = "../ferric-md" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }

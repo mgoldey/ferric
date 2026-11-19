@@ -11,6 +11,7 @@ mod cas;
 mod cdft;
 mod config;
 mod gpu_flag;
+mod md;
 mod opmp3;
 mod periodic;
 mod polarization;
@@ -229,21 +230,21 @@ pub fn unsupported_method_message(method: &str) -> String {
 /// error lists them. SINGLE SOURCE for the accept check in [`run`], the
 /// error text ([`unsupported_task_message`]) and the README-row test in
 /// `config_doc_tests.rs`.
-pub const SUPPORTED_TASKS: &[&str] = &["energy", "optimize", "frequencies"];
+pub const SUPPORTED_TASKS: &[&str] = &["energy", "optimize", "frequencies", "md"];
 
-/// The RI-J storage default's task class for a `method.task`: `optimize` and
-/// `frequencies` are [`RiJTask::Geometry`](ferric_scf::df_j::RiJTask) (an
+/// The RI-J storage default's task class for a `method.task`: `optimize`,
+/// `frequencies` and `md` are [`RiJTask::Geometry`](ferric_scf::df_j::RiJTask) (an
 /// unset `[scf] ri_j_precision` resolves to f64), everything else `Energy`
 /// (f32). An explicit `ri_j_precision` wins either way.
 pub fn ri_j_task_for(task: &str) -> ferric_scf::df_j::RiJTask {
     match task {
-        "optimize" | "frequencies" => ferric_scf::df_j::RiJTask::Geometry,
+        "optimize" | "frequencies" | "md" => ferric_scf::df_j::RiJTask::Geometry,
         _ => ferric_scf::df_j::RiJTask::Energy,
     }
 }
 
 /// The error text for an unrecognised `method.task`, listing every entry of
-/// [`SUPPORTED_TASKS`] (`expected energy, optimize, or frequencies`).
+/// [`SUPPORTED_TASKS`] (`expected energy, optimize, frequencies, or md`).
 pub fn unsupported_task_message(task: &str) -> String {
     let (last, rest) = SUPPORTED_TASKS
         .split_last()
@@ -1083,6 +1084,13 @@ pub fn run(args: Vec<String>) {
 
     if task == "frequencies" {
         run_frequencies(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
+        note_run_precision(&run_probe);
+        return;
+    }
+
+    if task == "md" {
+        let toml_path = std::path::Path::new(toml_path);
+        md::run_md(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, toml_path);
         note_run_precision(&run_probe);
         return;
     }

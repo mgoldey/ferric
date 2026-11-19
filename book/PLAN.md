@@ -401,6 +401,16 @@ its evidence and its use as a feature or label.
 | `training-labels` | Energies, gradients, Hessians and response as labels | validation matrix and anchors; R hf-gradient, ks-gradient, ri-mp2-gradient, rpa-gradient, hf-hessian, ks-hessian, harmonic-frequencies | `ferric-rpa/src/gradient.rs::total_rpa_gradient`, `ferric-scf/src/noise_floor.rs::de_noise_floor` | edit |
 | `esp-conditioning` | A worked consumer: esp-conditioning | the esp-conditioning builder code (interface only) | none | edit |
 
+### Part XVI. Dynamics
+
+**Molecular dynamics** (chapter `md`)
+
+Time integration of the nuclei on any gradient source: velocity Verlet, Berendsen weak coupling and Langevin BAOAB.
+
+| Label | Section | Sources | Code | Status |
+|---|---|---|---|---|
+| `molecular-dynamics` | Integrators and thermostats: velocity Verlet, Berendsen, Langevin BAOAB | S `md_integrators_sympy.py`; R molecular-dynamics | `ferric-md/src/driver.rs::run_md`, `ferric-md/src/config.rs::{MdConfig,Thermostat}`, `ferric-md/src/velocities.rs::{maxwell_boltzmann,remove_com_momentum,kinetic_energy,temperature}`, `ferric-md/src/rng.rs::Xoshiro256pp` | edit |
+
 ### Appendices
 
 | Label | Section | Sources | Code | Status |
@@ -449,10 +459,11 @@ registry row and are the largest block of `gap` sections.
 | XIII. Dispersion | 2 | 1 | 0 | 0 | 3 |
 | XIV. Capstone | 1 | 2 | 4 | 0 | 7 |
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
+| XVI. Dynamics | 0 | 1 | 0 | 0 | 1 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **100** | **48** | **8** | **6** | **162** |
+| **Total** | **100** | **49** | **8** | **6** | **163** |
 
-162 sections: 62% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
+163 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

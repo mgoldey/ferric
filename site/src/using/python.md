@@ -806,6 +806,16 @@ See [Constrained DFT](../methods/cdft.md) for a worked example.
 | `IrcResult` | Both directions of an IRC, plus the saddle they came from. | |
 | `IrcBranch` | One direction of an IRC walk. | |
 
+### Molecular dynamics
+
+| Name | Purpose | CLI |
+|---|---|---|
+| `run_aimd` | Born-Oppenheimer MD on the SCF surface: RHF/UHF/ROHF, or RKS/UKS/ROKS with `xc=` (`reference=`, unset: by multiplicity), `dispersion=` and `df_j_aux` / `df_k_aux` as in `run_optimize`. `thermostat="nve"` (velocity Verlet), `"berendsen"` (`tau_fs=`, equilibration only) or `"langevin"` (BAOAB, `friction_per_ps=`); `temperature_k`, `init_temperature_k`, `seed`, `stride`, `scf_warm_start`, `masses_amu`; `trajectory_path=` / `energies_path=` write XYZ and CSV. A thermostat parameter of another thermostat raises `ValueError`. | `task = "md"` |
+| `run_ffmd` | MD on the force field of an `MmTopology`, atoms given by `symbols` and `coords_angstrom`; `cutoff_angstrom=` for the non-periodic reaction-field cutoff. The MD kwargs of `run_aimd`. | — |
+| `MdResult` | Per-frame `times_fs`, `potential_energies`, `kinetic_energies`, `total_energies`, `conserved`, `temperatures`; `positions_angstrom`, `velocities` (Å/fs); `n_dof`, `max_conserved_drift`, `scf_iterations`, `certificate` (ungraded), `mol()`. | |
+
+See [Molecular dynamics](./md.md).
+
 ### QM/MM
 
 | Name | Purpose | CLI |
