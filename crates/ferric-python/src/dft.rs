@@ -3,7 +3,7 @@
 use super::*;
 
 /// ECP policy of `run_double_hybrid`.
-pub(crate) const DH_ECP: EcpPolicy = EcpPolicy::Skip;
+pub(crate) const DH_ECP: EcpPolicy = EcpPolicy::Apply;
 use ferric_scf::options::{df_k_aux_or_default, AuxBasis, ScfOptions};
 
 /// A Kohn-Sham `df_j_aux` / `df_k_aux` kwarg: the parsed spelling (opt-outs

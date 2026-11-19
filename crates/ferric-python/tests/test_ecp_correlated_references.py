@@ -186,3 +186,11 @@ def test_tddft_reference_is_run_rhf():
     cis = np.linalg.eigvalsh(a)[:3]
     r = ferric.run_tddft(hi(), bs, aux, n_roots=3, method="tda")
     assert np.allclose(r.excitation_energies, cis, atol=1e-6)
+
+
+def test_double_hybrid_reference_is_run_dft_or_run_uks():
+    bs, aux = bases()
+    dh = ferric.run_double_hybrid(hi(), bs, aux)
+    assert abs(dh.e_ks - ferric.run_dft(hi(), bs, "B2PLYP").energy) < EREF
+    udh = ferric.run_double_hybrid(hi(1, 2), bs, aux)
+    assert abs(udh.e_ks - ferric.run_uks(hi(1, 2), bs, "B2PLYP").energy) < EREF
