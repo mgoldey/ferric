@@ -1474,7 +1474,8 @@ pub(crate) fn run_uhf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same defaults as run_rhf / the CLI [scf] section.
+    // Same default values as run_rhf (the CLI [scf] section has equal values but
+    // its own lowering until roadmap 7).
     let options = ScfOptions {
         max_iter,
         energy_conv,
@@ -1606,8 +1607,9 @@ pub(crate) fn run_rohf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same defaults as run_rhf / run_uhf / the CLI [scf] section. `None` for
-    // a knob run_rohf does not take keeps the RhfConfig default.
+    // Same default values as run_rhf / run_uhf (the CLI has equal values, own
+    // lowering until roadmap 7). `None` for a knob run_rohf does not take
+    // keeps the RhfConfig default.
     let options = ScfOptions {
         max_iter,
         energy_conv,
