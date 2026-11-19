@@ -1404,6 +1404,30 @@
       "book": [
         "book/src/appendix-d-xtb.md#appendix-d"
       ]
+    },
+    "u-ccsd-update-amps": {
+      "reason": "the per-spin factorization of u_ccsd.rs::update_amps (PySCF uccsd.update_amps: per-spin F, the six W_ovvo ring blocks, the ladders) is not displayed in the book or transcribed in a script; u-ccsd proves the amplitude blocks, the energy split and the (T) classes, and the residual itself is held to the spin-orbital ccsd_uhf_spin_orbital solver amplitude by amplitude in Rust",
+      "book": [
+        "book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations"
+      ]
+    },
+    "rpa-gradient-metric-term": {
+      "reason": "rpa_gradient_sympy.py uses a unit RI metric, so the two-centre gamma term of the RI-dRPA gradient has no proof; the mp2_gradient_sympy.py part G non-unit-metric model is the one to reuse. Evidence is the Rust FD tests",
+      "book": [
+        "book/src/15-correlated-gradients/05-rpa-gradient.md#rpa-gradient-assembly"
+      ]
+    },
+    "ks-zvector-null-mode": {
+      "reason": "the null-mode projection of the KS Z-vector solve (zvector_ks.rs) has no sympy claim; ks_zvector_sympy.py proves the RKS/UKS/ROKS response equations on models without a null mode",
+      "book": [
+        "book/src/15-correlated-gradients/04-ks-zvector.md#ks-zvector"
+      ]
+    },
+    "linlccd-local": {
+      "reason": "linlccd with [local] (amplitude threshold): cc_triples_weights_and_linlccd_spin_adaptation_sympy.py proves the eps = 0 equations only; the pair gate and the truncation have no derivation or claim, and the Rust anchors are at eps = 0",
+      "book": [
+        "book/src/16-coupled-cluster/07-local-cc.md#local-cc-amplitude-threshold-linlccd"
+      ]
     }
   }
 }
