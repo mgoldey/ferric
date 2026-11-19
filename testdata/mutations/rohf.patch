@@ -1,13 +1,13 @@
-diff --git a/crates/ferric-scf/src/rohf.rs b/crates/ferric-scf/src/rohf.rs
-index 9ef070a78..00ace0fbc 100644
---- a/crates/ferric-scf/src/rohf.rs
-+++ b/crates/ferric-scf/src/rohf.rs
-@@ -1323,7 +1323,7 @@ fn solve_rohf_impl(
-                 total_quartets += <DirectK as KBuilder>::build(dk, &d_b, &mut k_b_buf)?;
-             }
-             f_a.scaled_add(-c_k, &k_a_buf);
--            f_b.scaled_add(-c_k, &k_b_buf);
-+            f_b.scaled_add(-c_k, &k_a_buf);
+diff --git a/crates/ferric-scf/src/driver.rs b/crates/ferric-scf/src/driver.rs
+index cd3e89c..2f889ac 100644
+--- a/crates/ferric-scf/src/driver.rs
++++ b/crates/ferric-scf/src/driver.rs
+@@ -798,7 +798,7 @@ impl<'a> OpenShellJk<'a> {
+         } else if need_k {
+             self.build_k((d_a, d_b), (d_occ_a, d_occ_b))?;
+             f_a.scaled_add(-c_k, &self.k_a_buf);
+-            f_b.scaled_add(-c_k, &self.k_b_buf);
++            f_b.scaled_add(-c_k, &self.k_a_buf);
          }
          drop(jk_scope);
- 
+         phases.stop(jk_t);

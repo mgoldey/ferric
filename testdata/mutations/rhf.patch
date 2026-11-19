@@ -1,13 +1,13 @@
 diff --git a/crates/ferric-scf/src/rhf.rs b/crates/ferric-scf/src/rhf.rs
-index 3323a262a..7136c92ad 100644
+index 27ce88e..c908c00 100644
 --- a/crates/ferric-scf/src/rhf.rs
 +++ b/crates/ferric-scf/src/rhf.rs
-@@ -2958,7 +2958,7 @@ fn solve_rhf_impl(
+@@ -2916,7 +2916,7 @@ impl<'a> RhfJk<'a> {
              )?;
          } else if k_mix.sr > 0.0 {
              // Plain hybrid or pure HF: K already built by the builder path above.
--            f.scaled_add(-0.5 * k_mix.sr, &k_buf);
-+            f.scaled_add(-0.25 * k_mix.sr, &k_buf);
+-            f.scaled_add(-0.5 * k_mix.sr, &self.k_buf);
++            f.scaled_add(-0.25 * k_mix.sr, &self.k_buf);
          }
          drop(jk_scope);
- 
+         phases.stop(fock_t);
