@@ -575,8 +575,10 @@ pub(crate) fn run_dft(
     // construction evaluated them, so a call with several bad kwargs raises
     // the same (first) error.
     let relativistic = crate::scf::parse_relativistic(relativistic)?;
-    let xc_name = functional
-        .unwrap_or(ferric_scf::options::entry::DEFAULT_DFT_FUNCTIONAL)
+    let xc_name = ScfEntryPoint::Dft
+        .functional(functional)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+        .expect("run_dft always resolves a functional")
         .to_string();
     // Rung 0 starts from dm0; later rungs carry the previous rung's density.
     let init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_dft")?;
@@ -604,8 +606,9 @@ pub(crate) fn run_dft(
     let use_sad_guess = parse_guess(guess)?;
     let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let trah_trigger = crate::scf::check_trah_trigger(trah_trigger)?;
-    let symmetric = symmetry || irrep_nelec.is_some();
-    if symmetric {
+    // The binding's own refusals (messages naming run_dft's kwargs) come
+    // before the policy, which also refuses irrep_nelec without symmetry.
+    if symmetry || irrep_nelec.is_some() {
         blocks::refuse_symmetric_dft(
             symmetry,
             with_gradient,
@@ -650,11 +653,12 @@ pub(crate) fn run_dft(
         trah_trigger,
         functional,
         dft_grid,
+        dispersion: dispersion.is_some(),
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Dft, kw)?;
     let mut cfg = options.into_rhf_config().py()?;
-    if symmetric {
+    if cfg.symmetry {
         return solve_symmetric_outcome(py, "run_dft", &ctx, &emol, &prep, op, &bounds, &cfg);
     }
     // The gradient below goes through `restricted_scf_gradient`, which
@@ -1278,17 +1282,11 @@ fn run_open_ks(
     )?;
     let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let trah_trigger = crate::scf::check_trah_trigger(trah_trigger)?;
-    let (entry, mom_reference) = match kind {
-        OpenKs::Uks => (
-            ScfEntryPoint::Uks,
-            Some(parse_mom_reference(
-                who,
-                mom_reference,
-                mom_after_iter,
-                stability_descent,
-            )?),
-        ),
-        OpenKs::Roks => (ScfEntryPoint::Roks, None),
+    // run_roks has no mom_reference kwarg (None); its policy refuses one.
+    let mom_reference = parse_mom_reference(who, mom_reference, mom_after_iter, stability_descent)?;
+    let entry = match kind {
+        OpenKs::Uks => ScfEntryPoint::Uks,
+        OpenKs::Roks => ScfEntryPoint::Roks,
     };
     // run_uks / run_roks policy (run_dft's KS defaults, including the
     // RIJCOSX rule) is `ScfEntryPoint::Uks` / `Roks`'s
@@ -1339,7 +1337,7 @@ fn run_open_ks(
         }
     }
     let ctx = ParallelContext::default();
-    let (r, _) = blocks::solve_open_shell(
+    let (r, hook_term) = blocks::solve_open_shell(
         py,
         solver,
         &ctx,
@@ -1351,6 +1349,18 @@ fn run_open_ks(
         fock_hook,
         dm0.as_ref(),
     )?;
+    // As run_uhf / run_rohf: the hook's noise-floor term can put a
+    // user-set energy_conv below the floor (a zero term never warns).
+    crate::scf::warn_hook_noise_floor(
+        py,
+        who,
+        SolverFamily::OpenShell,
+        energy_conv.is_some(),
+        &emol,
+        &prep,
+        &config,
+        hook_term,
+    );
     let gradient = with_gradient
         .then(|| {
             let g = scf_gradient(py, gradient_kind, &emol, &prep, &bounds, &config, &r)?;
@@ -1511,7 +1521,9 @@ pub(crate) fn run_uks<'py>(
 /// multiplicity - 1` singly occupied orbitals, the rest doubly occupied
 /// (Guest-Saunders coupling as in `run_rohf`). Same result, gradient
 /// (`ks_gradient_roks`), settings and exclusions as `run_uks`; `guess=`
-/// (MINAO by default) comes after `relativistic` here. Beyond `run_uks`'s
+/// (MINAO by default) comes after `relativistic` here. As in `run_rohf`, an
+/// explicit `cosx_final_pass=True` or `cosx_final_grid` is a `RuntimeError`
+/// at the solve (no ROHF/ROKS COSX final-grid pass). Beyond `run_uks`'s
 /// exclusions, `solve_rohf` has no TRAH step, no stability analysis and no
 /// `mom_reference="initial"`, so `trah_trigger`, `stability_descent` and
 /// `mom_reference` are not offered (as in `run_rohf`).

@@ -190,7 +190,6 @@ def test_aurora_on_run_dft_for_a_hybrid(water, b631g):
     )
 
 
-@pytest.mark.parametrize("name", ["dft", "uks"])
 def _ri_j_calls(r):
     return sum(k["calls_mixed"] for k in r.certificate["precision"]["kernels"])
 
@@ -346,39 +345,11 @@ def test_fock_hook_refuses_what_it_would_bypass_on_run_uks(nh2, sto3g):
 
 # --- what stays refused ---------------------------------------------------------
 
+# The refusal table of `ScfEntryPoint::refused`, the one source (checked
+# against every signature in test_scf_entry_point_surface.py).
 REFUSED = {
-    "run_uhf": ["diis", "smearing_sigma", "aurora", "symmetry", "irrep_nelec"],
-    "run_rohf": [
-        "diis",
-        "smearing_sigma",
-        "aurora",
-        "symmetry",
-        "irrep_nelec",
-        "stability_descent",
-        "trah_trigger",
-        "mom_reference",
-    ],
-    "run_dft": ["diis", "smearing_sigma", "soscf", "mom_reference"],
-    "run_uks": [
-        "diis",
-        "smearing_sigma",
-        "aurora",
-        "symmetry",
-        "irrep_nelec",
-        "dispersion",
-    ],
-    "run_roks": [
-        "diis",
-        "smearing_sigma",
-        "aurora",
-        "symmetry",
-        "irrep_nelec",
-        "dispersion",
-        "stability_descent",
-        "trah_trigger",
-        "mom_reference",
-    ],
-    "run_rhf": ["mom_reference"],
+    fn: [name for names, _ in knobs for name in names]
+    for fn, knobs in ferric._scf_refused().items()
 }
 VALUES = {
     "diis": "adiis",
@@ -391,6 +362,11 @@ VALUES = {
     "mom_reference": "previous",
     "soscf": True,
     "dispersion": "d3bj",
+    "functional": "PBE",
+    "grid_radial": 50,
+    "grid_angular": 110,
+    "grid_prune": "none",
+    "grid_weight_cut": 1e-14,
 }
 
 

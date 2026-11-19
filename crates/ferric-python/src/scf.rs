@@ -393,6 +393,29 @@ pub(crate) fn scf_options_from_kwargs(
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
+/// The knobs each SCF entry point refuses
+/// (`ferric_scf::options::entry::ScfEntryPoint::refused`), as
+/// `{"run_uhf": [(["diis"], reason), ...], ...}`: the Python keyword names
+/// of each refused knob with the reason its solver cannot honour it. Private;
+/// the signature-consistency test checks every entry point's signature
+/// against it.
+#[pyfunction]
+pub(crate) fn _scf_refused(
+) -> std::collections::BTreeMap<&'static str, Vec<(Vec<&'static str>, &'static str)>> {
+    use ScfEntryPoint as E;
+    [E::Rhf, E::Uhf, E::Rohf, E::Dft, E::Uks, E::Roks]
+        .into_iter()
+        .map(|e| {
+            let refused = e
+                .refused()
+                .iter()
+                .map(|(knob, reason)| (knob.python_names().to_vec(), *reason))
+                .collect();
+            (e.name(), refused)
+        })
+        .collect()
+}
+
 /// The non-convergence RuntimeWarning of `run_rhf` (no control-flow change).
 pub(crate) fn warn_rhf_not_converged(
     py: Python<'_>,
@@ -1544,7 +1567,7 @@ pub(crate) fn run_uhf(
         ri_k_precision,
         level_shift,
         mom_after_iter,
-        mom_reference: Some(mom_reference),
+        mom_reference,
         soscf,
         guess: Some(guess_from_use_sad(use_sad_guess)),
         guess_basis,
@@ -1594,7 +1617,9 @@ pub(crate) fn run_uhf(
 /// occupied-orbital semantics differ from UHF). Takes `run_uhf`'s SCF
 /// knobs that `solve_rohf` honours (`guess`, `soscf` (the ROHF Newton step),
 /// `smeared_charges`, `solvent` / `pcm_lebedev_order` and the `cosx_*` knobs
-/// come after `fock_hook_grad`), not those it cannot: `stability_descent`
+/// come after `fock_hook_grad`; `solve_rohf` has no COSX final-grid pass, so
+/// the default one is skipped and an explicit `cosx_final_pass=True` or
+/// `cosx_final_grid` is a `RuntimeError` at the solve), not those it cannot: `stability_descent`
 /// (no ROHF stability analysis), `trah_trigger` (no ROHF TRAH step),
 /// `mom_reference` (`"initial"` is UHF/UKS only), `diis`, `smearing_sigma`,
 /// `aurora` and `symmetry` (see

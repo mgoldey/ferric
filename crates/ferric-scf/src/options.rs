@@ -746,11 +746,7 @@ mod tests {
             ri_k_precision: k.ri_k_precision,
             level_shift: k.level_shift,
             mom_after_iter: k.mom_after_iter,
-            mom_reference: match entry {
-                E::Uhf => Some(k.mom_reference.unwrap_or_default()),
-                E::Uks => Some(MomReference::default()),
-                _ => None,
-            },
+            mom_reference: if is(&[E::Uhf]) { k.mom_reference } else { None },
             smearing_sigma: if is(&[E::Rhf]) {
                 k.smearing_sigma
             } else {
@@ -803,6 +799,8 @@ mod tests {
                 _ => None,
             },
             dft_grid: if hf { None } else { k.dft_grid.clone() },
+            // Post-SCF; no `RhfConfig` field to compare.
+            dispersion: false,
         }
     }
 
@@ -1123,11 +1121,23 @@ mod tests {
     /// with and without `guess="hcore"` and `run_roks` (guess always MINAO),
     /// for `functional` (default `"PBE"`; required there).
     fn check_ks(k: &Kw, msg: &str) {
-        same_msg(
-            &old_run_dft(k.clone()),
-            &new_run_dft(k.clone()),
-            &format!("run_dft, {msg}"),
-        );
+        if k.irrep_nelec.is_some() && !k.symmetry {
+            // The binding refuses this before the policy runs
+            // ("run_dft: irrep_nelec requires symmetry=True"); the old
+            // construction promoted it, the policy refuses it too.
+            let entry = ScfEntryPoint::Dft;
+            assert_eq!(
+                entry.options(kwargs(entry, k)).unwrap_err(),
+                entry::EntryOptionError::IrrepNelecWithoutSymmetry(entry),
+                "{msg}"
+            );
+        } else {
+            same_msg(
+                &old_run_dft(k.clone()),
+                &new_run_dft(k.clone()),
+                &format!("run_dft, {msg}"),
+            );
+        }
         let f = k.functional.unwrap_or(OPEN_KS_DEFAULT_FUNCTIONAL);
         let open = [
             (ScfEntryPoint::Uks, Some(true)),
@@ -1315,50 +1325,72 @@ mod tests {
         let gb = crate::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap();
         for (entry, names) in added {
             let has = |n: &str| names.contains(&n);
+            // Every listed name must be set below and checked below, so a
+            // misspelt or unhandled name fails instead of passing vacuously.
+            let mut set: Vec<&str> = Vec::new();
+            let checked = std::cell::RefCell::new(Vec::<&str>::new());
             let mut kw = kwargs(entry, &Kw::default());
             if has("diis_size") {
+                set.push("diis_size");
                 kw.diis_size = Some(5);
             }
             if has("integral_thresh") {
+                set.push("integral_thresh");
                 kw.integral_thresh = Some(1e-10);
             }
             if has("eri") {
+                set.push("eri");
                 kw.eri = Some(EriMode::Direct);
             }
             if has("guess") {
+                set.push("guess");
                 kw.guess = Some(Guess::Core);
             }
             if has("soscf") {
+                set.push("soscf");
                 kw.soscf = Some(true);
             }
             if has("smeared_charges") {
+                set.push("smeared_charges");
                 kw.external_potential = Some(smeared.clone());
             }
             if has("solvent") {
+                set.push("solvent");
                 kw.pcm = Some(ferric_pcm::PcmConfig::default());
             }
             if has("stability_descent") {
+                set.push("stability_descent");
                 kw.stability_descent = Some(true);
             }
             if has("cosx") {
+                set.push("cosx");
                 kw.cosx = Some(flipped_cosx.clone());
             }
             if has("aurora") {
+                set.push("aurora");
                 kw.aurora = Some(true);
             }
             if has("trah_trigger") {
+                set.push("trah_trigger");
                 kw.trah_trigger = trah(Some(0.1));
             }
             if has("guess_basis") {
+                set.push("guess_basis");
                 kw.guess_basis = Some(gb.clone());
             }
             if has("mom_reference") {
+                set.push("mom_reference");
                 kw.mom_reference = Some(MomReference::Initial);
             }
             let c = entry.options(kw).unwrap().into_rhf_config().unwrap();
             let d = RhfConfig::default();
             let who = entry.name();
-            let check = |n: &str, ok: bool| assert!(!has(n) || ok, "{who}: {n}");
+            let check = |n: &'static str, ok: bool| {
+                if has(n) {
+                    checked.borrow_mut().push(n);
+                    assert!(ok, "{who}: {n}");
+                }
+            };
             check("diis_size", c.diis_size == 5 && d.diis_size != 5);
             check("integral_thresh", c.integral_thresh == 1e-10);
             check("eri", c.eri == EriMode::Direct && d.eri != EriMode::Direct);
@@ -1381,6 +1413,13 @@ mod tests {
             check("trah_trigger", c.trah_trigger == Some(0.1));
             check("guess_basis", c.guess_basis.as_ref() == Some(&gb));
             check("mom_reference", c.mom_reference == MomReference::Initial);
+            let mut want: Vec<&str> = names.to_vec();
+            want.sort_unstable();
+            set.sort_unstable();
+            let mut checked = checked.into_inner();
+            checked.sort_unstable();
+            assert_eq!(set, want, "{who}: names with no setter");
+            assert_eq!(checked, want, "{who}: names with no check");
             assert!(c.xc.is_some() == entry.is_kohn_sham(), "{who}");
         }
     }

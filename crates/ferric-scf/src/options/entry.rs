@@ -14,7 +14,15 @@
 //!
 //! A refused knob never reaches the solver: the Python signatures do not
 //! offer it, and [`ScfEntryPoint::options`] returns an [`EntryOptionError`]
-//! if one is set anyway, so a knob is never accepted and silently ignored.
+//! if one is set anyway, so the entry point never accepts a knob and drops
+//! it. An accepted knob always reaches `RhfConfig`; what the solver then
+//! does with it is the solver's rule, and a few accelerators have run-time
+//! gates that decline a step for some functionals, with the SCF continuing
+//! on DIIS: `aurora` below the validated exact-exchange fraction
+//! (`aurora::MIN_VALIDATED_EXCHANGE_FRACTION`, so pure functionals), and
+//! `trah_trigger` for meta-GGAs and range-separated hybrids (RHF/RKS and
+//! UHF/UKS), `soscf` for range-separated hybrids (UHF/UKS) and meta-GGAs
+//! (ROHF/ROKS).
 
 use std::fmt;
 
@@ -67,22 +75,47 @@ pub enum ScfKnob {
     Functional,
     /// The `grid_*` keywords ([`ScfKwargs::dft_grid`]).
     DftGrid,
+    /// `dispersion=` ([`ScfKwargs::dispersion`]): a post-SCF correction,
+    /// not an `ScfOptions` field, listed so the refusal table covers every
+    /// keyword of the six signatures.
+    Dispersion,
 }
 
+/// Every [`ScfKnob`], for checks that walk them all.
+pub const ALL_SCF_KNOBS: [ScfKnob; 11] = [
+    ScfKnob::Diis,
+    ScfKnob::SmearingSigma,
+    ScfKnob::Soscf,
+    ScfKnob::Aurora,
+    ScfKnob::TrahTrigger,
+    ScfKnob::StabilityDescent,
+    ScfKnob::MomReference,
+    ScfKnob::Symmetry,
+    ScfKnob::Functional,
+    ScfKnob::DftGrid,
+    ScfKnob::Dispersion,
+];
+
 impl ScfKnob {
-    /// The Python keyword(s) this knob is spelled as.
-    pub fn kwarg(self) -> &'static str {
+    /// The Python keyword parameters this knob is spelled as.
+    pub fn python_names(self) -> &'static [&'static str] {
         match self {
-            ScfKnob::Diis => "diis",
-            ScfKnob::SmearingSigma => "smearing_sigma",
-            ScfKnob::Soscf => "soscf",
-            ScfKnob::Aurora => "aurora",
-            ScfKnob::TrahTrigger => "trah_trigger",
-            ScfKnob::StabilityDescent => "stability_descent",
-            ScfKnob::MomReference => "mom_reference",
-            ScfKnob::Symmetry => "symmetry / irrep_nelec",
-            ScfKnob::Functional => "functional",
-            ScfKnob::DftGrid => "grid_*",
+            ScfKnob::Diis => &["diis"],
+            ScfKnob::SmearingSigma => &["smearing_sigma"],
+            ScfKnob::Soscf => &["soscf"],
+            ScfKnob::Aurora => &["aurora"],
+            ScfKnob::TrahTrigger => &["trah_trigger"],
+            ScfKnob::StabilityDescent => &["stability_descent"],
+            ScfKnob::MomReference => &["mom_reference"],
+            ScfKnob::Symmetry => &["symmetry", "irrep_nelec"],
+            ScfKnob::Functional => &["functional"],
+            ScfKnob::DftGrid => &[
+                "grid_radial",
+                "grid_angular",
+                "grid_prune",
+                "grid_weight_cut",
+            ],
+            ScfKnob::Dispersion => &["dispersion"],
         }
     }
 
@@ -100,6 +133,7 @@ impl ScfKnob {
             ScfKnob::Symmetry => kw.symmetry || kw.irrep_nelec.is_some(),
             ScfKnob::Functional => kw.functional.is_some(),
             ScfKnob::DftGrid => kw.dft_grid.is_some(),
+            ScfKnob::Dispersion => kw.dispersion,
         }
     }
 }
@@ -127,6 +161,11 @@ const LADDER_OWNS: &str =
      smearing_sigma themselves";
 const HF_NO_FUNCTIONAL: &str = "Hartree-Fock has no exchange-correlation functional";
 const HF_NO_GRID: &str = "Hartree-Fock has no Kohn-Sham integration grid";
+const HF_NO_DISPERSION: &str =
+    "a dispersion correction is parameterised per functional; Hartree-Fock has none";
+const DISPERSION_RESULT: &str =
+    "UhfResult has no e_scf / e_dispersion / dispersion_model fields to report a dispersion \
+     correction in";
 
 impl ScfEntryPoint {
     /// The Python name (`"run_rhf"`, ...).
@@ -160,6 +199,7 @@ impl ScfEntryPoint {
                 (K::MomReference, MOM_REFERENCE_UHF_ONLY),
                 (K::Functional, HF_NO_FUNCTIONAL),
                 (K::DftGrid, HF_NO_GRID),
+                (K::Dispersion, HF_NO_DISPERSION),
             ],
             ScfEntryPoint::Uhf => &[
                 (K::Diis, DIIS_RHF_ONLY),
@@ -168,6 +208,7 @@ impl ScfEntryPoint {
                 (K::Symmetry, SYMMETRY_OPEN),
                 (K::Functional, HF_NO_FUNCTIONAL),
                 (K::DftGrid, HF_NO_GRID),
+                (K::Dispersion, HF_NO_DISPERSION),
             ],
             ScfEntryPoint::Rohf => &[
                 (K::Diis, DIIS_RHF_ONLY),
@@ -179,6 +220,7 @@ impl ScfEntryPoint {
                 (K::MomReference, MOM_REFERENCE_UHF_ONLY),
                 (K::Functional, HF_NO_FUNCTIONAL),
                 (K::DftGrid, HF_NO_GRID),
+                (K::Dispersion, HF_NO_DISPERSION),
             ],
             ScfEntryPoint::Dft => &[
                 (K::Diis, LADDER_OWNS),
@@ -191,6 +233,7 @@ impl ScfEntryPoint {
                 (K::SmearingSigma, SMEARING_RHF_ONLY),
                 (K::Aurora, AURORA_RHF_ONLY),
                 (K::Symmetry, SYMMETRY_OPEN),
+                (K::Dispersion, DISPERSION_RESULT),
             ],
             ScfEntryPoint::Roks => &[
                 (K::Diis, DIIS_RHF_ONLY),
@@ -200,7 +243,22 @@ impl ScfEntryPoint {
                 (K::TrahTrigger, TRAH_NOT_ROHF),
                 (K::StabilityDescent, STABILITY_NOT_ROHF),
                 (K::MomReference, MOM_REFERENCE_UHF_ONLY),
+                (K::Dispersion, DISPERSION_RESULT),
             ],
+        }
+    }
+
+    /// The exchange-correlation functional this entry point solves with for
+    /// a `functional=` of `given`: `None` (Hartree-Fock) for the HF entry
+    /// points, `given` or [`DEFAULT_DFT_FUNCTIONAL`] for `run_dft`, `given`
+    /// for `run_uks` / `run_roks`, where it is required.
+    pub fn functional(self, given: Option<&str>) -> Result<Option<&str>, EntryOptionError> {
+        match self {
+            ScfEntryPoint::Rhf | ScfEntryPoint::Uhf | ScfEntryPoint::Rohf => Ok(None),
+            ScfEntryPoint::Dft => Ok(Some(given.unwrap_or(DEFAULT_DFT_FUNCTIONAL))),
+            ScfEntryPoint::Uks | ScfEntryPoint::Roks => given
+                .map(Some)
+                .ok_or(EntryOptionError::MissingFunctional(self)),
         }
     }
 
@@ -215,12 +273,13 @@ impl ScfEntryPoint {
     ///   ([`df_k_aux_or_default`](crate::options::df_k_aux_or_default));
     ///   `xc` is the functional, `run_dft`'s defaulting to
     ///   [`DEFAULT_DFT_FUNCTIONAL`].
-    /// * `run_rhf`: `symmetry` lowers as given; `run_dft`: an
-    ///   `irrep_nelec` turns symmetry on (the binding refuses it without
-    ///   `symmetry=True` before calling this).
+    /// * `symmetry` and `irrep_nelec` lower as given; `irrep_nelec` never
+    ///   turns symmetry on by itself.
     ///
-    /// Errors: a knob of [`refused`](Self::refused) set, or `run_uks` /
-    /// `run_roks` without a functional.
+    /// Errors: a knob of [`refused`](Self::refused) set, `run_uks` /
+    /// `run_roks` without a functional, or `run_dft` with `irrep_nelec` but
+    /// not `symmetry` (its binding refuses that first, with its own
+    /// message; `run_rhf`'s solve path refuses it).
     pub fn options(self, kw: ScfKwargs<'_>) -> Result<ScfOptions, EntryOptionError> {
         if let Some((knob, reason)) = self.refused().iter().find(|(k, _)| k.is_set(&kw)) {
             return Err(EntryOptionError::Refused {
@@ -262,20 +321,21 @@ impl ScfEntryPoint {
             trah_trigger,
             functional,
             dft_grid,
+            // Post-SCF (run_dft applies it after the SCF); only the refusal
+            // check above reads it.
+            dispersion: _,
         } = kw;
         let ks = self.is_kohn_sham();
-        let xc = match self {
-            ScfEntryPoint::Rhf | ScfEntryPoint::Uhf | ScfEntryPoint::Rohf => None,
-            ScfEntryPoint::Dft => Some(functional.unwrap_or(DEFAULT_DFT_FUNCTIONAL).to_string()),
-            ScfEntryPoint::Uks | ScfEntryPoint::Roks => Some(
-                functional
-                    .ok_or(EntryOptionError::MissingFunctional(self))?
-                    .to_string(),
-            ),
-        };
+        let xc = self.functional(functional)?.map(str::to_string);
         let symmetry = match self {
+            // run_rhf lowers `irrep_nelec` without `symmetry` as given: its
+            // solve path refuses it, after the refusals that come first
+            // there (with_gradient, fock_hook).
             ScfEntryPoint::Rhf => Some(symmetry),
-            ScfEntryPoint::Dft => (symmetry || irrep_nelec.is_some()).then_some(true),
+            ScfEntryPoint::Dft if irrep_nelec.is_some() && !symmetry => {
+                return Err(EntryOptionError::IrrepNelecWithoutSymmetry(self));
+            }
+            ScfEntryPoint::Dft => Some(symmetry),
             // Refused above when set.
             _ => None,
         };
@@ -421,6 +481,10 @@ pub struct ScfKwargs<'a> {
     pub functional: Option<&'a str>,
     /// The resolved `grid_*` keywords (Kohn-Sham; `None` = production grid).
     pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
+    /// `dispersion=` was passed (`run_dft` only). Not lowered: the
+    /// correction is applied after the SCF; this is here so
+    /// [`ScfEntryPoint::refused`] covers every keyword of the signatures.
+    pub dispersion: bool,
 }
 
 /// [`ScfEntryPoint::options`]'s refusal.
@@ -437,6 +501,8 @@ pub enum EntryOptionError {
     },
     /// `run_uks` / `run_roks` without a functional.
     MissingFunctional(ScfEntryPoint),
+    /// `irrep_nelec` without `symmetry=True` (`run_dft`).
+    IrrepNelecWithoutSymmetry(ScfEntryPoint),
 }
 
 impl fmt::Display for EntryOptionError {
@@ -450,10 +516,13 @@ impl fmt::Display for EntryOptionError {
                 f,
                 "{}: {} is not supported: {reason}",
                 entry.name(),
-                knob.kwarg()
+                knob.python_names().join(" / ")
             ),
             EntryOptionError::MissingFunctional(entry) => {
                 write!(f, "{}: a functional is required", entry.name())
+            }
+            EntryOptionError::IrrepNelecWithoutSymmetry(entry) => {
+                write!(f, "{}: irrep_nelec requires symmetry=True", entry.name())
             }
         }
     }
@@ -507,6 +576,7 @@ mod tests {
             ScfKnob::DftGrid => {
                 kw.dft_grid = Some(ferric_dft::grid::AtomicGridConfig::production())
             }
+            ScfKnob::Dispersion => kw.dispersion = true,
         };
         for entry in ALL {
             for &(knob, reason) in entry.refused() {
@@ -530,6 +600,38 @@ mod tests {
                 assert!(offered, "{knob:?} is refused everywhere");
             }
         }
+    }
+
+    /// Each knob is refused by some entry point (or it would not be a knob).
+    #[test]
+    fn every_knob_is_refused_somewhere() {
+        for knob in ALL_SCF_KNOBS {
+            assert!(
+                ALL.iter()
+                    .any(|e| e.refused().iter().any(|(k, _)| *k == knob)),
+                "{knob:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irrep_nelec_never_turns_symmetry_on() {
+        let irrep = Some(vec![("A1".to_string(), 10)]);
+        let kw = ScfKwargs {
+            irrep_nelec: irrep.clone(),
+            ..ScfKwargs::default()
+        };
+        assert_eq!(
+            ScfEntryPoint::Dft.options(kw.clone()).unwrap_err(),
+            EntryOptionError::IrrepNelecWithoutSymmetry(ScfEntryPoint::Dft)
+        );
+        let c = ScfEntryPoint::Rhf
+            .options(kw)
+            .unwrap()
+            .into_rhf_config()
+            .unwrap();
+        assert!(!c.symmetry);
+        assert_eq!(c.irrep_nelec, irrep);
     }
 
     #[test]
