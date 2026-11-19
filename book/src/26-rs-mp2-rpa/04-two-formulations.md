@@ -33,11 +33,6 @@ $$ E^{\mathrm B}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mat
 
 $$ E^{\mathrm T}_c = E_{\mathrm{MP2}}[\mathrm C] + \Delta E_{\mathrm{dRPA}}[\mathrm C] - \Delta E_{\mathrm{dRPA}}[\mathrm{sr}] \qquad (\texttt{coupled-rings}). \label{eq:two-formulations-2} $$
 
-The manuscript in preparation on this method calls B LRC[κ], because its
-correction acts at the level of the kernel, and T LRC[E], because its
-correction acts at the level of the energy. The code and this chapter use B
-(`delta-lr`) and T (`coupled-rings`).
-
 B replaces the long-range direct rings of MP2 with their dRPA resummation.
 T screens every ring with the full operator and then removes the screening
 from the purely short-range rings. Each bracket uses one operator's fitted
@@ -87,10 +82,9 @@ $k_l^3/(4\Delta^2)$, is third order. In the water run of section
 @sec:two-formulations-run, at the one default $\omega = 0.420$ Å$^{-1}$,
 B's correction is 2.48 µHa and T's is 2.16 mHa, a factor of 870. A
 `coupled-rings` run at the default $\omega$ is not a B run with more rings
-added: it moves the energy about three orders of magnitude further. The
-manuscript evaluates each formulation at its own fixed $\omega$ for this
-reason, 0.42 Å$^{-1}$ for LRC[κ] and 0.2 Å$^{-1}$ for LRC[E]. The code keeps
-one default for both (section @sec:two-formulations-options), and neither
+added: it moves the energy about three orders of magnitude further. An
+$\omega$ chosen for one formulation is therefore not a sensible choice for
+the other. The code keeps one default for both (section @sec:two-formulations-options), and neither
 value is benchmarked in ferric (section @sec:two-formulations-known-limits).
 
 > **Verified equation @eq:rsrpa-forms-orders** · second order is full MP2; the third-order rings of each formulation
@@ -586,9 +580,8 @@ RHF reference; the open-shell row of that page is an anchor, outside the
 The grade covers an RHF reference with exact J and K, the erf attenuator at
 the default $\omega$, either formulation, frozen core 0, `trunc_thresh` 0 or
 below, the Lanczos eigensolver, the dense $\chi_0$ backend and sparsity, and
-Gauss–Legendre quadrature with $u_0 = 0.5$ and 20 or 40 points. The
-manuscript's production S22 runs use PDEP truncation at $10^{-4}$, which is
-outside this scope.
+Gauss–Legendre quadrature with $u_0 = 0.5$ and 20 or 40 points. Runs with
+PDEP truncation (`trunc_thresh` above 0) are outside this scope.
 The terf split is checked by its limits and, for B's long range, by the
 Ne$_2$ comparison of section @sec:two-formulations-terf-sign; the grade does
 not cover it.
