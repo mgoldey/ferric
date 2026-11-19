@@ -3630,11 +3630,8 @@ impl ScfCfg {
             ));
         }
         if let Some(t) = self.trah_trigger {
-            if !(t.is_finite() && t > 0.0) {
-                return Err(format!(
-                    "[scf] trah_trigger must be a positive number, got {t}"
-                ));
-            }
+            // The rule (and its message) lives in `TrahTrigger::new`.
+            ferric_scf::options::TrahTrigger::new(t).map_err(|e| format!("[scf] {e}"))?;
             if kind != "rhf" && kind != "uhf" {
                 return Err(format!(
                     "[scf] trah_trigger is wired for method.kind = \"rhf\" and \"uhf\" only; \
@@ -13233,6 +13230,30 @@ mod cli_wired_keys_tests {
             &cfg("rhf", "energy", 1, "[scf]\ntrah_trigger = 0.0\n"),
             "positive",
         );
+    }
+
+    /// The CLI text is pinned byte for byte: `[scf] ` + the
+    /// `InvalidTrahTrigger` Display shared with the Python frontend.
+    #[test]
+    fn trah_trigger_refusal_message_is_exact() {
+        for (toml, shown) in [
+            ("0.0", "0"),
+            ("-0.5", "-0.5"),
+            ("nan", "NaN"),
+            ("inf", "inf"),
+        ] {
+            let c = cfg(
+                "rhf",
+                "energy",
+                1,
+                &format!("[scf]\ntrah_trigger = {toml}\n"),
+            );
+            let e = c.validate_cli_wired_keys().expect_err("must be refused");
+            assert_eq!(
+                e,
+                format!("[scf] trah_trigger must be a positive number, got {shown}")
+            );
+        }
     }
 
     // ---- [dft] grid_radial / grid_angular ----
