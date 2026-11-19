@@ -133,3 +133,20 @@ def test_rimp2_ecp_gradient_matches_finite_differences():
     fd = (energy(1.61 + h) - energy(1.61 - h)) / (2 * h * bohr)
     g = ferric.run_rimp2(mol(1.61), bs, aux, with_gradient=True, **conv).gradient()
     assert abs(g[1, 2] - fd) < 1e-6
+
+
+def test_cc_reference_is_run_rhf_or_run_uhf():
+    bs, aux = bases()
+    eom = ferric.run_eom_ccsd(hi(), bs, aux, n_roots=1)
+    assert abs(eom.rhf_energy - rhf().energy) < EREF
+    ccsd = ferric.run_ccsd(hi(), bs, aux)
+    # run_eom_ccsd converges its CCSD to 1e-10 instead of 1e-8.
+    assert abs(ccsd.correlation_energy - eom.ccsd_correlation_energy) < 1e-6
+    channel = rhf_channel()
+    assert 1.0 < ccsd.correlation_energy / ri_ump2(channel, channel, 0, 1) < 1.3
+    u = uhf()
+    alpha = (u.mo_coefficients_alpha(), u.orbital_energies_alpha(), N_VALENCE_OCC)
+    beta = (u.mo_coefficients_beta(), u.orbital_energies_beta(), N_VALENCE_OCC - 1)
+    uccsd = ferric.run_ccsd(hi(1, 2), bs, aux)
+    assert uccsd.reference == "uhf"
+    assert 1.0 < uccsd.correlation_energy / ri_ump2(alpha, beta, 1, 2) < 1.3

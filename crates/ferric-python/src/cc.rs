@@ -5,7 +5,7 @@ use super::*;
 // ── CC (stub) ──
 
 /// ECP policy of the coupled-cluster drivers in this file.
-pub(crate) const CC_ECP: EcpPolicy = EcpPolicy::Skip;
+pub(crate) const CC_ECP: EcpPolicy = EcpPolicy::Apply;
 
 #[pyclass]
 #[pyo3(name = "CcResult")]
