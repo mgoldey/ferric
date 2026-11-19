@@ -68,9 +68,8 @@ use ferric_mp2::lmp2_direct::{
     assemble_boo_direct, assemble_pp_fitted_direct, assemble_ragged_direct_local, DirectConfig,
     DirectStats, OoGram, PpFitted,
 };
-use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_vv};
+use ferric_mp2::mo_transform::whitened_oo_vv;
 use ferric_mp2::ragged::{kept_fraction, matvec_indexed, solve_ragged_with, Ragged};
-use ferric_mp2::rimp2::metric_inverse_sqrt;
 
 /// Configuration for amplitude-threshold LinLCCD.
 #[derive(Debug, Clone)]
@@ -219,27 +218,19 @@ pub fn amplitude_linlccd_with_virtuals(
     let _charge = plan.commit()?;
 
     // hh ladder coefficients (ik|jl): the OOOO block is no⁴ — tiny — via
-    // the same whitened RI Gram as the canonical implementation
-    let vis = metric_inverse_sqrt(&lb.v2c, op)?;
-    let oo_g = {
-        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
-        let boo = transform_3center_oo(&eri3_ao, &lb.c_locc)
-            .into_shape_with_order((naux, no * no))
-            .map_err(|e| FerricError::General(format!("linlccd_amplitude oo reshape: {e}")))?;
-        let boo_t = vis.dot(&boo);
-        boo_t.t().dot(&boo_t) // rows (i,k), cols (j,l): (ik|jl)
-    };
-    // pp ladder: whitened B over VV pairs, gathered per pair on demand —
-    // the (nv²)² VVVV tensor is never formed
-    let bvv_t: Option<Array2<f64>> = if variant.needs_vvvv_pub() {
-        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
-        let bvv = transform_3center_vv(&eri3_ao, &vvhv.c_vloc)
-            .into_shape_with_order((naux, nv * nv))
-            .map_err(|e| FerricError::General(format!("linlccd_amplitude vv reshape: {e}")))?;
-        Some(vis.dot(&bvv))
-    } else {
-        None
-    };
+    // the same whitened RI Gram as the canonical implementation. pp ladder:
+    // whitened B over VV pairs, gathered per pair on demand — the (nv²)²
+    // VVVV tensor is never formed.
+    let (boo_t, bvv_t) = whitened_oo_vv(
+        op,
+        obs,
+        dfbs,
+        &lb.v2c,
+        &lb.c_locc,
+        variant.needs_vvvv_pub().then_some(&vvhv.c_vloc),
+    )?;
+    let oo_g = boo_t.t().dot(&boo_t); // rows (i,k), cols (j,l): (ik|jl)
+    drop(boo_t);
 
     let oo = if matches!(variant, LadderVariant::DriversOnly) {
         None
