@@ -143,29 +143,25 @@ pub(crate) fn run_opmp3(
         ..Opmp3Config::new(kind)
     };
     let x = config.resolved_x_ss().map_err(make_err)?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let sys = prepare(mol, basis_set)?;
+    let mol = sys.mol();
     let aux = auxbasis
-        .map(|a| PreparedBasis::new(&mol.inner, &a.inner))
+        .map(|a| sys.prepare_aux(&a.inner))
         .transpose()
         .map_err(make_err)?;
     let integrals = aux
         .as_ref()
         .map_or(Opmp3Integrals::Exact, Opmp3Integrals::Ri);
-    let ctx = ParallelContext::default();
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).map_err(make_err)?;
+    let (ctx, prep, bounds) = (sys.ctx(), sys.basis(), sys.bounds());
     let (scf, inner) = py
         .allow_threads(|| {
-            let scf = opmp3_scf(&ctx, &mol.inner, &prep, &bounds, &config)?;
-            let r = opmp3_on_reference(&ctx, &mol.inner, &prep, &bounds, &scf, integrals, &config)?;
+            let scf = opmp3_scf(ctx, mol, prep, bounds, &config)?;
+            let r = opmp3_on_reference(ctx, mol, prep, bounds, &scf, integrals, &config)?;
             Ok::<_, ferric_core::FerricError>((scf, r))
         })
         .map_err(make_err)?;
-    let reference_cert = reference_certificate(
-        &mol.inner,
-        &scf,
-        &opmp3_scf_config(&config),
-        &basis_set.inner,
-    );
+    let reference_cert =
+        reference_certificate(mol, &scf, &opmp3_scf_config(&config), &basis_set.inner);
     let certificate_data = ferric_mp2::certificate::opmp3_certificate(
         &reference_cert,
         auxbasis.map(|a| a.inner.name.as_str()),

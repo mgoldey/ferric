@@ -228,6 +228,13 @@ def test_tune_omega_references_are_run_dft_and_run_uks():
         assert abs(e["e_cation"] - cation) < 1e-4
 
 
+def test_opmp3_reference_is_run_rhf_or_run_rohf():
+    bs = bases()[0]
+    assert abs(ferric.run_opmp3(hi(), bs).e_scf - rhf().energy) < EREF
+    rohf = ferric.run_rohf(hi(1, 2), bs).energy
+    assert abs(ferric.run_opmp3(hi(1, 2), bs).e_scf - rohf) < EREF
+
+
 def test_a_molecule_reused_from_an_ecp_run_is_all_electron_in_sto3g():
     # run_aimd returns its molecule with def2-SVP's ECP counts on I; run in
     # STO-3G (no ECP) it must be the all-electron HI a fresh parse gives.
