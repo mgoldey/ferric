@@ -169,3 +169,20 @@ def test_rpa_family_reference_is_run_rhf():
     assert abs(ferric.run_pdep_rpa(hi(), bs, aux).rhf_energy - e_rhf) < EREF
     rs = ferric.run_rs_mp2_rpa(hi(), bs, aux, scf_jk="exact")
     assert abs(rs.rhf_energy - e_rhf) < EREF
+
+
+def test_tddft_reference_is_run_rhf():
+    # HF / TDA singlets are RI-CIS: A[ia, jb] = d_ij d_ab (e_a - e_i)
+    # + 2 (ia|jb) - (ij|ab) on run_rhf's orbitals, RI on the same auxbasis.
+    bs, aux = bases()
+    c, eps, n = rhf_channel()
+    b = ri_factors(0, 1)
+    bia = np.einsum("Pmn,mi,na->Pia", b, c[:, :n], c[:, n:])
+    bij = np.einsum("Pmn,mi,nj->Pij", b, c[:, :n], c[:, :n])
+    bab = np.einsum("Pmn,ma,nb->Pab", b, c[:, n:], c[:, n:])
+    nv = c.shape[1] - n
+    a = 2 * np.einsum("Pia,Pjb->iajb", bia, bia) - np.einsum("Pij,Pab->iajb", bij, bab)
+    a = a.reshape(n * nv, n * nv) + np.diag((eps[None, n:] - eps[:n, None]).reshape(-1))
+    cis = np.linalg.eigvalsh(a)[:3]
+    r = ferric.run_tddft(hi(), bs, aux, n_roots=3, method="tda")
+    assert np.allclose(r.excitation_energies, cis, atol=1e-6)

@@ -3,7 +3,7 @@
 use super::*;
 
 /// ECP policy of `run_tddft`.
-pub(crate) const TDDFT_ECP: EcpPolicy = EcpPolicy::Skip;
+pub(crate) const TDDFT_ECP: EcpPolicy = EcpPolicy::Apply;
 
 // ── TDDFT (closed-shell linear response) ──
 
