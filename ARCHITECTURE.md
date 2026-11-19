@@ -156,6 +156,18 @@ Done:
    `RhfConfig` literal), removing the hand-kept "CLI and Python agree"
    parity. It is also the template for 12: a `Result<_, CliError>`
    function with one `.or_exit()` at the call site.
+9a. `energy`/`total_energy` aliases on every SCF result class (molecular,
+    CDFT and periodic), so callers no longer branch on the result type.
+-  API snapshot coverage extends to the pure-Python submodules
+   (`serialize`, `rdkit`, `qcschema`, `units`, `molden`, `fcidump`, `viz`,
+   and the ASE calculator's properties and defaults).
+-  Spin-generic KS gradient core in `ferric-scf/src/ks_gradient.rs`
+   (closed, UKS and ROKS share one implementation; public functions are
+   shims), and shared reference-SCF/Gamma/k-point helpers in the periodic
+   bindings (`PbcArgs` carries its `PbcRole`).
+-  COSX for `run_uks`/`run_roks`: they now apply
+   `df_k_aux_or_default`, which they previously skipped (every
+   `k_builder="cosx"` call failed with a `df_k_aux` conflict).
 
 Next, each as its own PR following the patterns above:
 
@@ -166,9 +178,8 @@ Next, each as its own PR following the patterns above:
    prepared basis, operator, bounds, context) used by every correlated
    driver. Whether a driver applies ECPs is a behaviour change and gets its
    own tests.
-9. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
-   declarative macro for the shared Python result getters, adding
-   `energy`/`total_energy` aliases on every SCF result.
+9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
+   declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.
 11. `RhfConfig` in steps, each with a field-by-field oracle test:
     (a) route every literal site through an options lowering, then mark it
@@ -188,6 +199,11 @@ Next, each as its own PR following the patterns above:
     correlated method does not deep-copy arrays; result classes become
     `frozen`; `ferric.serialize` reads an explicit `MethodResult` schema
     instead of reflection.
-14. Spin-generic KS gradient wrappers (gated on bit-identical gradients), a
-    shared `ferric-testkit` dev crate, table-driven periodic entry points, file
-    splits, and a clippy ratchet on `too_many_arguments`.
+14. A shared `ferric-testkit` dev crate, file splits, and a clippy ratchet on
+    `too_many_arguments`.
+15. Types still stringly or boolean at the boundary: a `KBuilder` enum parsed
+    once (replacing `k_builder: Option<String>` and `COSX_K_BUILDER`
+    comparisons), a `Functional` newtype for `xc`, `ri_j_task` as an argument
+    to the lowering rather than a user option, and one
+    `Option<Hook { fock, grad }>` instead of the two independent hook
+    options in the open-shell entry.
