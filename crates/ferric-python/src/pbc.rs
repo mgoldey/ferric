@@ -1261,6 +1261,12 @@ struct PyGammaOpenShellResult {
 
 #[pymethods]
 impl PyGammaOpenShellResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
@@ -2038,6 +2044,12 @@ struct PyGammaRksResult {
 
 #[pymethods]
 impl PyGammaRksResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
@@ -2725,6 +2737,12 @@ struct PyKpointScfResult {
 
 #[pymethods]
 impl PyKpointScfResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
@@ -3395,6 +3413,12 @@ struct PyKpointRksResult {
 
 #[pymethods]
 impl PyKpointRksResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.

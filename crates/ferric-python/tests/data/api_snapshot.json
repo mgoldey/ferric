@@ -1246,6 +1246,9 @@
     "targets": {
      "kind": "attribute"
     },
+    "total_energy": {
+     "kind": "attribute"
+    },
     "weight_matrix": {
      "kind": "method",
      "signature": [
@@ -1599,6 +1602,9 @@
      "kind": "attribute"
     },
     "e_xc": {
+     "kind": "attribute"
+    },
+    "energy": {
      "kind": "attribute"
     },
     "exit_reason": {
@@ -2066,6 +2072,9 @@
     },
     "timings": {
      "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -2173,6 +2182,9 @@
     },
     "timings": {
      "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -2264,6 +2276,9 @@
      ]
     },
     "timings": {
+     "kind": "attribute"
+    },
+    "total_energy": {
      "kind": "attribute"
     }
    }
@@ -2548,6 +2563,9 @@
     },
     "timings": {
      "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -2685,6 +2703,9 @@
     },
     "timings": {
      "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -2742,6 +2763,65 @@
      "kind": "attribute"
     },
     "r_vdw_ts": {
+     "kind": "attribute"
+    }
+   }
+  },
+  "MdResult": {
+   "constructor": null,
+   "members": {
+    "certificate": {
+     "kind": "attribute"
+    },
+    "conserved": {
+     "kind": "attribute"
+    },
+    "kinetic_energies": {
+     "kind": "attribute"
+    },
+    "label": {
+     "kind": "attribute"
+    },
+    "max_conserved_drift": {
+     "kind": "attribute"
+    },
+    "mol": {
+     "kind": "method",
+     "signature": [
+      {
+       "kind": "POSITIONAL_ONLY",
+       "name": "self"
+      }
+     ]
+    },
+    "n_dof": {
+     "kind": "attribute"
+    },
+    "n_force_evaluations": {
+     "kind": "attribute"
+    },
+    "positions_angstrom": {
+     "kind": "attribute"
+    },
+    "potential_energies": {
+     "kind": "attribute"
+    },
+    "scf_iterations": {
+     "kind": "attribute"
+    },
+    "steps": {
+     "kind": "attribute"
+    },
+    "temperatures": {
+     "kind": "attribute"
+    },
+    "times_fs": {
+     "kind": "attribute"
+    },
+    "total_energies": {
+     "kind": "attribute"
+    },
+    "velocities": {
      "kind": "attribute"
     }
    }
@@ -3778,6 +3858,9 @@
     "stationarity_tol": {
      "kind": "attribute"
     },
+    "total_energy": {
+     "kind": "attribute"
+    },
     "unmet_criteria": {
      "kind": "attribute"
     }
@@ -4080,6 +4163,9 @@
        "name": "self"
       }
      ]
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -4402,6 +4488,9 @@
      "kind": "attribute"
     },
     "stationarity_tol": {
+     "kind": "attribute"
+    },
+    "total_energy": {
      "kind": "attribute"
     }
    }
@@ -5191,6 +5280,125 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "memory_budget_gb"
+   }
+  ],
+  "run_aimd": [
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "mol"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "basis_name"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "n_steps"
+   },
+   {
+    "default": "0.5",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "dt_fs"
+   },
+   {
+    "default": "'nve'",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "thermostat"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "temperature_k"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "init_temperature_k"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "tau_fs"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "friction_per_ps"
+   },
+   {
+    "default": "0",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "seed"
+   },
+   {
+    "default": "True",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "remove_com_motion"
+   },
+   {
+    "default": "1",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "stride"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "reference"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "xc"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "dispersion"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "df_j_aux"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "df_k_aux"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_max_iter"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_energy_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_density_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_warm_start"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "masses_amu"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "trajectory_path"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "energies_path"
    }
   ],
   "run_attenuated_rimp2": [
@@ -6389,6 +6597,89 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "scf_density_conv"
+   }
+  ],
+  "run_ffmd": [
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "topology"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "symbols"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "coords_angstrom"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "n_steps"
+   },
+   {
+    "default": "1.0",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "dt_fs"
+   },
+   {
+    "default": "'nve'",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "thermostat"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "temperature_k"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "init_temperature_k"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "tau_fs"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "friction_per_ps"
+   },
+   {
+    "default": "0",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "seed"
+   },
+   {
+    "default": "True",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "remove_com_motion"
+   },
+   {
+    "default": "1",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "stride"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "masses_amu"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cutoff_angstrom"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "trajectory_path"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "energies_path"
    }
   ],
   "run_frequencies": [

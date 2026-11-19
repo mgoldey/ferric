@@ -88,6 +88,12 @@ impl PyDftResult {
 
 #[pymethods]
 impl PyDftResult {
+    /// Alias of `total_energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn energy(&self) -> f64 {
+        self.total_energy
+    }
+
     /// Precision provenance of this KS-DFT SCF (see `RhfResult.precision`;
     /// the `xc-vxc` kernel carries a `ladder` record).
     #[getter]

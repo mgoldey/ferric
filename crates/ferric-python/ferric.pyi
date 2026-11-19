@@ -953,6 +953,7 @@ class SymmetricRhfResult:
     NotImplementedError; no function that takes an RhfResult accepts this."""
 
     energy: float
+    total_energy: float
     converged: bool
     iterations: int
     point_group: str
@@ -1014,6 +1015,11 @@ class RhfResult:
         ``precision`` and ``warnings`` (``list[str]``, with one entry per
         element, basis or functional of the run outside the solver's energy
         anchor; such a warning does not change the grade)."""
+        ...
+
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
         ...
 
     @property
@@ -1195,6 +1201,11 @@ class UhfResult:
         ...
 
     @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
+    @property
     def energy(self) -> float:
         """Total SCF energy in Hartree."""
         ...
@@ -1306,6 +1317,11 @@ class CdftResult:
         """Validation certificate (same keys as ``RhfResult.certificate``).
         ``capability`` is ``"cdft:uhf"`` or ``"cdft:uks"`` and the grade is ``"ungraded"``: the
         validation page does not grade this entry point. The UHF/UKS certificate at the constrained density is the reference; each constraint (fragment, kind, target, multiplier, population), the Becke weight grid and the outer-loop settings are approximations; an unconverged inner SCF or constraint is a warning."""
+        ...
+
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
         ...
 
     @property
@@ -2356,6 +2372,11 @@ class DftResult:
         ...
 
     @property
+    def energy(self) -> float:
+        """Alias of `total_energy` (the same value)."""
+        ...
+
+    @property
     def total_energy(self) -> float:
         """SCF energy plus the dispersion correction, if one was requested.
 
@@ -3100,6 +3121,11 @@ class GammaRhfResult:
         G vectors, chunks and RS-GDF aux dropped."""
         ...
     @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
+    @property
     def energy(self) -> float:
         """Total energy per cell (Hartree), incl. e_nuc and any Madelung shift."""
         ...
@@ -3272,6 +3298,11 @@ class GammaOpenShellResult:
     @property
     def functional(self) -> str | None: ...
     @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
+    @property
     def energy(self) -> float: ...
     @property
     def converged(self) -> bool: ...
@@ -3356,6 +3387,11 @@ class GammaRksResult:
         ...
     @property
     def functional(self) -> str: ...
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
     @property
     def energy(self) -> float: ...
     @property
@@ -3475,6 +3511,11 @@ class KpointRksResult:
     @property
     def functional(self) -> str: ...
     @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
+    @property
     def energy(self) -> float: ...
     @property
     def converged(self) -> bool: ...
@@ -3576,6 +3617,11 @@ class KpointScfResult:
         ...
     @property
     def method(self) -> str: ...
+    @property
+    def total_energy(self) -> float:
+        """Alias of `energy` (the same value)."""
+        ...
+
     @property
     def energy(self) -> float: ...
     @property
