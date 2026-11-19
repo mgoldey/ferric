@@ -1186,7 +1186,8 @@
     },
     "eom-ccsd": {
       "book": [
-        "book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-equations"
+        "book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-equations",
+        "book/src/16-coupled-cluster/04-eom-ccsd.md#eom-ccsd-product"
       ],
       "scripts": [
         "scripts/cc_ccsd_eom_brute_force_sympy.py"
