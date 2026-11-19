@@ -5,7 +5,7 @@ use super::*;
 // ── RI-MP2 ──
 
 /// ECP policy of the MP2-family drivers in this file.
-pub(crate) const MP2_ECP: EcpPolicy = EcpPolicy::Skip;
+pub(crate) const MP2_ECP: EcpPolicy = EcpPolicy::Apply;
 
 /// ECP policy of the dRPA / LinLCCD drivers in this file (`run_drpa`,
 /// `run_drpa_scan`, `run_linlccd`).
