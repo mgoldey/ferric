@@ -72,6 +72,19 @@ $n_o = 21$, $n_v = 93$):
 | $B_{ov}$ | $8 \cdot 420 \cdot 21 \cdot 93 = 6.56$ MB |
 | $G^{(0)}$ per worker | $8 \cdot 21 \cdot 93^2 = 1.45$ MB |
 
+The table lists the pieces. A job has two peaks, with $k$ the chunk width
+of section @sec:streaming-transform-chunk-width and $2 \cdot 8N_{\mathrm{aux}}^2$ for $V$ and $M$ held
+throughout:
+
+- during the transform, the raw tier $+\ 8N_{\mathrm{aux}}n_on_v + 8kn_on_v$;
+- during the pair loop, after `drop(src)`, $8N_{\mathrm{aux}}n_on_v + n_w \cdot 8n_on_v^2$.
+
+For benzene in cc-pVDZ with the raw tensor in core and an ample budget
+($k = 256$), the transform peak is $2.82 + 43.67 + 6.56 + 4.00 = 57.05$ MB.
+The pair-loop peak is $2.82 + 6.56 + n_w \cdot 1.45$ MB: 10.84 MB on one
+worker and 26.82 MB on 12. The per-row half transforms of
+section @sec:streaming-transform-memory-pass come on top of the first.
+
 ## The admission check {#memory-budget-admission-check}
 
 Before any three-index work, the driver calls `check_mo_side_alloc`. It adds
@@ -107,7 +120,7 @@ MO-side term. $n_w$ is `rayon::current_num_threads()`.
 so callers can report a size without running the check.
 
 For water in cc-pVDZ with cc-pVDZ-RI, $B_{ov}$ is 63 840 bytes and
-$G^{(i)}$ is 14 440 bytes per worker, so on 12 workers the sum is
+$G^{(i)}$ is 14 440 bytes per worker, so on a 12-thread pool the sum is
 237 120 bytes. A budget of $10^{-5}$ GiB (10 737 bytes) is refused before any
 three-index work, and 1 GiB admits (the `589b50832` build). The message
 prints both sizes in GB to two decimals, which at this scale reads
@@ -133,6 +146,10 @@ for gb in (1e-5, 1.0):  # 10 kB is below B_ov alone; 1 GB admits
 budget 1e-05 GB: refused: General error: RI-MP2 MO-side blocks (naux=84, nocc=5, nvir=19, 12 workers) requires 0.00 GB; budget is 0.00 GB — raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB or shrink the system
 budget 1 GB: E_corr = -0.2040334567
 ```
+
+The worker count in the message is `rayon::current_num_threads()`; the run
+above used a 12-thread pool, and under `RAYON_NUM_THREADS=1` the same
+snippet prints "1 workers".
 
 | Test (`crates/ferric-mp2/tests/mwe_rimp2_has_no_guard.rs`) | What it pins |
 |---|---|
@@ -185,8 +202,11 @@ with the same binary, no pool against a pool of the same size:
 | 44 MB | completes | refused: $B_{ov}$ needs 0.007 GB, 0.000 GB free |
 | 48 MB | completes | refused: $B_{ov}$ needs 0.007 GB, 0.002 GB free |
 | 51 MB | completes | completes |
-| 120 MB | completes | completes | The proper fix is to let the tier decision see the
-MO side, which is a change in `ferric-integrals`.
+| 120 MB | completes | completes |
+
+The band exists because the tier decision does not see the MO side.
+Letting it see the MO side is a change in `ferric-integrals` that has not
+been made. Until then
 `crates/ferric-mp2/tests/mwe_mp2_soft_planes_do_not_refuse.rs` pins that a
 budget inside the band completes
 (`a_budget_inside_the_refusal_window_still_completes`).
@@ -219,5 +239,5 @@ budget inside the band completes
 | the tests named above | the pinned behaviour |
 
 Changes from the sources: sizes are written in bytes with the factor 8
-explicit; $n_w$ names the worker count. The benzene sizes, the packed size
-and the 20 MB example are computed for this section.
+explicit; $n_w$ names the worker count. The benzene sizes, the two peaks,
+the packed size and the 20 MB example are computed for this section.

@@ -4,7 +4,7 @@
 
 | Entry point | Location |
 |---|---|
-| Rust | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu`, `ferric-mp2/src/rimp2.rs::pair_energy` |
+| Rust | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu` (supplies $G^{(i)}$), `ferric-mp2/src/rimp2.rs::spin_components_from_blocks` (the loop), `ferric-mp2/src/rimp2.rs::pair_energy` |
 | f64-only wrapper | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov` (RS-MP2+RPA, OO-RI-MP2) |
 | Dispatcher | `dispatch_spin_components` in `crates/ferric-mp2/src/rimp2.rs` (private): device first, then CPU |
 
@@ -50,10 +50,10 @@ two columns of $B$ of length $N_{\mathrm{aux}}$: $2N_{\mathrm{aux}}$ flops
 against $16N_{\mathrm{aux}}$ bytes read, $1/8$ flop per byte if nothing is
 reused. The block product reads $B_i$ once for all $j$. If each operand of
 the GEMM for $i$ crosses the memory bus once, with tail width
-$n = (n_o - i)n_v$, the intensity tends for a wide tail ($n$ large against
+$w_i = (n_o - i)n_v$, the intensity tends for a wide tail ($w_i$ large against
 $n_v$ and $N_{\mathrm{aux}}$) to
 
-$$ \frac{2\,n_v N_{\mathrm{aux}}\, n}{8\,(n_v N_{\mathrm{aux}} + N_{\mathrm{aux}} n + n_v n)} \;\longrightarrow\; \frac{n_v N_{\mathrm{aux}}}{4\,(n_v + N_{\mathrm{aux}})} , $$
+$$ \frac{2\,n_v N_{\mathrm{aux}}\, w_i}{8\,(n_v N_{\mathrm{aux}} + N_{\mathrm{aux}} w_i + n_v w_i)} \;\longrightarrow\; \frac{n_v N_{\mathrm{aux}}}{4\,(n_v + N_{\mathrm{aux}})} , $$
 
 69 flops per byte for benzene in aug-cc-pVTZ ($n_v = 393$,
 $N_{\mathrm{aux}} = 912$). The flop count is the same as for the dot
@@ -82,20 +82,12 @@ negative control).
 
 $$ E_{\mathrm{OS}} = \sum_i \sum_{j \ge i} f_{ij}\, e^{\mathrm{OS}}_{ij}, \qquad E_{\mathrm{SS}} = \sum_i \sum_{j \ge i} f_{ij}\, e^{\mathrm{SS}}_{ij}, \qquad f_{ij} = \begin{cases} 1 & i = j \\ 2 & i < j \end{cases} \label{eq:rimp2alg-tail-block-pairs} $$
 
-> **Verified equation @eq:rimp2alg-tail-block-pairs** · the unique-pair loop of the production kernel
->
-> The loop over $j \ge i$ with weights $f_{ij}$, reading $(ia|jb)$ and
-> $(ib|ja)$ from the tail block (@eq:pair-kernel-1), reproduces the full $(i,j)$ sum.
->
-> | | |
-> |---|---|
-> | Proof | `scripts/mp2_variant_identities.py`, claim 1 (unique-pair checks) |
-> | Negative control | off-diagonal weight 1 must differ |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu` |
-> | Code test | `spin_components_symmetry_matches_naive_double_loop` in `crates/ferric-mp2/src/rimp2.rs`: the production loop against a full $(i,j)$ double loop on H2O/cc-pVDZ, relative $10^{-12}$ |
->
-> <!-- verified: id=rimp2alg.tail-block-pairs; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::spin_components_from_b_ov_kappa_cpu; rust_test=ferric-mp2/src/rimp2.rs::spin_components_symmetry_matches_naive_double_loop -->
+The loop over $j \ge i$ with the weights $f_{ij}$, reading $(ia|jb)$ and
+$(ib|ja)$ from the tail block (@eq:pair-kernel-1), is (@eq:mp2-cs-unique-pairs), whose box in
+section @sec:closed-shell-ri-mp2 carries the proof. On the production code,
+`spin_components_symmetry_matches_naive_double_loop` in
+`crates/ferric-mp2/src/rimp2.rs` checks the loop against a full $(i,j)$
+double loop on H2O/cc-pVDZ, relative $10^{-12}$.
 
 ## The kernel {#pair-kernel-kernel}
 
@@ -122,20 +114,28 @@ Section @sec:closed-shell-ri-mp2-energy-splits reads this loop line by line.
 
 ## The parallel loop and its fixed summation order {#pair-kernel-parallel-loop-fixed-summation}
 
-Here is the parallel loop of `spin_components_from_b_ov_kappa_cpu` with the
-source comments replaced by the term each line computes:
+The loop has two pieces. `spin_components_from_b_ov_kappa_cpu` supplies
+$G^{(i)}$ as a closure, with the source comments replaced by the term each
+line computes:
+
+```rust
+let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]); // B_{P,ia}
+let b_tail = b_ov.slice(ndarray::s![.., i * nvir..]);           // B_{P,jb}, j >= i
+b_i.t().dot(&b_tail)                                            // G^(i)
+```
+
+`ferric-mp2/src/rimp2.rs::spin_components_from_blocks` holds the parallel
+loop and calls the closure as `pair_block(i)`:
 
 ```rust
 let partials: Vec<(f64, f64)> = (0..nocc)
     .into_par_iter()                                  // one rayon task per i
     .map(|i| {
-        let b_i = b_ov.slice(ndarray::s![.., i * nvir..(i + 1) * nvir]); // B_{P,ia}
-        let b_tail = b_ov.slice(ndarray::s![.., i * nvir..]);           // B_{P,jb}, j >= i
-        let g_i = b_i.t().dot(&b_tail);                                 // G^(i), (11.7)
+        let g_i = pair_block(i);                      // G^(i)
 
         let (mut e_os_i, mut e_ss_i) = (0.0, 0.0);
         for j in i..nocc {
-            let fac = if i == j { 1.0 } else { 2.0 };                   // f_ij, (11.8)
+            let fac = if i == j { 1.0 } else { 2.0 };  // f_ij
             let (e_os_ij, e_ss_ij) =
                 pair_energy(&g_i.view(), i, j, nvir, eps, first_occ, nocc_total, kappa);
             e_os_i += fac * e_os_ij;
@@ -146,12 +146,19 @@ let partials: Vec<(f64, f64)> = (0..nocc)
     .collect();                                       // partials kept in order of i
 ```
 
+The first block is (@eq:pair-kernel-1) and `fac` is the weight $f_{ij}$ of
+(@eq:rimp2alg-tail-block-pairs). The GEMM is a closure because a second
+caller supplies a different block: `spin_components_from_signed_b_ov`, for the
+terf interaction, forms $G^{(i)}$ from a signed factor as Coulomb RI minus
+terfc RI (`ferric-mp2/src/rimp2.rs::signed_pair_block`), and shares the loop,
+its weights and its summation order.
+
 After the loop, a serial `for` adds the partials in order of $i$.
 
 | Choice | Effect |
 |---|---|
 | One rayon task per $i$, with its GEMM inside the task | the GEMMs, which carry most of the work, run in parallel |
-| BLAS at one thread inside each task | no nested threading (section @sec:determinism-and-memory) |
+| BLAS at the process baseline inside a task: one thread unless `OPENBLAS_NUM_THREADS` is set higher, in which case the nested threads oversubscribe the cores | no nested threading by default (section @sec:determinism-and-memory-blas-thread-counts) |
 | Partials collected in $i$ order, summed on one thread | the total does not depend on the worker count; a rayon `reduce` would combine in a tree whose shape does |
 | $j, a, b$ loops serial inside a task | the per-$i$ partial is fixed |
 
@@ -164,14 +171,22 @@ No schedule can finish before its largest task, so the parallel speedup of
 this stage is at most $(n_o+1)/2$, whatever the worker count: 8 at
 $n_o = 15$. Rayon's work stealing balances the tasks when $n_o$ is several
 times the worker count. When $n_o + 1 < 2 n_w$, task 0 alone is longer than
-an even share $1/n_w$, and the first tasks set the wall time.
+an even share $1/n_w$, and the first tasks set the wall time. The bound
+would go away if the GEMM of the first tasks were itself threaded, or if $j$
+were split inside a task; neither is implemented.
 
-**What is pinned.** The CPU stage is designed to be bit-identical across
-`RAYON_NUM_THREADS`.
+**What is pinned.** Given the same $B$ and orbital energies, the pair stage
+is bit-identical across `RAYON_NUM_THREADS`.
 `mo_stream_dressing_uses_the_pool_and_is_thread_count_independent` in
 `crates/ferric-mp2/tests/mo_stream_dressing_threads.rs` runs
 `ri_mp2_spin_components` on H2O/cc-pVDZ in rayon pools of 1, 2 and 6 threads
 and asserts the same bits for $E_{\mathrm{OS}}$, $E_{\mathrm{SS}}$ and $B$.
+The test runs the driver inside `pool.install`, where the serial BLAS count
+is 1, so it covers the `[parallel] blas_threads = 1` case. With the default
+serial BLAS count, the rayon pool size (section
+@sec:determinism-and-memory-blas-thread-counts), the Cholesky factor of the
+metric, and so $B$, moves in the last bits with the pool size, and so does
+the energy.
 The device pair fold has its own test (section @sec:device-mixed-precision). The related test
 `ri_mp2_spin_components_consistent_across_blas_thread_counts` in
 `crates/ferric-mp2/tests/blas_raise_identity.rs` varies
@@ -183,10 +198,10 @@ identity.
 | Source | Used for |
 |---|---|
 | Dissertation, chapter 4, section 4.2, Function 4 | the batch index |
-| `crates/ferric-mp2/src/rimp2.rs`, the loop body and comments of `spin_components_from_b_ov_kappa_cpu` | equations @eq:pair-kernel-1 and @eq:rimp2alg-tail-block-pairs, the order rules, the excerpt |
-| `scripts/mp2_variant_identities.py`, claim 1 | verified equation @eq:rimp2alg-tail-block-pairs |
+| `crates/ferric-mp2/src/rimp2.rs`, the comments of `spin_components_from_b_ov_kappa_cpu` and the loop of `spin_components_from_blocks` | equations @eq:pair-kernel-1 and @eq:rimp2alg-tail-block-pairs, the order rules, the excerpts |
+| `scripts/mp2_variant_identities.py`, claim 1 | equation @eq:rimp2alg-tail-block-pairs, through the box of (@eq:mp2-cs-unique-pairs) |
 | `crates/ferric-mp2/tests/mo_stream_dressing_threads.rs` | the thread-count test |
-| `book/sample-ri-mp2.md`, sections 10.1.3 and 10.1.4 | the kernel excerpt, extended here |
+| section @sec:closed-shell-ri-mp2-algorithm | the kernel excerpt, extended here |
 
 Changes from the sources: the tail-block column index is written
 $(j - i)\,n_v + b$; the weight is written $f_{ij}$ (the code's `fac`). The

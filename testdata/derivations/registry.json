@@ -56,7 +56,8 @@
       "laplace-mp2"
     ],
     "cli:laplace-sos-mp2": [
-      "laplace-sos-mp2"
+      "laplace-sos-mp2",
+      "laplace-sos-mp2-local"
     ],
     "cli:linlccd": [
       "linlccd"
@@ -297,7 +298,8 @@
       "laplace-mp2"
     ],
     "py:run_laplace_sos_mp2": [
-      "laplace-sos-mp2"
+      "laplace-sos-mp2",
+      "laplace-sos-mp2-local"
     ],
     "py:run_linlccd": [
       "linlccd"
@@ -322,8 +324,7 @@
     ],
     "py:run_oo_rimp2": [
       "oo-rimp2",
-      "oo-rimp2-gradient",
-      "u-oo-rimp2"
+      "oo-rimp2-gradient"
     ],
     "py:run_optimize": [
       "att-rimp2-gradient",
@@ -698,7 +699,18 @@
         "book/src/12-oo-laplace/03-laplace-mp2.md#laplace-mp2"
       ],
       "scripts": [
-        "scripts/mp2_family_sympy.py"
+        "scripts/mp2_family_sympy.py",
+        "scripts/mp2_variant_identities.py"
+      ]
+    },
+    "laplace-sos-mp2-local": {
+      "book": [
+        "book/src/12-oo-laplace/04-local-laplace-sos.md#local-laplace-sos-rotated-energy",
+        "book/src/12-oo-laplace/04-local-laplace-sos.md#local-laplace-sos-truncations",
+        "book/src/12-oo-laplace/04-local-laplace-sos.md#local-laplace-sos-formulation"
+      ],
+      "scripts": [
+        "scripts/laplace_local_sympy.py"
       ]
     },
     "linlccd": {

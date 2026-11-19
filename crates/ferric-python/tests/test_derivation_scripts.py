@@ -199,6 +199,42 @@ CASES = [
         ],
     ),
     (
+        "laplace_local_sympy.py",
+        60,
+        [
+            (
+                "return m.T @ (w[:, None] * m)",
+                "return m @ (w[:, None] * m.T)",
+                "FAIL [rotated-equals-canonical]",
+            ),
+            (
+                "out.append([j for j in range(len(vir)) if seen[j]])",
+                "out.append([j for j in range(len(vir)) if seen[j] and j == len(out)])",
+                "FAIL [rotated-equals-canonical]",
+            ),
+            (
+                "return np.linalg.inv(np.linalg.cholesky(v))  # M",
+                "return np.linalg.cholesky(v).T  # M",
+                "FAIL [rotated-equals-canonical]",
+            ),
+            (
+                "if norm2 / (f_vir[a] - f_occ[i]) >= tau:",
+                "if norm2 / (f_occ[i] - f_vir[a]) >= tau:",
+                "FAIL [energy-cut-vacuous]",
+            ),
+            (
+                "expf = expm_sym(f_loc, t)",
+                "expf = np.diag(np.exp(t * np.diag(f_loc)))",
+                "FAIL [ao-sparse-vacuous-equals-canonical]",
+            ),
+            (
+                "Q = R.T * sp.diag(*y) * R",
+                "Q = R * sp.diag(*y) * R.T",
+                "FAIL [rotated-identity]",
+            ),
+        ],
+    ),
+    (
         "u_oo_rimp2_response_sympy.py",
         15,
         [
@@ -928,6 +964,26 @@ CASES = [
                 "coef = np.linalg.solve(v, three)  # V^-1 (Q|ia)",
                 "coef = np.linalg.solve(chi.T @ chi, three)  # V^-1 (Q|ia)",
                 "FAIL (ia|jb) - sum_P B B == (delta_ia|delta_jb)",
+            ),
+            (
+                "b += m[p0:p1, q0:q1] @ mo_blk  # beta = 1",
+                "b = m[p0:p1, q0:q1] @ mo_blk  # beta = 1",
+                "FAIL chunked dressing",
+            ),
+            (
+                "return start, start + (q + 1 if rank < s else q)",
+                "return start, start + q",
+                "FAIL band partials sum to G^(i)",
+            ),
+            (
+                "U64, U32 = 2.0**-53, 2.0**-24",
+                "U64, U32 = 2.0**-70, 2.0**-24",
+                "FAIL two f64 orders",
+            ),
+            (
+                "(1 + gamma(b, U32))",
+                "(1 + gamma(b, U64))",
+                "FAIL mixed bound, sub-ulp panel",
             ),
         ],
     ),

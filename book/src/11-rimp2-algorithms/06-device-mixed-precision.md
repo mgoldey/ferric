@@ -9,10 +9,10 @@
 | CLI | `[gpu] mode` or `preset`; `[precision] mode = "mixed"` with `rimp2-energy` in `mixed_kernels` (`site/src/reference/input.md`) |
 | Grade | f64 device: within a summation-order bound of the CPU. Mixed: a measured error map, not Proven (`site/src/reference/validation.md`, "Mixed-precision GPU kernels") |
 
-Section @sec:pair-kernel put the $O(N^5)$ work into one GEMM per occupied orbital. A GPU
-does large GEMMs faster than the CPU, and in single precision faster still.
-The device path replaces exactly that GEMM and nothing else, so the
-question for each variant is how far its $G^{(i)}$ can move from the CPU's.
+Section @sec:pair-kernel put the $O(N^5)$ work into one GEMM per occupied orbital. The
+device path replaces that GEMM and nothing else. Whether it is faster
+depends on the device and the block size; this section is about how far
+its $G^{(i)}$ can move from the CPU's.
 The plan: when the device runs, the f64 path and its summation-order bound,
 the mixed path and its element bound, then the measured errors.
 
@@ -66,18 +66,21 @@ element by
 
 $$ \big| G^{\mathrm{dev}}_{ab} - G^{\mathrm{cpu}}_{ab} \big| \le 2\,\gamma_{N_{\mathrm{aux}}}(u_{64})\, S_{ab}, \qquad \gamma_n(u) = \frac{n u}{1 - n u}, \qquad u_{64} = 2^{-53} . \label{eq:rimp2alg-device-f64-bound} $$
 
-> **Unverified equation @eq:rimp2alg-device-f64-bound** · the summation-order bound
+> **Verified equation @eq:rimp2alg-device-f64-bound** · the summation-order bound
 >
 > Each of the two dot products is within $\gamma_{N_{\mathrm{aux}}}S_{ab}$ of
 > the exact sum (Higham, *Accuracy and Stability of Numerical Algorithms*,
-> section @sec:one-electron), so their difference is within twice that.
+> section 3.1), so their difference is within twice that.
 >
 > | | |
 > |---|---|
-> | Proof | none committed. The bound is the standard dot-product error bound. To add: a numpy claim that sums random products in two orders at extended precision and checks the bound, with a negative control that sums in f32. |
+> | Proof | `scripts/mp2_variant_identities.py`, claim 11: two f64 summation orders of 912 products against the exact sum in rational arithmetic, and $2\gamma_{912}(u_{64}) = 2.0 \times 10^{-13}$ |
+> | Negative control | an f32 sum must break the f64 bound |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/rimp2_gpu.rs::try_spin_components_on_device` |
 > | Code tests | `per_element_g_blocks_match_the_cpu_within_two_gamma_s` and `device_f64_energy_is_within_the_derived_bound_and_the_gate_has_teeth` in `crates/ferric-mp2/tests/gpu_rimp2_resident.rs` (features `gpu` and `test-seams`): measured difference at most $1.7 \times 10^{-4}$ (OS) and $1.9 \times 10^{-4}$ (SS) of the bound; an f32 product on the CPU exceeds it, and the mutations offset and `fac = 1` fail |
 >
-> <!-- unverified: id=rimp2alg.device-f64-bound; todo=add summation-order bound claim to a scripts/ proof file -->
+> <!-- verified: id=rimp2alg.device-f64-bound; script=scripts/mp2_variant_identities.py; claim=11; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2_gpu.rs::try_spin_components_on_device -->
 
 The bound is the triangle inequality applied to the exact sum: each side is
 within $\gamma_{N_{\mathrm{aux}}}S_{ab}$ of it. At
@@ -115,19 +118,30 @@ The per-element bound, from the validation page:
 
 $$ \big| G^{\mathrm{mix}}_{ab} - G_{ab} \big| \le \varepsilon_G\, S_{ab} + \eta, \qquad \varepsilon_G = (1+u_{32})^2\big(1+\gamma_b(u_{32})\big)\big(1+\gamma_{\lceil N_{\mathrm{aux}}/b\rceil}(u_{64})\big) - 1 + \gamma_{N_{\mathrm{aux}}}(u_{64}), \label{eq:rimp2alg-mixed-element-bound} $$
 
-with $u_{32} = 2^{-24}$ and $\eta$ the f32 underflow term. The factor
+with $u_{32} = 2^{-24}$ and $\eta$ the f32 underflow term. $\eta$ is zero
+unless an operand, a product or a panel partial sum falls below the normal
+f32 range, $2^{-126}$; each such rounding then adds an absolute error of at
+most $2^{-150}$ (IEEE 754 gradual underflow). The validation page does not
+size it further. The factor
 $(1+u_{32})^2$ is the rounding of the two operands, $\gamma_b(u_{32})$ the f32
 panel sum, $\gamma_{\lceil N_{\mathrm{aux}}/b\rceil}(u_{64})$ the f64 sum over
 panels, and the last term the rounding of the f64 reference itself.
 
-> **Unverified equation @eq:rimp2alg-mixed-element-bound** · the mixed-precision element bound
+> **Verified equation @eq:rimp2alg-mixed-element-bound** · the mixed-precision element bound
+>
+> With f32 operands, f32 sums inside panels of $b$ auxiliary rows and an f64
+> sum over the panels, each element of $G$ is within
+> $\varepsilon_G S_{ab} + \eta$ of the exact sum.
 >
 > | | |
 > |---|---|
-> | Proof | none committed; the derivation is in the text of `site/src/reference/validation.md`, "Mixed-precision GPU kernels". To add: a numpy claim that emulates f32 panels and f64 panel sums and checks (@eq:rimp2alg-mixed-element-bound), with a negative control that accumulates across panels in f32. |
+> | Proof | `scripts/mp2_variant_identities.py`, claim 12: an emulation of the panel scheme at $b = 64$, $N_{\mathrm{aux}} = 912$ against the exact sum in rational arithmetic, on random-sign data, positive data and a constructed panel whose small products are lost in f32 (error $1.9 \times 10^{-6}\,S_{ab}$, half the bound); the term values of the table below; the $+2^{20}, 2^{-9}, -2^{20}$ panel sums |
+> | Negative control | a dropped panel must break the bound |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-core/src/gpu/mixed.rs::gemm_f32_f64acc_dev_into` |
 > | Code tests | `the_shipped_kernel_is_pinned_by_a_two_sided_per_element_measurement` and `the_f32_upload_is_round_to_nearest_even_bit_for_bit` in `crates/ferric-mp2/tests/gpu_rimp2_mixed.rs` |
 >
-> <!-- unverified: id=rimp2alg.mixed-element-bound; todo=add f32-panel emulation claim to a scripts/ proof file -->
+> <!-- verified: id=rimp2alg.mixed-element-bound; script=scripts/mp2_variant_identities.py; claim=12; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-core/src/gpu/mixed.rs::gemm_f32_f64acc_dev_into -->
 
 **Which term dominates.** Evaluate the four terms at $b = 64$ and
 $N_{\mathrm{aux}} = 912$:
