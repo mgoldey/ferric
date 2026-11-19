@@ -248,7 +248,8 @@
       "ks-grid",
       "d3",
       "ks-zvector",
-      "mbd"
+      "mbd",
+      "fock-hook-gradient"
     ],
     "py:run_double_hybrid": [
       "double-hybrid",
@@ -339,7 +340,8 @@
       "geometry-search",
       "mbd",
       "terfc-rimp2-gradient",
-      "scs-2terfc-gradient"
+      "scs-2terfc-gradient",
+      "fock-hook-gradient"
     ],
     "py:run_optimize_qmmm": [
       "qmmm",
@@ -358,7 +360,8 @@
       "qmmm"
     ],
     "py:run_rhf": [
-      "rhf"
+      "rhf",
+      "fock-hook-gradient"
     ],
     "py:run_rhf_gamma": [
       "pbc-hf"
@@ -380,7 +383,8 @@
       "pbc-ks"
     ],
     "py:run_rohf": [
-      "rohf"
+      "rohf",
+      "fock-hook-gradient"
     ],
     "py:run_rohf_gamma": [
       "pbc-hf"
@@ -431,7 +435,8 @@
       "u-gw"
     ],
     "py:run_uhf": [
-      "uhf"
+      "uhf",
+      "fock-hook-gradient"
     ],
     "py:run_uhf_gamma": [
       "pbc-hf"
@@ -1298,6 +1303,14 @@
       ],
       "scripts": [
         "scripts/md_integrators_sympy.py"
+      ]
+    },
+    "fock-hook-gradient": {
+      "book": [
+        "book/src/14-derivatives/07-fock-hook-gradient.md#fock-hook-gradient-gradient"
+      ],
+      "scripts": [
+        "scripts/fock_hook_gradient_sympy.py"
       ]
     }
   },

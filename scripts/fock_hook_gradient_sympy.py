@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Nuclear gradient of a Fock-hooked closed-shell SCF: explicit term plus Pulay.
 
-Derivation: `book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`. Code: crates/ferric-scf/src/gradient.rs (with_fock_hook_gradient and
+Derivation: `book/src/14-derivatives/07-fock-hook-gradient.md#fock-hook-gradient-gradient`. Code: crates/ferric-scf/src/gradient.rs (with_fock_hook_gradient and
 the energy-weighted density of the hooked orbitals).
 
 Model: a three-function closed-shell system (one doubly occupied orbital) whose
@@ -10,7 +10,7 @@ E_h(D; x) = kappa Tr[D B(x)] + lam Tr[D S(x)] + (gam/2) sum D_mn^2, so
 V = dE_h/dD = kappa B + lam S + gam D. The SCF is re-solved at displaced x.
 
 Independent route: a fourth-order central difference of the re-solved hooked SCF
-energy. Formula under test (`book/src/07-hartree-fock/06-fock-hooks.md#fock-hooks-equations`):
+energy. Formula under test (`book/src/14-derivatives/07-fock-hook-gradient.md#fock-hook-gradient-gradient`):
   dE/dx = Tr[D h'] + sum Gamma (mn|ls)' + dE_h/dx|_D - Tr[W S'],
   W = 2 C eps C^T from the HOOKED Fock matrix, Gamma = D D/2 - D_ml D_ns/4,
   dE_h/dx|_D = kappa Tr[D B'] + lam Tr[D S'] (the gam term has none).
