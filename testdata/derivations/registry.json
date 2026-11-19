@@ -125,25 +125,29 @@
       "d3-hessian",
       "harmonic-frequencies",
       "rrho-thermo",
-      "ir-intensities"
+      "ir-intensities",
+      "cosx-gradient"
     ],
     "frequencies:rhf": [
       "hf-hessian",
       "harmonic-frequencies",
       "rrho-thermo",
-      "ir-intensities"
+      "ir-intensities",
+      "cosx-gradient"
     ],
     "frequencies:rohf": [
       "hf-hessian",
       "harmonic-frequencies",
       "rrho-thermo",
-      "ir-intensities"
+      "ir-intensities",
+      "cosx-gradient"
     ],
     "frequencies:uhf": [
       "hf-hessian",
       "harmonic-frequencies",
       "rrho-thermo",
-      "ir-intensities"
+      "ir-intensities",
+      "cosx-gradient"
     ],
     "md:rhf": [
       "hf-gradient",
@@ -175,7 +179,8 @@
       "d3",
       "geometry-search",
       "ks-zvector",
-      "mbd"
+      "mbd",
+      "cosx-gradient"
     ],
     "optimize:oo-rimp2": [
       "oo-rimp2-gradient",
@@ -187,7 +192,8 @@
     ],
     "optimize:rhf": [
       "hf-gradient",
-      "geometry-search"
+      "geometry-search",
+      "cosx-gradient"
     ],
     "optimize:rimp2": [
       "ri-mp2-gradient",
@@ -196,7 +202,8 @@
     ],
     "optimize:rohf": [
       "hf-gradient",
-      "geometry-search"
+      "geometry-search",
+      "cosx-gradient"
     ],
     "optimize:scs-mp2": [
       "scs-mp2-gradient",
@@ -208,7 +215,8 @@
     ],
     "optimize:uhf": [
       "hf-gradient",
-      "geometry-search"
+      "geometry-search",
+      "cosx-gradient"
     ],
     "py:hirshfeld_polarizability": [
       "rpa-polarizability-c6"
@@ -249,7 +257,8 @@
       "d3",
       "ks-zvector",
       "mbd",
-      "fock-hook-gradient"
+      "fock-hook-gradient",
+      "cosx-gradient"
     ],
     "py:run_double_hybrid": [
       "double-hybrid",
@@ -361,7 +370,8 @@
     ],
     "py:run_rhf": [
       "rhf",
-      "fock-hook-gradient"
+      "fock-hook-gradient",
+      "cosx-gradient"
     ],
     "py:run_rhf_gamma": [
       "pbc-hf"
@@ -384,7 +394,8 @@
     ],
     "py:run_rohf": [
       "rohf",
-      "fock-hook-gradient"
+      "fock-hook-gradient",
+      "cosx-gradient"
     ],
     "py:run_rohf_gamma": [
       "pbc-hf"
@@ -436,7 +447,8 @@
     ],
     "py:run_uhf": [
       "uhf",
-      "fock-hook-gradient"
+      "fock-hook-gradient",
+      "cosx-gradient"
     ],
     "py:run_uhf_gamma": [
       "pbc-hf"
@@ -1315,6 +1327,14 @@
       ],
       "scripts": [
         "scripts/fock_hook_gradient_sympy.py"
+      ]
+    },
+    "cosx-gradient": {
+      "book": [
+        "book/src/14-derivatives/01-hf-gradient.md#hf-gradient-cosx"
+      ],
+      "scripts": [
+        "scripts/cosx_gradient_sympy.py"
       ]
     }
   },

@@ -454,6 +454,37 @@ CASES = [
         ],
     ),
     (
+        "cosx_gradient_sympy.py",
+        30,
+        [
+            (
+                "out[x] += c * vpt[HOME == x].sum(axis=0)",
+                "out[x] += 0.0 * vpt[HOME == x].sum(axis=0)",
+                "FAIL X1 fit off",
+            ),
+            (
+                'out += c * np.einsum("g,gxc->xc", e, geo.dw)',
+                'out += 0.0 * np.einsum("g,gxc->xc", e, geo.dw)',
+                "FAIL X1 fit off",
+            ),
+            (
+                "[(-pz * cv.T @ delta @ co).ravel() for co, cv, _, _, delta in blocks]",
+                "[(-0.5 * pz * cv.T @ delta @ co).ravel() for co, cv, _, _, delta in blocks]",
+                "FAIL X6 fit on RHF",
+            ),
+            (
+                'out -= np.einsum("xcmn,nm->xc", dsn, p2)',
+                'out -= 0.0 * np.einsum("xcmn,nm->xc", dsn, p2)',
+                "FAIL X5 fit on",
+            ),
+            (
+                "occ = co.T @ (delta + rm) @ co + np.diag(eo)",
+                "occ = co.T @ rm @ co + np.diag(eo)",
+                "FAIL X6 fit on RHF",
+            ),
+        ],
+    ),
+    (
         "df_jk_gradient_sympy.py",
         10,
         [

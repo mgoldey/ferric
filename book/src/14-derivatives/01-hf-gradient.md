@@ -1,6 +1,6 @@
 # Hartree–Fock nuclear gradient {#hf-gradient}
 
-<!-- status: ready; registry: hf-gradient -->
+<!-- status: ready; registry: hf-gradient, cosx-gradient -->
 
 Move one nucleus a little and the SCF energy changes. The slope of that
 change is the gradient, and minus the gradient is the force on the nucleus.
@@ -29,10 +29,10 @@ contract it.
 | CLI | `task = "optimize"` for `rhf`, `uhf`, `rohf`, `ksdft` (`examples/h2-lda-opt.toml`) |
 | Python | `run_rhf(..., with_gradient=True)`, `run_optimize`, `run_frequencies` |
 
-This section covers the exact four-centre route. When the SCF density-fitted
-J or K, the two-electron term differentiates the fitted energy instead
-(section @sec:df-jk-gradient). COSX exchange has its own gradient
-(`ferric-scf/src/gradient.rs::rhf_gradient_cosx`) and is not derived here.
+This section covers the exact four-centre route. When the SCF fitted J or
+K, the two-electron term differentiates the fitted energy instead (section
+@sec:df-jk-gradient). COSX exchange has its own gradient, derived in section
+@sec:hf-gradient-cosx.
 
 ## The gradient {#hf-gradient-gradient}
 
@@ -57,7 +57,8 @@ $$ \frac{\mathrm dE}{\mathrm dx} = \frac{\partial L}{\partial x}\Big|_{C\ \text{
 
 For RHF the multiplier is fixed by the Fock equations. With
 $D = 2C_oC_o^{\mathsf T}$ the energy is
-$E = \sum D h + \tfrac12\sum D\,G(D) + E_{nn}$, and differentiating in
+$E = \sum D h + \tfrac12\sum D\,G(D) + E_{nn}$ with
+$G(D) = J(D) - \tfrac12K(D)$, and differentiating in
 $C_o$ gives $\partial E/\partial C_o = 4FC_o$. Stationarity of $L$ is then
 
 $$ 4FC_o - 2SC_o\varepsilon' = 0 . $$
@@ -71,7 +72,7 @@ $W = 2\,C_o\,\mathrm{diag}(\varepsilon_o)\,C_o^{\mathsf T}$. Collect the terms:
 
 $$ E^x = E_{nn}^x + \sum_{\mu\nu} D_{\mu\nu} h^x_{\mu\nu}
 + \sum_{\mu\nu\lambda\sigma} \Gamma_{\mu\nu\lambda\sigma} (\mu\nu|\lambda\sigma)^x
-- \sum_{\mu\nu} W_{\mu\nu} S^x_{\mu\nu} . $$
+- \sum_{\mu\nu} W_{\mu\nu} S^x_{\mu\nu} . \label{eq:hf-gradient} $$
 
 The derivatives $h^x$, $(\mu\nu|\lambda\sigma)^x$ and $S^x$ are taken at fixed
 basis coefficients. $\Gamma$ is the two-particle density, defined so that
@@ -81,11 +82,14 @@ multiplier in the AO basis. Each reference has its own pair:
 | reference | $\Gamma_{\mu\nu\lambda\sigma}$ (`gamma`, `gamma_uhf`) | $W$ |
 |---|---|---|
 | RHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ | $2\,C_o\,\mathrm{diag}(\varepsilon_o)\,C_o^{\mathsf T}$ (`build_energy_weighted_density`) |
-| UHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac12\sum_\tau D^\tau_{\mu\lambda}D^\tau_{\nu\sigma}$ | $\sum_\sigma C_{\sigma}\,\mathrm{diag}(f_\sigma \varepsilon_\sigma)\,C_\sigma^{\mathsf T}$ (`build_energy_weighted_density_uhf`) |
+| UHF | $\tfrac12 D_{\mu\nu}D_{\lambda\sigma} - \tfrac12\sum_\tau D^\tau_{\mu\lambda}D^\tau_{\nu\sigma}$ | $\sum_\sigma C_{\sigma}\,\mathrm{diag}(n_\sigma \varepsilon_\sigma)\,C_\sigma^{\mathsf T}$ (`build_energy_weighted_density_uhf`) |
 | ROHF | UHF form at the ROHF $D_\alpha, D_\beta$ | $\mathrm{sym}(D_\alpha F_\alpha D_\alpha + D_\alpha F_\beta D_\beta)$ (`rohf_energy_weighted_density`) |
 
 For RHF and UHF the canonical orbitals diagonalize the multiplier, so $W$ is
-the occupation-weighted sum over eigenvalues. The UHF $f_\sigma$ are the
+the occupation-weighted sum over eigenvalues. For UHF each spin has its own
+orthonormality constraint and $\partial E/\partial C_\sigma = 2F_\sigma C_\sigma\,\mathrm{diag}(n_\sigma)$,
+so stationarity gives $\varepsilon'_\sigma = \mathrm{diag}(n_\sigma\varepsilon_\sigma)$
+in canonical orbitals and the $W$ of the table. The UHF $n_\sigma$ are the
 occupations recovered from the stored density: 1 for aufbau, fractions under
 `fractional_occ` (section @sec:hf-gradient-reproducibility-refusals says how they are recovered). For open
 shells $D = D_\alpha + D_\beta$ in the one-electron term.
@@ -223,6 +227,412 @@ $5\times10^{-2}$. It agrees only when symmetry decouples the open shell from
 the closed shells, as it does for the $\pi$ SOMO of OH, so an OH-only test
 cannot tell the two apart.
 
+### COSX exchange {#hf-gradient-cosx}
+
+With `k_builder = "cosx"` the SCF builds exchange on a grid (section
+@sec:link-cosx-cfmm-link-cosx), so the energy it converges is the grid
+energy, not the four-centre one. Its slope differs from the exact-exchange
+slope by the grid error: on water/6-31G at a (30,110) COSX grid the COSX
+gradient sits $2.1\times10^{-4}$ Ha/Bohr (fit off) and
+$5.5\times10^{-5}$ Ha/Bohr (fit on) from the exact-exchange RHF gradient.
+An optimizer that paired COSX energies with the exact-exchange gradient would
+walk to the wrong stationary point. The gradient must differentiate the grid
+sum itself. Three things move with a nucleus: the basis functions sampled at
+each point, the points themselves (each rides its home atom), and the Becke
+weights. With the overlap fit a fourth thing moves, the fit matrix $Q$, and
+the fitted energy is no longer stationary in the orbitals, so the gradient
+needs a Z-vector.
+
+| Symbol | Meaning | Code name |
+|---|---|---|
+| $\mathbf r_g = \mathbf R_{h(g)} + \mathbf u_g$ | grid point, riding its home atom $h(g)$ | `gp.xyz`, `gp.home_atom` |
+| $w_g$, $\partial w_g/\partial x$ | Becke weight and its total derivative with the point riding | `gp.weight`, `weight1` |
+| $\phi_g$ | vector of AO values $\chi_\mu(\mathbf r_g)$ | `chi` (one column per point) |
+| $A(g)$ | $A_{\nu\lambda}(g) = \int\chi_\nu\chi_\lambda/\lvert\mathbf r-\mathbf r_g\rvert$ (section @sec:link-cosx-cfmm-link-cosx) | libint2 nuclear engine with one unit charge, sign flipped |
+| $\tilde K(M)$ | $\sum_g w_g\,\phi_g\,(A(g)M\phi_g)^{\mathsf T}$, the unsymmetrized builder on any $M$ | `kt` |
+| $Q$ | $SS_{\rm num}^{-1}$ with the fit, $1$ without | `FitQ`, `SnumChol` |
+| $T(Y,B)$ | $\mathrm{tr}[Y\,Q\,\tilde K(B)]$ | `KTerm { b, m, c }` |
+| $T^x(Y,B)$ | derivative of $T$ at fixed $Y$, $B$ | `cosx_exchange_gradient_bilinear` |
+| $L(Y)$, $\Delta$, $Z_s$ | adjoint builder, energy-Fock mismatch, Z-vector density | `l_of`, `deltas`, `resp.zs` |
+
+| Entry point | Location |
+|---|---|
+| Rust | `ferric-scf/src/gradient.rs::{rhf_gradient_cosx,uhf_gradient_cosx,rohf_gradient_cosx}`; dispatch by `ferric-scf/src/cosx_gradient.rs::scf_exchange_is_cosx` inside `ferric-scf/src/gradient.rs::{restricted_scf_gradient,unrestricted_scf_gradient,restricted_open_scf_gradient}` |
+| CLI | `[scf] k_builder = "cosx"` with `task = "optimize"` for `rhf`, `uhf`, `rohf`, `ksdft`; finite-difference frequencies of the same kinds |
+| Python | `run_rhf`, `run_uhf`, `run_rohf`, `run_dft` with `k_builder="cosx"` and `with_gradient=True` |
+
+**The energy as a grid sum.** In the notation of section
+@sec:link-cosx-cfmm-link-cosx, $\tilde K = XG^{\mathsf T}$ with
+$X_{\mu g} = \sqrt{w_g}\,\chi_\mu(\mathbf r_g)$ and $G = A(g)FX$. Write the
+same product on a general matrix $M$:
+
+$$ \tilde K(M) = \sum_g w_g\,\phi_g\,\big(A(g)\,M\phi_g\big)^{\mathsf T}. $$
+
+Plain COSX is $K(D) = \tfrac12(\tilde K + \tilde K^{\mathsf T})$, and the
+fitted one is $K_f(D) = \tfrac12(Q\tilde K + (Q\tilde K)^{\mathsf T})$. Take
+the trace with a symmetric $Y$. The symmetrization drops out, and the cyclic
+property of the trace turns the outer product into a scalar per point:
+
+$$ T(Y,B) \equiv \mathrm{tr}\big[Y\,K_f(B)\big] = \mathrm{tr}\big[Y\,Q\,\tilde K(B)\big] = \sum_g w_g\,(B\phi_g)^{\mathsf T}A(g)\,(YQ\phi_g) . $$
+
+The exchange energy is $-\tfrac14T(D,D)$ for a closed shell (total $D$) and
+$-\tfrac12\sum_\sigma T(D_\sigma,D_\sigma)$ for UHF and ROHF. With the fit
+off, $Q = 1$ and $T(D,D) = \sum_g w_g\,\phi_g^{\mathsf T}DA(g)D\phi_g$.
+
+**Fit off: the energy is variational.** $T(D,D)$ with $Q=1$ is a quadratic
+form in $D$. Differentiate it with respect to every element of a general
+$D$: $\partial T/\partial D = 2\tilde K(D)^{\mathsf T}$. For symmetric
+variations only the symmetric part counts, which is $2K(D)$, so
+
+$$ \frac{\partial}{\partial D}\Big(-\tfrac14 T(D,D)\Big) = -\tfrac12 K(D) , $$
+
+the exchange part of the Fock matrix the SCF diagonalized. The energy
+derivative and the Fock matrix agree, the Lagrangian of section
+@sec:hf-gradient-gradient applies unchanged, and the gradient is the RHF one
+with the four-centre exchange term replaced by the derivative of the grid sum
+at fixed $D$:
+
+$$ E^x = E_{nn}^x + \mathrm{tr}[D\,h^x] + \tfrac12\sum_{\mu\nu\lambda\sigma}D_{\mu\nu}D_{\lambda\sigma}(\mu\nu|\lambda\sigma)^x - \tfrac14\,T^x(D,D) - \mathrm{tr}[W S^x], \qquad W = 2\,C_o\,\mathrm{diag}(\varepsilon_o)\,C_o^{\mathsf T} . $$
+
+The same argument holds per spin. UHF and ROHF pass
+$-\tfrac12T^x(D_\alpha,D_\alpha) - \tfrac12T^x(D_\beta,D_\beta)$ and keep
+their own $W$ from the table of section @sec:hf-gradient-gradient: the ROHF
+$W$ needs only the spin Fock matrices, and the exchange part of each one is
+the $D_\sigma$-derivative of the grid sum. A hybrid functional scales the
+coefficients by $c_x$.
+
+**The three terms at fixed matrices.** Write one point's contribution as
+$w_g e_g$ with $e_g = F_g^{\mathsf T}A(g)H_g$, $F_g = B\phi_g$ and
+$H_g = M\phi_g$, $M = YQ$ held fixed. Three factors depend on $x$:
+
+$$ \frac{\partial (w_ge_g)}{\partial x} = \underbrace{e_g\,\frac{\partial w_g}{\partial x}}_{\text{(c)}} + \underbrace{w_g\sum_\mu \frac{\partial e_g}{\partial\phi_\mu}\,\frac{\partial\chi_\mu(\mathbf r_g)}{\partial x}}_{\text{(a)}} + \underbrace{w_g\sum_{\lambda\sigma}F_{g\lambda}H_{g\sigma}\,\frac{\partial A_{\lambda\sigma}(g)}{\partial x}}_{\text{(b)}} . $$
+
+Term (a) is the AO values. $\chi_\mu(\mathbf r_g)$ depends on the point and
+on the centre of $\mu$ only through their difference, so for $x = (X,\alpha)$
+
+$$ \frac{\partial\chi_\mu(\mathbf r_g)}{\partial x} = \nabla_\alpha\chi_\mu(\mathbf r_g)\,\big(\delta_{X,h(g)} - \delta_{X,\mathrm{atom}(\mu)}\big), \qquad \frac{\partial e_g}{\partial\phi} = B\,A(g)H_g + M^{\mathsf T}A(g)F_g . $$
+
+For the energy itself ($Y = B = D$, $Q = 1$) the second factor is
+$2DA(g)D\phi_g$.
+
+Term (b) is the potential integrals. $A_{\lambda\sigma}(g)$ has three
+centres: the two basis-function centres and the point. The derivative with
+respect to the point lands on the home atom $h(g)$, because the point moves
+with it.
+
+Term (c) is the weight response. $\partial w_g/\partial x$ is the total
+derivative of the Becke weight with the point riding its atom, nonzero for
+every atom whose cell function the point sees.
+
+**Check translational invariance.** Move every atom by the same vector. The
+weights do not change, so the (c) terms sum to zero over atoms. In (a) the
+home-atom and own-centre contributions of each $\mu$ cancel. In (b) the three
+centre derivatives of one integral sum to zero. The rows of $T^x$ sum to zero.
+In the script's toy model the rows of the whole gradient sum to zero to
+$10^{-12}$ (claim X2).
+
+**Fit on: the energy is not variational.** With $Q\neq1$, $K_f$ is not
+self-adjoint. In the trace form above, $A(g)$ is symmetric, so
+
+$$ \mathrm{tr}\big[Y K_f(B)\big] = \sum_g w_g\,(YQ\phi_g)^{\mathsf T}A(g)\,(B\phi_g) = \mathrm{tr}\big[B\,L(Y)\big], \qquad L(Y) = \tfrac12\big(\tilde K(YQ) + \tilde K(YQ)^{\mathsf T}\big) , $$
+
+and $L \neq K_f$ unless $Q = 1$. Vary $D$ in $E_x = -\tfrac14T(D,D)$. The
+first argument gives $\mathrm{tr}[\delta D\,K_f(D)]$. The second gives
+$\mathrm{tr}[D\,K_f(\delta D)] = \mathrm{tr}[\delta D\,L(D)]$ by the adjoint
+identity. So
+
+$$ \frac{\partial E}{\partial D} = F + \Delta, \qquad F = h + J(D) - \tfrac12K_f(D), \qquad \Delta = \tfrac14\big(K_f(D) - L(D)\big) . $$
+
+The SCF diagonalizes $F$, so $F_{ai} = 0$ at convergence, but the energy
+gradient $4(F+\Delta)C_o$ keeps the virtual-occupied block $4\Delta_{ai}$.
+Two limits. At $Q = 1$, $L = K_f$ and $\Delta = 0$: the fit-off case. And
+$\mathrm{tr}[D\Delta] = \tfrac14(T(D,D) - T(D,D)) = 0$ for any $Q$, so with
+one doubly occupied orbital the occupied block $\Delta_{oo}$ vanishes as well.
+
+**The Z-vector Lagrangian.** Add the SCF conditions with multipliers
+$z_{ai}$ and the orthonormality constraint with a symmetric $x_{pq}$:
+
+$$ \mathcal L = E[C] + \sum_{ai} z_{ai}\,(C^{\mathsf T}FC)_{ai} - \sum_{pq}x_{pq}\,(C^{\mathsf T}SC - 1)_{pq} . $$
+
+Make $\mathcal L$ stationary in $C$. The $z$ term changes through $C_v$,
+through $C_o$, and through $F(D)$. Write $Z_s = \tfrac12(C_vzC_o^{\mathsf T} + C_oz^{\mathsf T}C_v^{\mathsf T})$.
+The $F(D)$ part is $\mathrm{tr}[Z_s\,\delta F] = \mathrm{tr}[Z_s J(\delta D)] - \tfrac12\mathrm{tr}[Z_s K_f(\delta D)]$,
+and the adjoint identity moves both onto $\delta D$:
+$\mathrm{tr}[\delta D\,R(Z_s)]$ with $R(Y) = J(Y) - \tfrac12L(Y)$. With
+$\delta D = 2(\delta C_oC_o^{\mathsf T} + C_o\delta C_o^{\mathsf T})$ the
+three derivatives are
+
+$$ \frac{\partial\mathcal L}{\partial C_o} = 4(F+\Delta)C_o + FC_vz + 4R(Z_s)C_o - 2SC\,x_{\cdot o}, \qquad \frac{\partial\mathcal L}{\partial C_v} = FC_oz^{\mathsf T} - 2SC\,x_{\cdot v} . $$
+
+Multiply on the left by $C^{\mathsf T}$, use $C^{\mathsf T}SC = 1$ and
+$C^{\mathsf T}FC = \mathrm{diag}(\varepsilon)$, and read off the blocks of
+$x$:
+
+$$ x_{ji} = 2\big(\varepsilon_i\delta_{ji} + \Delta_{ji} + R_{ji}\big), \qquad x_{ai} = 2(\Delta_{ai} + R_{ai}) + \tfrac12\varepsilon_az_{ai}, \qquad x_{ia} = \tfrac12\varepsilon_iz_{ai}, \qquad x_{ba} = 0 , $$
+
+with $R = R(Z_s)$ in the MO basis. $x$ is symmetric, so $x_{ai} = x_{ia}$,
+which is the Z-vector equation:
+
+$$ (\varepsilon_a - \varepsilon_i)\,z_{ai} + 4\,\big[C_v^{\mathsf T}R(Z_s)C_o\big]_{ai} = -4\,\Delta_{ai} . $$
+
+The orthonormality multiplier in the AO basis is $W = CxC^{\mathsf T}$:
+
+$$ W = 2\,C_o\big(\mathrm{diag}(\varepsilon_o) + \Delta_{oo} + R_{oo}\big)C_o^{\mathsf T} + \tfrac12\big(C_v(z\,\varepsilon_o)C_o^{\mathsf T} + \mathrm{h.c.}\big), $$
+
+where $z\,\varepsilon_o$ scales column $i$ of $z$ by $\varepsilon_i$. Now
+differentiate $\mathcal L$ at fixed $C$, $z$ and $x$. The energy gives its
+skeleton terms, $\sum z_{ai}(C^{\mathsf T}F^xC)_{ai} = \mathrm{tr}[Z_sF^x]$
+adds the derivative of the Fock matrix at fixed $D$, and
+$\mathrm{tr}[Z_sK_f^x(D)] = T^x(Z_s, D)$:
+
+$$ E^x = E_{nn}^x + \mathrm{tr}[(D + Z_s)h^x] + \tfrac12J^x(D,D) + J^x(Z_s,D) - \tfrac14T^x(D,D) - \tfrac12T^x(Z_s,D) - \mathrm{tr}[WS^x] , \label{eq:hf-gradient-cosx-fit} $$
+
+with $J^x(Y,B) = \sum Y_{\mu\nu}B_{\lambda\sigma}(\mu\nu|\lambda\sigma)^x$.
+$T^x$ now also differentiates $Q$. With $Q = SS_{\rm num}^{-1}$,
+
+$$ Q^x = S^xS_{\rm num}^{-1} - Q\,S_{\rm num}^xS_{\rm num}^{-1}, \qquad S_{\rm num} = \sum_g w_g\phi_g\phi_g^{\mathsf T} , $$
+
+and $S_{\rm num}^x$ has the weight term and the AO term of (a) and (c). Collect
+$M_{\rm tot} = \sum_kc_k\tilde K(B_k)Y_k$ over the terms. The $Q^x$ part of
+$\sum_kc_kT^x(Y_k,B_k)$ is
+$\mathrm{tr}[S^xP_1] - \mathrm{tr}[S_{\rm num}^xP_2]$ with
+$P_1 = S_{\rm num}^{-1}M_{\rm tot}$ and
+$P_2 = P_1(S_{\rm num}^{-1}S)^{\mathsf T}$.
+
+**Check the trivial limit.** Put $Q = 1$ into the fitted machinery. Then
+$\Delta = 0$, the right-hand side of the Z-vector equation is zero, $z = 0$,
+$Z_s = 0$, $W$ reduces to $2C_o\,\mathrm{diag}(\varepsilon_o)C_o^{\mathsf T}$,
+$Q^x = 0$, and (@eq:hf-gradient-cosx-fit) is the fit-off gradient. The code
+has this anchor as `ferric-scf/src/cosx_gradient.rs::FitQ` (`Identity` runs
+the fitted path with $Q = 1$).
+
+**UHF.** Per spin $\sigma$, $D_\sigma = C_{o\sigma}C_{o\sigma}^{\mathsf T}$ and
+the exchange weight is $-\tfrac12$. The same steps give
+$\Delta_\sigma = \tfrac12(K_f - L)(D_\sigma)$, the coupled equations
+$(\varepsilon_a - \varepsilon_i)z^\sigma_{ai} + 2[C_{v\sigma}^{\mathsf T}(J(Z_\alpha + Z_\beta) - L(Z_\sigma))C_{o\sigma}]_{ai} = -2\Delta_{\sigma,ai}$,
+occupation weight 1 in $W$, and exchange terms
+$-\tfrac12\sum_\sigma T^x(D_\sigma,D_\sigma) - \sum_\sigma T^x(Z_\sigma,D_\sigma)$.
+
+**What it means.** The response is small and it matters. On water/6-31G at a
+(30,110) COSX grid, from the `3f612e0b3` build, analytic and fourth-order
+finite-difference gradients ($h = 10^{-3}$ Bohr, COSX final pass off) agree to
+$2\times10^{-11}$ to $5\times10^{-11}$ Ha/Bohr with the fit on and off. In the
+toy model of the script the explicit derivative alone, without the Z-vector,
+misses by $7\times10^{-4}$ (RHF) and $4\times10^{-4}$ (UHF), against an
+agreement of $5\times10^{-12}$ with it.
+
+```python
+import numpy as np
+import ferric
+
+sym = ["O", "H", "H"]
+x0 = np.array([[0.0, 0.0, 0.25], [0.0, 1.50, -0.85], [0.0, -1.35, -0.95]])
+bs = ferric.BasisSet.bundled("6-31g")
+
+
+def run(x, fit, grad=False):
+    mol = ferric.Molecule.from_arrays(sym, x, units="bohr")
+    return ferric.run_rhf(mol, bs, energy_conv=1e-12, density_conv=1e-10, k_builder="cosx",
+                          cosx_grid=(30, 110), cosx_overlap_fit=fit, cosx_final_pass=False,
+                          with_gradient=grad)
+
+
+for fit in (False, True):
+    g = np.asarray(run(x0, fit, grad=True).gradient())
+    print(f"overlap_fit={fit}: sum over atoms {np.abs(g.sum(axis=0)).max():.1e}")
+    h = 1e-3
+    for atom, axis in ((0, 2), (1, 1)):
+        e = {}
+        for s in (-2, -1, 1, 2):
+            xp = x0.copy(); xp[atom, axis] += s * h
+            e[s] = run(xp, fit).energy
+        fd = (8 * (e[1] - e[-1]) - (e[2] - e[-2])) / (12 * h)
+        print(f"  atom {atom} axis {axis}: analytic {g[atom, axis]:.10f}  FD {fd:.10f}  diff {abs(fd - g[atom, axis]):.1e}")
+```
+
+```text
+overlap_fit=False: sum over atoms 5.5e-15
+  atom 0 axis 2: analytic 0.0404145573  FD 0.0404145573  diff 3.9e-11
+  atom 1 axis 1: analytic 0.0132062280  FD 0.0132062280  diff 2.1e-11
+overlap_fit=True: sum over atoms 2.8e-15
+  atom 0 axis 2: analytic 0.0401515131  FD 0.0401515132  diff 4.9e-11
+  atom 1 axis 1: analytic 0.0133607665  FD 0.0133607665  diff 5.0e-11
+```
+
+Leave the final pass on (the default) and the same differences become
+$1.6\times10^{-4}$ to $2.1\times10^{-4}$ Ha/Bohr (fit off): the energies
+then come from the larger final grid, which the gradient does not describe.
+
+> **Verified equation {#eq:scf-grad-cosx}** · the fit-off COSX gradient equals finite differences
+>
+> On a toy system (two atoms in 3D, five $s$ Gaussians, a grid of points
+> riding their atoms with weights from a smooth partition), the three-term
+> derivative (AO values, potential integrals with the charge-position block
+> on the home atom, weight response) equals a fourth-order finite difference
+> of $\sum_gw_g\,\phi_g^{\mathsf T}DA(g)D\phi_g$ at fixed $D$ (claim X1); the
+> fit-off RHF gradient with $-\mathrm{tr}[WS^x]$ equals a finite difference
+> of the re-solved COSX SCF energy (claim X2); in symbols, $T(D,D)$ is a
+> quadratic form whose $D$-derivative has symmetric part $2K(D)$ (claim X3).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/cosx_gradient_sympy.py`, claims X1, X2, X3, X7 |
+> | Negative control | dropping the weight response or the charge-position block misses by $10^{-1}$ and $2\times10^{-2}$ against an agreement of $10^{-12}$ (X1); the runner zeroes each of them (X1, X2 fail) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/cosx_gradient.rs::{cosx_exchange_gradient_bilinear_with_q,chunk_gradient}`, `ferric-scf/src/gradient.rs::{rhf_gradient_cosx_with_q,uhf_gradient_cosx,rohf_gradient_cosx}` |
+> | Code test | `rhf_cosx_gradient_matches_fd_sto3g` in `crates/ferric-scf/tests/cosx_gradient.rs` |
+>
+> <!-- verified: id=scf.grad.cosx; script=scripts/cosx_gradient_sympy.py; claim=X2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/cosx_gradient.rs::{cosx_exchange_gradient_bilinear_with_q,chunk_gradient},ferric-scf/src/gradient.rs::{rhf_gradient_cosx_with_q,uhf_gradient_cosx,rohf_gradient_cosx}; rust_test=ferric-scf/tests/cosx_gradient.rs::rhf_cosx_gradient_matches_fd_sto3g; registry=cosx-gradient -->
+
+> **Verified equation {#eq:scf-grad-cosx-fit}** · the overlap-fitted COSX gradient needs the Z-vector
+>
+> On the same toy: $\mathrm{tr}[YK_f(B)] = \mathrm{tr}[BL(Y)]$ with $K_f$
+> not self-adjoint and self-adjoint at $Q = 1$ (claim X4, symbols); the
+> directional derivative of the fitted energy is $\mathrm{tr}[\delta D(F+\Delta)]$
+> with $\mathrm{tr}[D\Delta] = 0$ (claim X4, numbers); $T^x(Y,B)$ including
+> $Q^x$ equals a finite difference of $T$ at fixed $Y$, $B$ (claim X5); the
+> Lagrangian gradient (@eq:hf-gradient-cosx-fit) equals a finite difference
+> of the re-solved fitted RHF energy (claim X6), and its UHF form likewise
+> (claim X7); $Q = 1$ through the fitted path gives $\Delta = 0$, $z = 0$ and
+> the fit-off gradient (claim X8).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/cosx_gradient_sympy.py`, claims X4, X5, X6, X7, X8 |
+> | Negative control | the explicit derivative without the Z-vector misses by $7\times10^{-4}$ (RHF) and $4\times10^{-4}$ (UHF); $T^x$ without $Q^x$ misses by $10^{-1}$; the runner halves the Z-vector right-hand side, drops $\Delta_{oo}$ from $W$ and drops the $S_{\rm num}^x$ part of $Q^x$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/cosx_gradient.rs::{fitted_exchange_response_with_q,cosx_exchange_gradient_bilinear_with_q,snum_derivative}`, `ferric-scf/src/gradient.rs::{rhf_gradient_cosx_with_q,uhf_gradient_cosx}` |
+> | Code test | `fitted_rhf_cosx_gradient_matches_fd_sto3g` in `crates/ferric-scf/tests/cosx_gradient.rs` |
+>
+> <!-- verified: id=scf.grad.cosx-fit; script=scripts/cosx_gradient_sympy.py; claim=X6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/cosx_gradient.rs::{fitted_exchange_response_with_q,cosx_exchange_gradient_bilinear_with_q,snum_derivative},ferric-scf/src/gradient.rs::{rhf_gradient_cosx_with_q,uhf_gradient_cosx}; rust_test=ferric-scf/tests/cosx_gradient.rs::fitted_rhf_cosx_gradient_matches_fd_sto3g; registry=cosx-gradient -->
+
+The toy uses $s$ functions, a smooth softmax partition in place of Becke's
+cell functions, and closed-form integrals. The skeleton derivatives of $h$,
+$(\mu\nu|\lambda\sigma)$ and $E_{nn}$ are taken there by central differences
+at fixed matrices; every grid term, $S^x$ and $S_{\rm num}^x$ are analytic.
+The proof does not cover ROHF numerically (its $W$ is the one of section
+@sec:hf-gradient-gradient, and the exchange part rests on claim X3), nor the
+RI-J Coulomb route.
+
+**The code.** `ferric-scf/src/cosx_gradient.rs::chunk_gradient` evaluates all
+three terms per point. For term (b) it asks libint2's nuclear-attraction
+derivative engine for a single unit charge at $\mathbf r_g$, which returns
+nine blocks: bra centre, ket centre and charge position, for $V = -A$. Inside
+the loop over the pair $(s_1, s_2)$, with `p` the product
+$w_g\,c_k\,F_{g\lambda}H_{g\sigma}$ summed over both orderings of the pair:
+
+<!-- excerpt: ferric-scf/src/cosx_gradient.rs::chunk_gradient -->
+```rust
+let idx = i * n2 + jj;
+for c in 0..3 {
+    local[(a1, c)] -= p * der[c * bsz + idx];
+    local[(a2, c)] -= p * der[(3 + c) * bsz + idx];
+    local[(home, c)] -= p * der[(6 + c) * bsz + idx];
+}
+```
+
+| Code | Equation |
+|---|---|
+| `-= p * der[...]` | $+w_gF_\lambda H_\sigma\,\partial A_{\lambda\sigma}/\partial x$, since `der` holds $\partial V = -\partial A$ |
+| `a1`, `a2` | the atoms of the two shells (bra and ket centre) |
+| `home` | $h(g)$: the charge-position block goes to the point's home atom |
+
+After the integral loop the same function adds (c) and (a) for each term:
+
+<!-- excerpt: ferric-scf/src/cosx_gradient.rs::chunk_gradient -->
+```rust
+for (b, row) in weight1[g0 + j].iter().enumerate() {
+    for c in 0..3 {
+        local[(b, c)] += t.c * e * row[c];
+    }
+}
+// (a) AO term: the point drags phi (+grad on home), the centre
+// drags phi (-grad on atom(mu)).
+for mu in 0..nbf {
+    let tv = w * t.c * dg[(mu, j)];
+    if tv == 0.0 {
+        continue;
+    }
+    let am = ao_atom[mu];
+    for c in 0..3 {
+        let v = tv * dchi[(c, mu, j)];
+        local[(home, c)] += v;
+        local[(am, c)] -= v;
+    }
+}
+```
+
+| Code | Equation |
+|---|---|
+| `weight1[g0 + j]` | $\partial w_g/\partial x$ for every atom, (c) |
+| `e` | $e_g = F_g^{\mathsf T}A(g)H_g$ |
+| `dg` | $\partial e_g/\partial\phi = BA(g)H_g + M^{\mathsf T}A(g)F_g$ ($2BA(g)F_g$ when $H = F$) |
+| `dchi[(c, mu, j)]` | $\nabla_c\chi_\mu(\mathbf r_g)$ |
+| `+= v` on `home`, `-= v` on `am` | $\delta_{X,h(g)} - \delta_{X,\mathrm{atom}(\mu)}$, (a) |
+
+The occupied block of $W$ in
+`ferric-scf/src/cosx_gradient.rs::fitted_exchange_response_routed` adds
+$\Delta_{oo}$ and $R_{oo}$ to the orbital energies; `wocc` is 2 for RHF and 1
+per spin for UHF:
+
+<!-- excerpt: ferric-scf/src/cosx_gradient.rs::fitted_exchange_response_routed -->
+```rust
+let mut occ = co.t().dot(&(delta + r).dot(co));
+for (i, e) in eo.iter().enumerate() {
+    occ[(i, i)] += e;
+}
+w.scaled_add(wocc, &co.dot(&occ.dot(&co.t())));
+```
+
+**Design choices.**
+
+- **The unscreened energy is differentiated.** The SCF's COSX build drops
+  shell pairs below `screen_thresh` and uses shell-sparse half transforms;
+  the gradient evaluates every shell pair at every point. The difference is
+  the screen error, measured by
+  `production_screens_move_the_fixed_density_derivative_by_less_than_their_bound`
+  in `crates/ferric-scf/tests/cosx_gradient.rs`. The cost is
+  O(points · shell pairs) with no screening.
+- **The Z-vector uses GMRES, not conjugate gradients.** The response operator
+  contains $L$, not $K_f$, so it is not symmetric.
+  `ferric-scf/src/cosx_gradient.rs::fitted_exchange_response_routed` solves
+  it with restarted GMRES (restart 30, at most 300 iterations, relative
+  residual $10^{-10}$), right-preconditioned by the orbital-energy gaps. An
+  unconverged solve and a non-positive gap are errors. $J(Z_s)$ uses the
+  builder the SCF used: exact four-centre $J$, or RI-J for RIJCOSX.
+- **RIJCOSX Coulomb.** When the SCF fitted $J$,
+  `ferric-scf/src/gradient.rs::cosx_run_coulomb_gradient` takes the Coulomb
+  terms from the RI-J gradient of section @sec:df-jk-gradient. The RI-J
+  energy $E_J(D) = \tfrac12J(D,D)$ is quadratic, so
+  $\tfrac12J^x(D,D) + J^x(Z_s,D) = E_J^x(D + Z_s) - E_J^x(Z_s)$: two passes
+  of the RI-J gradient.
+- **Grid and weights.** The gradient rebuilds the COSX grid with
+  `ferric-dft/src/grid.rs::build_atomic_grid_with_response_pruned`, the same
+  points as the energy plus the weight derivatives. Pruned grids are
+  differentiated like flat ones.
+
+**Refusals.** Each is a hard error, raised before the SCF by
+`ferric-scf/src/gradient.rs::{preflight_cosx_restricted,preflight_cosx_unrestricted,preflight_cosx_restricted_open}`
+on the geometry drivers:
+
+- the overlap fit with a Kohn–Sham functional
+  (`ferric-scf/src/cosx_gradient.rs::check_fitted_ks_supported`): the
+  Z-vector term would need $\mathrm{tr}[Z_sV_{xc}^x(D)]$, the nuclear
+  derivative of the XC Fock matrix, which ferric does not have. Fit-off COSX
+  with a hybrid is exact.
+- the overlap fit for ROHF and ROKS: there is no restricted-open-shell
+  Z-vector here.
+- a result whose reported energy came from the COSX final pass: the gradient
+  is that of the SCF-grid energy. The geometry drivers drop the final pass
+  (`ferric-scf/src/gradient.rs::gradient_task_config`).
+- ghost atoms, X2C, and COSMO, as for the exact-exchange gradient. The
+  analytic Hessian refuses COSX, so frequencies with `hessian = "auto"` take
+  finite differences of this gradient.
+
+When the functional has no exact exchange, or is range-separated, the SCF
+ignores `k_builder = "cosx"`, and so does the gradient
+(`ferric-scf/src/cosx_gradient.rs::scf_exchange_is_cosx`).
+
 ## The algorithm {#hf-gradient-algorithm}
 
 | Step | Quantity | Function |
@@ -305,7 +715,8 @@ $-\tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ of the table.
 
 ## Reproducibility and refusals {#hf-gradient-reproducibility-refusals}
 
-- The gradient is bit-identical across rayon thread counts
+- Given one SCF result, the gradient is bit-identical across rayon thread
+  counts
   (`rhf_gradient_bit_identical_across_thread_counts` in
   `crates/ferric-scf/src/gradient.rs`).
 - Fractional and non-aufbau occupations: the UHF $W$ uses the occupations
@@ -326,10 +737,10 @@ $-\tfrac14 D_{\mu\lambda}D_{\nu\sigma}$ of the table.
 
 | Option | Effect | Where |
 |---|---|---|
-| ECPs | adds $\sum D V^x_{\mathrm{ECP}}$ and uses $Z_{\mathrm{eff}}$ in $E_{nn}^x$ | this section |
-| external point charges and field | folded into the one-electron term; the field-density term is a finite difference | `ferric-scf/src/gradient.rs::oneelectron_gradient` |
+| ECPs | adds $\sum D V^x_{\mathrm{ECP}}$ and uses $Z_{\mathrm{eff}}$ in $E_{nn}^x$; the ECP derivative blocks are derived in chapter @sec:ecp | `ferric-scf/src/gradient.rs::ecp_gradient` |
+| external point charges and field | folded into the one-electron term; the field-density term is a finite difference of dipole integrals (section @sec:external-potentials-gradient) | `ferric-scf/src/gradient.rs::oneelectron_gradient` |
 | density-fitted J and K | the two-electron term differentiates the fitted energy | section @sec:df-jk-gradient |
-| COSX exchange | exchange differentiated on the COSX grid | `ferric-scf/src/gradient.rs::rhf_gradient_cosx` |
+| COSX exchange | exchange differentiated on the COSX grid; the overlap fit adds a Z-vector | section @sec:hf-gradient-cosx |
 | Kohn–Sham | adds the XC gradient and scales exchange by the hybrid fraction | section @sec:xc-gradient |
 | solvent (PCM) | adds the analytic IEF-PCM nuclear gradient | chapter @sec:implicit-solvation |
 
@@ -352,5 +763,6 @@ integrals.
 | Source | Used for |
 |---|---|
 | `scripts/hf_gradient_sympy.py`, claims G1, G2, G3, G5, S1 | verified equations @eq:scf-grad-hf and @eq:scf-grad-pulay |
+| `scripts/cosx_gradient_sympy.py`, claims X1 to X8 | verified equations @eq:scf-grad-cosx and @eq:scf-grad-cosx-fit |
 | `crates/ferric-scf/src/gradient.rs` | the algorithm, refusals and options |
 | `site/src/reference/validation.md` | the anchor rows |
