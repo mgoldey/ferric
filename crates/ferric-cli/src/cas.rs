@@ -10,6 +10,7 @@
 //! key is read by one surface and ignored by the other.
 
 use crate::config::Config;
+use crate::error::die;
 use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer, CasScfStabilityMode};
 use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
@@ -312,11 +313,6 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<CasPlan>, String>
             density_conv: scf_key("density_conv").then_some(cfg.scf.density_conv),
         },
     }))
-}
-
-fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!("error: {msg}");
-    std::process::exit(1);
 }
 
 fn build_stamp() -> BuildStamp {
