@@ -23,10 +23,14 @@ Checks (each label carries "(claim X)"):
       (kept/kept, kept/dropped, dropped/dropped) equals a fourth-order finite
       difference of E_K(x) with the spectral cut in a gap; the plain
       -V+ dV V+ misses (negative control).
+  D4  Pair-screened RI-J: with the density masked to a fixed pair set K, the
+      exact derivative of 1/2 d~^T V^-1 d~ equals the RI-J formula evaluated at
+      the masked density, g_J(D~); g_J(D) misses (negative control).
 
 Mutations (each turns the script red; exact one-occurrence substitutions):
   RI-J metric term -1/2 c c^T loses its 1/2                   (D1 fails)
   kept/dropped kernel entry 1/(lk (lk - ll)) -> 0             (D3 fails)
+  D4 formula evaluated at D instead of the masked density     (D4 fails)
 Exits nonzero on any failed check; prints "FAIL <label>".
 """
 
@@ -91,18 +95,50 @@ def exact_checks():
     e_j = sp.Rational(1, 2) * (d_p.T * vinv * d_p)[0]
     de_j = sp.diff(e_j, x).subs(x, 0)
 
-    # formula at x = 0
-    d_p0 = d_p.subs(x, 0)
     v0i = v0.inv()
-    c = v0i * d_p0
-    term3 = sum(
-        c[p] * sum(d[m, n] * a1[p][m, n] for m in range(nao) for n in range(nao))
-        for p in range(naux)
-    )
-    term2 = -sp.Rational(1, 2) * (c.T * v1 * c)[0]
+
+    def ri_j_formula(dens):
+        """g_J(dens): the RI-J gradient formula at x = 0 for the density handed in."""
+        d_p0 = sp.Matrix(
+            [
+                sum(dens[m, n] * a0[p][m, n] for m in range(nao) for n in range(nao))
+                for p in range(naux)
+            ]
+        )
+        c = v0i * d_p0
+        term3 = sum(
+            c[p] * sum(dens[m, n] * a1[p][m, n] for m in range(nao) for n in range(nao))
+            for p in range(naux)
+        )
+        term2 = -sp.Rational(1, 2) * (c.T * v1 * c)[0]
+        return term3 + term2
+
     check(
         "D1 RI-J gradient formula equals the exact derivative of 1/2 d^T V^-1 d (claim D1)",
-        sp.simplify(term3 + term2 - de_j) == 0,
+        sp.simplify(ri_j_formula(d) - de_j) == 0,
+    )
+
+    # D4: pair-screened RI-J. Keep the pairs in K (here the diagonal ones):
+    # d~_P = sum_{(mn) in K} D_mn A_P,mn(x); the derivative of 1/2 d~^T V^-1 d~
+    # is g_J at the masked density D~, and not g_J(D).
+    keep = sp.Matrix([[1, 0], [0, 1]])
+    dt = d.multiply_elementwise(keep)
+    dt_p = sp.Matrix(
+        [
+            sum(
+                keep[m, n] * d[m, n] * a_x(p)[m, n]
+                for m in range(nao)
+                for n in range(nao)
+            )
+            for p in range(naux)
+        ]
+    )
+    de_jt = sp.diff(sp.Rational(1, 2) * (dt_p.T * vinv * dt_p)[0], x).subs(x, 0)
+    unmasked_miss = sp.simplify(ri_j_formula(d) - de_jt)
+    check(
+        "D4 pair-screened RI-J gradient equals g_J of the masked density (claim D4)",
+        sp.simplify(ri_j_formula(dt) - de_jt) == 0 and unmasked_miss != 0,
+        f"(g_J(D) misses by {float(unmasked_miss):.2e})",
     )
 
     # RI-K, one channel, X is 2x1 (m = 1), all modes kept: V+ = V^-1

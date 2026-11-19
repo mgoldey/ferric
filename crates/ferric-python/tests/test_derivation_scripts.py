@@ -550,6 +550,11 @@ CASES = [
                 "return 0.0",
                 "FAIL D3 truncated-metric derivative",
             ),
+            (
+                "sp.simplify(ri_j_formula(dt) - de_jt) == 0",
+                "sp.simplify(ri_j_formula(d) - de_jt) == 0",
+                "FAIL D4 pair-screened RI-J",
+            ),
         ],
     ),
     (

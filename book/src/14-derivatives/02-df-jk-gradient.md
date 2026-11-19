@@ -54,8 +54,7 @@ $$ \partial E_J = d^{\mathsf T}V^{-1}\,\partial d + \tfrac12\, d^{\mathsf T}\,\p
 Differentiate $VV^{-1} = 1$ to get $\partial V^{-1} = -V^{-1}(\partial V)V^{-1}$,
 substitute, and write $c = V^{-1}d$:
 
-$$ E_J = \tfrac12\, d^{\mathsf T}V^{-1}d, \qquad c = V^{-1}d, \qquad
-\partial E_J = \sum_P c_P \sum_{\mu\nu} D_{\mu\nu}\,\partial(P\vert\mu\nu) \;-\; \tfrac12\, c^{\mathsf T}(\partial V)\,c . \label{eq:df-jk-gradient-1} $$
+$$ \partial E_J = \sum_P c_P \sum_{\mu\nu} D_{\mu\nu}\,\partial(P\vert\mu\nu) \;-\; \tfrac12\, c^{\mathsf T}(\partial V)\,c . \label{eq:df-jk-gradient-1} $$
 
 Check it with one auxiliary function: $E_J = d^2/(2V)$, and the quotient rule
 gives $(d/V)\,\partial d - \tfrac12 (d/V)^2\,\partial V$, which is (@eq:df-jk-gradient-1) with
@@ -94,18 +93,18 @@ $H_K$ is $Y$ pushed through the derivative of $V^{+}$; section @sec:df-jk-gradie
 it. The weights are built once, before any derivative integral is
 computed.
 
-What makes (@eq:df-grad-jk) more than the four-centre gradient in new notation is
-where the derivatives act. $\partial(P\vert\mu\nu)$ acts on all three
-centres, including the auxiliary function's, and $\partial V_{PQ}$ on both
+In (@eq:df-grad-jk) the derivatives act on the auxiliary centres too.
+$\partial(P\vert\mu\nu)$ acts on all three centres, including the auxiliary function's, and $\partial V_{PQ}$ on both
 auxiliary centres. The auxiliary functions sit on atoms, so they exert
 forces of their own, in the same way the orbital basis gives the Pulay
-term. These are the standard DF-SCF gradient expressions (Weigend, Häser, Patzelt and
-Ahlrichs, 1998, for RI-J; Weigend, Kattannek and Ahlrichs, 2009, for RI-K).
+term. These are the standard DF-SCF gradient expressions (Eichkorn, Treutler, Öhm,
+Häser and Ahlrichs, 1995, for RI-J; Weigend, Kattannek and Ahlrichs, 2009,
+for RI-K).
 
 How large is the difference? On the cc-pVDZ test systems of section @sec:df-jk-gradient-numerical-anchors,
 ferric's fitted gradient agrees with PySCF `df.grad` to about $10^{-10}$ Ha/Bohr, while the
 four-centre derivative paired with the fitted energy differs from PySCF by
-more than $5\times10^{-6}$ Ha/Bohr (section @sec:df-jk-gradient-numerical-anchors). An optimizer with a
+more than $5\times10^{-6}$ Ha/Bohr. An optimizer with a
 $10^{-6}$ Ha/Bohr convergence bar would stop at the wrong place.
 
 > **Verified equation @eq:df-grad-jk** · the fitted J and K gradient
@@ -244,6 +243,12 @@ gradient therefore treats modes below
 `ferric-scf/src/df_gradient.rs::DFK_GRADIENT_NOISE_FLOOR` ($10^{-7}$) as
 dropped even where the energy kept them, and prints a warning when the
 energy held by that band exceeds `NOISE_BAND_ENERGY_WARN` ($10^{-6}$ Ha).
+The module documentation of `ferric-scf/src/df_gradient.rs` records what the
+floor buys on water with an erf metric ($\omega = 0.3$), against central
+differences of the energy truncated at $10^{-10}$: a floor of $10^{-10}$
+leaves the gradient $5.0\times10^{-6}$ / $4.1\times10^{-6}$ Ha/Bohr off
+(6-31G / cc-pVDZ), the $10^{-7}$ floor $1.2\times10^{-8}$ /
+$2.7\times10^{-9}$ Ha/Bohr. That is a prototype measurement, not a test.
 The gradient is then that of the energy with this band removed, and the
 residual between gradient and reported energy is exactly the derivative of
 that band. With no metric eigenvalue below $10^{-7}$, the usual case, the
@@ -413,10 +418,19 @@ $$ \lvert d_P - \tilde d_P\rvert \le \sum_{\text{dropped}}\lvert(P\vert\mu\nu)\r
 \le \tau\sum_{\text{dropped}}\lvert D_{\mu\nu}\rvert\,\frac{Q_P}{q_{\max}} \le \tau\sum_{\text{dropped}}\lvert D_{\mu\nu}\rvert, $$
 
 and the coefficients move by $\tilde c - c = -V^{-1}(d - \tilde d)$. At
-$\tau \le 0$ nothing is dropped, $\tilde D = D$, and the two gradients are
+$\tau \le 0$ no nonzero pair is dropped (the test is a strict $>$, so a pair
+with $Q_{\mu\nu} = 0$ goes, and it contributes nothing), $\tilde D = D$, and the two gradients are
 the same bits.
 
 ### What is proven and what is not {#df-jk-gradient-proven}
+
+The identity $\nabla\tilde E_J = g_J(\tilde D)$ is claim D4 of
+`scripts/df_jk_gradient_sympy.py`: on the one-parameter model of claim D1,
+with the density masked to the diagonal pairs, the exact derivative of
+$\tfrac12\tilde d^{\mathsf T}V^{-1}\tilde d$ equals the RI-J formula
+evaluated at $\tilde D$, while the formula evaluated at $D$ misses by
+$3\times10^{-3}$. The runner hands the formula $D$ instead and checks that
+D4 fails.
 
 The tests in `crates/ferric-scf/tests/df_gradient_screened_j_handoff.rs` run
 PBE with RI-J only (def2-SVP, def2-universal-jkfit, `energy_conv` $10^{-11}$,
@@ -438,7 +452,10 @@ above is a scaling statement; only the bound on $d_P$ is proved.
 ## Reproducibility and memory {#df-jk-gradient-reproducibility-memory}
 
 - Both derivative passes map over auxiliary shells, collect in shell order and
-  fold serially, so the gradient is bit-identical across thread counts.
+  fold serially, so with `blas_threads = 1` the gradient is bit-identical
+  across thread counts. The RI-K metric eigendecomposition runs at the
+  serial-section BLAS count, whose default is the pool size; no test asserts
+  bit-identity for the fitted gradient.
 - Resident beside one three-index block (at most
   `ferric-scf/src/df_gradient.rs::GRADIENT_3C_BLOCK_CAP_BYTES` and a quarter
   of the budget): $2\,N_{\mathrm{aux}}\,m_s^2$ doubles per exchange channel
@@ -465,7 +482,7 @@ above is a scaling statement; only the bound on $d_P$ is proved.
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | RI-J, RI-JK, UHF, ROHF, KS (PBE, B3LYP, UKS B3LYP, wB97X) gradients: water, OH, HO2 / cc-pVDZ, 6-31G, def2-universal-jkfit | central finite differences of ferric's own fitted energy, $h = 10^{-3}$ Bohr | bar $10^{-6}$ Ha/Bohr; each case also asserts that the unfitted four-centre derivative misses by at least half the smallest predicted defect | `crates/ferric-scf/tests/df_jk_gradient.rs` |
-| RI-J and RI-JK RHF, UHF: cc-pVDZ | PySCF `df.grad` with the same auxiliary basis and auxiliary-basis response; the DF energies compared first to $10^{-7}$ Ha | about $10^{-10}$ Ha/Bohr, bar $10^{-6}$; the old pairing differs from PySCF by more than $5\times10^{-6}$ | `hf_ri_jk_gradient_matches_pyscf_df`, `uhf_ri_jk_gradient_matches_pyscf_df` in `crates/ferric-scf/tests/df_jk_gradient.rs` |
+| RI-J and RI-JK RHF, UHF: cc-pVDZ | PySCF `df.grad` with the same auxiliary basis and auxiliary-basis response; the DF energies compared first to $10^{-7}$ Ha | about $10^{-10}$ Ha/Bohr, bar $10^{-6}$; the four-centre derivative paired with the fitted energy differs from PySCF by more than $5\times10^{-6}$ | `hf_ri_jk_gradient_matches_pyscf_df`, `uhf_ri_jk_gradient_matches_pyscf_df` in `crates/ferric-scf/tests/df_jk_gradient.rs` |
 
 <!-- figures: site/src/reference/validation.md "RHF/UHF/ROHF/KS gradients, including density-fitted J/K" -->
 
@@ -487,5 +504,6 @@ not negligible cannot pass silently.
 | `crates/ferric-scf/src/df_gradient/deriv3c.rs` | the three-centre contraction layout |
 | `scripts/df_jk_gradient_sympy.py`, claims D1 to D3 | verified equation @eq:df-grad-jk |
 | `crates/ferric-scf/tests/df_jk_gradient.rs` | thresholds and the negative controls |
+| `scripts/df_jk_gradient_sympy.py`, claim D4 | the identity of section @sec:df-jk-gradient-pair-screened-ri-j |
 | `crates/ferric-integrals/src/three_index_source/pair_screen.rs`, module documentation; `crates/ferric-scf/tests/df_gradient_screened_j_handoff.rs` | the pair screen, its danuglipron numbers, and the checks of section @sec:df-jk-gradient-pair-screened-ri-j |
 | `site/src/reference/validation.md` | the gradient row |
