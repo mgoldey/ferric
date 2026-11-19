@@ -217,7 +217,7 @@ class FerricCalculator(Calculator):
             self.results = {
                 "energy": energy * Hartree,
                 "free_energy": energy * Hartree,
-                "certificate": result.certificate,
+                "certificate": getattr(result, "certificate", None),
             }
         result = self.ferric_result
         if want_forces and "forces" not in self.results:
