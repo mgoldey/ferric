@@ -30,8 +30,10 @@ gives the SCF, @sec:kpoint-scf-options to @sec:kpoint-scf-sources the options, a
 | Mesh | `ferric-pbc/src/kpts.rs::{monkhorst_pack,madelung}` |
 | RHF | `ferric-pbc/src/kscf.rs::{solve_krhf,solve_k_closed_shell}` |
 | UHF | `ferric-pbc/src/kuscf.rs::solve_kuhf` |
-| ROHF, ROKS | `ferric-pbc/src/kroks.rs::solve_krohf` |
+| ROHF | `ferric-pbc/src/kroks.rs::solve_krohf` |
+| ROKS | `ferric-pbc/src/kroks.rs::solve_kroks` |
 | RKS | `ferric-pbc/src/kdft.rs::solve_krks` |
+| UKS | `ferric-pbc/src/kuks.rs::solve_kuks` |
 | CLI | `[cell] kmesh = [n1, n2, n3]` with `method.kind` `rhf`, `uhf`, `rohf` or `ksdft` |
 | Python | `run_rhf_kpts`, `run_uhf_kpts`, `run_rohf_kpts`, `run_rks_kpts`, `run_uks_kpts`, `run_roks_kpts` |
 
@@ -99,13 +101,15 @@ nonzero only on $\mathbf K = \mathbf G + q$, $q = k' - k$:
 $$ P^{k'}_{\mu\nu}(\mathbf K) = \sum_{\mathbf L}e^{ik'\cdot\mathbf L}\int\phi_\mu\,\phi_\nu(\cdot - \mathbf L)\,e^{-i\mathbf K\cdot\mathbf r} , $$
 
 the transform of section @sec:pair-ft with a phase in the image sum
-(`crates/ferric-pbc/src/kdense_aft.rs`). Coulomb pairs a function with its
+(`ferric-pbc/src/kdense_aft.rs::build`). Only the ket's image sum carries a
+phase: the bra's Bloch sum has been removed by translation invariance, as in
+the overlap above, which leaves the factor $N_k\delta$ of the mesh identity. Coulomb pairs a function with its
 own $k$, so $q = 0$ and the kernel is taken at $\mathbf G$. Exchange pairs
 $k$ with every $k'$, so the kernel is taken at $\mathbf G + q$. The only term
 dropped is $\mathbf K = 0$.
 
 **Energy and Fock matrix.** With orbitals normalized per cell and
-$D(k) = 2C_o(k)C_o(k)^{\mathsf H}$ (`crates/ferric-pbc/src/kscf.rs`):
+$D(k) = 2C_o(k)C_o(k)^{\mathsf H}$ (`ferric-pbc/src/kscf.rs::solve_k_closed_shell`):
 
 $$
 \begin{aligned}
@@ -171,7 +175,7 @@ exxdiv=none   E(1x1x3 mesh)/cell=-1.077069004631  E(supercell)/3=-1.077069004631
 **Check the Gamma limit.** With $N_k = 1$ the only point is $k = 0$, every
 phase is 1, $q = 0$, $v_M$ is the cell's own constant, and the formulas are
 those of sections @sec:exchange-divergence and @sec:rsgdf. The force and stress tests in sections @sec:forces
-and 24.8 use this: a one-point mesh must give the Gamma numbers.
+and @sec:stress use this: a one-point mesh must give the Gamma numbers.
 
 > **Verified equation {#eq:pbc-kscf-supercell}** · the closed-shell k-mesh is the Gamma supercell
 >
@@ -200,7 +204,7 @@ normalizations, the Madelung constant per $k$) does not depend on the
 dimension.
 
 **Open shells.** Per spin, $D_\sigma(k) = C_{\sigma,o}C_{\sigma,o}^{\mathsf H}$
-and (`crates/ferric-pbc/src/kuscf.rs`)
+and (`ferric-pbc/src/kuscf.rs::solve_kuhf`)
 
 $$
 F_\sigma(k) = h(k) + J[D_\alpha + D_\beta]{}(k) - K[D_\sigma]{}(k),\qquad
@@ -211,8 +215,13 @@ where $K[D_\sigma]$ carries $v_MSD_\sigma S$ with coefficient 1: the builder is
 linear in the density, and there is no per-spin $\tfrac12$. Occupations are a
 global aufbau per spin over the whole mesh. ROHF and ROKS combine the same
 per-spin Fock matrices into the Guest–Saunders (Roothaan) effective Fock on
-one orbital set: at Gamma through `ferric_scf::rohf`, on a mesh per $k$ in
-`crates/ferric-pbc/src/kroks.rs` (PySCF `get_roothaan_fock`).
+one orbital set: at Gamma through `ferric_scf::rohf`, on a mesh in
+`ferric-pbc/src/kroks.rs::solve_krohf` (PySCF `get_roothaan_fock`). The
+effective Fock matrix couples the closed, open and virtual blocks of one
+orbital set (verified equation @eq:scf-rohf-gradient). On a mesh that coupling is formed per $k$
+from $F_\alpha(k)$ and $F_\beta(k)$ in the MO basis of that $k$; the
+occupations, which decide which orbitals are closed, open or virtual, come
+from one aufbau per spin over the whole mesh.
 
 > **Verified equation {#eq:pbc-kscf-uhf}** · the open-shell k-mesh is the Gamma supercell
 >
@@ -226,16 +235,16 @@ one orbital set: at Gamma through `ferric_scf::rohf`, on a mesh per $k$ in
 > | Negative control | the `krhf-supercell` mutations act on the shared builder |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pbc/src/kuscf.rs::solve_kuhf` |
-> | Code test | `crates/ferric-pbc/tests/pbc_kuhf.rs` |
+> | Code test | `tri_triplet_1x1x3_is_the_gamma_supercell_uhf` in `crates/ferric-pbc/tests/pbc_kuhf.rs` |
 >
-> <!-- verified: id=pbc.kscf.uhf; script=scripts/pbc_kpoint_corr_sympy.py; claim=kuhf-supercell; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/kuscf.rs::solve_kuhf; registry=pbc-hf -->
+> <!-- verified: id=pbc.kscf.uhf; script=scripts/pbc_kpoint_corr_sympy.py; claim=kuhf-supercell; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/kuscf.rs::solve_kuhf; rust_test=ferric-pbc/tests/pbc_kuhf.rs::tri_triplet_1x1x3_is_the_gamma_supercell_uhf; registry=pbc-hf -->
 
 The Madelung shift of the occupied levels, which explains why `none` and
 `ewald` share their densities, is box @eq:pbc-exxdiv-level-shift in section @sec:exchange-divergence. Per spin the
 energy moves by $-v_M(N_\alpha + N_\beta)/2$.
 
-**Kohn–Sham.** With an exact-exchange fraction $a$ (`crates/ferric-pbc/src/kdft.rs`,
-`solve_krks_injected`):
+**Kohn–Sham.** With an exact-exchange fraction $a$
+(`ferric-pbc/src/kscf.rs::solve_krks_injected`):
 
 $$
 F(k) = h(k) + J(k) - \tfrac a2K(k) + V_{xc}(k),\qquad
@@ -249,22 +258,47 @@ $$
 
 $V_{xc}(k)$ is the $D(k)$ derivative of $E_{xc}$ times $N_k$, the same
 convention as $h$, $J$ and $K$. The injected $K$ carries the Madelung term,
-so it is scaled by $a$ with the rest of the exchange. The cell integral runs
-on atom-centred grids weighted by an SSF partition of the infinite crystal
-(`crates/ferric-pbc/src/dft.rs`, `PeriodicGrid`). That periodic quadrature
-has no proof script, and neither do the XC force and stress terms. That is
-why `pbc-ks` stays a registry gap and this section's status is `edit`.
+so it is scaled by $a$ with the rest of the exchange. The GGA terms need
+$\nabla\chi_{\mu k}$. In this gauge,
+$\chi_{\mu k}(\mathbf r) = \sum_{\mathbf L}e^{ik\cdot\mathbf L}\phi_\mu(\mathbf r - \mathbf L)$,
+the phase does not depend on $\mathbf r$, so
+$\nabla\chi_{\mu k} = \sum_{\mathbf L}e^{ik\cdot\mathbf L}\nabla\phi_\mu(\mathbf r - \mathbf L)$
+with no extra $ik$ term; the molecular GGA and meta-GGA kernels apply to the
+Bloch sums unchanged. UKS and ROKS use the per-spin densities and the
+open-shell Fock matrices above, with $V_{xc,\sigma}(k)$ added per spin
+(`ferric-pbc/src/kuks.rs::solve_kuks`, `ferric-pbc/src/kroks.rs::solve_kroks`).
+
+**The cell integral.** The grid is the molecular atom-centred grid on the
+cell's atoms only, each point weighted by its home atom's partition weight
+evaluated in the infinite crystal, with every image atom within a cutoff $D$
+of the point as a competitor (`ferric-pbc/src/dft.rs::PeriodicGrid`; SSF by
+default). Write $w_{A,\mathbf L}$ for the weight of image $A + \mathbf L$.
+Translation covariance gives $w_{A,\mathbf L}(\mathbf r) = w_{A,0}(\mathbf r - \mathbf L)$
+and the weights sum to one over all atoms and images. For a lattice-periodic
+$f$,
+
+$$ \int_\text{cell}f = \sum_{\mathbf L}\sum_{A\in\text{cell}}\int_\text{cell}w_{A,\mathbf L}f = \sum_{A\in\text{cell}}\int_{\mathbb R^3}w_{A,0}\,f , $$
+
+because the translated cells tile space and $f$ is periodic. So the full
+atomic grid of each cell atom, with no cut at the cell boundary, integrates
+over one cell. The cutoff $D$ keeps an exact partition of unity only when
+every point has an atom within $D$, so `PeriodicGrid::build` refuses a $D$
+below a bound on the covering radius. The range-separated exchange $K$ of a
+CAM hybrid uses the kernel of section @sec:exchange-divergence. The periodic
+quadrature, its partition-weight derivatives in the force and stress, and the
+meta-GGA $\tau$ terms have no proof script. That is why `pbc-ks` stays a
+registry gap and this section's status is `edit`.
 
 ## The algorithm {#kpoint-scf-algorithm}
 
 | Step | What | Function |
 |---|---|---|
 | 1 | mesh, phases, supercell Madelung constant | `ferric-pbc/src/kpts.rs::{monkhorst_pack,madelung}` |
-| 2 | $S(k)$, $h(k)$, orthogonalizer: eigenvectors of $S(k)$ with eigenvalue $\ge$ `lindep` ($10^{-6}$), scaled by $\lambda^{-1/2}$ | `complex_canonical_orthogonalizer` |
-| 3 | $J(k)$, $K(k)$ from the pair transforms (dense) or the $k$-point fit (`rsgdf`) | `ferric-pbc/src/kdense_aft.rs::build`, `KRsGdf` |
+| 2 | $S(k)$, $h(k)$, orthogonalizer: eigenvectors of $S(k)$ with eigenvalue $\ge$ `lindep` ($10^{-6}$), scaled by $\lambda^{-1/2}$ | `ferric-pbc/src/kscf.rs::complex_canonical_orthogonalizer` |
+| 3 | $J(k)$, $K(k)$ from the pair transforms (dense) or the $k$-point fit (`rsgdf`) | `ferric-pbc/src/kdense_aft.rs::build`, `ferric-pbc/src/rsgdf/kpoint.rs::KRsGdf` |
 | 4 | diagonalize one of each $\{k, -k\}$; $C(-k) = C(k)^*$, $\varepsilon(-k) = \varepsilon(k)$ | `ferric-pbc/src/kscf.rs::diagonalize_all` |
 | 5 | occupy the $N_kN_e/2$ lowest levels over the whole mesh (PySCF `KRHF.get_occ`); a converged gap below `min_gap` is an error | `ferric-pbc/src/kscf.rs::aufbau` |
-| 6 | DIIS on $X^{\mathsf H}(FDS - SDF)X$ stacked over $k$, Gram $\operatorname{Re}\sum_k\langle e_i, e_j\rangle$, real weights | `KDiis::step` |
+| 6 | DIIS on $X^{\mathsf H}(FDS - SDF)X$ stacked over $k$, Gram $\operatorname{Re}\sum_k\langle e_i, e_j\rangle$, real weights | method `step` of `ferric-pbc/src/kscf.rs::KDiis` |
 
 Step 4 halves the diagonalizations: $F(-k) = F(k)^*$, so the eigenvectors at
 $-k$ are the conjugates of those at $k$. Step 5 fills levels over the whole
@@ -313,6 +347,7 @@ number.
 | `[cell] exxdiv` | `"ewald"`, `"none"` | `"ewald"` | the Madelung term of section @sec:exchange-divergence |
 | `[cell] ewald_start` | `"staged"`, `"direct"` | `"staged"` | open shells: converge with `none`, then restart with `ewald` |
 | `[cell] jk` | `"dense"`, `"rsgdf"` | `"dense"` | section @sec:rsgdf |
+| `min_gap` (`KScfConfig`) | Ha | $10^{-6}$ | a converged HOMO–LUMO gap on the mesh below it is an error |
 
 ## Numerical anchors {#kpoint-scf-numerical-anchors}
 
@@ -326,9 +361,13 @@ number.
 ## Limits {#kpoint-scf-limits}
 
 - Insulators only: the global aufbau refuses a converged gap below
-  `min_gap`. There is no smearing.
+  `min_gap` ($10^{-6}$ Ha). There is no smearing.
 - A shifted (Monkhorst-Pack, even $N$) mesh is a twisted-boundary supercell
-  and has no supercell anchor; it is pinned to PySCF instead.
+  and has no supercell anchor; it is pinned to PySCF instead
+  (`h2_shifted_mp_1x1x2_matches_pinned_pyscf_krhf_aftdf` in
+  `crates/ferric-pbc/tests/pbc_krhf.rs`; `shifted_mesh_triclinic_krks_matches_pinned_pyscf`
+  and `shifted_mesh_cubic_krks_matches_pinned_pyscf` in
+  `crates/ferric-pbc/tests/pbc_krks_shifted.rs`).
 
 ## Sources {#kpoint-scf-sources}
 

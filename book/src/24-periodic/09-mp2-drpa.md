@@ -3,7 +3,7 @@
 <!-- status: ready; registry: pbc-mp2, pbc-drpa -->
 
 Periodic MP2 and direct RPA reuse the molecular kernels of chapters @sec:mp2, @sec:rimp2-algorithms
-and 18. At the Gamma point the orbitals are real, and the only new
+and @sec:rpa. At the Gamma point the orbitals are real, and the only new
 ingredients are the integrals and the orbital energies. On a mesh the
 integrals carry crystal momentum: an excitation $i \to a$ moves momentum
 $k_a - k_i$, and only pairs of excitations with opposite momenta couple. Two questions
@@ -17,7 +17,7 @@ options, anchors, limits and sources follow.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
-| $B_{k,ia}$ | fitted integrals in the occupied-virtual block | `b_ov_from_ao_b` |
+| $B^P_{ia}$ | fitted integrals in the occupied-virtual block | `b_ov_from_ao_b` |
 | $\Pi(q, iu)$ | density response at momentum $q$ | |
 | $V^{k_ik_jk_a}_{iajb}$ | $(ik_i\,ak_a|jk_j\,bk_b)$, $k_b = k_i + k_j - k_a$ | |
 | $\Delta_{ia} = \varepsilon_a - \varepsilon_i$ | excitation energy | |
@@ -76,7 +76,7 @@ which is not implemented (@sec:mp2-drpa-limits).
 > <!-- verified: id=pbc.corr.ov; script=scripts/pbc_kpoint_corr_sympy.py; claim=ov-neutral; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/mp2.rs::b_ov_from_ao_b; rust_test=ferric-pbc/tests/pbc_mp2.rs::mp2_from_rsgdf_matches_dense_aft_in_the_trivial_aux_limit; registry=pbc-mp2 -->
 
 **The integrals.** Production runs take the SCF's own RS-GDF factor $B$ of
-section @sec:rsgdf and transform it to $B_{k,ia}$ (`b_ov_from_ao_b`). It goes to
+section @sec:rsgdf and transform it to $B^P_{ia}$ (`b_ov_from_ao_b`). It goes to
 the molecular kernels: `ferric_mp2::rimp2::spin_components_from_b_ov` for
 MP2, and `ferric_rpa::run_pdep_rpa_from_parts` at full rank with the log-det
 summand for dRPA. $B$ is already multiplied by the inverse square root of the
@@ -150,7 +150,8 @@ where $V_{ibja}$ is the element of $V^{k_ik_jk_b}$. The second leg $B^{vo}$ is
 transformed from $B(k_b, k_j)$ itself. It is not obtained by conjugating the
 $-q$ class, which would require the orbitals at $-k$ to be the conjugates of
 those at $k$, a time-reversal gauge that a caller-built SCF result need not
-have.
+have. The cost is a second occupied-virtual transform per class, which
+doubles that step; the contraction over the triples is unchanged.
 
 **dRPA.** Each class $q$ has its own response, with $1/N_k$ averaging the
 excitations that carry momentum $q$:
@@ -313,7 +314,11 @@ code test computes it with the Gamma MP2 code and compares.
 **The frequency grid.** The Gamma dRPA integral uses Gauss–Legendre points
 $x \in (-1, 1)$ mapped by $u = u_0(1 + x)/(1 - x)$, $u_0 = 0.5$, which sends
 $x \to 1$ to $u \to \infty$. The default is 40 points
-(`DEFAULT_GAMMA_DRPA_QUAD_POINTS`).
+(`DEFAULT_GAMMA_DRPA_QUAD_POINTS`), not the 20 of the molecular dRPA
+(@sec:quadratures): with $u_0 = 0.5$ the 20-point grid misses H$_2$O/6-31G
+by $2.3\times10^{-6}$ Ha, because the core excitations ($\Delta_{ia} \approx 21$ Ha)
+sit far above $u_0$; 40 points give $7.4\times10^{-10}$ Ha
+(`ferric-pbc/src/drpa.rs` module documentation).
 
 ## The large-cell limit {#mp2-drpa-large-cell-limit}
 
@@ -333,8 +338,18 @@ only:
 
 The Madelung-shifted difference falls as $a^{-3}$: the test requires a local
 exponent between 2.8 and 3.3, and the fitted $a^{-3}$ coefficient agrees
-within 1% with a prediction built from molecular quantities only (the
-transition dipole, the occupied orbital's spread and $(ia|ia)$; 0.671). The
+within 1% with a prediction built from molecular quantities only. With one
+occupied and one virtual level the molecular energy is
+$E = (ia|ia)^2/D$, $D = 2(\varepsilon_i - \varepsilon_a)$. In the box,
+$(ia|ia)$ gains the image dipole term $-\kappa|\mathbf d_{ia}|^2/a^3$,
+$\kappa = 4\pi/3$, with $\mathbf d_{ia}$ the transition dipole, and the
+shifted denominator moves by $-\kappa(2\sigma^2 + 2|\mathbf d_{ia}|^2)/a^3$,
+with $\sigma^2$ the occupied orbital's second moment about its centre. To
+first order in both,
+
+$$ E^\text{shifted} - E^\text{mol} \approx \frac{c_3}{a^3}, \qquad c_3 = -\kappa\Big[\frac{2(ia|ia)|\mathbf d_{ia}|^2}{D} - \frac{(ia|ia)^2(2\sigma^2 + 2|\mathbf d_{ia}|^2)}{D^2}\Big] = 0.671\ \text{Ha·Bohr}^3 \label{eq:pbc-corr-box-c3} $$
+
+(0.67109405 in the test, which evaluates it from ferric's molecular SCF). The
 unshifted difference falls as $a^{-1}$. That is the size of $v_M$: the
 `none` occupied levels sit $v_M$ above the `ewald` ones (box @eq:pbc-exxdiv-level-shift), so each
 denominator $\varepsilon_i + \varepsilon_j - \varepsilon_a - \varepsilon_b$
@@ -347,8 +362,8 @@ the rate of the integrals.
 The $1/a$ part can be seen without a molecular reference. From the
 `589b50832` build, for H2/STO-3G at 0.74 Å on the $z$ axis (not the test's
 geometry, so the energies are not the table's), the unshifted minus shifted
-correlation energy times $a$ stays between 0.033 and 0.034 Ha·Bohr from 16 to
-24 Bohr:
+correlation energy times $a$ falls from 0.0342 to 0.0328 Ha·Bohr between 16
+and 24 Bohr, a 4% drift on top of the $1/a$ law:
 
 ```python
 import ferric
@@ -376,7 +391,7 @@ a= 24.0  E_shifted=-0.0130895087  E_unshifted=-0.0144559536  unshifted-shifted=-
 
 | Step | Gamma | $k$-points |
 |---|---|---|
-| 1 | the SCF's RS-GDF $B$, transformed to $B_{k,ia}$ | the pair tensors of each class $q$ |
+| 1 | the SCF's RS-GDF $B$, transformed to $B^P_{ia}$ | the pair tensors of each class $q$ |
 | 2 | occupied energies shifted by `occupied_shift` | the same |
 | 3 | MP2: `ferric_mp2::rimp2::spin_components_from_b_ov` | MP2: loop over $(k_i, k_j, k_a)$, $k_b$ by momentum conservation |
 | 4 | dRPA: `ferric_rpa::run_pdep_rpa_from_parts`, full rank | dRPA: per $q$, realified, through the Gamma pipeline |
@@ -406,7 +421,7 @@ The denominator conversion is one match:
 | `[cell] denominators`, `denominators=` | `"shifted"` (`MadelungShifted`), `"unshifted"` | none (required) | the occupied orbital energies in the denominators |
 | `frozen_core` | integer | 0 | core orbitals excluded from correlation |
 | `[cell] quad_points` | positive integer | 40 | dRPA Gauss-Legendre points |
-| `[cell] drpa_energy` | `"quadrature"`, `"plasmon"`, `"second-order"` | `"quadrature"` | the dRPA energy route |
+| `[cell] drpa_energy` | `"quadrature"`, `"plasmon"`, `"second-order"` | `"quadrature"` | the dRPA energy route, `kmesh` only: the frequency integral, the plasmon formula of @sec:drpa-three-ways-plasmon-formula, or the second-order term alone |
 
 ## Numerical anchors {#mp2-drpa-numerical-anchors}
 
