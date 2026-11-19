@@ -11,8 +11,10 @@ it at first order. Its gradient needs the same orbital relaxation term as a
 correlated method, with the Kohn–Sham orbital Hessian in place of the
 Hartree–Fock one.
 
-ferric provides it as one module, `ferric_scf::zvector_ks`, for RKS, UKS and
-ROKS references. Its only production caller is the MBD@rsSCS gradient. The
+ferric provides it as one module, `ferric-scf/src/zvector_ks.rs`, for RKS, UKS and
+ROKS references. Its only production caller is the MBD@rsSCS gradient of
+section @sec:mbd, where $Q$ is the MBD energy and $V$ its derivative with
+respect to the density through the Hirshfeld volumes. The
 derivation is section @sec:ks-zvector-equations, and the proof is `scripts/ks_zvector_sympy.py`.
 
 | Symbol | Meaning | Code name |
@@ -31,7 +33,7 @@ derivation is section @sec:ks-zvector-equations, and the proof is `scripts/ks_zv
 
 ## The equations {#ks-zvector-equations}
 
-### The split
+### The split {#ks-zvector-split}
 
 The total derivative splits into a fixed-orbital part, which the caller
 supplies, and the relaxation:
@@ -71,16 +73,18 @@ rotation $\kappa$ changes the density $D = 2\mathbf C_o\mathbf C_o^{\mathsf T}$
 by $2\mathbf C(\kappa + \kappa^{\mathsf T})\mathbf C^{\mathsf T}$, where
 $\kappa + \kappa^{\mathsf T}$ has $\kappa_{ai}$ in both off-diagonal corners.
 Contract with the symmetric $V$: $dQ = \operatorname{Tr}[V\,\delta D] = 4\sum\kappa_{ai}V_{ai}$.
-The same count gives $dE = 4\sum\kappa_{ai}F_{ai}$. Then the argument of
+The same count gives $dE = 4\sum\kappa_{ai}F_{ai}$. Then the argument of section
 @sec:lagrangian-zvector-lagrangian, with $\partial Q/\partial\kappa = 4V_{vo}$ and $H$ symmetric, gives
 $HZ = -4V_{vo}$.
 
-### The Hessian and $f_{xc}$
+### The Hessian and $f_{xc}$ {#ks-zvector-hessian-fxc}
 
 The Hessian product applied to a trial $x$ is
 
-$$ (Hx)_{ai} = (F_{vv}x - xF_{oo})_{ai} + \big(\mathbf C_v^{\mathsf T}\,\delta F[\delta D(x)]\,\mathbf C_o\big)_{ai}, \qquad \delta F[\delta D] = \delta J - \tfrac12\big(c_{\mathrm{sr}}\delta K_{\mathrm{sr}} + c_{\mathrm{lr}}\delta K_{\mathrm{lr}}\big) + \delta V_{xc} . $$
+$$ (Hx)_{ai} = (F_{vv}x - xF_{oo})_{ai} + \big(\mathbf C_v^{\mathsf T}\,\delta F[\delta D(x)]\,\mathbf C_o\big)_{ai}, \qquad \delta F[\delta D] = \delta J - \tfrac12\big(c_{\mathrm{sr}}\delta K_{\mathrm{sr}} + c_{\mathrm{lr}}\delta K_{\mathrm{lr}}\big) + \delta V_{xc} , $$
 
+with $\delta D(x) = 2(\mathbf C_vx\mathbf C_o^{\mathsf T} + \text{h.c.})$, the
+density change of a rotation $x$ counted above.
 The first term is the orbital-energy difference in a non-canonical
 representation. The second is the response of the Kohn–Sham Fock matrix to
 the density change: the Coulomb response, the exact-exchange response scaled
@@ -92,7 +96,7 @@ section @sec:lagrangian-zvector. It carries the second derivative of the XC func
 kernel for a GGA includes the $\sigma = |\nabla\rho|^2$ couplings and the
 kernel for a τ-only meta-GGA the $\tau$ couplings.
 
-### The contraction without new derivative integrals
+### The contraction without new derivative integrals {#ks-zvector-contraction-fd}
 
 The relaxation term needs $\partial F_{ai}/\partial R$, which would normally
 need new derivative integrals. The code avoids them. Since
@@ -203,9 +207,13 @@ the caller's part alone is the SCF gradient.
 >
 > <!-- verified: id=ks.zvector.contraction; script=scripts/ks_zvector_sympy.py; claim=Z2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/zvector_ks.rs::relaxation_gradient_closed; rust_test=ferric-rpa/tests/mbd_scf_gradient.rs::mbd_exact_gradient_matches_fd_of_full_scf_pipeline; registry=ks-zvector -->
 
-### Open shells
+## Open shells {#ks-zvector-open-shells}
 
-The occupation factor changes with the reference. UKS has unit occupations,
+The occupation factor changes with the reference.
+
+### UKS {#ks-zvector-uks}
+
+UKS has unit occupations,
 so a rotation in spin $\sigma$ changes $D_\sigma$ by
 $\mathbf C_{\sigma v}x^\sigma\mathbf C_{\sigma o}^{\mathsf T} + \text{h.c.}$ and
 $dE = 2\sum_\sigma\kappa^\sigma\cdot F^\sigma_{vo}$. The right-hand side is
@@ -217,7 +225,7 @@ closed-shell $Z$ and the relaxation is the RKS one.
 In full, with $D_\sigma = \mathbf C_{\sigma o}\mathbf C_{\sigma o}^{\mathsf T}$ and
 $Q$ a function of $D_\alpha + D_\beta$:
 
-$$ (Hx)^\sigma = F^\sigma_{vv}x^\sigma - x^\sigma F^\sigma_{oo} + \mathbf C_{\sigma v}^{\mathsf T}\,\delta F_\sigma[\delta D_\alpha, \delta D_\beta]\,\mathbf C_{\sigma o}, \qquad HZ^\sigma = -2V^\sigma_{vo}, $$
+$$ (Hx)^\sigma = F^\sigma_{vv}x^\sigma - x^\sigma F^\sigma_{oo} + \mathbf C_{\sigma v}^{\mathsf T}\,\delta F_\sigma[\delta D_\alpha, \delta D_\beta]\,\mathbf C_{\sigma o}, \qquad HZ^\sigma = -2V^\sigma_{vo}, \label{eq:ks-zvector-uks} $$
 
 $$ \delta F_\sigma = \delta J[\delta D_\alpha + \delta D_\beta] - \big(c_{\mathrm{sr}}\delta K_{\mathrm{sr}} + c_{\mathrm{lr}}\delta K_{\mathrm{lr}}\big)[\delta D_\sigma] + \delta V^\sigma_{xc} . $$
 
@@ -232,6 +240,8 @@ $$ W = \sum_\sigma D_\sigma F_\sigma D_\sigma, \qquad \dot W = \sum_\sigma\big(\
 The contraction is $\tfrac12\,d/dt$ of
 `ferric-scf/src/ks_gradient.rs::ks_gradient_uks_for_density` at the rotated
 projectors of each spin, built as in the closed shell with occupation 1.
+
+### ROKS {#ks-zvector-roks}
 
 ROKS has one set of orbitals split into closed, open and virtual blocks.
 Three rotation blocks change the densities: $\kappa_{vc}$ moves both spins,
@@ -257,7 +267,7 @@ $$ \begin{aligned}
 (Hx)_{vc} &= F^+_{vv}x_{vc} - x_{vc}F^+_{cc} + F_{\beta,vo}x_{oc} - x_{vo}F_{\alpha,oc} + \mathbf C_v^{\mathsf T}(\delta F_\alpha + \delta F_\beta)\mathbf C_c,\\
 (Hx)_{vo} &= F_{\alpha,vv}x_{vo} - x_{vo}F_{\alpha,oo} + G_{vc}x_{oc}^{\mathsf T} - x_{vc}F_{\alpha,oc}^{\mathsf T} + \mathbf C_v^{\mathsf T}\delta F_\alpha\mathbf C_o,\\
 (Hx)_{oc} &= F_{\beta,oo}x_{oc} - x_{oc}F_{\beta,cc} + F_{\beta,vo}^{\mathsf T}x_{vc} + x_{vo}^{\mathsf T}G_{vc} + \mathbf C_o^{\mathsf T}\delta F_\beta\mathbf C_c,
-\end{aligned} $$
+\end{aligned} \label{eq:ks-zvector-roks} $$
 
 where $\delta F_\sigma$ is the response spin Fock matrix of the trial densities
 
@@ -268,7 +278,7 @@ $$ \delta D_\alpha = \mathbf C_vx_{vc}\mathbf C_c^{\mathsf T} + \mathbf C_vx_{vo
 $\delta D^{\mathrm{fix}}_\alpha = -D_\alpha S^xD_\alpha$ and the
 $\delta D^{\mathrm{fix}}_\beta$ above, and for the energy the same path gives
 
-$$ W = D_\alpha F_\alpha D_\alpha + P_cF_\beta P_c + \tfrac12\big(P_cF_\beta P_o + P_oF_\beta P_c\big) . $$
+$$ W = D_\alpha F_\alpha D_\alpha + P_cF_\beta P_c + \tfrac12\big(P_cF_\beta P_o + P_oF_\beta P_c\big) . \label{eq:ks-zvector-roks-w} $$
 
 The cross term vanishes at convergence, since
 $P_cF_\beta P_o = \mathbf C_cF_{\beta,co}\mathbf C_o^{\mathsf T}$ and
@@ -284,7 +294,7 @@ $\kappa$ the antisymmetric generator of the three $Z$ blocks. This Cayley
 rotation (`ferric-scf/src/zvector_ks.rs::cayley`) is exactly orthogonal,
 equals $\mathbf 1 + t\kappa + O(t^2)$, and its inverse is its value at $-t$.
 
-> **Verified equations @eq:ks-zvector-1 and @eq:ks-zvector-contraction, open shell** · the UKS and ROKS blocks
+> **Verified equation {#eq:ks-zvector-open-shell}** · the UKS and ROKS blocks of (@eq:ks-zvector-uks), (@eq:ks-zvector-roks) and (@eq:ks-zvector-roks-w)
 >
 > UKS with $HZ^\sigma = -2V^\sigma_{vo}$ and the factor $\tfrac12$, and ROKS
 > with $HZ = -(4V_{vc}, 2V_{vo}, 2V_{oc})$, the three-block product and the

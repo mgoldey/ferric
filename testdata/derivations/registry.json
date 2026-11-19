@@ -543,8 +543,9 @@
     },
     "terfc-rimp2-gradient": {
       "book": [
-        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient",
-        "book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals"
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-terfc",
+        "book/src/04-operators/02-terf-table-engine.md#terf-table-engine-derivative-integrals",
+        "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc"
       ],
       "scripts": [
         "scripts/terfc_rimp2_gradient_sympy.py"
@@ -1344,7 +1345,7 @@
     },
     "scs-2terfc-gradient": {
       "book": [
-        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient",
+        "book/src/15-correlated-gradients/02-rimp2-gradient.md#rimp2-gradient-scs-2terfc",
         "book/src/15-correlated-gradients/07-u-rimp2-gradient.md#u-rimp2-gradient-terfc-scs-mp2-2terfc"
       ],
       "scripts": [

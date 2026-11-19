@@ -135,6 +135,8 @@ is the direct-ring MP2 energy
 
 $$ E^{(2)}_{\mathrm{dr}} = -2\sum_{iajb}\frac{(ia|jb)^2}{\Delta_{ij}^{ab}}, $$
 
+with $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j > 0$,
+the negative of the $\Delta$ of section @sec:rimp2-gradient. That is
 twice the opposite-spin MP2 energy, which is SCS-MP2 at
 $(c_{\mathrm{OS}}, c_{\mathrm{SS}}) = (2, 0)$. With
 $t_{ij}^{ab} = -(ia|jb)/\Delta_{ij}^{ab}$ the densities become
@@ -146,7 +148,7 @@ section's normalization, $\Gamma = 4x$ and
 $P = P^{\mathrm{MP2}} + P^{\mathrm{MP2}\,\mathsf T}$. That limit is the
 exactness anchor against independent code.
 
-### The frequency loop
+### The frequency loop {#rpa-gradient-frequency-loop}
 
 `ferric-rpa/src/gradient_analytic.rs::frequency_response` diagonalizes
 $\Pi_k$ once per node and reads both $S$ and $Q$ off the eigenvalues. For an
@@ -205,18 +207,16 @@ accumulate_p_vv(&mut out.p_vv, b_ov.view(), q_b.view(), &gaps, omega, ps, no, nv
 
 ## Lagrangian, Z-vector and frozen core {#rpa-gradient-lagrangian-z-vector-frozen}
 
-The orbital derivative of $E_c$ is collected as $\sum_{pq}Y_{pq}U_{pq}$ with
-$Y_{pi} = \sum_{Pa}\Gamma^P_{ia}B^P_{pa}$, $Y_{pa} = \sum_{Pi}\Gamma^P_{ia}B^P_{ip}$
-and $2P_{pq}\varepsilon_p$ on the $oo$ and $vv$ blocks. These are the
-RPA counterparts of the Lagrangian matrix $I$ of (@eq:rimp2-gradient-2). The Z-vector
+The orbital derivative of $E_c$ is collected as $\sum_{pq}Y_{pq}U_{pq}$,
+with $Y$ derived in section @sec:rpa-gradient-orbital-response; it is the
+RPA counterpart of the Lagrangian matrix $I$ of (@eq:rimp2-gradient-2). The Z-vector
 right-hand side has the same shape as (@eq:mp2-grad-assembly):
 
 $$ L_{ai} = Y_{ai} - Y_{ia} + 4\big(\mathbf C_v^{\mathsf T}G[P^{\mathrm{AO}}]\mathbf C_o\big)_{ai}, \label{eq:rpa-gradient-3} $$
 
-and the solve is the closed-shell equation (@eq:zvec-hessian-product). With core orbitals $I$
-frozen, $\Gamma$ and $P_{ij}$ run over the active occupied orbitals and the
-canonical condition $F_{Ij} = 0$ adds the core-active block
-$P_{Ij} = -Y_{Ij}/\big(2(\varepsilon_I - \varepsilon_j)\big)$ to $P_{oo}$.
+and the solve is the closed-shell equation (@eq:zvec-hessian-product), in
+the normalization of section @sec:rpa-gradient-orbital-response. A frozen
+core adds a core-active block to $P_{oo}$ (section @sec:rpa-gradient-frozen-core).
 
 Why can the RI-MP2 code take over from here? It reads the amplitudes only
 through $x$ and the unrelaxed densities $p$, and it treats them as the
@@ -275,22 +275,31 @@ $$ R^{(x)}_{ai} = -F^{[x]}_{ai} + \varepsilon_iS^{(x)}_{ai} + \Big(\mathbf C_v^{
 
 where $F^{[x]} = \mathbf C^{\mathsf T}\big(\partial_xh + G^{[x]}[D^{\mathrm{HF}}]\big)\mathbf C$
 is the skeleton Fock derivative at fixed density. $A$ is symmetric, so the
-$3N$ responses are replaced by one solve $Az = L$, and
-$\sum_{ai}L_{ai}U^{(x)}_{ai} = \sum_{ai}z_{ai}R^{(x)}_{ai}$.
+$3N$ responses are replaced by one solve $A\bar z = L$, and
+$\sum_{ai}L_{ai}U^{(x)}_{ai} = \sum_{ai}\bar z_{ai}R^{(x)}_{ai}$.
+
+$\bar z$ is not the $z$ of section @sec:lagrangian-zvector. $L$ is twice
+the $X$ of (@eq:zvec-hessian-product), since $L = 2X$ follows from
+$I_{qi} = -\tfrac12Y_{qi}$ and $P = 2p$. $A$ is that section's Hessian
+product ($\tfrac12(4J - K - K^{\mathsf T})$ is $2G$ on a symmetric density),
+and the right-hand side carries the opposite sign. So $\bar z = -2z$, with $z$ the solution of
+(@eq:zvec-hessian-product); the convention table of chapter
+@sec:correlated-gradients lists both.
 
 ### The gradient {#rpa-gradient-assembly}
 
 With the relaxed correlation density
 
-$$ D_2 = P^{\mathrm{AO}} - \tfrac12\big(\mathbf C_vz\mathbf C_o^{\mathsf T} + \text{h.c.}\big) $$
+$$ D_2 = P^{\mathrm{AO}} - \tfrac12\big(\mathbf C_v\bar z\mathbf C_o^{\mathsf T} + \text{h.c.}\big) = P^{\mathrm{AO}} + D^z, $$
 
-the gradient is
+with $D^z$ the Z-vector density of (@eq:zvec-hessian-product), the
+gradient is
 
 $$ \frac{dE}{dx} = \frac{dE_{\mathrm{HF}}}{dx} + \operatorname{tr}\Big[D_2\big(\partial_xh + G^{[x]}[D^{\mathrm{HF}}]\big)\Big] + \sum_{pq}W_{pq}S^{(x)}_{pq} + \sum_{Q\mu\nu}\tilde\Gamma^Q_{\mu\nu}\,\partial_x(Q|\mu\nu) - \tfrac12\sum_{PQ}\gamma_{PQ}\,\partial_xV_{PQ}, $$
 
 with the energy-weighted density
 
-$$ W_{oo} = -\tfrac12Y_{oo} - 2\mathbf C_o^{\mathsf T}G[D_2]\mathbf C_o, \qquad W_{vv} = -\tfrac12Y_{vv}, \qquad W_{ia} = -Y_{ia}, \qquad W_{ai} = z_{ai}\varepsilon_i . $$
+$$ W_{oo} = -\tfrac12Y_{oo} - 2\mathbf C_o^{\mathsf T}G[D_2]\mathbf C_o, \qquad W_{vv} = -\tfrac12Y_{vv}, \qquad W_{ia} = -Y_{ia}, \qquad W_{ai} = \bar z_{ai}\varepsilon_i . $$
 
 $\tilde\Gamma = M^{\mathsf T}\Gamma$, that is
 $\tilde\Gamma^Q_{ia} = \sum_PM_{PQ}\Gamma^P_{ia}$, back-transformed to AOs,
@@ -301,26 +310,27 @@ Z-vector combine into the single $G[D_2]$ term of $W_{oo}$.
 
 ### Frozen core {#rpa-gradient-frozen-core}
 
-With core orbitals $I$ frozen, $\Gamma$ and $P_{ij}$ run over the active
-occupied orbitals only, and core-active rotations are no longer a symmetry
-of $E_c$. The canonical condition $F_{Ij} = 0$ fixes them. Without the
-orbital terms it reads
+With core orbitals $k$ frozen and $I$ the active occupied orbitals (the
+letters of section @sec:rimp2-gradient and of the code), $\Gamma$ and
+$P_{IJ}$ run over the active occupied orbitals only, and core-active
+rotations are no longer a symmetry of $E_c$. The canonical condition
+$F_{kI} = 0$ fixes them. Without the orbital terms it reads
 
-$$ U_{Ij}(\varepsilon_I - \varepsilon_j) = -F^{(x)}_{Ij} + \varepsilon_jS^{(x)}_{Ij}, $$
+$$ U_{kI}(\varepsilon_k - \varepsilon_I) = -F^{[x]}_{kI} + \varepsilon_IS^{(x)}_{kI}, $$
 
 and it adds the symmetric core-active block
 
-$$ P_{Ij} = P_{jI} = -\frac{Y_{Ij} - Y_{jI}}{2(\varepsilon_I - \varepsilon_j)} = -\frac{Y_{Ij}}{2(\varepsilon_I - \varepsilon_j)} $$
+$$ P_{kI} = P_{Ik} = -\frac{Y_{kI} - Y_{Ik}}{2(\varepsilon_k - \varepsilon_I)} = -\frac{Y_{kI}}{2(\varepsilon_k - \varepsilon_I)} $$
 
-to $P_{oo}$. $Y_{jI} = 0$ because no core column enters $B$. The factor
+to $P_{oo}$. $Y_{Ik} = 0$ because no core column enters $B$. The factor
 $\tfrac12$ appears because $\sum_{ij}P_{ij}\,\delta F_{ij}$ visits the pair
-twice. From there $P_{Ij}$ is an ordinary part of $P$: it enters the
+twice. From there $P_{kI}$ is an ordinary part of $P$: it enters the
 $2P\varepsilon$ term of $Y$, $P^{\mathrm{AO}}$, $L$, $D_2$ and $W$.
 
 This is `ferric-mp2/src/zvector.rs::frozen_core_block`, which forms
-$D_{kI} = I_{kI}/(\varepsilon_k - \varepsilon_I)$, in the code's naming with
-$k$ the frozen core orbital and $I$ the active one; its
-$I_{qi} = -2\sum_{Pa}x^P_{ia}B^P_{qa}$ is $-\tfrac12Y_{qi}$ at $x = \Gamma/4$.
+$D_{kI} = I_{kI}/(\varepsilon_k - \varepsilon_I)$; its
+$I_{qi} = -2\sum_{Pa}x^P_{ia}B^P_{qa}$ is $-\tfrac12Y_{qi}$ at $x = \Gamma/4$,
+so $D_{kI} = 2P_{kI}$, the $P = 2p$ of the reuse below.
 The block needs a gap between the core and the active occupied orbitals,
 which every frozen-core choice of `ferric_core` has. A gap below $10^{-8}$
 is an error ("the frozen-core gradient is undefined").
