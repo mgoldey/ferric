@@ -29,6 +29,10 @@ ferric-core
   (the bundled `ferric` command). CLI helpers may call `process::exit`, which
   would kill the interpreter. Existing uses (`LocalCfg`, `LocalModel`, `LocalScheme`, `Mp2Cfg`) are slated
   to move into ferric-mp2.
+- **Python imports nothing above it.** The package under
+  `crates/ferric-python/python/ferric/` never imports `smeltery` or
+  `attestation`; both depend on ferric, not the other way round.
+  `tests/test_python_does_not_import_above.py` scans the package's imports.
 
 ## Options and configs
 
