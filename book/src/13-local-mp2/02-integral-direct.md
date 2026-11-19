@@ -302,12 +302,12 @@ to the CG tolerance. The test has one mutation arm per map, so each map is
 shown to change the energy when it is broken.
 
 n-Butane in cc-pVDZ shows the trivial limit and then the default maps
-(the `76ffd5a79` build, λ-Boys λ = 10). Python has no way to pass `virt_radius = None`, so
+(re-run 2026-11-18 at the current defaults: λ-Boys λ = 10, Fock screen κ = 1 on both paths). Python has no way to pass `virt_radius = None`, so
 the first run keeps the 20 Bohr default; butane is 10.5 Bohr between its
 farthest atoms, so that radius drops nothing. The trivial run matches exact
 RI-MP2 to $2.71\times10^{-13}$ Ha. With the default maps (`virt_radius` 20,
 `ao_tail` $10^{-4}$) the direct recovery agrees with the in-core one to
-$10^{-4}$ percentage points at each $\varepsilon$:
+$7\times10^{-4}$ percentage points at each $\varepsilon$:
 
 ```python
 import ferric
@@ -330,9 +330,9 @@ for eps in (1e-5, 1e-4, 1e-3):
 
 ```text
 exact -0.599645225098  direct trivial maps -0.599645225098  diff +2.71e-13 Ha
-eps=  1e-05  in-core  99.9921%  direct (default maps)  99.9922%
-eps=  1e-04  in-core  99.7348%  direct (default maps)  99.7349%
-eps=  1e-03  in-core  95.2024%  direct (default maps)  95.2025%
+eps=  1e-05  in-core  99.9990%  direct (default maps)  99.9991%
+eps=  1e-04  in-core  99.8929%  direct (default maps)  99.8931%
+eps=  1e-03  in-core  96.5805%  direct (default maps)  96.5812%
 ```
 
 **Artifact hypothesis.** The two outcomes of a size sweep are predicted in
@@ -390,15 +390,16 @@ two entry points cannot drift apart. The CLI defaults are in
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, trivial maps, integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri) | PySCF `DFMP2`, same auxiliary basis | at most $1.38\times10^{-11}$ Ha over the 24 comparisons of the validation page, bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `crates/ferric-mp2/tests/lmp2_direct.rs` |
-| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.999%, 99.89%, 96.6% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ at the default maps (virtual radius 20 Bohr, AO tail 1e-4, no pair gate, Fock screen κ = 1), against 99.99%, 99.73%, 95.2% in core (λ-Boys, λ = 10 on both). The Fock screen keeps more amplitudes than the plain mask, so direct exceeds in-core here. At the old maps (virtual radius 12 Bohr, AO tail 1e-3, gate 0.7, Fock screen off) direct recovered 99.98%, 99.72%, 95.2% | same |
+| finite $\varepsilon$, n-butane / cc-pVDZ | PySCF `DFMP2` | recovers 99.999%, 99.89%, 96.6% at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ at the default maps (virtual radius 20 Bohr, AO tail 1e-4, no pair gate, Fock screen κ = 1), against 99.999%, 99.89%, 96.6% in core (λ-Boys, λ = 10, Fock screen κ = 1 on both). At the old maps (virtual radius 12 Bohr, AO tail 1e-3, gate 0.7, Fock screen off) direct recovered 99.98%, 99.72%, 95.2% | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
-On this molecule the integral-direct defaults raise the recovery over
-in-core by 0.007, 0.16 and 1.38 percentage points at $\varepsilon =
-10^{-5}$, $10^{-4}$, $10^{-3}$ (all electrons; 2026-11-18). The rise comes
-from the Fock screen, which the in-core path does not run. At the old maps,
-with the screen off, the difference was 0.01 to 0.02 points.
+On this molecule the integral-direct defaults and the in-core path, both
+with the Fock screen, agree to 0.001 percentage points at $\varepsilon =
+10^{-5}$, $10^{-4}$, $10^{-3}$ (all electrons; 2026-11-18). Before the
+in-core path ran the screen, direct exceeded it by 0.007, 0.16 and 1.38
+points; at the old maps, with the screen off on both, the difference was
+0.01 to 0.02 points.
 
 **Cost and scaling (provisional).** On n-alkanes C20, C32 and C48 (6-31G
 with cc-pVDZ-RI, frozen carbon cores, a calibrated pair gate of 0.7 for

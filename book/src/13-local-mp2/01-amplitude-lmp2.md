@@ -717,13 +717,17 @@ What the table shows:
 
 Timings on the production path are in section @sec:amplitude-lmp2-fock-screen-default.
 
-### On by default on the integral-direct path {#amplitude-lmp2-fock-screen-default}
+### On by default in the CLI and Python {#amplitude-lmp2-fock-screen-default}
 
-`[local] integral_direct = true` (CLI) and `run_rimp2(..., integral_direct=True)`
-(Python) run the screen with κ = 1 unless `fock_screen = false` /
-`fock_screen=False` is given. The key is an error without `integral_direct`.
-The in-core path and the Rust `AmplitudeLmp2Config::default` keep the plain
-mask.
+`[local] scheme = "amplitude-threshold"` (CLI, kinds `rimp2` and `att-rimp2`)
+and `run_rimp2(..., local="amplitude-threshold")` (Python) run the screen
+with κ = 1 (`FOCK_SCREEN_KAPPA_DEFAULT`) on both the in-core and the
+integral-direct path, unless `fock_screen = false` / `fock_screen=False` is
+given. The key is an error on the local kinds that do not read it (`drpa`,
+`linlccd`). The Rust `AmplitudeLmp2Config::default` keeps the plain mask,
+which is the exactness anchor. The integral-direct path was switched first;
+the in-core measurements are in section
+@sec:amplitude-lmp2-fock-screen-incore.
 
 The decision rests on criteria fixed before any of the data below was taken.
 At matched $\varepsilon$ the wall-time overhead is at most 10% on the
@@ -838,6 +842,93 @@ removes a third to a half of the truncation error for 6–9% more wall time. At
 1e-6 and below it removes 60–98%. The 1e-4 conformer errors stay at several
 kJ/mol with or without it: $\varepsilon$ = 1e-4 is a loose model whichever
 mask is used.
+
+### The in-core path {#amplitude-lmp2-fock-screen-incore}
+
+The same four criteria were applied to the in-core path
+(`amplitude_lmp2`) before it was switched. Three hold. The overhead
+criterion misses by 0.1 to 0.4 points at the largest size that fits, and
+the screen was made the default anyway for the accuracy it buys.
+
+**Construction.** Measured 2026-11-18 with the same probe
+(`FD_PATH=incore`), library code of commit `e35f20900`. The setup is 6-31G
+with cc-pVDZ-RI, all-electron, Coulomb, λ-Boys λ = 10, global-metric RI fit
+(no locality maps on this path). Only $\varepsilon$ and κ vary. The anchor
+`fock_screen_is_inert_at_eps0_butane_incore` passes: at
+$\varepsilon = 0$, screen on minus screen off is exactly 0, and both are
+$7.76\times10^{-14}$ Ha from canonical RI-MP2. With no maps, canonical
+RI-MP2 is the exact reference here, so every error below is against it.
+Each run is one process under a 12 GB cgroup cap. In-core C32 is killed by
+that cap in both arms, so the largest chain is C24.
+
+| system | $\varepsilon$ | keep off / on | error off | error κ = 1 | ratio |
+|---|---|---|---|---|---|
+| C12 | 1e-4 | 0.0265 / 0.0311 | 3.49e-3 | 1.95e-3 | 0.56 |
+| C12 | 1e-5 | 0.1093 / 0.1241 | 1.71e-4 | 5.64e-5 | 0.33 |
+| C12 | 1e-6 | 0.2893 / 0.3163 | 5.69e-6 | 9.50e-7 | 0.17 |
+| C12 | 1e-7 | 0.5309 / 0.5577 | 1.80e-7 | 1.05e-8 | 0.06 |
+| C20 | 1e-4 | 0.0065 / 0.0076 | 6.55e-3 | 3.79e-3 | 0.58 |
+| C20 | 1e-6 | 0.0889 / 0.0997 | 1.44e-5 | 3.05e-6 | 0.21 |
+| C20 | 1e-7 | 0.2051 / 0.2236 | 5.52e-7 | 5.41e-8 | 0.10 |
+| C24 | 1e-4 | 0.0038 / 0.0045 | 8.12e-3 | 4.71e-3 | 0.58 |
+| C24 | 1e-5 | 0.0175 / 0.0202 | 4.29e-4 | 1.66e-4 | 0.39 |
+| C24 | 1e-6 | 0.0555 / 0.0627 | 1.93e-5 | 4.17e-6 | 0.22 |
+| naphthalene | 1e-4 | 0.1073 / 0.1224 | 2.19e-3 | 1.16e-3 | 0.53 |
+| naphthalene | 1e-6 | 0.6333 / 0.6531 | 2.76e-6 | 1.37e-7 | 0.05 |
+| naphthalene | 1e-7 | 0.8668 / 0.8774 | 3.35e-8 | 4.79e-10 | 0.01 |
+| adamantane | 1e-4 | 0.1211 / 0.1452 | 5.12e-3 | 2.97e-3 | 0.58 |
+| adamantane | 1e-6 | 0.8013 / 0.8141 | 5.50e-6 | 1.59e-7 | 0.03 |
+| adamantane | 1e-7 | 0.9562 / 0.9601 | 4.59e-7 | 1.66e-10 | 0.004 |
+
+The full grid is C12, C16, C20 and C24, naphthalene and adamantane at
+$\varepsilon$ = 1e-4 to 1e-7 (C24 to 1e-6). Every one of the 23 off/on
+pairs has the lower error with the screen, ratios 0.004–0.58.
+
+**Cost.** C24, three repeats with the κ order alternated; wall time is the
+whole `amplitude_lmp2` call, median (s).
+
+| $\varepsilon$ | off | κ = 1 | overhead |
+|---|---|---|---|
+| 1e-4 | 18.7 | 19.8 | +5.8% |
+| 1e-5 | 33.6 | 37.1 | +10.4% |
+| 1e-6 | 83.0 | 91.4 | +10.1% |
+
+The criterion was at most 10%; 1e-5 and 1e-6 miss it. Most of the extra
+time is in the solve, which carries the extra amplitudes; the assembly
+grows by 5–8%. At matched final error (the plain arm's wall time
+interpolated to the screen's error) the screen is cheaper everywhere: cost
+ratio 0.95, 0.84, 0.74 on C20 at 1e-4, 1e-5, 1e-6; 0.95, 0.84 on C24;
+0.91–0.98 on naphthalene and 0.92–0.98 on adamantane (single runs below
+C24).
+
+**Size extensivity.** Error per added CH$_2$, linear fit to C16, C20, C24
+(μHa per CH$_2$):
+
+| $\varepsilon$ | off | κ = 1 |
+|---|---|---|
+| 1e-4 | 387 | 231 |
+| 1e-5 | 21.4 | 9.17 |
+| 1e-6 | 1.05 | 0.28 |
+
+The error per carbon at $\varepsilon$ = 1e-5 is 16.1, 16.5 and 17.9 μHa
+from C16 to C24 without the screen and 5.8, 6.5 and 6.9 μHa with it.
+
+**Conformer energies.** ACONF20 as above, in kJ/mol against A2000. At
+$\varepsilon$ = 1e-6 one conformer ran past an hour at the 12 GB cap and
+was stopped; that row covers all pairs of the 14 conformers that finished
+in both arms. Every conformer has the lower error with the screen.
+
+| $\varepsilon$ | conformers | max\|Δ\| off | max\|Δ\| κ = 1 | MAD off | MAD κ = 1 |
+|---|---|---|---|---|---|
+| 1e-4 | 22 | 8.03 | 5.66 | 3.84 | 2.86 |
+| 1e-5 | 22 | 0.606 | 0.324 | 0.370 | 0.182 |
+| 1e-6 | 14 (all pairs) | 0.0517 | 0.0105 | 0.0160 | 0.0040 |
+
+**Reading (provisional, same scope as the direct path).** In core the
+screen removes 42–47% of the error at 1e-4 and 78–99.6% at 1e-6 and below,
+for 6–10% more wall time on C24, and it is cheaper than the plain mask at
+equal error. The 0.1–0.4 point miss on the overhead criterion was accepted
+(Matt, 2026-11-18) for that accuracy.
 
 ## Combining the screen, the embedding and λ-Boys orbitals {#amplitude-lmp2-combined-truncation}
 
@@ -1307,10 +1398,11 @@ difference of a few percent in $t_{\mathrm{corr}}$ is noise:
 | n-octane, integral-direct | 7 | 2.2 ms | 1.30 / 1.28 s | 0.17% | $1.913 / 1.916\times10^{-3}$ |
 | n-C20H42, integral-direct | 7 | 17.9 ms | 8.53 / 8.87 s | 0.20% | $6.434 / 6.466\times10^{-3}$ |
 
-On n-butane / cc-pVDZ with all electrons the in-core recovery moves from
-99.980, 99.671, 94.99% to 99.992, 99.735, 95.20% at
+On n-butane / cc-pVDZ with all electrons and the plain mask, the in-core
+recovery moves from 99.980, 99.671, 94.99% to 99.992, 99.735, 95.20% at
 $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$, and n-octane at
-$10^{-3}$ from 93.81 to 94.00%. With frozen core the same n-butane errors
+$10^{-3}$ from 93.81 to 94.00%. With the Fock screen, the default since
+2026-11-18, n-butane recovers 99.999, 99.893, 96.58%. With frozen core the same n-butane errors
 move by 2 to 3% in either direction. The frozen-core alkane errors grow
 by 0.05 to 0.5%; the default is taken for the
 naphthalene gain at a cost below 0.4% of $t_{\mathrm{corr}}$.
@@ -1371,7 +1463,7 @@ error.
 | `fit_radius_bohr` | per-pair domain-local RI fit in place of the global-metric fit | section @sec:integral-direct |
 | `aux_tail_frac` | per-pair auxiliary truncation, rigorously bounded per element by $f\varepsilon$; inactive at $\varepsilon = 0$ | `ferric-mp2/src/lmp2_amplitude.rs::AmplitudeLmp2Config` |
 | `lambda_boys` | λ of the λ-Boys occupied localization, default 10; 0 is plain Boys. Changes the orbitals, so $J$ and the kept set; the error stays one-sided because $E^*$ is rotation invariant; inert at $\varepsilon = 0$ | section @sec:amplitude-lmp2-lambda-boys |
-| `fock_screen` | also keeps elements whose one-step Fock-propagated integral clears $\kappa\varepsilon$ (section @sec:amplitude-lmp2-fock-screen); inert at $\varepsilon = 0$. On by default (κ = 1) on the integral-direct CLI and Python paths, `[local] fock_screen = false` to turn it off; off in the in-core path and the Rust default | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
+| `fock_screen` | also keeps elements whose one-step Fock-propagated integral clears $\kappa\varepsilon$ (section @sec:amplitude-lmp2-fock-screen); inert at $\varepsilon = 0$. On by default (κ = 1) in the CLI and Python, in core and integral-direct; `[local] fock_screen = false` turns it off; off in the Rust `AmplitudeLmp2Config::default` | `ferric-mp2/src/ragged.rs::pair_blocks_screened` |
 | `cg_rtol`, `cg_max_iter` | Rust only: an explicit tolerance disables the tightening; neither is a CLI or Python option | this section |
 | operator | Coulomb or erfc, in the metric and the three-index integrals | chapter @sec:operators |
 
@@ -1388,7 +1480,7 @@ mutation, dropping one hard virtual, breaks the agreement
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | $\varepsilon = 0$, every locality map at its no-op limit, in-core (global and per-pair domain fit) and integral-direct: H2O, n-butane / cc-pVDZ, 6-31G (cc-pvdz-ri), frozen core 0 and one per heavy atom | PySCF `DFMP2` with the same auxiliary basis, checked against a dense numpy sum to $10^{-12}$ | $E_{\mathrm{corr}}$ at most $1.38\times10^{-11}$ Ha over 24 comparisons, at the default PCG stop; bar $10^{-10}$ Ha | `crates/ferric-mp2/tests/validation_lmp2_amplitude.rs`, `eps_zero_matches_canonical_ri_mp2` in `crates/ferric-mp2/tests/lmp2_amplitude.rs` |
-| finite $\varepsilon$ on n-butane / cc-pVDZ, all electrons | PySCF `DFMP2` (canonical) | recovers 99.99%, 99.73%, 95.2% of the DF-MP2 correlation energy in core (λ-Boys, λ = 10) at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps; the error is one-sided and has no tolerance | same |
+| finite $\varepsilon$ on n-butane / cc-pVDZ, all electrons | PySCF `DFMP2` (canonical) | recovers 99.999%, 99.89%, 96.6% of the DF-MP2 correlation energy in core (λ-Boys, λ = 10, Fock screen κ = 1) at $\varepsilon = 10^{-5}$, $10^{-4}$, $10^{-3}$ with production maps; the error is one-sided and has no tolerance | same |
 
 <!-- figures: site/src/reference/validation.md "Local RI-MP2 (`rimp2` with `[local] scheme = \"amplitude-threshold\"`)" -->
 
@@ -1397,12 +1489,12 @@ a ballpark only. It truncates by pair-natural-orbital occupation, not by an
 amplitude threshold, so the two recoveries are not compared.
 
 **The error is superlinear in $\varepsilon$.** As $\varepsilon$ grows by
-factors of ten, the recovery falls from 99.99% to 99.73% to 95.2%. The
+factors of ten, the recovery falls from 99.999% to 99.89% to 96.6%. The
 missing correlation energy therefore grows faster than linearly in
 $\varepsilon$. There is no tolerance on it. To reach a target accuracy, run
 a series of $\varepsilon$ values and choose from it.
 
-n-Butane in cc-pVDZ, all electrons, from the `76ffd5a79` build (λ-Boys, λ = 10). Each line
+n-Butane in cc-pVDZ, all electrons, re-run 2026-11-18 at the current defaults (λ-Boys λ = 10, Fock screen κ = 1). Each line
 of the output is cut after `keep_fraction`; the full `local` dict also
 carries the solver statistics, the timings and the trust text. The
 $\varepsilon = 0$ run reproduces the exact RI-MP2 energy to
@@ -1426,9 +1518,9 @@ for eps in (0.0, 1e-5, 1e-4, 1e-3):
 ```text
 exact RI-MP2 E_corr = -0.5996452251 Ha
 eps=  0e+00  E_corr=-0.5996452251  recovery=100.0000%  E-E*=+2.726e-13 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0, 'keep_fraction': 1.0, ...}
-eps=  1e-05  E_corr=-0.5995980733  recovery= 99.9921%  E-E*=+4.715e-05 Ha  local={'scheme': 'amplitude-threshold', 'eps': 1e-05, 'keep_fraction': 0.5846693712871353, ...}
-eps=  1e-04  E_corr=-0.5980550045  recovery= 99.7348%  E-E*=+1.590e-03 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0001, 'keep_fraction': 0.21723822050709232, ...}
-eps=  1e-03  E_corr=-0.5708766759  recovery= 95.2024%  E-E*=+2.877e-02 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.001, 'keep_fraction': 0.02984183343387928, ...}
+eps=  1e-05  E_corr=-0.5996393999  recovery= 99.9990%  E-E*=+5.825e-06 Ha  local={'scheme': 'amplitude-threshold', 'eps': 1e-05, 'keep_fraction': 0.6214949617088122, ...}
+eps=  1e-04  E_corr=-0.5990032819  recovery= 99.8929%  E-E*=+6.419e-04 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.0001, 'keep_fraction': 0.25059967175861636, ...}
+eps=  1e-03  E_corr=-0.5791405455  recovery= 96.5805%  E-E*=+2.050e-02 Ha  local={'scheme': 'amplitude-threshold', 'eps': 0.001, 'keep_fraction': 0.03658314436374073, ...}
 ```
 
 ## Sources

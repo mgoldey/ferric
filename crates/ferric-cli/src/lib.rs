@@ -2700,8 +2700,7 @@ fn run_rimp2_local(
     if let Some((d, _)) = &maps {
         println!(
             "  locality maps         = r_aux {} Bohr, r_virt {} Bohr, ao_tail {:.0e}, \
-             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}, \
-             fock_screen {}",
+             schwarz_skip {:.0e}, batch_merge {}, gate_cal {}, virt_schwarz_kappa {}",
             d.aux_radius,
             d.virt_radius,
             d.ao_tail,
@@ -2710,10 +2709,16 @@ fn run_rimp2_local(
             d.gate_cal.map_or("off".to_string(), |c| format!("{c}")),
             d.virt_schwarz_kappa
                 .map_or("off".to_string(), |k| format!("{k}")),
-            d.fock_screen
-                .map_or("off".to_string(), |k| format!("kappa {k}")),
         );
     }
+    println!(
+        "  Fock screen           = {}",
+        model
+            .fock_screen
+            .map_or("off (plain amplitude mask)".to_string(), |k| format!(
+                "kappa {k} (in-core and integral-direct default)"
+            ))
+    );
     println!("  RHF energy            = {:.10} Ha", result.energy);
     println!("  E_corr(local MP2)     = {:.10} Ha", r.e_corr);
     let e_ref = want_ref.then_some(r.e_corr_canonical_ri);

@@ -468,14 +468,15 @@ coupling to kept ones but sitting on a zero integral is never kept. On
 adamantane/6-31G the error stays at 2.4e-7 Ha at `eps = 1e-8` with 99.998% of
 amplitudes kept. The Fock-propagated screen also keeps the amplitudes whose
 one-step Fock-dressed integral exceeds `eps`, which removes this floor. It is on by
-default on the integral-direct path (`[local] fock_screen`, default `true`;
-Python `fock_screen=`), and `false` keeps the plain integral mask. The in-core
-path and the Rust library default (`AmplitudeLmp2Config::fock_screen = None`)
-use the plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane
-and the ACONF20 conformers with the production maps, the screen lowers the
-truncation error at every `eps` tried (by a third to a half at `1e-4`, by 60–98% at
-`1e-6` and below). It costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB
-more peak memory (book chapter 13, "On by default on the integral-direct path").
+default in the CLI and Python, in core and integral-direct (`[local] fock_screen`,
+default `true`; Python `fock_screen=`), and `false` keeps the plain integral mask.
+The Rust library default (`AmplitudeLmp2Config::fock_screen = None`) uses the
+plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane and the
+ACONF20 conformers, the screen lowers the truncation error at every `eps` tried on
+both paths (by 34–49% at `1e-4`, by 62–99.6% at `1e-6` and below). Integral-direct it
+costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB more peak memory; in core
+6–10% on C24, and at equal error it is cheaper than the plain mask on both paths
+(book chapter 13, "On by default in the CLI and Python" and "The in-core path").
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
 

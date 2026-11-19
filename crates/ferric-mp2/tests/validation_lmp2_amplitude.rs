@@ -50,8 +50,8 @@
 //! On n-butane/cc-pVDZ at ε = 1e-5, 1e-4 (the value the examples and the
 //! measured error maps use) and 1e-3, both frozen-core settings, both
 //! paths at their production settings (the user-facing defaults: λ-Boys
-//! λ = 10, and on the direct path `DirectConfig::production` maps, Fock
-//! screen κ = 1, no pair gate): the error against PySCF is recorded
+//! λ = 10 and the Fock screen κ = 1 on both paths, and on the direct path
+//! `DirectConfig::production` maps with no pair gate): the error against PySCF is recorded
 //! with the keep / pair fractions and domain sizes, and the assertion is
 //! only the structure the method guarantees — under-correlation (one-sided)
 //! that grows monotonically with ε. No finite-ε tolerance is a bar.
@@ -436,7 +436,14 @@ fn finite_eps_c4h10_ccpvdz_error_is_one_sided_and_monotone() {
             let mut errs = Vec::new();
             for &eps in &EPS_SWEEP {
                 let x = if path == "in-core" {
-                    in_core(&su, &lcfg(eps, fc, None))
+                    // The user-facing in-core default: Fock screen on.
+                    in_core(
+                        &su,
+                        &AmplitudeLmp2Config {
+                            fock_screen: Some(DIRECT_FOCK_SCREEN_KAPPA),
+                            ..lcfg(eps, fc, None)
+                        },
+                    )
                 } else {
                     direct(
                         &su,
@@ -503,7 +510,13 @@ fn orca_ballpark(system: &str) {
     }
     let mut prev = f64::NEG_INFINITY;
     for &eps in &EPS_SWEEP {
-        let x = in_core(&su, &lcfg(eps, 0, None));
+        let x = in_core(
+            &su,
+            &AmplitudeLmp2Config {
+                fock_screen: Some(DIRECT_FOCK_SCREEN_KAPPA),
+                ..lcfg(eps, 0, None)
+            },
+        );
         let pct = 100.0 * x.e_corr / e_df;
         eprintln!(
             "BALLPARK {system}/cc-pvdz fc=0 ferric eps={eps:.0e}   {pct:.4}% of PySCF DF-MP2 \

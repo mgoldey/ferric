@@ -419,9 +419,10 @@ pub(crate) fn local_correlation_operator(
 /// integral-direct local MP2, which never forms the global 3-index tensor;
 /// its locality maps are `aux_radius` (Bohr, default 10.0), `virt_radius`
 /// (Bohr, 20.0), `ao_tail` (1e-4), `schwarz_skip` (1e-5; 0 disables the cut), `batch_merge` (4), `gate_cal` (pair gate, off) and
-/// `virt_schwarz_kappa` (off), plus `fock_screen` (default true: the
-/// Fock-propagated mask screen, κ = 1; false keeps the plain integral mask),
-/// the same names and defaults as the CLI's `[local]` keys. The rules are the CLI's: every local kwarg is a
+/// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
+/// `[local]` keys. On both the in-core and the integral-direct path,
+/// `fock_screen` (default true) runs the Fock-propagated mask screen, κ = 1;
+/// false keeps the plain integral mask. The rules are the CLI's: every local kwarg is a
 /// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
 /// local one (it reads only `frozen_core` and `auxbasis`).
 ///

@@ -1347,9 +1347,10 @@ pub struct LocalCfg {
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
     /// Omitted = off.
     pub virt_schwarz_kappa: Option<f64>,
-    /// Integral-direct only: the Fock-propagated screen of the amplitude mask
-    /// (book §amplitude-lmp2-fock-screen), κ =
-    /// `ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA`. Default true;
+    /// `kind = "rimp2"` / `"att-rimp2"` only, in-core and integral-direct:
+    /// the Fock-propagated screen of the amplitude mask (book
+    /// §amplitude-lmp2-fock-screen), κ =
+    /// `ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT`. Default true;
     /// `false` keeps the plain Eq-8 mask.
     pub fock_screen: Option<bool>,
     /// `kind = "rimp2"` / `"att-rimp2"` only: which VV-HV virtual-space build
@@ -1399,9 +1400,6 @@ pub struct LocalDirectKnobs {
     /// `[local] virt_schwarz_kappa`: ε-linked Schwarz virtual-candidate
     /// screen κ (> 0); `None` disables the screen.
     pub virt_schwarz_kappa: Option<f64>,
-    /// `[local] fock_screen`: the Fock-propagated mask screen's κ, `Some(
-    /// DIRECT_FOCK_SCREEN_KAPPA)` by default, `None` with `fock_screen = false`.
-    pub fock_screen: Option<f64>,
 }
 
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
@@ -1422,6 +1420,12 @@ pub struct LocalModel {
     /// `[local] lambda_boys`, default applied (local MP2 only; the dRPA and
     /// LinLCCD paths refuse the key and localize with plain Boys).
     pub lambda_boys: f64,
+    /// `[local] fock_screen`: the Fock-propagated mask screen's κ, on both
+    /// the in-core and the integral-direct path. `Some(
+    /// ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT)` by default,
+    /// `None` with `fock_screen = false` (local MP2 only; the dRPA and
+    /// LinLCCD paths refuse the key and run the plain mask).
+    pub fock_screen: Option<f64>,
 }
 
 impl LocalModel {
@@ -1446,7 +1450,7 @@ impl LocalModel {
             eri3_budget_bytes,
             compute_reference: self.reference,
             pair_gate_cal: self.direct.as_ref().and_then(|d| d.gate_cal),
-            fock_screen: self.direct.as_ref().and_then(|d| d.fock_screen),
+            fock_screen: self.fock_screen,
             virtual_space: self.virtual_space.clone(),
             lambda_boys: self.lambda_boys,
             ..Default::default()
@@ -1476,7 +1480,6 @@ impl LocalCfg {
             || self.batch_merge.is_some()
             || self.gate_cal.is_some()
             || self.virt_schwarz_kappa.is_some()
-            || self.fock_screen.is_some()
     }
 
     fn sets_virtual_thresholds(&self) -> bool {
@@ -1666,16 +1669,12 @@ impl LocalCfg {
                 batch_merge: self.batch_merge.unwrap_or(prod.batch_merge),
                 gate_cal: opt_pos("gate_cal", self.gate_cal)?,
                 virt_schwarz_kappa: opt_pos("virt_schwarz_kappa", self.virt_schwarz_kappa)?,
-                fock_screen: self
-                    .fock_screen
-                    .unwrap_or(true)
-                    .then_some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         } else {
             if self.sets_direct_knobs() {
                 return Err(
                     "[local] aux_radius / virt_radius / ao_tail / schwarz_skip / \
-                            batch_merge / gate_cal / virt_schwarz_kappa / fock_screen are the \
+                            batch_merge / gate_cal / virt_schwarz_kappa are the \
                             integral-direct \
                             locality maps and are read only with integral_direct = true; \
                             without it they would be silently ignored"
@@ -1696,6 +1695,10 @@ impl LocalCfg {
             direct,
             virtual_space,
             lambda_boys,
+            fock_screen: self
+                .fock_screen
+                .unwrap_or(true)
+                .then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
         }))
     }
 }
@@ -4958,6 +4961,16 @@ impl Config {
                  always uses the dense build)"
             ));
         }
+        if self.local.as_ref().and_then(|l| l.fock_screen).is_some()
+            && kind != "rimp2"
+            && kind != "att-rimp2"
+        {
+            return Err(format!(
+                "[local] fock_screen sets the Fock-propagated mask screen of the local MP2 \
+                 and applies to method.kind = \"rimp2\" or \"att-rimp2\" only (got \"{kind}\", \
+                 which runs the plain amplitude mask)"
+            ));
+        }
         if self.local.as_ref().and_then(|l| l.lambda_boys).is_some()
             && kind != "rimp2"
             && kind != "att-rimp2"
@@ -6595,7 +6608,7 @@ mod compat_guard_tests {
         assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
         assert_eq!(l.pair_gate_cal, None);
         assert!(!l.compute_reference);
-        // In-core: no maps, no Fock screen (it is an integral-direct knob).
+        // In-core: no maps, the same Fock screen (a model knob, not a map).
         let m = cfg(
             "rimp2",
             "energy",
@@ -6606,7 +6619,7 @@ mod compat_guard_tests {
         .unwrap();
         let (l, d) = m.rimp2_configs(0, None);
         assert!(d.is_none());
-        assert_eq!(l.fock_screen, None);
+        assert_eq!(l.fock_screen, Some(DIRECT_FOCK_SCREEN_KAPPA));
         assert_eq!(l.lambda_boys, ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
     }
 
@@ -6688,8 +6701,6 @@ mod compat_guard_tests {
             ("batch_merge", "4"),
             ("gate_cal", "0.7"),
             ("virt_schwarz_kappa", "1.0"),
-            ("fock_screen", "false"),
-            ("fock_screen", "true"),
         ] {
             for direct in ["", "integral_direct = false\n"] {
                 let e = model(&format!(
@@ -6713,16 +6724,26 @@ mod compat_guard_tests {
                 batch_merge: 4,
                 gate_cal: None,
                 virt_schwarz_kappa: None,
-                fock_screen: Some(ferric_mp2::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA),
             })
         );
-        // fock_screen = false turns the screen off; a non-bool is a type error
-        let off = model(
-            "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\nfock_screen = false",
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(off.direct.unwrap().fock_screen, None);
+        // The Fock screen is on by default on both paths; fock_screen = false
+        // turns it off on either; a non-bool is a type error.
+        let kappa = Some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT);
+        assert_eq!(m.fock_screen, kappa);
+        for direct in ["", "integral_direct = true\n"] {
+            let on = model(&format!(
+                "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(on.fock_screen, kappa, "{direct:?}");
+            let off = model(&format!(
+                "scheme = \"amplitude-threshold\"\neps = 1e-4\n{direct}fock_screen = false"
+            ))
+            .unwrap()
+            .unwrap();
+            assert_eq!(off.fock_screen, None, "{direct:?}");
+        }
         for bad in ["fock_screen = 1.0", "fock_screen = \"off\""] {
             let src = format!(
                 "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -6888,6 +6909,26 @@ mod compat_guard_tests {
         for kind in ["drpa", "linlccd"] {
             let e = ok(kind).expect_err(kind);
             assert!(e.contains("lambda_boys") && e.contains("plain Boys"), "{e}");
+        }
+    }
+
+    /// `[local] fock_screen` is a local-MP2 model knob: accepted in-core and
+    /// integral-direct for rimp2, refused for dRPA and LinLCCD (which run the
+    /// plain mask and would silently ignore it).
+    #[test]
+    fn local_fock_screen_is_mp2_only_on_both_paths() {
+        let at = "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n";
+        let ok = |kind: &str, extra: &str| {
+            cfg(kind, "energy", &format!("{at}{extra}fock_screen = false\n")).validate_task_compat()
+        };
+        assert_eq!(ok("rimp2", ""), Ok(()));
+        assert_eq!(ok("rimp2", "integral_direct = true\n"), Ok(()));
+        for kind in ["drpa", "linlccd"] {
+            let e = ok(kind, "").expect_err(kind);
+            assert!(
+                e.contains("fock_screen") && e.contains("plain amplitude mask"),
+                "{e}"
+            );
         }
     }
 
