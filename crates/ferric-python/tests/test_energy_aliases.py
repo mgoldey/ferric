@@ -68,3 +68,17 @@ def test_periodic_scf_results_have_both_spellings(tmp_path):
     for name, r in results.items():
         assert type(r).__name__ == name
         assert r.energy == r.total_energy, name
+
+
+def test_cdft_result_has_both_spellings():
+    mol = ferric.Molecule.from_xyz_string("2\nLiH\nLi 0 0 0\nH 0 0 1.60\n", 0, 1)
+    r = ferric.run_cdft(
+        mol,
+        ferric.BasisSet.bundled("sto-3g"),
+        [ferric.CdftConstraint([0], 2.2, kind="charge")],
+        lambda_tol=1e-5,
+        max_outer=40,
+    )
+    assert type(r).__name__ == "CdftResult"
+    assert r.energy == r.total_energy
+    assert isinstance(r.energy, float)

@@ -26,7 +26,7 @@ import json
 import os
 
 import pytest
-from api_snapshot import SNAPSHOT, generate, optional_missing, render
+from api_snapshot import SNAPSHOT, drop_optional, generate, optional_missing, render
 
 HOW_TO = (
     "To regenerate after a DELIBERATE, reviewed API change:\n"
@@ -60,9 +60,7 @@ def test_public_api_matches_snapshot():
     committed_data = json.loads(committed)
     # A submodule whose optional dependency is missing here (ferric.ase without
     # ASE) is not compared: drop its committed section, deterministically.
-    skipped = optional_missing()
-    for name in skipped:
-        committed_data.get("submodules", {}).pop(name, None)
+    drop_optional(committed_data)
     if json.loads(live) == committed_data:
         return
     old, new = dict(_flatten(committed_data)), dict(_flatten(json.loads(live)))

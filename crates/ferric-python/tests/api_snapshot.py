@@ -99,11 +99,16 @@ def _import_submodule(name: str):
     """The `ferric.<name>` module, or `None` when an optional dependency of
     its module-level imports (only `ase`) is missing."""
     import importlib
+    import importlib.util
 
+    if name == "ase" and importlib.util.find_spec("ase") is None:
+        return None
     try:
         return importlib.import_module(f"ferric.{name}")
-    except ImportError:
-        if name == "ase":
+    except ModuleNotFoundError as exc:
+        # Only the optional dependency itself being absent is tolerated; a
+        # broken internal import in ferric/ase.py must raise.
+        if name == "ase" and exc.name is not None and exc.name.split(".")[0] == "ase":
             return None
         raise
 
@@ -111,6 +116,15 @@ def _import_submodule(name: str):
 def optional_missing() -> list[str]:
     """Submodules whose section cannot be generated here (deterministic)."""
     return [n for n in SUBMODULES if _import_submodule(n) is None]
+
+
+def drop_optional(data: dict) -> list[str]:
+    """Drop from a committed snapshot the sections that cannot be generated
+    here (optional dependency missing); returns the dropped names."""
+    skipped = optional_missing()
+    for name in skipped:
+        data.get("submodules", {}).pop(name, None)
+    return skipped
 
 
 def generate_submodule(name: str) -> dict | None:
@@ -164,7 +178,11 @@ def main(argv: list[str]) -> int:
         return 2
     text = render(generate())
     if "--check" in argv:
-        return 0 if SNAPSHOT.read_text() == text else 1
+        if SNAPSHOT.read_text() == text:
+            return 0
+        committed = json.loads(SNAPSHOT.read_text())
+        drop_optional(committed)
+        return 0 if committed == json.loads(text) else 1
     SNAPSHOT.parent.mkdir(parents=True, exist_ok=True)
     SNAPSHOT.write_text(text)
     print(f"wrote {SNAPSHOT}")
