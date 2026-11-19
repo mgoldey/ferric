@@ -6,8 +6,8 @@ to the molecule (26 valence electrons, effective nuclear charge 25 on I). The
 correlated drivers used to prepare the same basis, which carries V_ECP and
 the reduced charge, on the all-electron molecule (54 electrons), so their
 reference was a different, unphysical system: `run_rimp2(...).rhf_energy` was
--143.31 Ha against `run_rhf`'s -297.23 Ha. Each driver family now builds its
-`ferric_scf::PreparedSystem` with `EcpPolicy::Apply` (roadmap item 8 of
+-143.31 Ha against `run_rhf`'s -297.23 Ha. Every driver now builds a
+`ferric_scf::PreparedSystem`, which applies the ECP (roadmap item 8 of
 ARCHITECTURE.md), and each test below pins one family to the SCF drivers.
 
 Bars: where a driver reports its reference energy, it runs the same SCF

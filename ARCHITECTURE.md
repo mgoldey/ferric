@@ -119,10 +119,12 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
   drivers share one skeleton (validate, warn, solve, gradient, wrap) with
   variant hooks; `solve_open_shell_entry` in `ferric-python/src/scf.rs` is the
   first instance.
-- **Owners establish invariants once.** A `PreparedSystem` (molecule with ECP
-  applied, prepared basis, operator, Schwarz bounds, context) is built by a
-  single constructor and only borrowed afterwards, so a solver cannot receive
-  a molecule without its ECP.
+- **Owners establish invariants once.** `ferric_scf::PreparedSystem`
+  (molecule with ECP applied, prepared basis, operator, Schwarz bounds,
+  context) is built by a single constructor and only borrowed afterwards, so
+  a solver cannot receive a molecule without its ECP. Every correlated driver
+  uses it; the SCF entry points in `ferric-python/src/scf.rs` still assemble
+  the same pieces by hand (the `TODO` on `OpenShellEntry`).
 - **Units (target):** newtypes at API boundaries only (`Bohr`/`Angstrom` on
   molecule constructors and accessors, `Hartree` on result energies), with
   kernels keeping raw `f64` and arrays. No such newtypes exist yet. Today the
@@ -165,6 +167,36 @@ Done:
    (closed, UKS and ROKS share one implementation; public functions are
    shims), and shared reference-SCF/Gamma/k-point helpers in the periodic
    bindings (`PbcArgs` carries its `PbcRole`).
+8. `ferric_scf::PreparedSystem`, built by `PreparedSystem::new(mol, basis)`
+   (which applies the basis set's ECP) with `with_aux` for a fitting basis
+   and `solve_rhf`/`solve_uhf`/`solve_rohf`/`solve_rhf_ladder` on the
+   borrowed system. The reference-SCF helpers in `ferric-python/src/mp2.rs`
+   build one and every correlated driver borrows it. ECP decisions, per
+   driver family (`crates/ferric-python/tests/test_ecp_correlated_references.py`
+   pins each against `run_rhf`/`run_uhf`/`run_dft`/`run_uks` on HI/def2-SVP):
+   - Applied, as a bug fix (the drivers prepared the ECP basis, which
+     carries V_ECP and the reduced nuclear charge, on the all-electron
+     molecule, so the reference was a 54-electron HI at -143.3 Ha against
+     `run_rhf`'s -297.2 Ha): the MP2 family (`run_rimp2` exact, open-shell
+     and gradient, SCS, Laplace, attenuated, MP3, OO-RI-MP2; the terfc,
+     SCS-2terfc, MP2-V and VV10-variant entry points share the same helpers
+     but are not exercised on an ECP system by the test), coupled cluster
+     (CCD, CCSD, CCSD(T), EOM-CCSD, UCCSD),
+     GW/BSE/TDHF polarizability, PDEP-RPA and RS-MP2-RPA, `run_tddft`, the
+     double hybrid, and exact LinLCCD. The kernels already count electrons
+     from `mol.nelec()` and the analytic RI-MP2, OO-RI-MP2 and RPA gradients
+     already carry the ECP term (central differences agree to 3e-7 Ha/Bohr,
+     as for `run_rhf`).
+   - Already applied: CAS-CI, CASSCF and NEVPT2.
+   - Refused, unchanged: the amplitude-threshold local MP2, `run_drpa`
+     (exact and local), `run_drpa_scan` and local LinLCCD, whose localized
+     virtual space cannot count valence virtuals on ECP atoms
+     (`ferric_mp2::lmp2_amplitude` refuses an ECP basis).
+   Not yet on `PreparedSystem`: `tune_omega` and `run_opmp3`, which solve
+   their own SCF without applying the ECP (the same bug class, not checked
+   here), and the post-SCF helpers that prepare a basis for one-electron or
+   response integrals on a result passed in (`response_modes`,
+   `orbital_moments`, `density_second_moment`).
 -  COSX for `run_uks`/`run_roks`: they now apply
    `df_k_aux_or_default`. Before, they applied the RI-K default even under
    COSX, so a COSX call with HF exchange or a global hybrid (the functionals
@@ -177,11 +209,6 @@ Next, each as its own PR following the patterns above:
 
 6b. Fill the keyword-argument drift between the six SCF entry points
     additively (and in `ferric.pyi`).
-8. Grow the existing `converged_*` reference-SCF helpers in
-   `ferric-python/src/mp2.rs` into a borrowed `PreparedSystem` (molecule,
-   prepared basis, operator, bounds, context) used by every correlated
-   driver. Whether a driver applies ECPs is a behaviour change and gets its
-   own tests.
 9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
    declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.
