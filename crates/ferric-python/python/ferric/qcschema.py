@@ -25,8 +25,8 @@ Hartree, gradients in Hartree/Bohr. The geometry is used as given (no
 re-orientation), so the gradient is in the input frame. ``geometry`` may be
 flat (3N) or (N, 3).
 
-Drivers: ``energy``, ``gradient`` and ``hessian``. Any other driver
-(``properties``) fails with ``unsupported_error``. ``hessian`` is the analytic
+Drivers: ``energy``, ``gradient``, ``hessian`` and ``properties``. Any other
+driver fails with ``input_error``. ``hessian`` is the analytic
 Hessian (``run_frequencies(hessian="analytic")`` /
 ``"analytic-moving-grid"``, never a finite difference) for ``hf`` / ``scf``
 (RHF for a singlet, UHF otherwise) and for DFT (RKS for a singlet, UKS
@@ -55,7 +55,30 @@ ferric basis name):
   ``dispersion`` is closed-shell only: with multiplicity > 1 it fails with
   ``unsupported_error``.
 
-Keywords are a strict allowlist; any other key fails with ``input_error``
+``properties`` returns a dict as ``return_result`` (QCSchema's convention for
+that driver), atomic units throughout. ``keywords["properties"]`` lists what to
+compute; without it the defaults are returned (SCF and Kohn-Sham only; MP2 and
+CC return their energies). A name that cannot be computed fails the whole job:
+
+* ``scf_dipole_moment`` (3, e*Bohr, about the coordinate origin) and
+  ``scf_quadrupole_moment`` (3x3, e*Bohr^2, raw Cartesian second moment about
+  the origin, not traceless; closed shell only): the SCF/KS density, also copied
+  into ``properties``. ECP cores and ghost atoms are handled (effective charges).
+* ``orbital_energies_alpha`` / ``orbital_energies_beta`` (Hartree; beta only for
+  an unrestricted reference), ``homo_energy``, ``lumo_energy`` (highest
+  occupied / lowest virtual over both spins).
+* ``mulliken_charges``, ``lowdin_charges`` (closed shell only) and, on request
+  only, ``hirshfeld_charges`` and ``chelpg_charges`` (closed shell only), in e.
+* Energies already in ``properties`` (``scf_total_energy``...) may be named.
+* ``mp2_dipole_moment``, ``ccsd_dipole_moment``... and every density property
+  with ``mp2`` / ``ccsd`` / ``ccsd(t)``: ``unsupported_error``, ferric's MP2 and
+  CC results expose no density. An unknown name is ``input_error``.
+
+The names without a QCSchema ``AtomicResultProperties`` field (orbital
+energies, HOMO/LUMO, charges) appear only in ``return_result``: the schema
+forbids extra fields in ``properties``.
+
+Keywords are a strict allowlist (plus ``properties`` for that driver); any other key fails with ``input_error``
 naming it. Values are passed to the ferric driver unchanged.
 
 * hf / scf: ``max_iter``, ``energy_conv``, ``density_conv``, ``diis_size``,
@@ -89,13 +112,19 @@ Output properties: ``return_energy``, ``return_gradient`` (gradient driver),
 ``ccsd_prt_pr_correlation_energy`` / ``ccsd_prt_pr_total_energy`` (ccsd(t)),
 ``return_hessian`` (hessian driver),
 ``nuclear_repulsion_energy`` and ``calcinfo_natom`` / ``nalpha`` / ``nbeta``;
-``calcinfo_nbasis`` and ``calcinfo_nmo`` for SCF and DFT (the MP2 result does
-not expose the basis size). ``provenance["build"]`` is ``ferric.build_info()``
+``calcinfo_nbasis`` for every method and driver (``BasisSet.n_functions``) and
+``calcinfo_nmo`` for SCF, DFT and CC (the MP2 result does not expose the MO
+count). ``provenance["build"]`` is ``ferric.build_info()``
 (commit and dirty flag baked into the extension) and
 ``extras["ferric"]["certificate"]`` is the result's validation certificate.
 
 ``protocols.wavefunction`` other than ``"none"`` fails with
-``unsupported_error``; ferric does not serialise a wavefunction here.
+``unsupported_error``: QCSchema v1 orbitals carry no AO ordering or
+normalisation convention, and ferric's (libint: spherical m = -l..l, Cartesian
+components sharing the x^l norm) differs from other producers', so a consumer
+would read the coefficients wrongly without any error. ``protocols.native_files``
+other than ``"none"`` fails the same way. Orbital energies are available
+through the ``properties`` driver instead.
 
 ``error.error_type`` is one of ``input_error`` (malformed input, unknown
 keyword, method, functional or basis, driver refusal of a keyword),
@@ -218,11 +247,11 @@ def _run(inp: Any) -> dict[str, Any]:
             f"schema_version {inp.get('schema_version')!r}: only version 1 is supported",
         )
     driver = inp.get("driver")
-    if driver not in ("energy", "gradient", "hessian"):
-        kind = "unsupported_error" if driver == "properties" else "input_error"
+    if driver not in ("energy", "gradient", "hessian", "properties"):
         raise _QcError(
-            kind,
-            f"driver {driver!r}: ferric.qcschema supports 'energy', 'gradient' and 'hessian'",
+            "input_error",
+            f"driver {driver!r}: ferric.qcschema supports 'energy', 'gradient',"
+            " 'hessian' and 'properties'",
         )
     model = inp.get("model")
     if not isinstance(model, dict) or "method" not in model:
@@ -237,9 +266,20 @@ def _run(inp: Any) -> dict[str, Any]:
     if wfn != "none":
         raise _QcError(
             "unsupported_error",
-            f"protocols.wavefunction {wfn!r}: ferric.qcschema returns no wavefunction",
+            f"protocols.wavefunction {wfn!r}: ferric.qcschema returns no wavefunction"
+            " (QCSchema v1 carries no AO ordering or normalisation, and ferric's"
+            " libint AO order would be misread by consumers; see the module docstring)",
+        )
+    native = protocols.get("native_files", "none")
+    if native != "none":
+        raise _QcError(
+            "unsupported_error",
+            f"protocols.native_files {native!r}: ferric.qcschema returns no native files",
         )
     keywords = dict(inp.get("keywords") or {})
+    requested = None
+    if driver == "properties":
+        requested = _requested_properties(keywords.pop("properties", None))
 
     method = str(model["method"]).lower()
     family = _family(method)
@@ -254,6 +294,7 @@ def _run(inp: Any) -> dict[str, Any]:
 
     mol, mult = _molecule(inp.get("molecule"))
     basis = _bundled(basis_name, "basis")
+    _check_properties_supported(requested, family, method)
     want_grad = driver == "gradient"
     t0 = time.perf_counter()
     if driver == "hessian":
@@ -270,6 +311,10 @@ def _run(inp: Any) -> dict[str, Any]:
     props["calcinfo_nalpha"] = (nelec + mult - 1) // 2
     props["calcinfo_nbeta"] = (nelec - mult + 1) // 2
     props["return_energy"] = ret["energy"]
+    try:
+        props.setdefault("calcinfo_nbasis", int(basis.n_functions(mol)))
+    except ValueError:  # an element the basis does not cover: the run would have failed
+        pass
     if want_grad:
         gradient = result.gradient()
         if gradient is None:
@@ -280,6 +325,8 @@ def _run(inp: Any) -> dict[str, Any]:
     elif driver == "hessian":
         return_result = ret["hessian"]
         props["return_hessian"] = return_result
+    elif driver == "properties":
+        return_result = _properties(family, mol, mult, basis, result, props, requested)
     else:
         return_result = ret["energy"]
 
@@ -306,6 +353,232 @@ def _run(inp: Any) -> dict[str, Any]:
         }
     )
     return out
+
+
+# Properties of the ``properties`` driver. SCHEMA names are fields of
+# QCSchema's AtomicResultProperties (so they also land in ``properties``); the
+# rest have no schema field and live in ``return_result`` only.
+_SCHEMA_PROPERTIES = ("scf_dipole_moment", "scf_quadrupole_moment")
+_EXTENSION_PROPERTIES = (
+    "orbital_energies_alpha",
+    "orbital_energies_beta",
+    "homo_energy",
+    "lumo_energy",
+    "mulliken_charges",
+    "lowdin_charges",
+    "hirshfeld_charges",
+    "chelpg_charges",
+)
+_SUPPORTED_PROPERTIES = _SCHEMA_PROPERTIES + _EXTENSION_PROPERTIES
+# Computed on request only: both run extra SCF or grid work.
+_OPT_IN = ("hirshfeld_charges", "chelpg_charges")
+_CLOSED_SHELL_ONLY = ("mulliken_charges", "lowdin_charges") + _OPT_IN
+# Schema fields that need a post-SCF density ferric does not expose.
+_NO_DENSITY = (
+    "mp2_dipole_moment",
+    "ccsd_dipole_moment",
+    "ccsd_prt_pr_dipole_moment",
+    "ccsdt_dipole_moment",
+    "ccsdtq_dipole_moment",
+)
+# Energy names are always in ``properties``; asking for one is not an error
+# when the method produced it.
+_ENERGY_NAMES = frozenset(
+    {
+        "return_energy",
+        "scf_total_energy",
+        "scf_xc_energy",
+        "nuclear_repulsion_energy",
+        "mp2_correlation_energy",
+        "mp2_total_energy",
+        "ccsd_correlation_energy",
+        "ccsd_total_energy",
+        "ccsd_prt_pr_correlation_energy",
+        "ccsd_prt_pr_total_energy",
+    }
+)
+
+
+def _requested_properties(value):
+    """The ``keywords["properties"]`` list (``None`` when absent), validated."""
+    if value is None:
+        return None
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise _QcError("input_error", "keywords['properties'] must be a list of names")
+    names = list(dict.fromkeys(value))  # drop repeats, keep the order
+    for name in names:
+        if name in _SUPPORTED_PROPERTIES or name in _ENERGY_NAMES:
+            continue
+        if name in _NO_DENSITY:
+            continue  # refused by method in _check_properties_supported
+        raise _QcError(
+            "input_error",
+            f"unknown property {name!r}; supported: {list(_SUPPORTED_PROPERTIES)}"
+            f" and the energies {sorted(_ENERGY_NAMES)}",
+        )
+    return names
+
+
+def _check_properties_supported(requested, family, method):
+    """Refuse, before any computation, a property the method cannot give."""
+    if not requested:
+        return
+    for name in requested:
+        if name in _NO_DENSITY or (
+            name in _SUPPORTED_PROPERTIES and family not in ("hf", "dft")
+        ):
+            raise _QcError(
+                "unsupported_error",
+                f"property {name!r} with method {method!r}: ferric's MP2 and CC"
+                " results expose no density (relaxed or unrelaxed), so only SCF and"
+                " Kohn-Sham properties are available",
+            )
+
+
+def _scf_arrays(result):
+    """(restricted, orbital energies alpha, beta or None, density total)."""
+    if hasattr(result, "orbital_energies_alpha"):
+        density = np.asarray(result.density_alpha()) + np.asarray(result.density_beta())
+        return (
+            False,
+            np.asarray(result.orbital_energies_alpha(), dtype=float),
+            np.asarray(result.orbital_energies_beta(), dtype=float),
+            density,
+        )
+    return (
+        True,
+        np.asarray(result.orbital_energies(), dtype=float),
+        None,
+        np.asarray(result.density()),
+    )
+
+
+def _properties(family, mol, mult, basis, result, props, requested):
+    """The ``properties`` driver: the dict returned as ``return_result``.
+
+    Atomic units throughout (QCSchema): dipole in e*Bohr and quadrupole in
+    e*Bohr^2 about the coordinate origin (the quadrupole is the raw Cartesian
+    second moment sum_A Z_A R_A R_A - sum_uv D_uv <u|r r|v>, not traceless),
+    charges in e, orbital energies in Hartree. Schema-named entries are also
+    written to ``props``. Without ``keywords["properties"]`` every default
+    property the reference supports is returned; a requested property that is
+    not computable raises (nothing is skipped silently).
+    """
+    wanted = list(requested) if requested else None
+    out: dict[str, Any] = {}
+    if family not in ("hf", "dft"):
+        # MP2 / CC: the energies the run produced.
+        for name in wanted or [n for n in props if n in _ENERGY_NAMES]:
+            out[name] = _energy_property(name, props)
+        return out
+    restricted, eps_a, eps_b, density = _scf_arrays(result)
+    nelec = mol.nelec()
+    nalpha, nbeta = (nelec + mult - 1) // 2, (nelec - mult + 1) // 2
+    if wanted is None:
+        wanted = [
+            "scf_dipole_moment",
+            *(["scf_quadrupole_moment"] if restricted else []),
+            "orbital_energies_alpha",
+            *([] if restricted else ["orbital_energies_beta"]),
+            "homo_energy",
+        ]
+        if len(eps_a) > nalpha or (eps_b is not None and len(eps_b) > nbeta):
+            wanted.append("lumo_energy")
+        if restricted:
+            wanted += ["mulliken_charges", "lowdin_charges"]
+    for name in wanted:
+        if name in out:
+            continue
+        if name in _ENERGY_NAMES:
+            out[name] = _energy_property(name, props)
+        elif name == "scf_dipole_moment":
+            out[name] = _dipole(mol, basis, density).tolist()
+        elif name == "scf_quadrupole_moment":
+            if not restricted:
+                raise _QcError(
+                    "unsupported_error",
+                    "scf_quadrupole_moment: ferric's second-moment routine takes an"
+                    f" RHF or RKS result only (multiplicity {mult} runs an unrestricted"
+                    " reference)",
+                )
+            out[name] = _quadrupole(mol, basis, result, density).tolist()
+        elif name == "orbital_energies_alpha":
+            out[name] = eps_a.tolist()
+        elif name == "orbital_energies_beta":
+            if restricted:
+                raise _QcError(
+                    "unsupported_error",
+                    "orbital_energies_beta: the reference is restricted, beta equals"
+                    " orbital_energies_alpha",
+                )
+            out[name] = eps_b.tolist()
+        elif name in ("homo_energy", "lumo_energy"):
+            out[name] = _frontier(name, eps_a, eps_b, nalpha, nbeta)
+        elif name in _CLOSED_SHELL_ONLY:
+            if not restricted:
+                raise _QcError(
+                    "unsupported_error",
+                    f"{name}: ferric's population analyses are closed-shell only"
+                    f" (multiplicity {mult} runs an unrestricted reference)",
+                )
+            fn = getattr(ferric, name)
+            out[name] = np.asarray(fn(mol, basis, result), dtype=float).tolist()
+    for name in _SCHEMA_PROPERTIES:
+        if name in out:
+            props[name] = out[name]
+    return out
+
+
+def _energy_property(name, props):
+    if name not in props:
+        raise _QcError(
+            "unsupported_error", f"property {name!r} is not produced by this method"
+        )
+    return props[name]
+
+
+def _frontier(name, eps_a, eps_b, nalpha, nbeta):
+    """HOMO / LUMO energy: highest occupied / lowest virtual over both spins."""
+    homo = [
+        e[n - 1]
+        for e, n in ((eps_a, nalpha), (eps_b, nbeta))
+        if e is not None and n > 0
+    ]
+    lumo = [
+        e[n]
+        for e, n in ((eps_a, nalpha), (eps_b, nbeta))
+        if e is not None and n < len(e)
+    ]
+    values = homo if name == "homo_energy" else lumo
+    if not values:
+        what = "occupied" if name == "homo_energy" else "virtual"
+        raise _QcError(
+            "unsupported_error", f"{name}: the reference has no {what} orbital"
+        )
+    return float(max(values) if name == "homo_energy" else min(values))
+
+
+def _nuclear_charges(mol, basis):
+    """Effective nuclear charges: Z minus ECP core electrons, 0 for a ghost."""
+    return np.array(
+        [
+            0.0 if ghost else float(z - basis.ecp_core_electrons(z))
+            for z, ghost in zip(mol.atomic_numbers(), mol.is_ghost())
+        ]
+    )
+
+
+def _dipole(mol, basis, density):
+    ints = ferric.AoIntegrals(mol, basis)
+    electronic = -np.einsum("xij,ij->x", np.asarray(ints.dipole()), density)
+    return electronic + _nuclear_charges(mol, basis) @ np.asarray(mol.coords_bohr())
+
+
+def _quadrupole(mol, basis, result, density):
+    second = np.asarray(ferric.density_second_moment(mol, basis, result), dtype=float)
+    coords = np.asarray(mol.coords_bohr())
+    nuclear = np.einsum("a,ai,aj->ij", _nuclear_charges(mol, basis), coords, coords)
+    return nuclear - second
 
 
 def _dispatch(family, method, mol, mult, basis, basis_name, keywords, want_grad):
