@@ -159,10 +159,15 @@ Done:
     the knobs each entry point refuses because its solver cannot honour them
     (`ScfEntryPoint::refused`: `diis`, `smearing_sigma`, `aurora` outside
     `solve_rhf`; `diis`/`smearing_sigma`/`soscf` on `run_dft`, whose ladder
-    sets them per rung; ROHF/ROKS `trah_trigger`, `stability_descent`,
-    `mom_reference`; open-shell `symmetry`, which needs a result class of its
-    own). The `options` oracle tests run the old literals against that
-    function.
+    sets them per rung; `trah_trigger` and `stability_descent` on ROHF/ROKS;
+    `mom_reference` on RHF/ROHF/DFT/ROKS (`"initial"` is UHF/UKS only);
+    open-shell `symmetry`, which needs a result class of its own;
+    `functional`, the `grid_*` keywords and `dispersion` on the Hartree-Fock
+    entry points, and `dispersion` on UKS/ROKS). That table is exported as
+    `ferric._scf_refused()` and checked against every signature
+    (`test_scf_entry_point_surface.py`: each knob any of the six takes is
+    offered or refused, never both). The `options` oracle tests run the old
+    literals against that function.
 7. The CLI `[scf]` section lowered through `ferric_scf::options`
    (`try_scf_config` in ferric-cli, oracle-tested against the old
    `RhfConfig` literal), removing the hand-kept "CLI and Python agree"
@@ -221,3 +226,13 @@ Next, each as its own PR following the patterns above:
     to the lowering rather than a user option, and one
     `Option<Hook { fock, grad }>` instead of the two independent hook
     options in the open-shell entry.
+    Follow-ups from the 6b review: a `KBuilder` enum parsed at the binding,
+    which `df_k_aux_or_default` then takes; `Option<Symmetry { irrep_nelec }>`
+    instead of `symmetry` + `irrep_nelec`; one solver-capability table in
+    ferric-scf shared by `ScfEntryPoint::refused` and the CLI's
+    `validate_open_shell_scf_keys` / `validate_accelerators`; `ScfKwargs`
+    fields grouped (convergence, J/K route, guess, environment, accelerators,
+    Kohn-Sham); `ksdft_ladder`'s own copy of the KS JK-fit default and the
+    RIJCOSX rule; a `StabilitySkip::Solvent` (the stability Hessian has no PCM
+    response term); `run_dft`'s `symmetry=True` overload typing in
+    `ferric.pyi`.

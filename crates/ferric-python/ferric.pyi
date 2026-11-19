@@ -4606,8 +4606,10 @@ def run_rohf(
 
     guess, soscf, smeared_charges, solvent, pcm_lebedev_order and the cosx_*
     knobs: as for run_uhf (solve_rohf honours them; soscf is the ROHF Newton
-    step, with_gradient=True includes the smeared-charge and IEF-PCM terms,
-    and the COSX overlap fit is refused there). Not offered (solve_rohf cannot
+    step, with_gradient=True includes the smeared-charge and IEF-PCM terms).
+    solve_rohf has no COSX final-grid pass: the default one is skipped (the
+    energy is the SCF-grid energy), and an explicit cosx_final_pass=True or
+    cosx_final_grid raises RuntimeError at the solve. Not offered (solve_rohf cannot
     honour them): stability_descent (no ROHF stability analysis), trah_trigger
     (no ROHF TRAH step), mom_reference ("initial" is UHF/UKS only), diis,
     smearing_sigma, aurora and symmetry."""
@@ -4737,7 +4739,9 @@ def run_roks(
     rest doubly occupied (run_rohf's occupations and Guest-Saunders coupling).
     Settings, result, gradient (ks_gradient_roks) and exclusions as for
     run_uks; guess= ("minao" default, or "hcore") comes after relativistic
-    here. dm0 is run_rohf's pair. As in run_rohf, solve_rohf has no TRAH step,
+    here. dm0 is run_rohf's pair. As in run_rohf, an explicit
+    cosx_final_pass=True or cosx_final_grid raises RuntimeError at the solve
+    (no ROHF/ROKS COSX final-grid pass), and solve_rohf has no TRAH step,
     no stability analysis and no mom_reference="initial", so trah_trigger,
     stability_descent and mom_reference are not offered."""
     ...
