@@ -12,7 +12,8 @@ RDKit is an optional dependency, imported inside each function::
 Coordinates travel as Angstrom floats and are handed to
 ``Molecule.from_arrays`` as float64 (no text round trip), so they are
 preserved exactly; ferric converts to Bohr once, as for any Angstrom input.
-Charge and multiplicity are read from the ``ferric.Molecule`` by default.
+Charge and multiplicity are read from the ``ferric.Molecule`` by default
+(``to_rdkit``); ``from_rdkit`` takes the formal charge and the radical count.
 """
 
 from __future__ import annotations
@@ -42,13 +43,15 @@ def _rdkit():
 def from_rdkit(
     mol: Any,
     charge: int | None = None,
-    multiplicity: int = 1,
+    multiplicity: int | None = None,
     conf_id: int = -1,
 ) -> ferric.Molecule:
     """A ``ferric.Molecule`` from an RDKit ``Mol`` with a 3-D conformer.
 
     ``charge=None`` uses ``Chem.GetFormalCharge(mol)``. ``conf_id`` selects the
-    conformer (-1: the default one). Explicit hydrogens are NOT added; call
+    conformer (-1: the default one). ``multiplicity=None`` is
+    ``sum(atom.GetNumRadicalElectrons()) + 1`` (a radical SMILES such as
+    ``[CH3]`` is a doublet); an explicit value overrides. Explicit hydrogens are NOT added; call
     ``Chem.AddHs`` first (``from_smiles`` does). ``ValueError`` if the molecule
     has no conformer, the conformer is 2-D, or ``conf_id`` does not exist.
     """
@@ -70,6 +73,8 @@ def from_rdkit(
     symbols = [atom.GetSymbol() for atom in mol.GetAtoms()]
     if charge is None:
         charge = Chem.GetFormalCharge(mol)
+    if multiplicity is None:
+        multiplicity = sum(a.GetNumRadicalElectrons() for a in mol.GetAtoms()) + 1
     return ferric.Molecule.from_arrays(
         symbols,
         coords,
@@ -82,7 +87,7 @@ def from_rdkit(
 def from_smiles(
     smiles: str,
     charge: int | None = None,
-    multiplicity: int = 1,
+    multiplicity: int | None = None,
     seed: int = 0xF00D,
     optimize: bool = True,
 ) -> ferric.Molecule:
@@ -91,7 +96,8 @@ def from_smiles(
     Adds hydrogens, embeds with ETKDG (``randomSeed=seed``, so the result is
     reproducible for a given RDKit version) and, when ``optimize``, relaxes
     with MMFF (UFF if MMFF has no parameters). ``charge=None`` is the SMILES'
-    formal charge. ``ValueError`` for an unparsable SMILES or a failed embed.
+    formal charge and ``multiplicity=None`` counts the radical electrons plus 1
+    (see ``from_rdkit``). ``ValueError`` for an unparsable SMILES or a failed embed.
     """
     Chem = _rdkit()
     from rdkit.Chem import AllChem

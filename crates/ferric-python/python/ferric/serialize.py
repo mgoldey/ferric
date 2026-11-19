@@ -33,7 +33,7 @@ import numpy as np
 
 import ferric
 
-from .qcschema import _plain
+from ._util import _plain, default_multiplicity
 
 __all__ = ["molecule_from_dict", "read_run_log", "to_dict", "to_json"]
 
@@ -81,7 +81,7 @@ def to_dict(obj: Any, arrays: bool = False) -> dict[str, Any]:
             continue
         try:
             value = getattr(obj, name)
-        except (AttributeError, RuntimeError, ValueError, TypeError):  # noqa: S112 - not a field
+        except (AttributeError, NotImplementedError):  # noqa: S112 - not a field
             continue
         if callable(value):
             continue
@@ -146,14 +146,11 @@ def molecule_from_dict(
         multiplicity = d.get("multiplicity")
     kw = {"units": "bohr", "charge": charge, "ghost": d.get("ghost") or None}
     coords = np.asarray(d["coords_bohr"], dtype=float)
-    if multiplicity is not None:
-        return ferric.Molecule.from_arrays(
-            d["symbols"], coords, multiplicity=int(multiplicity), **kw
-        )
-    try:
-        return ferric.Molecule.from_arrays(d["symbols"], coords, multiplicity=1, **kw)
-    except ValueError:
-        return ferric.Molecule.from_arrays(d["symbols"], coords, multiplicity=2, **kw)
+    if multiplicity is None:
+        multiplicity = default_multiplicity(d["symbols"], charge, kw["ghost"])
+    return ferric.Molecule.from_arrays(
+        d["symbols"], coords, multiplicity=int(multiplicity), **kw
+    )
 
 
 def read_run_log(path: str | os.PathLike[str]) -> list[dict[str, Any]]:

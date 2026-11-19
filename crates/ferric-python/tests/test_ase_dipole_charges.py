@@ -131,7 +131,7 @@ def test_neutral_dipole_is_origin_independent():
 )
 def test_charges_sum_to_the_total_charge(case, scheme):
     symbols, pos, calc, total = case
-    atoms = _atoms(symbols, pos, basis="sto-3g", charges=scheme, **calc)
+    atoms = _atoms(symbols, pos, basis="sto-3g", charge_scheme=scheme, **calc)
     q = atoms.get_charges()
     assert q.shape == (len(atoms),)
     # Mulliken/Lowdin partition tr(DS) exactly; Hirshfeld integrates on a grid.
@@ -142,7 +142,9 @@ def test_charges_sum_to_the_total_charge(case, scheme):
 
 
 def test_charges_scheme_routes_to_the_ferric_function():
-    atoms = _atoms("OH2", WATER_POS, method="rhf", basis="sto-3g", charges="lowdin")
+    atoms = _atoms(
+        "OH2", WATER_POS, method="rhf", basis="sto-3g", charge_scheme="lowdin"
+    )
     q = atoms.get_charges()
     r = atoms.calc.ferric_result
     mol = ferric.Molecule.from_arrays(["O", "H", "H"], WATER_POS)
@@ -208,6 +210,32 @@ def test_charge_and_multiplicity_fall_back_to_the_atoms():
     assert atoms.get_potential_energy() < e_dication
 
 
+def test_fractional_initial_charge_sum_is_refused():
+    atoms = Atoms("OH2", positions=WATER_POS)
+    atoms.set_initial_charges([0.3, 0.1, 0.0])
+    atoms.calc = FerricCalculator(basis="sto-3g")
+    with pytest.raises(CalculatorSetupError, match="0.4"):
+        atoms.get_potential_energy()
+    # An explicit charge bypasses the fallback.
+    atoms.calc = FerricCalculator(basis="sto-3g", charge=0)
+    atoms.get_potential_energy()
+
+
+def test_bad_initial_magnetic_moments_are_refused():
+    atoms = Atoms("OH2", positions=WATER_POS)
+    atoms.set_initial_magnetic_moments(np.array([[0, 0, 1.0], [0, 0, 0], [0, 0, 0]]))
+    atoms.calc = FerricCalculator(basis="sto-3g")
+    with pytest.raises(CalculatorSetupError, match="non-collinear"):
+        atoms.get_potential_energy()
+    atoms = Atoms("OH2", positions=WATER_POS)
+    atoms.set_initial_magnetic_moments([0.5, 0.0, 0.0])
+    atoms.calc = FerricCalculator(basis="sto-3g")
+    with pytest.raises(CalculatorSetupError, match="magnetic moments sum to 0.5"):
+        atoms.get_potential_energy()
+    atoms.calc = FerricCalculator(basis="sto-3g", multiplicity=1)
+    atoms.get_potential_energy()
+
+
 def test_dipole_and_charges_refusals():
     with pytest.raises(PropertyNotImplementedError, match="closed-shell"):
         _atoms("OH2", WATER_POS, method="uhf", charge=1, multiplicity=2).get_charges()
@@ -215,8 +243,14 @@ def test_dipole_and_charges_refusals():
         _atoms(
             "OH2", WATER_POS, method="rimp2", auxbasis="cc-pvdz-ri"
         ).get_dipole_moment()
-    with pytest.raises(CalculatorSetupError, match="charges="):
-        _atoms("OH2", WATER_POS, charges="chelpg").get_charges()
+    with pytest.raises(CalculatorSetupError, match="charge_scheme="):
+        FerricCalculator(charge_scheme="chelpg")
+    calc = FerricCalculator()
+    with pytest.raises(CalculatorSetupError, match="charge_scheme="):
+        calc.set(charge_scheme="chelpg")
+    # The old spelling (a typo for charge=) is no longer accepted.
+    with pytest.raises(CalculatorSetupError, match="unknown parameter"):
+        FerricCalculator(charges=-1)
     cell = Atoms(
         "H2", positions=[(0, 0, 0), (0, 0, 0.74)], cell=np.eye(3) * 4, pbc=True
     )

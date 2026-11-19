@@ -127,3 +127,17 @@ def test_multiplicity_round_trip_and_old_dict_fallback():
     assert fs.molecule_from_dict(d, multiplicity=1).multiplicity == 1
     old = {k: v for k, v in d.items() if k != "multiplicity"}
     assert fs.molecule_from_dict(old).multiplicity == 1  # parity fallback
+
+
+def test_molecule_from_dict_parity_default_is_direct():
+    base = {
+        "symbols": ["H", "H", "H"],
+        "coords_bohr": [[0, 0, 0], [0, 0, 1.5], [0, 1.5, 0]],
+    }
+    assert fs.molecule_from_dict(base).multiplicity == 2
+    assert fs.molecule_from_dict(base, charge=1).multiplicity == 1
+    ghosted = {**base, "ghost": [False, False, True]}
+    assert fs.molecule_from_dict(ghosted).multiplicity == 1
+    # A bad symbol names the real cause instead of retrying another multiplicity.
+    with pytest.raises(ValueError, match="unknown element"):
+        fs.molecule_from_dict({**base, "symbols": ["H", "H", "Xx"]})

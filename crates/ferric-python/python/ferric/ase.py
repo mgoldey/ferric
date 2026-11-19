@@ -43,19 +43,22 @@ holds the last ferric result object.
 ``round(atoms.get_initial_charges().sum())`` and the multiplicity
 ``abs(round(atoms.get_initial_magnetic_moments().sum())) + 1``, so atoms
 without initial charges or magnetic moments give the neutral singlet, as
-before. An explicit value always wins.
+before. A fractional initial-charge sum, non-collinear (N, 3) magnetic moments
+or a magnetic-moment sum that is not an integer (within 1e-3) raise
+``CalculatorSetupError``. An explicit value always wins.
 
 ``dipole`` (e*Angstrom, about the coordinate origin; origin-independent for a
 neutral molecule) is available for the molecular SCF and Kohn-Sham methods
 (rhf, uhf, rohf, rks, uks, roks): the SCF density contracted with
 ``AoIntegrals.dipole`` plus the nuclear term ``sum_A Z_A R_A`` (ECP-effective
 ``Z_A``, ghosts zero). ``charges`` (per-atom partial charges, e) is available
-for the closed-shell rhf and rks, by the ``charges=`` scheme: ``"mulliken"``
+for the closed-shell rhf and rks, by the ``charge_scheme=`` parameter: ``"mulliken"``
 (default), ``"lowdin"`` or ``"hirshfeld"`` (``ferric.mulliken_charges`` /
 ``lowdin_charges`` / ``hirshfeld_charges``). Both are computed from the SCF
 already run for the energy when one is cached. Periodic cells, the RI-MP2
 methods (no relaxed density is exposed) and open-shell ``charges`` raise
-``PropertyNotImplementedError``.
+``PropertyNotImplementedError``. ``charge_scheme`` is validated when the
+calculator is built and in ``set()``. Any ``set()`` discards the cached SCF.
 """
 
 from __future__ import annotations
@@ -96,6 +99,18 @@ _KS = ("dft", "rks", "uks", "roks")
 # Resolved methods whose result carries the SCF density (dipole, charges).
 _DENSITY = ("rhf", "uhf", "rohf", "rks", "uks", "roks")
 _CHARGE_SCHEMES = ("mulliken", "lowdin", "hirshfeld")
+_INT_TOL = 1e-3
+
+
+def _check_scheme(kwargs):
+    """Refuse an unknown ``charge_scheme`` as early as it is given."""
+    if "charge_scheme" in kwargs:
+        scheme = str(kwargs["charge_scheme"]).lower()
+        if scheme not in _CHARGE_SCHEMES:
+            raise CalculatorSetupError(
+                f"FerricCalculator: charge_scheme={kwargs['charge_scheme']!r}; choose one of "
+                f"{list(_CHARGE_SCHEMES)}"
+            )
 
 
 class FerricCalculator(Calculator):
@@ -118,7 +133,7 @@ class FerricCalculator(Calculator):
         "auxbasis": None,
         "charge": None,
         "multiplicity": None,
-        "charges": "mulliken",
+        "charge_scheme": "mulliken",
         "kpts": None,
         "options": None,
     }
@@ -134,6 +149,7 @@ class FerricCalculator(Calculator):
                 f"FerricCalculator: unknown parameter(s) {unknown}; driver keywords go in "
                 "options={...}"
             )
+        _check_scheme(kwargs)
         Calculator.__init__(self, **kwargs)
         self.ferric_result = None
 
@@ -143,6 +159,7 @@ class FerricCalculator(Calculator):
             raise CalculatorSetupError(
                 f"FerricCalculator: unknown parameter(s) {unknown}"
             )
+        _check_scheme(kwargs)
         return Calculator.set(self, **kwargs)
 
     def reset(self):
@@ -217,19 +234,36 @@ class FerricCalculator(Calculator):
         if want_dipole and "dipole" not in self.results:
             self.results["dipole"] = _dipole(mol, basis, result) * Bohr
         if want_charges and "charges" not in self.results:
-            self.results["charges"] = _charges(mol, basis, result, p.charges)
+            self.results["charges"] = _charges(mol, basis, result, p.charge_scheme)
 
     def _charge_multiplicity(self, atoms):
         """Explicit ``charge``/``multiplicity`` win; ``None`` falls back to
         the atoms' initial charges / magnetic moments (0 / 1 without them)."""
         p = self.parameters
         if p.charge is None:
-            charge = round(float(np.sum(atoms.get_initial_charges())))
+            total = float(np.sum(atoms.get_initial_charges()))
+            if abs(total - round(total)) > _INT_TOL:
+                raise CalculatorSetupError(
+                    f"FerricCalculator: the atoms' initial charges sum to {total:g}, not an "
+                    "integer; pass charge= explicitly"
+                )
+            charge = round(total)
         else:
             charge = int(p.charge)
         if p.multiplicity is None:
-            unpaired = abs(round(float(np.sum(atoms.get_initial_magnetic_moments()))))
-            multiplicity = unpaired + 1
+            magmoms = np.asarray(atoms.get_initial_magnetic_moments())
+            if magmoms.ndim != 1:
+                raise CalculatorSetupError(
+                    "FerricCalculator: non-collinear initial magnetic moments (shape "
+                    f"{magmoms.shape}) have no multiplicity; pass multiplicity= explicitly"
+                )
+            total = float(np.sum(magmoms))
+            if abs(total - round(total)) > _INT_TOL:
+                raise CalculatorSetupError(
+                    f"FerricCalculator: the atoms' initial magnetic moments sum to {total:g}, "
+                    "not an integer; pass multiplicity= explicitly"
+                )
+            multiplicity = abs(round(total)) + 1
         else:
             multiplicity = int(p.multiplicity)
         return charge, multiplicity
@@ -245,12 +279,6 @@ class FerricCalculator(Calculator):
                 f"{method!r} exposes no relaxed density"
             )
         if want_charges:
-            scheme = str(self.parameters.charges).lower()
-            if scheme not in _CHARGE_SCHEMES:
-                raise CalculatorSetupError(
-                    f"FerricCalculator: charges={self.parameters.charges!r}; choose one of "
-                    f"{list(_CHARGE_SCHEMES)}"
-                )
             if method not in ("rhf", "rks"):
                 raise PropertyNotImplementedError(
                     f"FerricCalculator: charges are closed-shell only (rhf, rks); method "

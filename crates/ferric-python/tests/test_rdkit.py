@@ -92,3 +92,10 @@ def test_to_rdkit_rejects_ghosts():
     )
     with pytest.raises(ValueError, match="ghost"):
         fr.to_rdkit(mol)
+
+
+def test_radical_smiles_defaults_to_doublet_and_explicit_overrides():
+    mol = fr.from_smiles("[CH3]")
+    assert mol.multiplicity == 2
+    assert fr.from_smiles("[CH3]", multiplicity=4).multiplicity == 4
+    assert fr.from_smiles("CCO").multiplicity == 1
