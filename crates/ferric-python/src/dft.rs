@@ -643,6 +643,10 @@ pub(crate) fn run_dft(
         trah_trigger: None,
         xc: Some(xc_name),
         dft_grid,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let mut cfg = options.into_rhf_config().py()?;
     if symmetric {
@@ -1216,6 +1220,10 @@ fn run_open_ks(
         trah_trigger: None,
         xc: Some(functional.to_string()),
         dft_grid,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let mut config = options.into_rhf_config().py()?;
     let (solver, gradient_kind) = match kind {

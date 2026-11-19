@@ -333,36 +333,6 @@ fn scf_jk_route_line(cfg: &Config, jk: &ferric_scf::scf_jk::ScfJk) -> String {
     format!("Reference SCF J/K: {} ({source})", jk.label())
 }
 
-/// The actual CLI, taking argv explicitly instead of reading
-/// `std::env::args()` itself. Split out so a caller whose real OS-process
-/// argv does NOT match `[program_name, ...user_args]` can reconstruct that
-/// shape and pass it in directly, rather than being stuck with whatever
-/// `std::env::args()` happens to return in their process.
-///
-/// This exists because of a real, measured mismatch: `ferric-python`'s
-/// `_cli_main` `#[pyfunction]` (the `ferric` console-script entry point pip
-/// installs) is called from INSIDE an already-running Python interpreter,
-/// and `std::env::args()` there returns THREE elements for a two-argument
-/// invocation -- `[python_interpreter_path, script_path, "--help"]`, not
-/// `[script_path, "--help"]` -- confirmed by an inline debug print, not
-/// assumed: a real `strace -f -e trace=execve` on the shebang-launched
-/// wrapper script showed a completely ORDINARY two-element argv at the
-/// process's initial exec, so the extra element is something Python's own
-/// runtime does to the argv `std::env::args()`/`/proc/self/cmdline` report
-/// AFTER that point, not a shebang or wrapper-script artifact. The old
-/// `args[1] == "--help"` check therefore silently checked the WRONG
-/// element under the console script (the script's own path, never "--help"
-/// or a real TOML path), while working correctly for the native binaries
-/// this crate also builds -- caught because `ferric --help`'s exit code
-/// (2, not the documented 0) and truncated one-line output differed from
-/// the native binary's, not from a logic read of the diff.
-///
-/// `_cli_main` reconstructs argv from Python's own `sys.argv` (which the
-/// pip-generated wrapper script sets correctly -- confirmed against
-/// maturin's own docs) instead of trying to normalize `std::env::args()`'s
-/// extra element away, since `sys.argv` is the shape Python itself commits
-/// to being stable, not an implementation detail of how CPython's runtime
-/// happens to report process argv on this platform/version.
 /// One stderr line saying what the DF-guess stage actually did.
 fn print_df_guess_outcome(
     dfg: &ferric_scf::ladder::DfGuessResult,
@@ -466,7 +436,7 @@ struct ScfConfigInputs<'a> {
 }
 
 /// The run's base `RhfConfig`: the `[scf]` section lowered through
-/// `ferric_scf::options` (`ScfOptionsExt::into_rhf_config`), plus the fields
+/// `ferric_scf::options` (`ScfOptions::into_rhf_config`), plus the fields
 /// other sections own (`[dft]` grid and functional, `[cosmo]`, `[qmmm]`
 /// polarizable sites).
 ///
@@ -481,9 +451,7 @@ struct ScfConfigInputs<'a> {
 /// error. Most were already validated by `load_config`; an error here still
 /// fails the run rather than dropping the key.
 fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig, CliError> {
-    use ferric_scf::options::{
-        df_k_aux_or_default, AuxBasis, Guess, ScfOptions, ScfOptionsExt, TrahTrigger,
-    };
+    use ferric_scf::options::{df_k_aux_or_default, AuxBasis, Guess, ScfOptions, TrahTrigger};
     let ScfConfigInputs {
         task,
         cosx_router_allowed,
@@ -577,65 +545,63 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
         s.df_k_aux.as_deref().map(AuxBasis::parse),
         kind_default(df_k_default),
     );
-    let options = ScfOptionsExt {
-        base: ScfOptions {
-            max_iter: Some(s.max_iter),
-            energy_conv: Some(s.energy_conv),
-            density_conv: Some(s.density_conv),
-            diis_size: Some(s.diis_size),
-            diis_flavor: Some(diis_flavor),
-            integral_thresh: Some(s.integral_thresh),
-            k_builder: s.k_builder.clone(),
-            cosx: Some(cosx),
-            df_j_aux,
-            df_k_aux,
-            ri_j_precision,
-            ri_k_precision,
-            // A written `level_shift`, 0 included, turns off the automatic
-            // meta-GGA shift (the lowering's rule).
-            level_shift: s.level_shift,
-            mom_after_iter: Some(s.mom_after_iter),
-            mom_reference: Some(mom_reference),
-            smearing_sigma: s.smearing_sigma,
-            soscf: Some(s.soscf),
-            guess: Some(guess),
-            guess_basis,
-            init_guess_density: None,
-            external_potential,
-            pcm,
-            // `None` = "unset" -> the SCF resolver auto-detects (0.8 x RAM).
-            // An explicit [memory] budget is passed through and honored.
-            three_index_budget_bytes: budget_bytes,
-            // `[scf] check_stability` / `stability_descent` (the descent acts
-            // on the verdict, so it implies the check).
-            stability: Some(s.stability()),
-            symmetry: Some(s.symmetry),
-            irrep_nelec: s.irrep_nelec.as_ref().map(|m| {
-                m.iter()
-                    .map(|(label, n)| (label.clone(), *n))
-                    .collect::<Vec<_>>()
-            }),
-            eri: Some(eri),
-            relativistic,
-            // SCF accelerators, both opt-in and OFF unless `[scf]` asks.
-            //
-            // AURORA is measured to win on closed-shell RHF (-24.2% J/K
-            // builds, growing with size) but is NOT defaulted on: its evidence
-            // is closed-shell RHF only, pure functionals are known-weak, open
-            // shell is unimplemented, and the paper's D_k^xc term -- the
-            // reason pure functionals fail -- is named but never defined.
-            //
-            // TRAH wins ITERATIONS everywhere measured but loses WALL TIME
-            // everywhere (45x DIIS on benzene/cc-pVDZ), because each step pays
-            // a Davidson of Fock builds. Its value is convergence RESCUE, not
-            // throughput.
-            aurora: Some(s.aurora),
-            trah_trigger,
-            // The SCF functional (`Config::scf_xc_and_aux_defaults`) and the
-            // `[dft]` main grid.
-            xc,
-            dft_grid,
-        },
+    let options = ScfOptions {
+        max_iter: Some(s.max_iter),
+        energy_conv: Some(s.energy_conv),
+        density_conv: Some(s.density_conv),
+        diis_size: Some(s.diis_size),
+        diis_flavor: Some(diis_flavor),
+        integral_thresh: Some(s.integral_thresh),
+        k_builder: s.k_builder.clone(),
+        cosx: Some(cosx),
+        df_j_aux,
+        df_k_aux,
+        ri_j_precision,
+        ri_k_precision,
+        // A written `level_shift`, 0 included, turns off the automatic
+        // meta-GGA shift (the lowering's rule).
+        level_shift: s.level_shift,
+        mom_after_iter: Some(s.mom_after_iter),
+        mom_reference: Some(mom_reference),
+        smearing_sigma: s.smearing_sigma,
+        soscf: Some(s.soscf),
+        guess: Some(guess),
+        guess_basis,
+        init_guess_density: None,
+        external_potential,
+        pcm,
+        // `None` = "unset" -> the SCF resolver auto-detects (0.8 x RAM).
+        // An explicit [memory] budget is passed through and honored.
+        three_index_budget_bytes: budget_bytes,
+        // `[scf] check_stability` / `stability_descent` (the descent acts
+        // on the verdict, so it implies the check).
+        stability: Some(s.stability()),
+        symmetry: Some(s.symmetry),
+        irrep_nelec: s.irrep_nelec.as_ref().map(|m| {
+            m.iter()
+                .map(|(label, n)| (label.clone(), *n))
+                .collect::<Vec<_>>()
+        }),
+        eri: Some(eri),
+        relativistic,
+        // SCF accelerators, both opt-in and OFF unless `[scf]` asks.
+        //
+        // AURORA is measured to win on closed-shell RHF (-24.2% J/K
+        // builds, growing with size) but is NOT defaulted on: its evidence
+        // is closed-shell RHF only, pure functionals are known-weak, open
+        // shell is unimplemented, and the paper's D_k^xc term -- the
+        // reason pure functionals fail -- is named but never defined.
+        //
+        // TRAH wins ITERATIONS everywhere measured but loses WALL TIME
+        // everywhere (45x DIIS on benzene/cc-pVDZ), because each step pays
+        // a Davidson of Fock builds. Its value is convergence RESCUE, not
+        // throughput.
+        aurora: Some(s.aurora),
+        trah_trigger,
+        // The SCF functional (`Config::scf_xc_and_aux_defaults`) and the
+        // `[dft]` main grid.
+        xc,
+        dft_grid,
         diis_switch_thresh: s.diis_switch_thresh,
         // The one place the CLI picks the RI-J default by task: optimize and
         // frequencies resolve an unset precision to f64 (the f32 surface is
@@ -664,6 +630,37 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
 /// Errors are reported on stderr and terminate the process through
 /// `std::process::exit` (status 2 for usage errors, 1 for input or run
 /// errors) rather than being returned.
+///
+/// This is the actual CLI, taking argv explicitly instead of reading
+/// `std::env::args()` itself. Split out so a caller whose real OS-process
+/// argv does NOT match `[program_name, ...user_args]` can reconstruct that
+/// shape and pass it in directly, rather than being stuck with whatever
+/// `std::env::args()` happens to return in their process.
+///
+/// This exists because of a real, measured mismatch: `ferric-python`'s
+/// `_cli_main` `#[pyfunction]` (the `ferric` console-script entry point pip
+/// installs) is called from INSIDE an already-running Python interpreter,
+/// and `std::env::args()` there returns THREE elements for a two-argument
+/// invocation -- `[python_interpreter_path, script_path, "--help"]`, not
+/// `[script_path, "--help"]` -- confirmed by an inline debug print, not
+/// assumed: a real `strace -f -e trace=execve` on the shebang-launched
+/// wrapper script showed a completely ORDINARY two-element argv at the
+/// process's initial exec, so the extra element is something Python's own
+/// runtime does to the argv `std::env::args()`/`/proc/self/cmdline` report
+/// AFTER that point, not a shebang or wrapper-script artifact. The old
+/// `args[1] == "--help"` check therefore silently checked the WRONG
+/// element under the console script (the script's own path, never "--help"
+/// or a real TOML path), while working correctly for the native binaries
+/// this crate also builds -- caught because `ferric --help`'s exit code
+/// (2, not the documented 0) and truncated one-line output differed from
+/// the native binary's, not from a logic read of the diff.
+///
+/// `_cli_main` reconstructs argv from Python's own `sys.argv` (which the
+/// pip-generated wrapper script sets correctly -- confirmed against
+/// maturin's own docs) instead of trying to normalize `std::env::args()`'s
+/// extra element away, since `sys.argv` is the shape Python itself commits
+/// to being stable, not an implementation detail of how CPython's runtime
+/// happens to report process argv on this platform/version.
 pub fn run(args: Vec<String>) {
     // Threading model (see ferric_core::blas_threads): thread stacks large
     // enough for threaded LAPACK on any thread, OpenBLAS at 1 thread in

@@ -652,8 +652,8 @@ pub(crate) fn run_rhf(
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
-    // Defaults come from ferric_scf::options; the CLI `[scf]` section does not
-    // use this lowering yet and will share it (ARCHITECTURE.md roadmap 7).
+    // Defaults come from ferric_scf::options, the lowering the CLI `[scf]`
+    // section also goes through; the CLI-only knobs stay `None` here.
     let options = ScfOptions {
         max_iter,
         energy_conv,
@@ -695,6 +695,10 @@ pub(crate) fn run_rhf(
         // Hartree-Fock: no functional, no KS grid.
         xc: None,
         dft_grid: None,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let mut config = options.into_rhf_config().py()?;
     if with_gradient {
@@ -1487,8 +1491,8 @@ pub(crate) fn run_uhf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same default values as run_rhf (the CLI [scf] section has equal values but
-    // its own lowering until roadmap 7).
+    // Same default values as run_rhf (and the CLI `[scf]` section, which
+    // shares this lowering).
     let options = ScfOptions {
         max_iter,
         energy_conv,
@@ -1529,6 +1533,10 @@ pub(crate) fn run_uhf(
         // Hartree-Fock: no functional, no KS grid.
         xc: None,
         dft_grid: None,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let config: UhfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(
@@ -1622,8 +1630,8 @@ pub(crate) fn run_rohf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same default values as run_rhf / run_uhf (the CLI has equal values, own
-    // lowering until roadmap 7). `None` for a knob run_rohf does not take
+    // Same default values as run_rhf / run_uhf (and the CLI `[scf]` section,
+    // which shares this lowering). `None` for a knob run_rohf does not take
     // keeps the RhfConfig default.
     let options = ScfOptions {
         max_iter,
@@ -1663,6 +1671,10 @@ pub(crate) fn run_rohf(
         // Hartree-Fock: no functional, no KS grid.
         xc: None,
         dft_grid: None,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let config: RohfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(

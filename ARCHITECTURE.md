@@ -86,8 +86,8 @@ ferric-core
   extension trait. `OrExit` replaces the hand-written
   `unwrap_or_else(|e| { eprintln!(...); exit(1) })` closures. It is a
   transitional step: run functions should move to `Result<_, CliError>` with
-  `?`, so that `process::exit` appears only in `main`/`run`. `CliError` has
-  no producers yet; it marks where that migration lands.
+  `?`, so that `process::exit` appears only in `main`/`run`. Its first
+  producer is `try_scf_config` (the `[scf]` lowering).
 - **Python:** convert a `FerricError` with the crate-local `IntoPyResult`
   extension trait (`.py()?`), not a fresh `map_err` per call site. A blanket
   `From<FerricError> for PyErr` is not possible (orphan rule). Older
@@ -151,13 +151,16 @@ Done:
     `run_roks` (oracle-tested against their old `rhf_config_budgeted`
     construction), with the RIJCOSX rule as
     `ferric_scf::options::df_k_aux_or_default`.
+7. The CLI `[scf]` section lowered through `ferric_scf::options`
+   (`try_scf_config` in ferric-cli, oracle-tested against the old
+   `RhfConfig` literal), removing the hand-kept "CLI and Python agree"
+   parity. It is also the template for 12: a `Result<_, CliError>`
+   function with one `.or_exit()` at the call site.
 
 Next, each as its own PR following the patterns above:
 
 6b. Fill the keyword-argument drift between the six SCF entry points
     additively (and in `ferric.pyi`).
-7. Lower the CLI `ScfCfg` through `ferric_scf::options`, removing the
-   hand-kept "CLI and Python agree" parity.
 8. Grow the existing `converged_*` reference-SCF helpers in
    `ferric-python/src/mp2.rs` into a borrowed `PreparedSystem` (molecule,
    prepared basis, operator, bounds, context) used by every correlated

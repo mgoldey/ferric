@@ -1,8 +1,8 @@
 //! Frontend-neutral SCF options and their lowering to [`RhfConfig`](crate::rhf::RhfConfig).
 //!
 //! Frontends (the Python `run_rhf` / `run_uhf` / `run_rohf` and the Kohn-Sham
-//! `run_dft` / `run_uks` / `run_roks`, and the CLI `[scf]` section through
-//! [`ScfOptionsExt`](crate::options::ScfOptionsExt)) parse their own
+//! `run_dft` / `run_uks` / `run_roks`, and the CLI `[scf]` section) parse
+//! their own
 //! surface syntax (strings, PyO3 objects, TOML) into an [`ScfOptions`](crate::options::ScfOptions), then
 //! call [`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config). The lowering is pure: no I/O, no
 //! environment reads, no process exit, no printing. It owns the defaults (the
@@ -29,9 +29,6 @@ use ferric_core::FerricError;
 use ndarray::Array2;
 
 use crate::rhf::RhfConfig;
-
-mod ext;
-pub use ext::ScfOptionsExt;
 
 /// Default SCF iteration cap ([`RhfConfig::max_iter`]).
 pub const DEFAULT_SCF_MAX_ITER: usize = 200;
@@ -253,6 +250,16 @@ pub struct ScfOptions {
     /// [`RhfConfig::dft_grid`]: an explicit main KS grid. `None` keeps the
     /// default (`None`, the production grid on every KS path).
     pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
+    /// [`RhfConfig::diis_switch_thresh`].
+    pub diis_switch_thresh: Option<f64>,
+    /// [`RhfConfig::ri_j_task`]: the task class an unset
+    /// [`RhfConfig::ri_j_precision`] resolves against. A frontend derives it
+    /// from the task it runs; it is not a user knob.
+    pub ri_j_task: Option<crate::df_j::RiJTask>,
+    /// [`RhfConfig::screening`].
+    pub screening: Option<crate::screening::ScreeningKind>,
+    /// [`RhfConfig::verbose`].
+    pub verbose: Option<bool>,
 }
 
 impl ScfOptions {
@@ -306,6 +313,10 @@ impl ScfOptions {
             trah_trigger,
             xc,
             dft_grid,
+            diis_switch_thresh,
+            ri_j_task,
+            screening,
+            verbose,
         } = self;
 
         let mut c = RhfConfig::default();
@@ -414,6 +425,18 @@ impl ScfOptions {
         }
         if dft_grid.is_some() {
             c.dft_grid = dft_grid;
+        }
+        if let Some(v) = diis_switch_thresh {
+            c.diis_switch_thresh = v;
+        }
+        if let Some(v) = ri_j_task {
+            c.ri_j_task = v;
+        }
+        if let Some(v) = screening {
+            c.screening = v;
+        }
+        if let Some(v) = verbose {
+            c.verbose = v;
         }
         Ok(c)
     }
@@ -694,6 +717,10 @@ mod tests {
             trah_trigger: trah(k.trah_trigger),
             xc: None,
             dft_grid: None,
+            diis_switch_thresh: None,
+            ri_j_task: None,
+            screening: None,
+            verbose: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -733,6 +760,10 @@ mod tests {
             trah_trigger: trah(k.trah_trigger),
             xc: None,
             dft_grid: None,
+            diis_switch_thresh: None,
+            ri_j_task: None,
+            screening: None,
+            verbose: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -772,6 +803,10 @@ mod tests {
             trah_trigger: None,
             xc: None,
             dft_grid: None,
+            diis_switch_thresh: None,
+            ri_j_task: None,
+            screening: None,
+            verbose: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -1099,6 +1134,10 @@ mod tests {
             trah_trigger: None,
             xc: Some(k.functional.unwrap_or("LDA").to_string()),
             dft_grid: k.dft_grid,
+            diis_switch_thresh: None,
+            ri_j_task: None,
+            screening: None,
+            verbose: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -1143,6 +1182,10 @@ mod tests {
             trah_trigger: None,
             xc: Some(functional.to_string()),
             dft_grid: k.dft_grid,
+            diis_switch_thresh: None,
+            ri_j_task: None,
+            screening: None,
+            verbose: None,
         }
         .into_rhf_config()
         .unwrap()
@@ -1287,6 +1330,31 @@ mod tests {
         assert_eq!((d.check_stability, d.scf_stability_descent), (false, false));
     }
 
+    /// The knobs only the CLI `[scf]` section sets today each lower to their
+    /// one `RhfConfig` field.
+    #[test]
+    fn cli_knobs_lower_to_their_config_fields() {
+        use crate::df_j::RiJTask;
+        use crate::screening::ScreeningKind;
+        let c = ScfOptions {
+            diis_switch_thresh: Some(3e-2),
+            ri_j_task: Some(RiJTask::Geometry),
+            screening: Some(ScreeningKind::Csb),
+            verbose: Some(true),
+            ..Default::default()
+        }
+        .into_rhf_config()
+        .unwrap();
+        let expected = RhfConfig {
+            diis_switch_thresh: 3e-2,
+            ri_j_task: RiJTask::Geometry,
+            screening: ScreeningKind::Csb,
+            verbose: true,
+            ..RhfConfig::default()
+        };
+        same(&c, &expected);
+    }
+
     /// Exhaustive destructure of `RhfConfig`: adding a field fails to compile
     /// this test (the lowering itself still compiles, since it starts from
     /// `RhfConfig::default()`), forcing a decision on whether `ScfOptions`
@@ -1301,7 +1369,7 @@ mod tests {
             density_conv: _,              // lowered
             diis_size: _,                 // lowered
             diis_flavor: _,               // lowered
-            diis_switch_thresh: _,        // default
+            diis_switch_thresh: _,        // lowered
             smearing_sigma: _,            // lowered
             integral_thresh: _,           // lowered
             k_builder: _,                 // lowered
@@ -1309,7 +1377,7 @@ mod tests {
             df_j_aux: _,                  // lowered
             df_k_aux: _,                  // lowered
             ri_j_precision: _,            // lowered
-            ri_j_task: _,                 // default (geometry drivers set it)
+            ri_j_task: _,                 // lowered (CLI task class; geometry drivers also set it)
             ri_k_precision: _,            // lowered
             xc: _,                        // lowered
             xc_omega: _,                  // default
@@ -1342,11 +1410,11 @@ mod tests {
             cosmo: _,                     // default
             pcm: _,                       // lowered
             polarizable: _,               // default (QM/MM)
-            verbose: _,                   // default
+            verbose: _,                   // lowered
             check_stability: _,           // lowered (stability_descent)
             symmetry: _,                  // lowered
             irrep_nelec: _,               // lowered
-            screening: _,                 // default
+            screening: _,                 // lowered
             raw_handoff: _,               // default
             eri: _,                       // lowered
             eri_route: _,                 // default (solver output)
