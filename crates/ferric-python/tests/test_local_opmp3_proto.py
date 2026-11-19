@@ -180,4 +180,6 @@ def test_pbe0_reference_new_maps_match_exact_in_the_trivial_limit():
     assert ok, worst
     assert not bad  # the anchor can fail on this reference
     assert abs(info["e3_identity_gap"]) <= info["e3_identity_bound"]
-    assert sys_.e_nbs < 0.0  # a KS reference carries (stabilizing) non-Brillouin singles
+    assert (
+        sys_.e_nbs < 0.0
+    )  # a KS reference carries (stabilizing) non-Brillouin singles

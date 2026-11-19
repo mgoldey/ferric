@@ -28,6 +28,8 @@ pub mod lccd_cepa0;
 pub mod lmp2_amplitude;
 /// Model certificate carried by every amplitude-threshold LMP2 result.
 pub mod lmp2_certificate;
+/// Amplitude-threshold local OP-MP3 (one pattern for both orders).
+pub mod local_opmp3;
 /// Ring-CCD family: rCCD, drCCD amplitude solvers.
 pub mod rccd_family;
 

@@ -306,7 +306,7 @@ only. Every model is printed as `E_HF[ρ] + E_NBS + E_c`, and the run-log
 ## `[local]`
 
 The local approximation of a correlated method. `method.kind` names the
-method (`rimp2`, `drpa`, `linlccd` or, integral-direct only, `att-rimp2`); this section says whether and how its
+method (`rimp2`, `drpa`, `linlccd`, `opmp3` (RI integrals only) or, integral-direct only, `att-rimp2`); this section says whether and how its
 amplitudes are truncated. Without it (or with `scheme = "none"`) the method is
 computed exactly. On any other kind the section is an error. The local runs
 are closed shell and `task = "energy"` only, and every printout and run-log
@@ -320,7 +320,7 @@ scheme, `eps` and kept fraction. See
 | `scheme` | string | `"none"` | `none` `amplitude-threshold` | `amplitude-threshold`: drop pair amplitudes whose localized integral is at or below `eps` (single threshold). Any other value is an error. |
 | `eps` | float | **required** with `amplitude-threshold` | ≥ 0, finite | The threshold is part of the model and has no default. `0` keeps every amplitude and reproduces the exact method. An error with `scheme = "none"`. |
 | `eps_sweep` | array of floats | none | each ≥ 0 | `drpa` only. Several ε on one SCF and one localized assembly; sorted and de-duplicated, one result block per point. Instead of `eps`, not with it. |
-| `reference` | bool | `false` | | Also compute the exact method (canonical RI-MP2, canonical plasmon dRPA, exact LinLCCD) and print the local error against it. Costs the full exact calculation. An error with `scheme = "none"`. |
+| `reference` | bool | `false` | | Also compute the exact method (canonical RI-MP2, canonical plasmon dRPA, exact LinLCCD, canonical OP-MP3) and print the local error against it. Costs the full exact calculation. An error with `scheme = "none"`. |
 | `integral_direct` | bool | `false` | | `rimp2` only. The integral-direct local MP2: never forms the global 3-index tensor. |
 | `aux_radius` | float | `10.0` | Bohr, > 0 | Integral-direct only (an error otherwise). Aux fit-domain radius. |
 | `virt_radius` | float | `20.0` | Bohr, > 0 | Integral-direct only. Virtual domain radius. |
@@ -329,13 +329,13 @@ scheme, `eps` and kept fraction. See
 | `batch_merge` | integer | `4` | ≥ 1 | Integral-direct only. |
 | `gate_cal` | float | none (gate off) | > 0 | Integral-direct only. Pair-gate calibration (~0.7 Coulomb, ~0.02 erfc ω = 1). |
 | `virt_schwarz_kappa` | float | none (off) | > 0 | Integral-direct only. ε-linked Schwarz virtual-candidate screen. |
-| `fock_screen` | bool | `true` | | `rimp2` and `att-rimp2`, in core and integral-direct. Also keep the amplitudes whose one-step virtual-Fock-dressed integral exceeds κ·ε (κ = 1), the ones the integral-size mask misses. `false` keeps the plain integral mask. See [the Fock-propagated screen](../methods/mp2.md). |
-| `virtual_space` | string | `"dense"` | `dense` `local` | `rimp2` / `att-rimp2` only (an error on `drpa` / `linlccd`, which always use the dense build). Which VV-HV localized-virtual build to use: `dense` is the O(N³) build; `local` is the opt-in threshold-sparse build. With every threshold at zero **and** `virtual_solve_radius` larger than the molecule (one global solve), it spans the same space and gives the same energy as `dense`. A finite solve radius changes the projected-minimal functions even at zero thresholds; that step only rotates the basis, so the ε = 0 energy is unaffected, but finite-ε energies can move slightly. The local build always starts Boys from its own valence block, so its columns match `dense` only up to Boys' stopping tolerance (about 1e-8), not column by column. Every run prints one line naming the build. See [local VV-HV build](../methods/mp2.md#local-vv-hv-build). |
+| `fock_screen` | bool | `true` | | `rimp2`, `att-rimp2` and `opmp3`, in core and integral-direct. Also keep the amplitudes whose one-step virtual-Fock-dressed integral exceeds κ·ε (κ = 1), the ones the integral-size mask misses. `false` keeps the plain integral mask. See [the Fock-propagated screen](../methods/mp2.md). |
+| `virtual_space` | string | `"dense"` | `dense` `local` | `rimp2` / `att-rimp2` / `opmp3` only (an error on `drpa` / `linlccd`, which always use the dense build). Which VV-HV localized-virtual build to use: `dense` is the O(N³) build; `local` is the opt-in threshold-sparse build. With every threshold at zero **and** `virtual_solve_radius` larger than the molecule (one global solve), it spans the same space and gives the same energy as `dense`. A finite solve radius changes the projected-minimal functions even at zero thresholds; that step only rotates the basis, so the ε = 0 energy is unaffected, but finite-ε energies can move slightly. The local build always starts Boys from its own valence block, so its columns match `dense` only up to Boys' stopping tolerance (about 1e-8), not column by column. Every run prints one line naming the build. See [local VV-HV build](../methods/mp2.md#local-vv-hv-build). |
 | `virtual_tau` | float | `1e-9` | ≥ 0 | `virtual_space = "local"` only (an error otherwise). Block threshold of the span-critical steps (occupied projector, the Newton-Schulz Löwdins, the final guard). `0` drops nothing. |
 | `virtual_tau_loose` | float | `1e-6` | ≥ 0 | `virtual_space = "local"` only. Block threshold of the basis-choice steps (projected-minimal functions, valence projector, pivot Gram and Cholesky rows). `0` drops nothing. |
 | `virtual_solve_radius` | float | `30.0` | Bohr, > 0 | `virtual_space = "local"` only. Neighbourhood radius of the domain-local projected-minimal solves; a radius larger than the molecule is one global solve. |
 | `virtual_boys_tau` | float | `1e-8` | ≥ 0 | `virtual_space = "local"` only. Boys pair screen; `0` rotates every pair. |
-| `lambda_boys` | float | `10.0` | Bohr²/Ha², finite, ≥ 0 | `rimp2` / `att-rimp2` only (an error on `drpa` / `linlccd`, which localize with plain Boys). Weight λ of Σᵢ Fᵢᵢ² in the λ-Boys occupied localization, started from the converged Boys orbitals; `0` is plain Boys. The ε = 0 energy does not depend on it. The printout's `occupied localization` line and the run log's `local.lambda_boys*` fields record it. |
+| `lambda_boys` | float | `10.0` | Bohr²/Ha², finite, ≥ 0 | `rimp2` / `att-rimp2` / `opmp3` only (an error on `drpa` / `linlccd`, which localize with plain Boys). Weight λ of Σᵢ Fᵢᵢ² in the λ-Boys occupied localization, started from the converged Boys orbitals; `0` is plain Boys. The ε = 0 energy does not depend on it. The printout's `occupied localization` line and the run log's `local.lambda_boys*` fields record it. |
 
 ## `[rpa]`
 

@@ -110,6 +110,7 @@ def prove_a1():
     ar = u.T * a * u
     br = b if MUTATION == "pade_half_rotated" else u.T * b * u
     d = sp.simplify(pade(ar, br).trace() - pade(a, b).trace())
+    # claim a1: the trace Pade is invariant under an occupied rotation
     check("a1 Tr P(U^T A U, U^T B U) == Tr P(A, B)", d == 0)
 
 
@@ -156,6 +157,7 @@ def prove_a2():
     cr = rotate(c)
     jr = rotate(j, virt_b=MUTATION != "w_virtual_once")
     d = (w_of(cr, jr) - u.T * w_of(c, j) * u).applyfunc(sp.simplify)
+    # claim a2: W is covariant under the occupied and virtual rotations
     check("a2 W[c U V, J U V] == U^T W[c, J] U", d == sp.zeros(n, n))
 
 
@@ -190,6 +192,7 @@ def prove_b():
         c1f[kk] = c1[idx]
     lhs = (c2.T * g * jv)[0]
     rhs = (c1f.T * g * rv)[0]
+    # claim b: the 2n+1 form of E3 holds on one mask
     check("b <G c2, J> == <G c1, R> on one mask", sp.simplify(lhs - rhs) == 0)
     # b2: two masks is not an identity (rational counterexample)
     a2 = a.subs(
@@ -340,7 +343,7 @@ def numerical():
         f"(keep {mask.mean():.2f}, gap {gap:.1e})",
     )
 
-    # N3: E_NBS is reference-wide: semicanonical formula == local singles solve
+    # claim N3: E_NBS is reference-wide: semicanonical formula == local singles solve
     d_ia = ev[None, :] - eo[:, None]
     e_can = -2.0 * float(np.sum(fov**2 / d_ia))
     fov_l = uo.T @ fov @ uv

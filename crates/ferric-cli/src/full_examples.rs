@@ -373,13 +373,13 @@ fn keys() -> Vec<Key> {
         key!("local", "batch_merge", "", |_| Off("only with integral_direct = true")),
         key!("local", "gate_cal", "", |_| Off("only with integral_direct = true")),
         key!("local", "virt_schwarz_kappa", "", |_| Off("only with integral_direct = true")),
-        key!("local", "fock_screen", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2)")),
-        key!("local", "virtual_space", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2)")),
+        key!("local", "fock_screen", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2, opmp3)")),
+        key!("local", "virtual_space", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2, opmp3)")),
         key!("local", "virtual_tau", "", |_| Off("only with virtual_space = \"local\"")),
         key!("local", "virtual_tau_loose", "", |_| Off("only with virtual_space = \"local\"")),
         key!("local", "virtual_solve_radius", "", |_| Off("only with virtual_space = \"local\"")),
         key!("local", "virtual_boys_tau", "", |_| Off("only with virtual_space = \"local\"")),
-        key!("local", "lambda_boys", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2)")),
+        key!("local", "lambda_boys", "", |_| Off("only with scheme = \"amplitude-threshold\" (rimp2, att-rimp2, opmp3)")),
         // ---- [cc] / [eom]
         key!("cc", "ladder", "particle-particle ladder: auto | dense | ri", |_| s("auto")),
         key!("eom", "n_roots", "lowest singlet excitations", |_| n("5")),
@@ -515,7 +515,7 @@ fn sections(c: &Ctx) -> Vec<&'static str> {
     };
     let mut out = vec!["molecule", "basis", "method", "scf"];
     if let Some(own) = own {
-        for sec in ["cas", "cas.ci", "opmp3"] {
+        for sec in ["cas", "cas.ci", "opmp3", "local"] {
             let top = sec.split('.').next().unwrap();
             if own.contains(&top) {
                 out.push(sec);

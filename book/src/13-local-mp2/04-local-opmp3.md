@@ -1,6 +1,6 @@
 # Amplitude-threshold local OP-MP3 {#local-opmp3}
 
-<!-- status: gap; registry: local-opmp3 -->
+<!-- status: ready; registry: local-opmp3 -->
 
 *Notation follows `book/notation.md` and section @sec:opmp3. $c^{(1)}$ and
 $c^{(2)}$ are the first- and second-order doubles amplitudes, $W^{(2)}$ and
@@ -76,15 +76,16 @@ fails: $\mathcal A$ is no longer the rotated canonical operator. On propane
 in STO-3G that error is $5\times10^{-3}$ Ha, far above the $10^{-10}$ Ha bar of
 the anchor.
 
-> **Unverified equation @eq:local-opmp3-covariance** · OP-MP3 is invariant under the occupied and virtual localization
+> **Verified equation @eq:local-opmp3-covariance** · OP-MP3 is invariant under the occupied and virtual localization
 >
 > | | |
 > |---|---|
 > | Proof | `scripts/local_opmp3_sympy.py` claims a1 (the trace Padé under a symbolic rotation) and a2 (the W covariance, every amplitude and integral an independent symbol), and N1 (canonical route vs a rotated route with the full Fock, OP-MP3 and SSD-OPMP3 agree to $3.3\times10^{-16}$); mutations `pade_half_rotated`, `w_virtual_once` and `semicanonical` each turn their check red |
-> | Code | not ported yet: the Python prototype `scripts/prototypes/local_opmp3_proto.py` |
-> | Code test | `test_local_opmp3_matches_exact_in_the_trivial_limit` in `crates/ferric-python/tests/test_local_opmp3_proto.py` |
+> | Runner | `crates/ferric-python/tests/test_local_opmp3_sympy.py` |
+> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference` (prototype: `scripts/prototypes/local_opmp3_proto.py`) |
+> | Code test | `crates/ferric-mp2/tests/local_opmp3.rs`: at $\varepsilon = 0$ every model, $E_{\mathrm{HF}}$, $E_{\mathrm{NBS}}$ and the $W$ spectra equal `opmp3_on_reference` (same RI basis) to $10^{-10}$ Ha on the HF reference, the PBE0 reference and the PBE0 reference with a frozen core |
 >
-> <!-- unverified: id=local-opmp3.invariance; todo=cite the Rust local OP-MP3 driver and its eps=0 anchor test once ported -->
+> <!-- verified: id=local-opmp3.invariance; script=scripts/local_opmp3_sympy.py; claim=a2; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference; rust_test=ferric-mp2/tests/local_opmp3.rs::local_opmp3_matches_exact_in_the_trivial_limit_pbe0; registry=local-opmp3 -->
 
 ## One mask for both orders {#local-opmp3-one-mask}
 
@@ -116,15 +117,16 @@ operator that maps $c^{(1)}$ to $J$ and the one that maps $c^{(2)}$ to $R$
 are then different blocks of $\mathcal A$. Check the limit: at $K$ = everything
 the identity reduces to the canonical $2n+1$ identity.
 
-> **Unverified equation @eq:local-opmp3-2n1** · the third-order energy keeps its 2n+1 form on one mask
+> **Verified equation @eq:local-opmp3-2n1** · the third-order energy keeps its 2n+1 form on one mask
 >
 > | | |
 > |---|---|
 > | Proof | `scripts/local_opmp3_sympy.py` claim b (symbolic, $G\mathcal A$ symmetric and $G$ block-diagonal on $K$), b2 (two masks: a rational counterexample, $-9/7$ against $3/11$) and N2 (closed-shell model at kept fraction 0.65); mutation `two_masks` turns b and N2 red ($-8.2\times10^{-2}$) |
-> | Code | not ported yet: `local_run` in `scripts/prototypes/local_opmp3_proto.py` |
-> | Code test | `test_e3_identity_holds_on_one_mask_and_fails_on_two` in `crates/ferric-python/tests/test_local_opmp3_proto.py` |
+> | Runner | `crates/ferric-python/tests/test_local_opmp3_sympy.py` |
+> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference` (`e3_2n1`, `e3_identity_gap`) |
+> | Code test | `finite_eps_keeps_e_nbs_and_the_2n1_identity` in `crates/ferric-mp2/tests/local_opmp3.rs` (PBE0 propane, $\varepsilon = 10^{-4}$: the two routes agree to $10^{-10}$ Ha) |
 >
-> <!-- unverified: id=local-opmp3.2n1; todo=cite the Rust local OP-MP3 driver and its finite-eps E3 identity test once ported -->
+> <!-- verified: id=local-opmp3.2n1; script=scripts/local_opmp3_sympy.py; claim=b; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference; rust_test=ferric-mp2/tests/local_opmp3.rs::finite_eps_keeps_e_nbs_and_the_2n1_identity; registry=local-opmp3 -->
 
 ## A Kohn-Sham reference {#local-opmp3-ks-reference}
 
@@ -148,15 +150,16 @@ The same holds for the HF reference energy of the Kohn-Sham density.
 The same-spin damping $x_{ss}$ of SSD-OPMP3 multiplies $W^{(3)\mathrm{SS}}$
 after the amplitudes are formed. It does not touch the mask either.
 
-> **Unverified claim** · $E_{\mathrm{NBS}}$ is independent of the doubles mask and of the localization
+> **Verified claim** · $E_{\mathrm{NBS}}$ is independent of the doubles mask and of the localization
 >
 > | | |
 > |---|---|
 > | Proof | `scripts/local_opmp3_sympy.py` claim N3 (semicanonical formula vs the localized singles solve, $-4.6\times10^{-2}$ Ha model value, agreement $< 10^{-14}$); mutation `nbs_local_diag` (keep only the diagonal of the localized Fock) turns it red |
-> | Code | not ported yet: `System` (the `reference` branch) in `scripts/prototypes/local_opmp3_proto.py` |
-> | Code test | `test_pbe0_reference_new_maps_match_exact_in_the_trivial_limit` in `crates/ferric-python/tests/test_local_opmp3_proto.py` |
+> | Runner | `crates/ferric-python/tests/test_local_opmp3_sympy.py` |
+> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference` takes `Opmp3Reference::e_nbs` unchanged |
+> | Code test | `finite_eps_keeps_e_nbs_and_the_2n1_identity` in `crates/ferric-mp2/tests/local_opmp3.rs` ($E_{\mathrm{NBS}}$ of the local run at $\varepsilon = 10^{-4}$ equals the canonical one bit for bit) |
 >
-> <!-- unverified: id=local-opmp3.nbs; todo=cite the Rust driver's reuse of the canonical E_NBS once ported -->
+> <!-- verified: id=local-opmp3.nbs; script=scripts/local_opmp3_sympy.py; claim=N3; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference; rust_test=ferric-mp2/tests/local_opmp3.rs::finite_eps_keeps_e_nbs_and_the_2n1_identity; registry=local-opmp3 -->
 
 ## What is proven and what is not {#local-opmp3-proven}
 
@@ -167,6 +170,24 @@ bound on the truncation error of the OP-type models. The error of
 $E^{(2)}$ is bounded by the Schur norm of the dropped amplitudes (section
 @sec:amplitude-lmp2-fock-screen). The Padé passes the errors of $W^{(2)}$
 and $W^{(3)}$ through its first derivatives, and nothing here bounds those
-derivatives away from a near-singular $A - B$ (a stretched bond). The
-method exists only as the Python prototype; this section gains its code
-excerpts and measurements when the Rust port lands.
+derivatives away from a near-singular $A - B$ (a stretched bond).
+
+## The implementation {#local-opmp3-implementation}
+
+`ferric_mp2::local_opmp3` (CLI `method.kind = "opmp3"` with `[local]`,
+Python `run_opmp3(local=..., eps=...)`) takes the OP-MP3 reference of
+section @sec:opmp3 (HF or a functional), localizes against its HF Fock
+matrix, builds the LMP2 pattern with the shared pair builder (Eq 8 plus the
+Fock-propagated screen, λ-Boys occupieds, VV-HV virtuals: the local MP2
+maps and defaults), solves both orders on that one pattern with the ragged
+LMP2 solver, and hands $W^{(2)}$, $W^{(3)}$ to the unchanged OP-MP3 models.
+$E_{\mathrm{NBS}}$ and $E_{\mathrm{HF}}$ come from the reference unchanged.
+RI integrals only, closed shell only.
+
+The residual $R(c^{(1)})$ is the canonical spin-blocked MP3 residual
+evaluated over the localized orbitals with dense amplitudes, of which only
+the pattern part is kept. That makes the first version a correctness
+reference, not a fast method: its cost is canonical RI-MP3 plus the two
+pattern solves, and no cost or scaling claim attaches to it. A ragged
+residual (ring kernels contracted through the RI factors, ladders through
+`ferric_mp2::ladders`) is the next step and must reproduce this one.

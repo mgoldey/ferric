@@ -358,6 +358,19 @@ compared with the paper's Q-Chem values (see the
 [validation page](../reference/validation.md)). Derivation:
 `book/src/10-mp2/11-opmp3.md#opmp3`.
 
+**Local OP-MP3** (`opmp3` with [`[local]`](../reference/input.md#local)
+`scheme = "amplitude-threshold"`, `examples/butane-local-opmp3-pbe0.toml`,
+`run_opmp3(local="amplitude-threshold", eps=...)`): both amplitude orders
+are solved on one amplitude pattern, the local MP2 pattern of the same `eps`
+(λ-Boys occupied orbitals, VV-HV virtuals and the Fock-propagated screen, all
+built against the HF Fock of the reference density), so W⁽²⁾ and W⁽³⁾ come from
+the same truncation and E⁽³⁾ obeys the 2n+1 identity on it. Closed shell,
+RI integrals, energy only. With `eps = 0` it reproduces the canonical OP-MP3
+to round-off for HF and PBE0 references (`crates/ferric-mp2/tests/local_opmp3.rs`).
+The third-order residual is still built densely, so this is not a
+reduced-cost method yet. Derivation:
+`book/src/13-local-mp2/04-local-opmp3.md#local-opmp3`.
+
 ## Laplace formulations
 
 **RI-Laplace MP2** (`laplace-mp2`, `examples/water-laplace-rimp2.toml`,

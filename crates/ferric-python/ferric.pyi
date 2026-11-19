@@ -2019,6 +2019,16 @@ class Opmp3Result:
         SCF's, the method's settings in ``approximations`` and the
         reference's as ``"scf <name>"``, and ``warnings``."""
         ...
+    @property
+    def local(self) -> dict[str, Any] | None:
+        """``None`` for the exact method. For ``local="amplitude-threshold"``:
+        ``scheme``, ``eps``, ``keep_fraction``, ``integral_direct`` (False),
+        ``n_pairs``, ``cg_iterations``, ``cg_relres``, ``lambda_boys``, the
+        third-order energy of both routes (``e3`` = c2.K, ``e3_2n1`` =
+        c1.R(c1), equal on one pattern) and, with ``compute_reference=True``,
+        ``canonical`` (canonical correlation energies keyed like
+        ``correlation``)."""
+        ...
 
 class Mp3Result:
     """Result of an MP3 calculation."""
@@ -5452,12 +5462,30 @@ def run_opmp3(
     scf_max_iter: int | None = None,
     scf_energy_conv: float | None = None,
     scf_density_conv: float | None = None,
+    local: str | None = None,
+    eps: float | None = None,
+    compute_reference: bool | None = None,
+    fock_screen: bool | None = None,
+    lambda_boys: float | None = None,
+    virtual_space: str | None = None,
+    virtual_tau: float | None = None,
+    virtual_tau_loose: float | None = None,
+    virtual_solve_radius: float | None = None,
+    virtual_boys_tau: float | None = None,
 ) -> Opmp3Result:
     """OP-MP3, SOP-MP3, SSD-OPMP3 (and MP2, MP3, scalar Pade) on an RHF/ROHF
     (``reference="hf"``) or RKS/ROKS (``reference=<functional>``) reference,
     built on the HF Fock of the reference density with non-Brillouin
     singles. ``x_ss=None`` uses the paper's printed damping for the
-    reference; ``auxbasis=None`` runs exact four-centre integrals."""
+    reference; ``auxbasis=None`` runs exact four-centre integrals.
+
+    ``local="amplitude-threshold"`` with ``eps=`` (required) runs the local
+    OP-MP3: both amplitude orders solved on one local-MP2 pattern in
+    localized orbitals (closed shell, RI: ``auxbasis`` required). The maps
+    and their defaults are those of ``run_rimp2(local=...)``
+    (``fock_screen``, ``lambda_boys``, ``virtual_space`` and its
+    thresholds); ``compute_reference=True`` also runs the canonical OP-MP3
+    into ``result.local["canonical"]``."""
     ...
 
 def run_laplace_mp2(
