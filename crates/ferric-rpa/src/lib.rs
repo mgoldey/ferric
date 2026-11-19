@@ -78,7 +78,8 @@ pub mod response_modes;
 pub mod rs_mp2_rpa;
 /// Boys-screened B-tile construction for sparse chi0.
 pub mod screen;
-/// Seed vector construction for Davidson/Lanczos eigensolvers.
+/// Boys-localized seed vectors for the dielectric eigensolver (no production caller). Research route, feature `research`.
+#[cfg(feature = "research")]
 pub mod seeds;
 /// Dense Sternheimer (Adler-Wiser) chi0 and dielectric matrix evaluation.
 pub mod sternheimer;

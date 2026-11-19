@@ -28,6 +28,8 @@ default = []
 # chi0 (`ao_rpa`), OSV/DNV (`pno`) and pair-PNO (`dlpno_rpa`) RPA. Each lane's
 # verdict is recorded in project memory (ao-minimax-pdep-rpa-loses-on-dense,
 # pno-osv-no-small-molecule-win, rpa-cannot-consume-pair-indexed-bases).
+# Also the Boys-localized eigensolver seeds (`seeds`), which have no caller and
+# no tests; parked here rather than deleted (Matt, 2026-11-19).
 # Off by default; one CI job (`ferric-rpa-research`) builds and tests it.
 research = []
 # Same transitive-feature-edge lesson T9 documented for ferric-mp2/Cargo.toml:
