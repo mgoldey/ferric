@@ -150,3 +150,14 @@ def test_cc_reference_is_run_rhf_or_run_uhf():
     uccsd = ferric.run_ccsd(hi(1, 2), bs, aux)
     assert uccsd.reference == "uhf"
     assert 1.0 < uccsd.correlation_energy / ri_ump2(alpha, beta, 1, 2) < 1.3
+
+
+def test_gw_family_reference_is_run_rhf_run_uhf_or_run_dft():
+    bs, aux = bases()
+    assert abs(ferric.run_gw(hi(), bs, aux).ref_energy - rhf().energy) < EREF
+    pbe = ferric.run_dft(hi(), bs, "PBE").energy
+    assert abs(ferric.run_gw(hi(), bs, aux, xc="PBE").ref_energy - pbe) < EREF
+    assert abs(ferric.run_u_gw(hi(1, 2), bs, aux).ref_energy - uhf().energy) < EREF
+    assert ferric.run_bse_tda(hi(), bs, aux).nocc == N_VALENCE_OCC
+    pol = ferric.run_tdhf_static_polarizability(hi(), bs, aux, "PBE0")
+    assert pol.nocc == N_VALENCE_OCC

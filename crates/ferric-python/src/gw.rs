@@ -3,7 +3,7 @@
 use super::*;
 
 /// ECP policy of the GW / BSE / TDHF-polarizability drivers in this file.
-pub(crate) const GW_ECP: EcpPolicy = EcpPolicy::Skip;
+pub(crate) const GW_ECP: EcpPolicy = EcpPolicy::Apply;
 
 // ── GW (closed-shell: G0W0 / COHSEX / evGW0 / evGW) ──
 //
