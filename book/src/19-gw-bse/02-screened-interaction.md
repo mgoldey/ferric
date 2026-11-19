@@ -55,7 +55,8 @@ to the right:
 $$ \tilde W = \mathbf 1 - \Pi\,\tilde W . $$
 
 This is the Dyson equation $W = v + v\chi_0W$ in the dressed basis, with
-$v = \mathbf 1$ and $\chi_0 = -\Pi$. The static bare part $\mathbf 1$ of
+$v = \mathbf 1$ and $\chi_0 = -\Pi$: chapter @sec:rpa defines $\Pi$
+positive, and the density response $\chi_0$ is negative. The static bare part $\mathbf 1$ of
 $\tilde W$ gives the exchange self-energy $\Sigma^x$ of section @sec:ri-factors-and-exchange. The code
 carries only the dynamic part:
 
@@ -67,7 +68,9 @@ correlation self-energy vanishes and GW reduces to the exchange of section
 order: screening lowers the interaction. In general
 $\tilde{\boldsymbol\varepsilon} \ge \mathbf 1$, so
 $\tilde{\boldsymbol\varepsilon}^{-1} \le \mathbf 1$ and $\tilde W_d$ is
-negative definite on the imaginary axis.
+negative semidefinite on the imaginary axis. It is zero on any auxiliary
+direction that no particle–hole pair couples to: $\Pi$ has rank at most
+$n_on_v$, and on its null space $\tilde W_d = 0$.
 
 **One particle–hole pair.** Take one $(ia)$ pair with $B^P_{ia} = b$ and
 $\Delta_i^a = e$. Then $\Pi = 4b^2e/(u^2+e^2)$ is a scalar, and
@@ -78,10 +81,17 @@ Compare with the singlet direct-RPA matrices of one pair, $\mathbf A = e + 2K$
 and $\mathbf B = 2K$ with $K = b^2$. Their product is
 $(\mathbf A-\mathbf B)(\mathbf A+\mathbf B) = e(e+4b^2) = \Omega^2$: the pole
 of $W$ sits at the direct-RPA excitation energy (section @sec:drpa-three-ways-plasmon-formula). In general
-$W$ is a sum of such poles, one per RPA excitation $s$ with eigenvector
-$\rho_s$:
+$W$ is a sum of such poles, one per RPA excitation $n$:
 
-$$ \tilde W_d(iu) = -\sum_s \frac{2\Omega_s\,\rho_s\rho_s^{\mathsf T}}{u^2+\Omega_s^2} . $$
+$$ \tilde W_d(iu) = -\sum_n \frac{2\Omega_n\,\rho_n\rho_n^{\mathsf T}}{u^2+\Omega_n^2}, \qquad \rho_n = \sqrt2\,B_{ov}(X+Y)_n . $$
+
+Here $B_{ov}$ is the $N_{\rm aux}\times n_on_v$ block of $B$, and $(X+Y)_n$
+is the direct-RPA eigenvector normalized to $X^{\mathsf T}X - Y^{\mathsf T}Y = 1$
+(section @sec:response-tda-casida-reduction). In that normalization
+$\rho_n\rho_n^{\mathsf T}$ is the strength $s$ of the one-pair case: one pair
+has $(X+Y)^2 = e/\Omega$, so $\rho^2 = 2b^2e/\Omega = s$. A numpy check on
+a random five-function, four-pair model reproduces
+$-\Pi(\mathbf 1+\Pi)^{-1}$ from this pole sum to $10^{-16}$.
 
 > **Verified equation {#eq:gw-single-pole-w}** · one particle–hole pair gives a single-pole $W$
 >
@@ -125,7 +135,10 @@ close to 1 is a potential the molecule barely screens, and its weight is
 close to 0.
 
 **Redressing.** The PDEP step of chapter @sec:rpa returns its eigenpotentials in
-raw auxiliary coefficients, $c = M_{\rm pdep}^{\mathsf T}U$. The GW code needs
+raw auxiliary coefficients. A vector $U$ in a dressed basis, whose functions
+are $\tilde\chi_P = \sum_Q (M_{\rm pdep})_{PQ}\chi_Q$, expands as
+$\sum_P U_P\tilde\chi_P = \sum_Q (M_{\rm pdep}^{\mathsf T}U)_Q\chi_Q$, so
+its raw coefficients are $c = M_{\rm pdep}^{\mathsf T}U$. The GW code needs
 the vectors in the dressed basis of its own $B$, so
 `ferric-gw/src/w_pdep.rs::redress_eigenpotentials` solves
 $M^{\mathsf T}\hat U = c$. When $M = L^{-1}$ (Coulomb and erfc) the solve is
@@ -236,7 +249,10 @@ The only GW-specific use of PDEP is the basis $\{\hat U_\xi\}$ above.
 tables runs at `trunc_thresh = 0`, where the PDEP basis is the full RI
 dielectric eigenbasis and $W$ is the ordinary RI $W$. Truncated GW is not
 validated. At the defaults (`n_quad = 40`, `trunc_thresh = 1e-4`) the HOMO
-and LUMO stay within 10 meV of the matched settings.
+and LUMO stay within 10 meV of the matched settings
+(`g0w0_pbe_{h2o,nh3,ch2o}_defaults_within_bar`, `hf_starts_h2o_defaults_within_bar`
+and `u_g0w0_uhf_oh_defaults_within_bar` in
+`crates/ferric-gw/tests/validation_gw_defaults.rs`).
 
 ## Sources {#screened-interaction-sources}
 

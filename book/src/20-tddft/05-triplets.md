@@ -4,7 +4,10 @@
 
 Excite one electron of a closed shell and the two now-unpaired electrons
 can pair their spins to a singlet or a triplet. The two states share an
-orbital picture and differ in energy, and the triplet usually lies lower. In
+orbital picture and differ in energy. The singlet pays the Coulomb
+self-repulsion $2(ia|ia) \ge 0$ of the transition density and the triplet
+does not (section @sec:triplets-spin-blocks), so the triplet usually lies
+lower. In
 response theory the difference is one sign: a singlet moves the $\alpha$
 and $\beta$ densities together, a triplet moves them in opposite
 directions. A closed-shell reference has the same spatial orbitals for both
@@ -88,7 +91,7 @@ match spin {
 `build_a_matrix` skips the Coulomb product when `c_j` is 0, so a triplet
 run never forms $B_{ov}^{\mathsf T}B_{ov}$ for $\mathbf A$.
 
-### The kernel block
+### The kernel block {#triplets-kernel-block}
 
 `ferric_dft::lr_kernel` applies the spin-resolved AO kernel to
 $(\delta D^\alpha, \delta D^\beta) = (\delta D, s\,\delta D)$, with $s = +1$
@@ -159,9 +162,23 @@ let s = [
 
 The singlet branch returns `restricted_coefficients`. Both branches are
 pinned against the spin-resolved `linearize_point` in the unit test
-`spin_coefficients_match_linearize_point`.
+`restricted_coefficients_match_linearize_point`.
 
-### What is not computed
+> **Verified equation {#eq:td-triplet-linearization}** · the triplet linearization of the libxc variables
+>
+> For $\delta\rho_\beta = -\delta\rho_\alpha$, $\nabla\delta\rho_\beta = -\nabla\delta\rho_\alpha$, $\delta\tau_\beta = -\delta\tau_\alpha$ at a restricted point, $\delta x = (\rho_1, -\rho_1, 2\gamma_1, 0, -2\gamma_1, \tau_1, -\tau_1)$, and the linearized $\alpha$ potential has $u^\alpha = \delta v_{\rho_\alpha}$, $t^\alpha = \delta v_{\tau_\alpha}$, $\mathbf w^\alpha = (2\delta v_{\sigma_{\alpha\alpha}} + \delta v_{\sigma_{\alpha\beta}})\mathbf g + (2v_{\sigma_{\alpha\alpha}} - v_{\sigma_{\alpha\beta}})\nabla\delta\rho_\alpha$, symbolically for a generic Hessian.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/tddft_response_sympy.py`, claim tripletlin |
+> | Negative control | the same coefficients do not linearize the singlet |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-dft/src/fxc.rs::spin_coefficients` |
+> | Code test | `restricted_coefficients_match_linearize_point` in `crates/ferric-dft/src/fxc.rs` |
+>
+> <!-- verified: id=td.triplet.linearization; script=scripts/tddft_response_sympy.py; claim=tripletlin; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/fxc.rs::spin_coefficients; rust_test=ferric-dft/src/fxc.rs::restricted_coefficients_match_linearize_point; registry=tddft -->
+
+### What is not computed {#triplets-not-computed}
 
 The $M_S = \pm1$ components are degenerate with $M_S = 0$ and are not
 computed. Triplet transition dipoles and oscillator strengths are exactly
@@ -185,14 +202,15 @@ of equal and opposite spin amplitudes.
 > | Negative control | the runner sets the triplet kernel sign $s$ to $+1$ (B1 fails); in the Rust validation, the singlet sign moves the triplet roots by 0.07 to 0.51 eV |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-tddft/src/tddft.rs::coulomb_factor`, `ferric-dft/src/lr_kernel.rs::fxc_ov_block` |
-> | Code test | `crates/ferric-tddft/tests/validation_tddft_rsh.rs` (triplets against the PySCF `tdscf.uhf.get_ab` spin blocks) |
+> | Code test | `compare` in `crates/ferric-tddft/tests/validation_tddft_rsh.rs` (triplets against the PySCF `tdscf.uhf.get_ab` spin blocks; it also requires every triplet oscillator strength to be 0) |
 >
-> <!-- verified: id=td.triplet.blocks; script=scripts/tddft_response_sympy.py; claim=A1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::coulomb_factor; registry=tddft -->
+> <!-- verified: id=td.triplet.blocks; script=scripts/tddft_response_sympy.py; claim=A1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::coulomb_factor; rust_test=ferric-tddft/tests/validation_tddft_rsh.rs::compare; registry=tddft -->
 
 Singlet and triplet TDA roots of water / 6-31G, from the `589b50832` build.
-Each triplet lies below its singlet, and every triplet oscillator strength
-prints as zero. The last two lines are RHF ethylene, the triplet instability
-of @sec:triplets-triplet-instability: TDA returns roots and the Casida
+Root for root, each triplet lies below the singlet of the same index, and
+every triplet oscillator strength prints as zero. The last two lines are
+RHF ethylene, the triplet instability of section
+@sec:triplets-triplet-instability: TDA returns roots and the Casida
 triplet problem is refused with its $\Omega^2$.
 
 ```python
@@ -250,9 +268,11 @@ negative eigenvalue. So a triplet Casida run fails when the reference is
 triplet-unstable: a lower, spin-broken solution exists.
 
 Both solvers refuse a negative $\Omega^2$ in place of dropping the root.
-RHF ethylene, the textbook case, and benzene are refused this way; the dense solver reports the reference's
-$\Omega^2_{\min}$ ($-3.171\times10^{-3}$ Ha$^2$ for C2H4, from the
-validation table's `tddft` row). TDA uses $\mathbf A^T$ alone and has no
+RHF ethylene, the textbook case, and benzene are refused this way. The
+dense solver reports $\Omega^2_{\min}$: $-3.176\times10^{-3}$ Ha$^2$ for
+C2H4 in the example above, and $-3.171\times10^{-3}$ Ha$^2$ in the
+validation table's `tddft` row, which uses PySCF's geometry and response
+fit. TDA uses $\mathbf A^T$ alone and has no
 such failure.
 
 ## Numerical anchors {#triplets-numerical-anchors}
@@ -269,3 +289,7 @@ combination of PySCF's `tdscf.uhf.get_ab` spin blocks on the same orbitals.
 
 | Source | What it gives |
 |---|---|
+| section @sec:fxc-singlet-triplet-block | the spin-resolved kernel and its singlet and triplet combinations |
+| section @sec:stability-stability-operators | the RHF → UHF stability operator that $\mathbf A^T + \mathbf B^T$ reduces to for HF |
+| R. Bauernschmitt and R. Ahlrichs, *J. Chem. Phys.* **104**, 9047 (1996) | singlet and triplet instabilities of a closed-shell Kohn–Sham reference |
+| M. E. Casida, in *Recent Advances in Density Functional Methods, Part I*, ed. D. P. Chong (World Scientific, 1995), p. 155 | the spin-resolved response equations |

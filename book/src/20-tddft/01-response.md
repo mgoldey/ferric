@@ -15,11 +15,11 @@ can also take an electron from $a$ back to $i$.
 
 The plan:
 
-1. Write $\mathbf A$ and $\mathbf B$ in spatial orbitals (@sec:response-matrices).
+1. Write $\mathbf A$ and $\mathbf B$ in spatial orbitals (section @sec:response-matrices).
 2. Derive the Casida eigenproblem from the response equations, reduce it to
    a symmetric one, and drop $\mathbf B$ to get the Tamm–Dancoff
-   approximation (@sec:response-tda-casida-reduction).
-3. Solve it without forming the matrices (@sec:response-matrix-free-solvers).
+   approximation (section @sec:response-tda-casida-reduction).
+3. Solve it without forming the matrices (section @sec:response-matrix-free-solvers).
 
 The Tamm–Dancoff approximation (TDA) solves with $\mathbf A$ alone; full
 response (Casida) keeps $\mathbf B$. On an HF reference the two are CIS and
@@ -30,7 +30,8 @@ TDHF.
 | $ia$ | compound index, `i * nvir + a` | `ia` |
 | $\Delta_i^a$ | $\varepsilon_a - \varepsilon_i$ | the diagonal of `a`, `diag` |
 | $c_J$ | Coulomb coefficient, 2 singlet, 0 triplet | `coulomb_factor` |
-| $c_{\rm sr}, c_{\rm lr}, \omega$ | exact-exchange fractions and range separation | `ExchangeMix` |
+| $c_{\rm sr}, c_{\rm lr}, \omega$ | exact-exchange fractions and range-separation parameter | `ExchangeMix` |
+| $\nu$ | frequency of a driving field | |
 | $K_{ia,jb}$ | XC kernel block | added by `add_fxc_block` |
 | $B^P_{pq}$ | Coulomb-metric RI tensors ($ov$, $oo$, $vv$) | `RiTensors { b_ov, .. }` |
 | $\Omega_n$, $X_n$, $(X+Y)_n$ | excitation energy and amplitudes | `omega`, `amplitudes` |
@@ -63,7 +64,11 @@ Read the terms of $\mathbf A$ one at a time.
   global fraction for a hybrid, 0 for LDA, GGA and meta-GGA.
 - $K_{ia,jb} = (ia|f_{\alpha\alpha}+f_{\alpha\beta}|jb)$ is the response of
   the exchange-correlation potential, the singlet kernel block of section
-  @sec:fxc-singlet-triplet-block. It is zero for an HF reference.
+  @sec:fxc-singlet-triplet-block. It is zero for an HF reference. For an
+  LDA the bracket is the integral
+  $\int\phi_i\phi_a\,(f_{\alpha\alpha}+f_{\alpha\beta})\,\phi_j\phi_b\,d\mathbf r$
+  with $f_{\sigma\tau} = \partial^2 e/\partial\rho_\sigma\partial\rho_\tau$;
+  a GGA or meta-GGA adds the gradient and $\tau$ terms of section @sec:fxc.
 
 Where does the 2 come from? In spin orbitals each excitation carries a spin
 label, $ia\alpha$ or $ia\beta$. The Coulomb integral couples $ia\alpha$ to
@@ -165,19 +170,19 @@ $(ib|ja)$. No second integral set is needed for $\mathbf B$.
 
 ## TDA and the Casida reduction {#response-tda-casida-reduction}
 
-### From the response to an eigenproblem
+### From the response to an eigenproblem {#response-eigenproblem}
 
 Perturb the reference with a real one-electron operator oscillating at
-frequency $\omega$, with occupied–virtual elements $v_{ia}$. To first order
+frequency $\nu$, with occupied–virtual elements $v_{ia}$. To first order
 the density changes by amplitudes $X_{ia}$ on the $i\to a$ products and
 $Y_{ia}$ on the $a\to i$ products, and linear response gives them as the
 solution of
 
 $$ \left[\begin{pmatrix}\mathbf A & \mathbf B\\ \mathbf B & \mathbf A\end{pmatrix}
-- \omega\begin{pmatrix}1 & 0\\ 0 & -1\end{pmatrix}\right]\begin{pmatrix}X\\ Y\end{pmatrix}
+- \nu\begin{pmatrix}1 & 0\\ 0 & -1\end{pmatrix}\right]\begin{pmatrix}X\\ Y\end{pmatrix}
 = -\begin{pmatrix}v\\ v\end{pmatrix} . $$
 
-For most $\omega$ this has a finite solution. It fails to have one where the
+For most $\nu$ this has a finite solution. It fails to have one where the
 matrix on the left is singular, and there the response diverges. Setting
 $v = 0$ and asking for a nonzero solution gives those frequencies:
 
@@ -253,28 +258,31 @@ column by $1/\sqrt{\Omega_n}$.
 >
 > <!-- verified: id=td.casida.reduction; script=scripts/tddft_response_sympy.py; claim=B4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::solve_casida; rust_test=ferric-tddft/src/davidson.rs::casida_matches_dense_solve; registry=tddft -->
 
-### What the roots mean
+### What the roots mean {#response-roots-meaning}
 
 The same reduction solves the driven problem. Add and subtract its rows
 and eliminate $X-Y$:
 
-$$ \big[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}\big]{(X+Y)} = -2v . $$
+$$ \big[(\mathbf A+\mathbf B) - \nu^2(\mathbf A-\mathbf B)^{-1}\big]{(X+Y)} = -2v . $$
 
 Put $X+Y = Tz$ and multiply on the left by $T$; this gives
-$(M - \omega^2)z = -2Tv$. Expand $z$ in the eigenvectors $Z_n$ of $M$, and
+$(M - \nu^2)z = -2Tv$. Expand $z$ in the eigenvectors $Z_n$ of $M$, and
 use $TZ_n = \Omega_n^{1/2}(X+Y)_n$ from equation @eq:td-casida-reduction:
 
-$$ v\cdot(X+Y) = \sum_n \frac{2\,\Omega_n\,\big(v\cdot(X+Y)_n\big)^2}{\omega^2 - \Omega_n^2} . $$
+$$ v\cdot(X+Y) = \sum_n \frac{2\,\Omega_n\,\big(v\cdot(X+Y)_n\big)^2}{\nu^2 - \Omega_n^2} . $$
 
 The left side is proportional to the first-order change of the expectation
 value of the perturbation, and the right side writes it as a sum over
-states. Each root contributes a pole at $\omega = \pm\Omega_n$, with a
+states. Each root contributes a pole at $\nu = \pm\Omega_n$, with a
 weight set by how strongly the perturbation couples to $(X+Y)_n$. When $v$
 is a dipole operator, the weight is set by the transition dipole of
-section @sec:oscillator-strengths. At $\omega = 0$ the sum is
-$-2\,v^{\mathsf T}(\mathbf A+\mathbf B)^{-1}v$, the static response, and
-$\mathbf A + \mathbf B$ is the orbital Hessian of section @sec:second-order-orbital-gradient-hessian at canonical
-orbitals.
+section @sec:oscillator-strengths. At $\nu = 0$ the sum is
+$-2\,v^{\mathsf T}(\mathbf A+\mathbf B)^{-1}v$, the static response. At
+canonical orbitals $\mathbf A + \mathbf B$ is the RHF Hessian product
+$\mathbf H$ of section @sec:second-order-orbital-gradient-hessian, with the
+same $4(ai|bj)$ and exchange terms. That section stores a quarter of the
+true derivative, so the second derivative of the energy along a real
+rotation $\kappa$ is $4\,\kappa^{\mathsf T}(\mathbf A+\mathbf B)\kappa$.
 
 The positive-definiteness conditions have a meaning too. $T$ is symmetric
 and invertible, so $M = T(\mathbf A+\mathbf B)T$ is congruent to
@@ -285,11 +293,14 @@ point of the energy, the instability that section @sec:stability detects. ferric
 treats both cases as errors. A negative eigenvalue of
 $\mathbf A-\mathbf B$, or an $\Omega^2$ below $-10^{-10}$ Ha$^2$, is an
 instability of the reference, and the run stops; the root is not clamped
-to zero. Both solvers return the lowest `n_roots` roots above
-$10^{-10}$ Ha, in ascending order
-(`ferric-tddft/src/tddft.rs::lowest_positive_roots`).
+to zero. The other cut is on $\Omega$ itself. The dense Casida path maps
+an $\Omega^2$ between $-10^{-10}$ Ha$^2$ and 0 to $\Omega = 0$, and both
+solvers return the lowest `n_roots` values of $\Omega$ above $10^{-10}$ Ha,
+in ascending order (`ferric-tddft/src/tddft.rs::lowest_positive_roots`).
+A root with $\Omega \le 10^{-10}$ Ha, a zero mode of the reference, is
+dropped from the list without an error.
 
-### The Tamm–Dancoff approximation
+### The Tamm–Dancoff approximation {#response-tamm-dancoff}
 
 Set $\mathbf B = 0$. Equation @eq:response-2 splits into $\mathbf AX = \Omega X$ and
 $\mathbf AY = -\Omega Y$, and the excitation block is the Hermitian
@@ -310,7 +321,15 @@ TDA and Casida side by side for water / 6-31G, from the `589b50832` build,
 at HF (CIS and TDHF), PBE and B3LYP. Every Casida root lies below its TDA
 partner, by 0.003 to 0.09 eV. At B3LYP the second and third roots change
 order between the two: the bright one ($f \approx 0.1$) is the third TDA
-root and the second Casida root.
+root and the second Casida root. The printed difference subtracts roots by
+index, so for those two lines it compares different states. Paired by
+state, the dark root moves by $-0.005$ eV and the bright one by $-0.081$
+eV.
+
+The snippets fit the response integrals in `cc-pvdz-ri`, an MP2 fitting
+set. Nothing ties the auxiliary basis to the family of the orbital basis;
+the CLI uses `cc-pvdz-rifit` (the same set) when `[mp2] auxbasis` is
+unset.
 
 ```python
 import ferric
@@ -372,7 +391,7 @@ preconditioner is the diagonal $D_{ia} = \Delta_i^a$.
 (`ferric-tddft/src/tddft.rs::AUTO_DENSE_MAX_DIM`) or $4n_{\rm roots} \ge d$, and runs Davidson
 otherwise. The settings `dense` and `davidson` force one.
 
-### TDA
+### TDA {#response-davidson-tda}
 
 Rayleigh–Ritz on an orthonormal subspace $V$ diagonalizes
 $H = V^{\mathsf T}\mathbf AV$ and gives Ritz pairs $(\theta, x = Vy)$ with
@@ -384,12 +403,11 @@ $$ t = Pr - \epsilon Px,\qquad P = (\theta - D)^{-1},\qquad \epsilon = \frac{x^{
 with $\epsilon$ chosen so that
 $x^{\mathsf T}t = x^{\mathsf T}Pr - \epsilon\,x^{\mathsf T}Px = 0$.
 
-Why not the plain $Pr$? Take a root whose eigenvector lies on a block of
-equal orbital differences, all equal to $\theta$, such as a coupling-free
-combination of a degenerate set of $\pi\to\pi^*$ excitations. There
-$Pr \approx -x$, and almost every new direction is one the subspace already
-has; the solver stalls. Removing the $x$ part first keeps the step in the
-complement. `ferric-tddft/src/davidson.rs::diagonal_correction` is the
+Why not the plain $Pr$? Where $\mathbf A$ is close to diagonal on the
+support of $x$, $\mathbf Ax \approx Dx$, so $r \approx (D - \theta)x$ and
+$Pr = (\theta - D)^{-1}r \approx -x$. The new direction is then almost the
+Ritz vector the subspace already holds, and the solver stalls. Removing the
+$x$ part first keeps the step in the complement. `ferric-tddft/src/davidson.rs::diagonal_correction` is the
 equation:
 
 <!-- excerpt: ferric-tddft/src/davidson.rs::diagonal_correction -->
@@ -405,7 +423,21 @@ if den.is_finite() && den != 0.0 {
 `inverse_shifted_diag` floors $|\theta - D|$ at `PRECOND_FLOOR`, and
 $\epsilon$ is skipped when $x^{\mathsf T}Px$ is not finite or vanishes.
 
-### Casida
+> **Verified equation {#eq:td-davidson-olsen}** · Olsen's correction is orthogonal to the Ritz vector
+>
+> $t = Pr - \epsilon Px$ with $\epsilon = x^{\mathsf T}Pr/x^{\mathsf T}Px$ has $x^{\mathsf T}t = 0$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/tddft_response_sympy.py`, claim olsen |
+> | Negative control | the plain $Pr$ has a component along $x$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-tddft/src/davidson.rs::diagonal_correction` |
+> | Code test | `tda_matches_dense_eigh` in `crates/ferric-tddft/src/davidson.rs` |
+>
+> <!-- verified: id=td.davidson.olsen; script=scripts/tddft_response_sympy.py; claim=olsen; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/davidson.rs::diagonal_correction; rust_test=ferric-tddft/src/davidson.rs::tda_matches_dense_eigh; registry=tddft -->
+
+### Casida {#response-davidson-casida}
 
 One subspace $V$ carries both $X+Y$ and $X-Y$. Project the two products,
 $M_\pm = V^{\mathsf T}(\mathbf A\pm\mathbf B)V$, and write the subspace
@@ -432,6 +464,20 @@ let vk = mp.dot(&uk) / om;
 negative $\Omega^2$ is an RPA instability and an error, as on the dense
 path.
 
+> **Verified equation {#eq:td-davidson-casida-ritz}** · the Casida subspace solution
+>
+> $u = \Omega^{-1/2}Lz$ and $v = M_+u/\Omega$ with $LM_+Lz = \Omega^2z$ and $|z| = 1$ satisfy $M_+u = \Omega v$, $M_-v = \Omega u$ and $u^{\mathsf T}v = 1$; on the full space $\Omega$ are the positive roots of $\begin{pmatrix}\mathbf A&\mathbf B\\-\mathbf B&-\mathbf A\end{pmatrix}$ and $u = X+Y$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/tddft_response_sympy.py`, claim casidaritz |
+> | Negative control | scaling $u$ by $1/\Omega$ instead of $\Omega^{-1/2}$ fails (recorded mutation) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-tddft/src/davidson.rs::casida_ritz` |
+> | Code test | `casida_matches_dense_solve` in `crates/ferric-tddft/src/davidson.rs` |
+>
+> <!-- verified: id=td.davidson.casida-ritz; script=scripts/tddft_response_sympy.py; claim=casidaritz; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/davidson.rs::casida_ritz; rust_test=ferric-tddft/src/davidson.rs::casida_matches_dense_solve; registry=tddft -->
+
 The residuals are the two row-sum equations,
 
 $$ r_+ = (\mathbf A+\mathbf B)(X+Y) - \Omega(X-Y),\qquad
@@ -448,7 +494,7 @@ Olsen projection against $q = (X-Y;\,X+Y)$
 (`ferric-tddft/src/davidson.rs::casida_correction`), and both
 $\delta_+$ and $\delta_-$ join the subspace.
 
-### Guesses and stopping
+### Guesses and stopping {#response-guesses-stopping}
 
 The guesses are unit vectors on the lowest
 $\max(2n_{\rm roots}, n_{\rm roots}+8)$ diagonal elements, extended over any
@@ -465,13 +511,60 @@ above $10^{-10}$ Ha, the dense path's cut.
 | `max_iter` | 100; an unconverged root is an error |
 | subspace before collapse | $\max(n_{\rm guess} + 10n_{\rm roots}, 50)$ |
 
-These solvers have no proof script. The unit tests `tda_matches_dense_eigh`,
+The two boxes above prove the algebra of the correction and of the
+subspace solution. Whether the solvers converge to the right roots is
+tested against the dense solve: `tda_matches_dense_eigh`,
 `casida_matches_dense_solve`, `root_in_a_block_no_guess_touches_is_found`,
 `unconverged_root_is_an_error` and
 `non_positive_a_minus_b_is_an_rpa_instability` in
-`crates/ferric-tddft/src/davidson.rs` compare them with the dense solve,
-and the range-separated, triplet and open-shell validation tests run both
-solvers against PySCF.
+`crates/ferric-tddft/src/davidson.rs`. The range-separated, triplet and
+open-shell validation tests run both solvers against PySCF.
+
+## Running it {#response-running-it}
+
+The CLI kinds are `tda` and `tddft` (Casida). The functional goes in the
+`[tddft]` section, and the reference SCF is converged with it. From
+`examples/water-tddft-cam-b3lyp-triplet.toml`:
+
+```toml
+# Lowest five triplet Casida roots of water on a CAM-B3LYP reference.
+# The long-range exchange uses an erf-metric RI tensor set.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "tddft"
+
+[tddft]
+n_roots = 5
+xc = "HYB_GGA_XC_CAM_B3LYP"
+spin = "triplet"
+```
+
+`examples/water-tda.toml` (CIS), `examples/water-tddft-pbe.toml` and
+`examples/nh2-tddft-uks.toml` (an open-shell UKS reference, chosen by
+`multiplicity = 2`) are the other three. The keys of `[tddft]`
+(`ferric-cli/src/config.rs::TddftCfg`), with their Python equivalents in
+`run_tddft`:
+
+| Key | Python | Default | Meaning |
+|---|---|---|---|
+| `n_roots` | `n_roots` | 3 | number of roots |
+| `xc` | `functional` | absent: HF reference (CIS or TDHF) | reference functional; sets the exact exchange and the kernel (section @sec:kernel) |
+| `c_hf` | none | the functional's fraction | override of a global hybrid's exact-exchange fraction; refused on HF and on range-separated hybrids |
+| `solver` | `solver` | `"auto"` | `"dense"`, `"davidson"` or `"auto"` (dense for $d \le 200$) |
+| `spin` | `spin` | `"singlet"` | `"singlet"` or `"triplet"` (section @sec:triplets) |
+| method kind | `method` | `"tda"` in Python | `tda` or `tddft` in the CLI; `"tda"` or `"casida"` in Python |
+| multiplicity | `reference` | `"auto"` | a multiplicity above 1 runs the unrestricted problem (section @sec:unrestricted); Python can also force `"unrestricted"` on a closed shell |
+
+Elsewhere in the configuration: the auxiliary basis is `[mp2] auxbasis`
+(default `cc-pvdz-rifit`), the grid is the `[dft]` grid keys (the Python
+`grid_*` arguments), and `[memory] budget_gb` bounds the dense matrices.
+The Davidson settings (`conv_tol` $10^{-6}$, `max_iter` 100) are library
+defaults, `DavidsonSettings`, with no CLI or Python key.
 
 ## Numerical anchors {#response-numerical-anchors}
 
@@ -479,50 +572,35 @@ From `site/src/reference/validation.md`, "TDA and Casida TDDFT excitation energi
 
 | Quantity | Value | Test |
 |---|---|---|
-| lowest five roots vs PySCF, HF | $\le 2\times10^{-6}$ eV | `crates/ferric-tddft/tests/validation_tddft.rs` |
-| LDA, PBE | $\le 1.2\times10^{-5}$ eV | the same |
-| B3LYP, default pruned grid | $\le 8.1\times10^{-4}$ eV | the same |
-| B3LYP, the reference's flat grid | $\le 2.8\times10^{-6}$ eV | the same |
-| r2SCAN, water/6-31G, flat 75 × 110 grid | $2.1\times10^{-6}$ eV | the same |
+| lowest five roots vs PySCF, HF | $\le 2\times10^{-6}$ eV | `water_631g_hf`, `water_augdz_hf`, `h2co_631g_hf` and the other HF cases in `crates/ferric-tddft/tests/validation_tddft.rs` |
+| LDA, PBE | $\le 1.2\times10^{-5}$ eV | `water_631g_lda`, `water_631g_pbe` and the other LDA and PBE cases, same file |
+| B3LYP, default pruned grid (grid error) | $\le 8.1\times10^{-4}$ eV | `water_631g_b3lyp`, `water_augdz_b3lyp` and the other B3LYP cases |
+| B3LYP, the reference's flat grid | $\le 2.8\times10^{-6}$ eV | `water_augdz_b3lyp_same_grid_tda_keeps_the_density_tail`, `h2co_augdz_b3lyp_same_grid_tda_keeps_the_density_tail` |
+| r2SCAN, water/6-31G, flat 75 × 110 grid on both sides (implementation error at a fixed grid) | $2.1\times10^{-6}$ eV | `water_631g_r2scan` |
+| hybrid meta-GGAs TPSSh and M06-2X, water/6-31G, flat 75 × 110 grid | below the file's bar, $10^{-3}$ eV | `water_631g_tpssh`, `water_631g_m062x` |
+
+The test names are generated by the `validation_case!` macro of that file;
+each calls `check_case` for one molecule, basis and functional.
 
 The B3LYP rows differ by grid alone; section @sec:kernel-grid-sensitivity explains why.
 
-Two more anchors sit inside the library. TDA equals
-`ferric-gw/src/tddft.rs::run_tda_dft`, which shares the kernel block, and with
-$K = 0$ and $c_{\rm HF} = 1$ it reduces to CIS. The prototype
+Two more anchors sit inside the library. `ferric-gw/src/tddft.rs::run_tda_dft`
+is an earlier, library-only implementation of closed-shell singlet TDA,
+written before this crate and validated against PySCF on its own. It shares
+the kernel block and nothing else, so it is kept as an independent
+construction: `tda_matches_the_validated_library_tda_path` requires the two
+to agree, and with $K = 0$ and $c_{\rm HF} = 1$ both reduce to CIS. The prototype
 `scripts/proto_tddft.py` builds the TDA and Casida matrices by hand from
 PySCF integrals and compares them with PySCF `tdscf` on water/cc-pVDZ.
-
-### What is proven and what is not {#response-proven}
-
-The chapter's tests and their reference data:
-
-| Check | Where | Reference |
-|---|---|---|
-| TDA and Casida roots against PySCF `TDA`/`TDDFT` | `crates/ferric-tddft/tests/validation_tddft.rs` | generator `scripts/validation/gen_tddft_refs.py`; grades in `site/src/reference/validation.md`, rows `tda` and `tddft` |
-| range-separated hybrids and triplets against PySCF `get_ab` | `crates/ferric-tddft/tests/validation_tddft_rsh.rs` | generator `scripts/validation/gen_tddft_rsh_refs.py`; RHF blocks for singlets, the UKS spin blocks for triplets; the response integrals, the SCF fit and the grid are matched to PySCF |
-| the exact limits of section @sec:rsh and the singlet + triplet identity of section @sec:triplets | unit tests in `crates/ferric-tddft/src` | exact identities |
-| refusals | `crates/ferric-tddft/tests/refusals.rs` | |
-| memory plan | `crates/ferric-tddft/tests/memory_budget.rs` | |
-
-`scripts/tddft_response_sympy.py` proves, symbolically: the singlet and
-triplet spin adaptation of $\mathbf A$ and $\mathbf B$, the kernel factor 2,
-the scalar Casida reduction and its normalization, and the range-separated
-exchange split. Numerically, on random models with RI tensors and a grid
-kernel, it checks the spin-orbital $\mathbf A$ and $\mathbf B$ against the
-code's singlet and triplet blocks; CIS by brute force over determinants
-(Jordan–Wigner) against $\mathbf A$, closed and open shell; the Casida roots
-and $X+Y$ against the full non-Hermitian problem; the oscillator-strength sum
-rule; the unrestricted blocks and their closed-shell limit; the
-$\langle S^2\rangle$ formula against a Fock-space $\lVert S_+\Psi\rVert^2$;
-and the Casida $X$ extraction against the full eigenvector. With
-`DERIV_CROSSCHECK=1` and PySCF importable, it also compares
-H$_2$O/STO-3G RHF (TDA and TDHF, singlet and triplet) and
-H$_2$O$^+$/STO-3G UHF (TDA and TDHF) energies and oscillator strengths with
-PySCF; without that variable this part is skipped with a message.
 
 ## Sources {#response-sources}
 
 | Source | What it gives |
 |---|---|
 | section @sec:fxc-linearized-potential | the kernel block $K$ (section @sec:fxc) |
+| M. E. Casida, in *Recent Advances in Density Functional Methods, Part I*, ed. D. P. Chong (World Scientific, 1995), p. 155 | the linear-response equations and the $(\mathbf A-\mathbf B)^{1/2}(\mathbf A+\mathbf B)(\mathbf A-\mathbf B)^{1/2}$ form |
+| R. Bauernschmitt and R. Ahlrichs, *Chem. Phys. Lett.* **256**, 454 (1996) | the adiabatic TDDFT working equations with hybrid functionals |
+| S. Hirata and M. Head-Gordon, *Chem. Phys. Lett.* **314**, 291 (1999) | the Tamm–Dancoff approximation in TDDFT |
+| R. E. Stratmann, G. E. Scuseria and M. J. Frisch, *J. Chem. Phys.* **109**, 8218 (1998) | the Davidson solver for the Casida problem |
+| E. R. Davidson, *J. Comput. Phys.* **17**, 87 (1975) | the subspace method |
+| J. Olsen, P. Jørgensen and J. Simons, *Chem. Phys. Lett.* **169**, 463 (1990) | the correction vector of equation @eq:td-davidson-olsen |

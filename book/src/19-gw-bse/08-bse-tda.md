@@ -11,7 +11,9 @@ adds this electron–hole interaction, plus a bare exchange term, to the
 quasiparticle gaps. With a static $W$ and without the de-excitation block
 (Tamm–Dancoff), it is a symmetric eigenproblem in the space of single
 excitations, the same shape as CIS or TDA-TDDFT (section @sec:response) with a
-different kernel.
+different kernel. This section takes the response matrices, the singlet
+spin adaptation and the oscillator-strength formula from chapter @sec:tddft
+and states what the BSE kernel changes.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -45,20 +47,21 @@ $\phi_i\phi_a$ has no spin dependence beyond $\sigma$, and $v$ does not see
 spin. The screened term connects equal spins only, because the electron and
 hole it acts on must keep their spins.
 
-**Spin-adapt.** The matrix has the block form
-$\begin{pmatrix}A_{\alpha\alpha}&A_{\alpha\beta}\\A_{\alpha\beta}&A_{\alpha\alpha}\end{pmatrix}$,
-with $A_{\alpha\alpha} = \Delta + (ia|jb) - (ab|W|ij)$ and
-$A_{\alpha\beta} = (ia|jb)$. Rotate the spin index with
-$U = \tfrac1{\sqrt2}\begin{pmatrix}1&1\\1&-1\end{pmatrix}$. The rotation
-block-diagonalizes it into a singlet block, $A_{\alpha\alpha}+A_{\alpha\beta}$,
-and a triplet block, $A_{\alpha\alpha}-A_{\alpha\beta}$. The singlet block is
-the code's matrix, with $(ia|jb)$ counted twice:
+**Spin-adapt.** The blocks are $A_{\alpha\alpha} = \Delta + (ia|jb) - (ab|W|ij)$
+and $A_{\alpha\beta} = (ia|jb)$. The spin rotation of equation
+@eq:td-matrices-spin-adaptation (section @sec:response-matrices) gives the
+singlet block $A_{\alpha\alpha}+A_{\alpha\beta}$ and the triplet block
+$A_{\alpha\alpha}-A_{\alpha\beta}$, exactly as for TDDFT with $-(ab|W|ij)$
+in the place of $-c_{\rm HF}(ij|ab) + K$. The singlet block is the code's
+matrix, with $(ia|jb)$ counted twice:
 
 $$ \mathbf A_{ia,jb} = (\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i)\,\delta_{ij}\delta_{ab} + 2(ia|jb) - (ab|W(0)|ij), $$
 
 $$ (pq|W(0)|rs) = (pq|rs) + \sum_\xi w_\xi B^\xi_{pq}B^\xi_{rs}, \qquad w_\xi = \frac1{\lambda_\xi(0)} - 1 . $$
 
-The triplet block is $\Delta - (ab|W|ij)$, with no Hartree term.
+The triplet block is $\Delta - (ab|W|ij)$, with no Hartree term. Claim B1
+proves it, but the code does not compute it: `run_bse_tda` returns singlets
+only.
 
 **Check the limits.** Drop the kernel and the eigenvalues are the
 quasiparticle gaps $\epsilon^{\rm QP}_a - \epsilon^{\rm QP}_i$. Replace $W$ by
@@ -116,8 +119,9 @@ an 8-spin-orbital Fock space, and that the Brillouin condition holds.
 > | Negative control | a truncated basis must miss $(pq|rs)$ |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-gw/src/bse.rs::run_bse_tda` |
+> | Code test | `bse_tda_h2o_vs_numpy` in `crates/ferric-gw/tests/validation_bse.rs` |
 >
-> <!-- verified: id=bse.tda.kernel; script=scripts/gw_self_energy_sympy.py; claim=8; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::run_bse_tda; registry=bse-tda -->
+> <!-- verified: id=bse.tda.kernel; script=scripts/gw_self_energy_sympy.py; claim=8; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/bse.rs::run_bse_tda; rust_test=ferric-gw/tests/validation_bse.rs::bse_tda_h2o_vs_numpy; registry=bse-tda -->
 
 **The assembly.** `ferric-gw/src/bse.rs::run_bse_tda` fills the matrix with a
 double loop over $(ia, jb)$ and two integral closures, `bare` and
@@ -160,20 +164,14 @@ returns the eigenvalues ascending with matching eigenvector columns.
 
 ## Oscillator strengths {#bse-tda-oscillator-strengths}
 
-**The transition moment.** A singlet root with amplitudes $X$ is the
-spin-adapted combination of the $\alpha$ and $\beta$ excitations:
-
-$$ |\Psi_n\rangle = \sum_{ia}X_{ia}\,\tfrac1{\sqrt2}\,\big(a^\dagger_{a\alpha}a_{i\alpha} + a^\dagger_{a\beta}a_{i\beta}\big)|\Phi_0\rangle . $$
-
-The dipole operator is a one-electron operator summed over both spins. Each
-spin term gives $\tfrac1{\sqrt2}\sum_{ia}X_{ia}\langle i|\mathbf r|a\rangle$,
-and the two add:
-
-$$ \langle 0|\mathbf r|n\rangle = \sqrt2\sum_{ia}X_{ia}\langle i|\mathbf r|a\rangle, \qquad f_n = \tfrac23\,\Omega_n\,|\langle 0|\mathbf r|n\rangle|^2 . $$
-
-The occupied–virtual dipole blocks do not depend on the origin, because the
-occupied and virtual orbitals are orthogonal. The code takes the AO dipole
-about the origin. The loop over states in
+**The transition moment.** The transition dipole and the oscillator strength
+are those of equation @eq:td-osc-sum-rule (section
+@sec:oscillator-strengths-length-gauge-formula) with $Y = 0$:
+$\langle 0|\mathbf r|n\rangle = \sqrt2\sum_{ia}X_{ia}\langle i|\mathbf r|a\rangle$
+and $f_n = \tfrac23\,\Omega_n|\langle 0|\mathbf r|n\rangle|^2$. The
+$\sqrt2$ is the same spin sum, and the occupied–virtual dipole blocks do not
+depend on the origin for the same reason. BSE-TDA has its own copy of the
+loop, in
 `ferric-gw/src/bse.rs::tda_oscillator_strengths`:
 
 <!-- excerpt: ferric-gw/src/bse.rs::tda_oscillator_strengths -->
@@ -198,9 +196,12 @@ about the origin. The loop over states in
 
 **How the factors are checked.** Claim B3 evaluates
 $\langle\Phi_0|\mathbf r|\Psi_n\rangle$ over the Jordan–Wigner determinants.
-Claim B4 checks the sum rule
-$\sum_n f_n = \tfrac43\sum_x \mathbf r_x^{\mathsf T}\mathbf A\,\mathbf r_x$ over
-all roots, which fixes both the $\sqrt2$ and the factor $\Omega$.
+Claim B4 checks the sum rule over all roots. It is the TDA form of equation
+@eq:td-osc-sum: with $Y = 0$ and $X_n$ orthonormal,
+$\sum_n\Omega_nX_nX_n^{\mathsf T} = \mathbf A$, so $\mathbf A$ takes the
+place of $\mathbf A - \mathbf B$ and
+$\sum_n f_n = \tfrac43\sum_x \mathbf r_x^{\mathsf T}\mathbf A\,\mathbf r_x$.
+The rule fixes both the $\sqrt2$ and the factor $\Omega$.
 
 > **Verified equation {#eq:bse-tda-osc}** · the transition moment and the sum rule
 >
@@ -223,7 +224,8 @@ all roots, which fixes both the $\sqrt2$ and the factor $\Omega$.
 The lowest five singlets of water / cc-pVDZ, from the `589b50832` build, with
 their oscillator strengths. Every root lies below the G0W0@HF gap of the
 first line: the screened electron–hole attraction of the direct term pulls
-them down. The second root is dark ($f = 0$ to five places).
+them down. The second root is dark ($f = 0$ to five places). The CLI input
+is `examples/water-bse-tda.toml`.
 
 ```python
 # Water / cc-pVDZ: lowest five BSE-TDA singlets, their oscillator strengths, and the G0W0 gap they sit below.
@@ -267,7 +269,7 @@ certificate warnings: []
 **Why every QP energy is solved.** The G0W0 energies of core and high virtual
 orbitals are individually ill-conditioned: the Thiele continuation of
 $\Sigma^c$ far from the Fermi level moves them by up to $3.8\times10^{-3}$ Ha
-between two runs of the reference generator. The lowest five $\Omega$ move by
+between two independent runs of the same reference calculation. The lowest five $\Omega$ move by
 at most $1.1\times10^{-7}$ Ha, because those states carry little of the
 low-lying eigenvectors. A rigid scissor outside a $\text{HOMO}-k\ldots\text{LUMO}+k$
 window instead moves the lowest five $\Omega$ by $1.5\times10^{-4}$ to
@@ -292,12 +294,21 @@ The CLI refuses multiplicity above 1 (closed-shell RHF only). With $W\to v$
 and Hartree–Fock energies the same assembly is CIS (`run_cis_tda`), the
 isolation test for the kernel layout.
 
-**Known limits (2026-11-15).** Singlets only, static $W$, no dynamical
-correction, dense. The quasiparticle energies come from the internal G0W0,
-which matches PySCF only at `n_quad = 100`, `trunc_thresh = 0`; the defaults
-are coarser. The grade is Smoke: the lowest five singlets match an
-independent numpy BSE-TDA given the same QP energies, and the physics is not
-benchmarked against experiment here.
+**Known limits (2026-11-19).** Singlets only, static $W$, no dynamical
+correction, dense. HF starting point only: `run_bse_tda` takes an RHF
+reference and the Python call has no `xc`. The quasiparticle energies come
+from the internal G0W0, which matches PySCF only at `n_quad = 100`,
+`trunc_thresh = 0`; the defaults are coarser. The grade is Smoke: the lowest
+five singlets match an independent numpy BSE-TDA given the same QP energies.
+The physics has one committed benchmark: BSE-TDA[G0W0@HF] / aug-cc-pVDZ on
+a ten-molecule Thiel-set subset against the QUEST best estimates
+(`testdata/reference/thiel_set_subset.json`, inputs
+`examples/*-bse-tda-augdz.toml`, logs in `benchmarks/bse-tda-pilot/`) gives
+a mean absolute error of 0.641 eV and a mean signed error of +0.598 eV over
+17 assigned states. `corrected_statistic_is_worse_than_the_naive_one_and_both_are_pinned`
+in `crates/ferric-gw/tests/bse_tda_phase2_assignment.rs` recomputes those
+figures from the committed logs. It measures the method at that basis, not
+the implementation, and does not set the grade.
 
 ## Numerical anchors {#bse-tda-numerical-anchors}
 

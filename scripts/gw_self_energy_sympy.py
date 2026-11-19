@@ -57,8 +57,9 @@ claim 4 runs Newton to the exact root; claims 6-8 use exact rationals.
 
 Open shell (`book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per`): only the spin-summed dielectric (claim 1,
 prefactor 2 per spin) is open-shell specific. The per-spin Sigma_c is the same
-integral over that spin's MOs, so claims 2-4 cover it; the per-spin mid-gap
-eps_F and the U-COHSEX drivers are not checked separately.
+integral over that spin's MOs; scripts/gw_ucohsex_sympy.py checks it against a
+U-dRPA pole sum (claim U3), the U-COHSEX pieces (U1) and the per-spin mid-gap
+eps_F (U2).
 
 Mutations (each turns the script red):
   - prefactor 1 instead of 2 on the first spin's Pi in claim 1 (marker

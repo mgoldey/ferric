@@ -14,6 +14,8 @@ dielectric):
         Sigma_COH_s(p)  = + 1/2 sum_{q in s} sum_xi w_xi M_s[xi,p,q]^2,  w = 1/lambda - 1
   * u_sigma.rs qp_per_spin_g0w0: each spin continues Sigma_c from its own line
     z = eps_F,s + i u with eps_F,s the mid-gap of THAT spin (fermi_level(&eps_act, n_occ_act)).
+  * u_sigma.rs run_u_g0w0 / qp_per_spin_g0w0: the dynamic per-spin Sigma_c
+    (claim U3) from the same M_s and the spin-summed eps~(iu).
 
 Checked:
   U1  Lattice model (6 sites, spin-dependent orthogonal orbitals, 2 alpha and
@@ -34,11 +36,26 @@ Checked:
       eps_F inside that spin's gap; a line through the other spin's mid-gap
       (outside this spin's gap) mis-assigns a state and continues to a
       different function. 80-digit arithmetic, tolerance 1e-40.
+  U3  Dynamic per-spin Sigma^c (u_sigma.rs run_u_g0w0, module doc):
+        Sigma_c,s(m, z) = -(1/pi) sum_{n in s} int_0^inf du W_s,mn(iu)
+                           (z - eps_n,s) / ((z - eps_n,s)^2 + u^2),
+        W_s,mn(iu) = M_s[:,mn]^T [eps~(iu)^-1 - 1] M_s[:,mn],
+        eps~(iu) = 1 + Pi_a(iu) + Pi_b(iu),
+        Pi_s(iu) = 2 sum B_s B_s^T Delta / (u^2 + Delta^2),
+      on the U1 lattice model at z = eps_F,s + iy (y = 0.3, 1.1), integrated
+      with 400 Gauss-Legendre nodes on u = u0 (1+x)/(1-x), equals the
+      independent pole sum over the spin-orbital direct-RPA excitations,
+      sum_n sum_s V_s,mn^2 / (z - eps_n +- Omega_s) with
+      V_s,mn = sum_{jb tau} (mn|jb) (X+Y)_{jb tau, s}  (1e-10). At alpha = beta
+      it equals the closed-shell Sigma_c (prefactor-4 Pi). Negative control:
+      the other spin's orbital energies in the kernel.
 
 Mutations (the runner substitutes the code line once; each exits 1):
   the per-spin dielectric prefactor 2 -> 4                 -> U1 fails
   the alpha channel's occupied set swapped with beta's     -> U1 fails
   the sign rule Re(z - eps_q) > 0 replaced by True         -> U2 fails
+  the frequency-dependent per-spin Pi prefactor 2 -> 4     -> U3 fails
+  W_d = eps~^-1 - 1 replaced by eps~^-1 (bare v kept in W)  -> U3 fails
 
 Run: python3 scripts/gw_ucohsex_sympy.py   (needs numpy, mpmath)
 """
@@ -295,9 +312,124 @@ def part_u2():
     )
 
 
+# ----------------------------------------------------------------- U3
+def pi_spin_freq(b, eps, nocc, u):
+    """energy.rs unrestricted chi0 at iu: Pi_s = 2 sum B B^T Delta/(u^2 + Delta^2)."""
+    bov = b[:, :nocc, nocc:].reshape(b.shape[0], -1)
+    gaps = (eps[None, nocc:] - eps[:nocc, None]).ravel()
+    return 2.0 * (bov * (gaps / (u**2 + gaps**2))) @ bov.T
+
+
+def code_sigma_c(b_s, eps_s, lam0, u0, chans, m, z, nodes, weights):
+    """u_sigma.rs per spin: Sigma_c,s(m, z) = -(1/pi) sum_{n in s} sum_xi,eta
+    M_s[xi,mn] [eps~(iu)^-1 - 1]_xi,eta M_s[eta,mn] integrated over u, with
+    M_s = U^T B_s (U: static spin-summed PDEP modes, a complete basis here)."""
+    m_proj = np.einsum("Px,Ppq->xpq", u0, b_s)
+    tot = 0.0
+    for uk, wk in zip(nodes, weights):
+        eps_mat = np.eye(M) + sum(pi_spin_freq(b, e, no, uk) for b, e, no in chans)
+        w_d = u0.T @ np.linalg.inv(eps_mat) @ u0 - np.eye(M)
+        for n in range(M):
+            w_mn = m_proj[:, m, n] @ w_d @ m_proj[:, m, n]
+            kern = z - eps_s[n]
+            tot += wk * w_mn * kern / (kern**2 + uk**2)
+    return -tot / np.pi
+
+
+def drpa_pole_sigma(chans, spin, m, z):
+    """Independent route: spin-orbital direct RPA on real frequencies,
+    Omega^2 from Delta^1/2 (Delta + 2K) Delta^1/2, X+Y = Delta^1/2 Z/sqrt(Omega),
+    V_s,mn = sum_{jb tau} (mn|jb)_tau (X+Y)_{jb tau, s}, and claim 2's residues
+    Sigma_c(z) = sum_n sum_s V^2 / (z - eps_n +- Omega_s)."""
+    bov = np.concatenate(
+        [b[:, :no, no:].reshape(b.shape[0], -1) for b, _, no in chans], axis=1
+    )
+    dlt = np.concatenate([(e[None, no:] - e[:no, None]).ravel() for _, e, no in chans])
+    kmat = bov.T @ bov
+    sq = np.sqrt(dlt)
+    om2, zz = np.linalg.eigh(sq[:, None] * (np.diag(dlt) + 2.0 * kmat) * sq[None, :])
+    om = np.sqrt(om2)
+    xpy = sq[:, None] * zz / np.sqrt(om)[None, :]
+    b_s, eps_s, nocc_s = chans[spin]
+    tot = 0.0
+    for n in range(M):
+        v = b_s[:, m, n] @ bov @ xpy
+        sign = 1.0 if n < nocc_s else -1.0
+        tot += np.sum(v**2 / (z - eps_s[n] + sign * om))
+    return tot
+
+
+def gl_half_line(n, u0):
+    x, w = np.polynomial.legendre.leggauss(n)
+    return u0 * (1 + x) / (1 - x), w * 2 * u0 / (1 - x) ** 2
+
+
+def part_u3():
+    rng = np.random.default_rng(20261119)
+    nocc_a, nocc_b = 2, 1
+    phi_a, eps_a = spin_channel(rng, nocc_a)
+    phi_b, eps_b = spin_channel(rng, nocc_b)
+    lmat = 0.35 * rng.standard_normal((M, M))
+    b_a, b_b = build_b(lmat, phi_a), build_b(lmat, phi_b)
+    chans = [(b_a, eps_a, nocc_a), (b_b, eps_b, nocc_b)]
+    lam0, u0 = np.linalg.eigh(
+        np.eye(M) + sum(pi_spin_freq(b, e, no, 0.0) for b, e, no in chans)
+    )
+    nodes, weights = gl_half_line(400, 0.5)
+    worst = 0.0
+    for spin, (b_s, eps_s, nocc_s) in enumerate(chans):
+        ef = 0.5 * (eps_s[nocc_s - 1] + eps_s[nocc_s])  # this spin's mid-gap
+        for m in range(M):
+            for y in (0.3, 1.1):
+                z = ef + 1j * y
+                c = code_sigma_c(b_s, eps_s, lam0, u0, chans, m, z, nodes, weights)
+                worst = max(worst, abs(c - drpa_pole_sigma(chans, spin, m, z)))
+    check(
+        "U3",
+        worst < 1e-10,
+        f"per-spin dynamic Sigma_c on z = eps_F,s + iy (code integral) = U-dRPA pole sum: max |d| = {worst:.1e}",
+    )
+    # Negative control: the other spin's orbital energies in the kernel.
+    z = 0.5 * (eps_a[1] + eps_a[2]) + 0.3j
+    bad = code_sigma_c(b_a, eps_b, lam0, u0, chans, 0, z, nodes, weights)
+    check(
+        "U3",
+        abs(bad - drpa_pole_sigma(chans, 0, 0, z)) > 1e-4,
+        "negative control: the other spin's propagator energies are wrong",
+    )
+
+    # Closed-shell limit: alpha = beta equals the closed-shell Sigma_c
+    # (prefactor-4 Pi with spatial pairs).
+    phi, eps = spin_channel(rng, 2)
+    b = build_b(lmat, phi)
+    ch2 = [(b, eps, 2), (b, eps, 2)]
+    lam_u, uu = np.linalg.eigh(
+        np.eye(M) + sum(pi_spin_freq(bb, e, no, 0.0) for bb, e, no in ch2)
+    )
+    z = 0.5 * (eps[1] + eps[2]) + 0.4j
+    d = 0.0
+    for m in range(M):
+        su = code_sigma_c(b, eps, lam_u, uu, ch2, m, z, nodes, weights)
+        sc = 0.0
+        m_proj = np.einsum("Px,Ppq->xpq", uu, b)
+        for uk, wk in zip(nodes, weights):
+            pi_c = 2.0 * pi_spin_freq(b, eps, 2, uk)  # prefactor 4
+            w_d = uu.T @ np.linalg.inv(np.eye(M) + pi_c) @ uu - np.eye(M)
+            for n in range(M):
+                w_mn = m_proj[:, m, n] @ w_d @ m_proj[:, m, n]
+                sc += wk * w_mn * (z - eps[n]) / ((z - eps[n]) ** 2 + uk**2)
+        d = max(d, abs(su + sc / np.pi))
+    check(
+        "U3",
+        d < 1e-12,
+        f"alpha = beta: per-spin dynamic Sigma_c = closed-shell Sigma_c: max |d| = {d:.1e}",
+    )
+
+
 def main():
     part_u1()
     part_u2()
+    part_u3()
     print(f"{len(FAILS)} failed: {FAILS}" if FAILS else "all identities hold")
     return 1 if FAILS else 0
 

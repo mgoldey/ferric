@@ -1497,6 +1497,37 @@ CASES = [
                 "on_occupied_side = True",
                 "FAIL [U2]",
             ),
+            (
+                "return 2.0 * (bov * (gaps",
+                "return 4.0 * (bov * (gaps",
+                "FAIL [U3]",
+            ),
+            (
+                "w_d = u0.T @ np.linalg.inv(eps_mat) @ u0 - np.eye(M)",
+                "w_d = u0.T @ np.linalg.inv(eps_mat) @ u0",
+                "FAIL [U3]",
+            ),
+        ],
+    ),
+    (
+        "gw_evgw_sympy.py",
+        15,
+        [
+            (
+                "eps_prop = [eps_qp[m] for m in (OCC, VIR)]",
+                "eps_prop = list(EPS_MF)",
+                "[FAIL] EV2",
+            ),
+            (
+                "eps_qp = [EPS_MF[m] for m in (OCC, VIR)]",
+                'eps_qp = [EPS_MF[m] + mpf("0.01") for m in (OCC, VIR)]',
+                "[FAIL] EV1",
+            ),
+            (
+                "om, s = one_pair_pole(eps_qp[VIR] - eps_qp[OCC])",
+                "om, s = one_pair_pole(EPS_MF[VIR] - EPS_MF[OCC])",
+                "[FAIL] EV3",
+            ),
         ],
     ),
     (
@@ -1857,6 +1888,18 @@ CASES = [
                 "return 0.5 * (xpy + apb_xpy / omega)",
                 "return 0.5 * (xpy - apb_xpy / omega)",
                 "[FAIL] D4",
+            ),
+            (
+                "lhs = 2 * sp.diff(e_unpol, rho, 2)",
+                "lhs = 1 * sp.diff(e_unpol, rho, 2)",
+                "[FAIL] A2",
+            ),
+            ("return pr - eps * px", "return pr", "[FAIL] E1"),
+            ("u = l_half @ z / np.sqrt(om)", "u = l_half @ z / om", "[FAIL] E2"),
+            (
+                "return ra, sg, ta, wt * (2 * vs[0] - vs[1])",
+                "return ra, sg, ta, wt * (2 * vs[0] + vs[1])",
+                "[FAIL] E3",
             ),
         ],
     ),

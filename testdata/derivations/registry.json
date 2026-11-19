@@ -41,7 +41,8 @@
       "eom-ccsd"
     ],
     "cli:gw": [
-      "gw"
+      "gw",
+      "u-gw"
     ],
     "cli:ksdft": [
       "ks-semilocal",
@@ -579,12 +580,17 @@
       "book": [
         "book/src/19-gw-bse/03-correlation-self-energy.md#correlation-self-energy-frequency-integral",
         "book/src/18-rpa/02-quadratures.md#quadratures-rule",
-        "book/src/19-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-hybrid-references"
+        "book/src/19-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references",
+        "book/src/19-gw-bse/02-screened-interaction.md#screened-interaction-dielectric-matrix-single-pole",
+        "book/src/19-gw-bse/04-cohsex.md#cohsex-static-limit",
+        "book/src/19-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-quasiparticle-equation",
+        "book/src/19-gw-bse/06-eigenvalue-self-consistency.md#eigenvalue-self-consistency-update"
       ],
       "scripts": [
         "scripts/gw_self_energy_sympy.py",
         "scripts/rpa_quadrature_sympy.py",
-        "scripts/gw_hybrid_vmf_sympy.py"
+        "scripts/gw_hybrid_vmf_sympy.py",
+        "scripts/gw_evgw_sympy.py"
       ]
     },
     "harmonic-frequencies": {
@@ -1065,10 +1071,12 @@
     },
     "bse-tda": {
       "book": [
-        "book/src/19-gw-bse/08-bse-tda.md#bse-tda-matrix"
+        "book/src/19-gw-bse/08-bse-tda.md#bse-tda-matrix",
+        "book/src/20-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula"
       ],
       "scripts": [
-        "scripts/gw_bse_rpax_sympy.py"
+        "scripts/gw_bse_rpax_sympy.py",
+        "scripts/tddft_response_sympy.py"
       ]
     },
     "tdhf-static-polarizability": {
@@ -1082,7 +1090,7 @@
     "u-gw": {
       "book": [
         "book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per",
-        "book/src/19-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-hybrid-references"
+        "book/src/19-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references"
       ],
       "scripts": [
         "scripts/gw_ucohsex_sympy.py",

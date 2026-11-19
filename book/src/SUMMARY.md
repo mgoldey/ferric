@@ -136,7 +136,7 @@
 - [20. Time-dependent density functional theory](20-tddft/index.md)
   - [20.1 Response matrices, TDA and the Casida equations](20-tddft/01-response.md)
   - [20.2 Transition dipoles and oscillator strengths](20-tddft/02-oscillator-strengths.md)
-  - [20.3 The kernel and the functional gate](20-tddft/03-kernel.md)
+  - [20.3 The kernel and which functionals are accepted](20-tddft/03-kernel.md)
   - [20.4 Range-separated hybrids](20-tddft/04-rsh.md)
   - [20.5 Triplets](20-tddft/05-triplets.md)
   - [20.6 Unrestricted references and $\langle S^2\rangle$](20-tddft/06-unrestricted.md)

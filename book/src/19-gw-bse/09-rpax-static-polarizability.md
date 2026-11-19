@@ -2,8 +2,9 @@
 
 <!-- status: ready; registry: tdhf-static-polarizability -->
 
-A static electric field pushes the electrons one way and the nuclei the
-other. The induced dipole per unit field is the polarizability, and in
+A static electric field displaces the electron cloud against the fixed
+nuclei. The induced dipole per unit field is the (electronic)
+polarizability, and in
 linear response it comes from the same particle–hole matrices as the
 excitation energies: a field mixes the excited states into the ground state,
 each weighted by its transition dipole and its energy. This section takes
@@ -13,11 +14,15 @@ $\mathbf A$ and the de-excitation block $\mathbf B$ then carry a screened
 exchange-type term. With $W$ replaced by $v$ at a Hartree–Fock reference the
 kernel is TDHF and the polarizability is the coupled-perturbed HF one; the
 shipped kernel keeps the screened $W$, so it is a statically screened RPAx.
+The CLI kind is `tdhf-static-polarizability` for historical reasons; the
+method is statically screened RPAx on a Kohn–Sham reference.
 
-This section is Smoke grade. The implementation is
-checked against independent assemblies of the same equations, but the
-physics is not established: the polarizability is 46% low against the dipole
-oscillator strength distribution (DOSD) reference on water.
+This section is Smoke grade. The implementation is checked against
+independent assemblies of the same equations. The physics depends on an
+empirical scissor: for water / aug-cc-pVDZ at PBE, $\alpha_{\rm iso}$ is
+11.05, 8.61 and 7.33 a.u. at scissor 0.20, 0.36 and 0.50 Ha, against 9.64
+from the dipole oscillator strength distribution (DOSD) and 9.86 from
+coupled-perturbed PBE in the same basis.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -36,15 +41,17 @@ oscillator strength distribution (DOSD) reference on water.
 ## The response matrices {#rpax-static-polarizability-response-matrices}
 
 **In spin orbitals.** The construction is the one of section @sec:bse-tda, now with
-the de-excitation block. The Hartree term $(ia|jb)$ couples every spin pair,
-and the screened terms couple equal spins only:
+the de-excitation block $\mathbf B$ of section @sec:response-matrices. The
+Hartree term $(ia|jb)$ couples every spin pair, and the screened terms
+couple equal spins only:
 
 $$ A_{i_\sigma a_\sigma,j_\tau b_\tau} = \Delta_i^a\delta + (ia|jb) - \delta_{\sigma\tau}(ab|W|ij), \qquad B_{i_\sigma a_\sigma,j_\tau b_\tau} = (ia|jb) - \delta_{\sigma\tau}(ib|W|ja) . $$
 
-**Spin-adapt.** The spin rotation of section @sec:bse-tda adds the $\alpha\alpha$ and
-$\alpha\beta$ blocks for the singlet. In $\mathbf A$ and in $\mathbf B$ the
-Hartree term appears in both blocks, so the singlet carries $2(ia|jb)$ in
-each, and $4(ia|jb)$ in their sum. The singlet block is
+**Spin-adapt.** The spin rotation of equation @eq:td-matrices-spin-adaptation
+adds the $\alpha\alpha$ and $\alpha\beta$ blocks for the singlet. In
+$\mathbf A$ and in $\mathbf B$ the Hartree term appears in both blocks, so
+the singlet carries $2(ia|jb)$ in each, and $4(ia|jb)$ in their sum. The
+singlet block is
 
 $$ (\mathbf A+\mathbf B)_{ia,jb} = \Delta_i^a\delta + 4(ia|jb) - (ab|W|ij) - (ib|W|ja), \qquad (\mathbf A-\mathbf B)_{ia,jb} = \Delta_i^a\delta + (ib|W|ja) - (ab|W|ij) . $$
 
@@ -102,25 +109,21 @@ adds a constant to every virtual energy before the assembly
 ## The response {#rpax-static-polarizability-response}
 
 **The equations.** Apply a perturbation $-\mathbf F\cdot\hat{\boldsymbol\mu}$ at
-imaginary frequency $\omega = iu$. The first-order amplitudes solve
+frequency $\nu$. The first-order amplitudes solve the driven response
+equation of section @sec:response-tda-casida-reduction. Its right-hand side
+is $-v$ for a perturbation $v$; here $v = -\boldsymbol\mu F$, so
 
-$$ \begin{pmatrix}\mathbf A-\omega&\mathbf B\\\mathbf B&\mathbf A+\omega\end{pmatrix}\binom{X}{Y} = \binom{\boldsymbol\mu}{\boldsymbol\mu}F , $$
+$$ \begin{pmatrix}\mathbf A-\nu&\mathbf B\\\mathbf B&\mathbf A+\nu\end{pmatrix}\binom{X}{Y} = \binom{\boldsymbol\mu}{\boldsymbol\mu}F , $$
 
 and the induced dipole is $\boldsymbol\mu\cdot(X+Y)$.
 
-**Reduce to one block.** Subtract the second block row from the first:
+**Reduce to one block.** Add and subtract the two block rows and eliminate
+$X - Y$, as in section @sec:response-tda-casida-reduction:
 
-$$ (\mathbf A-\mathbf B)(X-Y) - \omega(X+Y) = 0 \quad\Rightarrow\quad X - Y = \omega(\mathbf A-\mathbf B)^{-1}(X+Y) . $$
+$$ \big[(\mathbf A+\mathbf B) - \nu^2(\mathbf A-\mathbf B)^{-1}\big]{(X+Y)} = 2\boldsymbol\mu F . $$
 
-Add the two rows instead:
-
-$$ (\mathbf A+\mathbf B)(X+Y) - \omega(X-Y) = 2\boldsymbol\mu F . $$
-
-Substitute $X - Y$ from the first result:
-
-$$ \big[(\mathbf A+\mathbf B) - \omega^2(\mathbf A-\mathbf B)^{-1}\big]{(X+Y)} = 2\boldsymbol\mu F . $$
-
-**Go to the singlet space.** At $\omega = iu$, $-\omega^2 = u^2$. In the
+**Go to the singlet space.** On the imaginary axis, $\nu = iu$ and
+$-\nu^2 = u^2$. In the
 rotated spin basis the spin-orbital dipole is $\boldsymbol\mu_{\rm so} = \sqrt2\,\boldsymbol\mu$,
 so $X+Y$ carries one $\sqrt2$ from the right-hand side and the dot product
 with $\boldsymbol\mu_{\rm so}$ another. Together with the 2 of the
@@ -134,11 +137,12 @@ $$ \alpha_{xy}(iu) = 4\,\mu_x^{\mathsf T}\big[(\mathbf A-\mathbf B)(\mathbf A+\m
 $\alpha = 4\mu^{\mathsf T}(\mathbf A+\mathbf B)^{-1}\mu$: the static
 polarizability depends on $\mathbf A+\mathbf B$ alone. The operator
 $[(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)+u^2]^{-1}(\mathbf A-\mathbf B)$ is
-symmetric and equals the sum over states
-$2\sum_n|\langle0|\mathbf r|n\rangle|^2\,\Omega_n/(\Omega_n^2+u^2)$, with
+symmetric. Its quadratic form with $\mu$ is $\alpha(iu)/4$, and
+$\alpha(iu) = 2\sum_n|\langle0|\mathbf r|n\rangle|^2\,\Omega_n/(\Omega_n^2+u^2)$, with
 $\Omega_n^2$ the eigenvalues of $(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)$
-(claim 7 of `scripts/gw_self_energy_sympy.py`): the sum over excited
-states of the opening paragraph.
+and $\langle0|\mathbf r|n\rangle$ the transition dipole of equation
+@eq:td-osc-sum-rule (claim 7 of `scripts/gw_self_energy_sympy.py`): the sum
+over excited states of the opening paragraph.
 
 **The code** solves one linear system per Cartesian axis,
 $[(\mathbf A-\mathbf B)(\mathbf A+\mathbf B)]\,t = (\mathbf A-\mathbf B)\mu$,
@@ -171,7 +175,9 @@ library drivers add $u^2$ to the product. The order matters: the reversed
 form $\mu^{\mathsf T}(\mathbf A-\mathbf B)[\cdots]^{-1}\mu$ is a different
 number. Claim S3 is the scalar algebra of the reduction, and claim R2 solves
 the full $2N\times2N$ spin-orbital system at $u = 0$ and $u = 0.7$ and gets
-the code's number.
+the code's number. The Rust test named in the box below runs the static
+solve only; nothing in Rust exercises $u \ne 0$ outside the library-only
+dynamic drivers.
 
 > **Verified equation {#eq:rpax-response}** · the response solve against the full spin-orbital response equation
 >
@@ -239,25 +245,32 @@ does not fit.
 
 | Option | Effect |
 |---|---|
-| `[gw] scissor` | adds a constant to every virtual KS energy; 0.3 to 0.4 Ha for small molecules |
+| `[gw] scissor` | adds a constant to every virtual KS energy; 0.3 to 0.4 Ha for small molecules. It sets the answer: water / aug-cc-pVDZ at PBE gives $\alpha_{\rm iso}$ 11.05, 8.61 and 7.33 a.u. at 0.20, 0.36 and 0.50 Ha |
 | `[rpa] xc` | required: the CLI refuses an HF reference |
 | `trunc_thresh` | the CLI default is $10^{-4}$; the validation runs at 0 |
 
 **Why the diagonal guard exists.** At `scissor = 0` the kernel can give a
 negative $\alpha$ diagonal even for small closed-shell molecules at
-equilibrium geometry (water/cc-pVDZ $\alpha_{xx} = -2.68$ a.u.). This is an
-excitonic instability: the screened exchange kernel paired with the
-uncorrected KS gap. In the static limit $\alpha = 4\mu^{\mathsf T}(\mathbf A+\mathbf B)^{-1}\mu$,
+equilibrium geometry (water/cc-pVDZ $\alpha_{xx} = -2.68$ a.u.;
+aug-cc-pVDZ $-67.8$ a.u.). This is an excitonic instability. On a KS
+reference the diagonal $\Delta_i^a$ is the small KS gap, while the screened
+terms $-(ab|W|ij) - (ib|W|ja)$ of $\mathbf A+\mathbf B$ are sized for an
+electron and hole separated by a quasiparticle gap; the attraction wins and
+$\mathbf A+\mathbf B$ loses positive definiteness. In the static limit $\alpha = 4\mu^{\mathsf T}(\mathbf A+\mathbf B)^{-1}\mu$,
 so a negative diagonal element means $\mathbf A+\mathbf B$ is not positive
 definite. The isotropic average can look right while the tensor is
 unphysical, so the library refuses instead of warning. An independent kernel
 reproduces the negative diagonal, so it is not an assembly error. A nonzero
 scissor, or a diagonal from G0W0 energies, removes it.
 
-**Known limits (2026-11-15).** Static $\alpha$ only. The dynamic drivers
-`run_bse_c6` and `run_bse_c6_ks` are deliberately library-only: $C_6$ from this
-kernel stays about 63% low regardless of the HOMO–LUMO gap, worse than the
-PDEP-RPA route of section @sec:polarizabilities-from-dielectric-modes. Closed shell only. The grade is Smoke.
+**Known limits (2026-11-19).** Static $\alpha$ only. The dynamic drivers
+`run_bse_c6` and `run_bse_c6_ks` are library-only. $C_6$ from this kernel was
+recorded as about 63% low regardless of the HOMO–LUMO gap, worse than the
+PDEP-RPA route of section @sec:polarizabilities-from-dielectric-modes; that
+figure has not been retested against the basis-set and scissor dependence
+that the static $\alpha$ shows above, so it may measure the basis rather
+than the kernel. Closed shell only. The physics rests on the empirical
+scissor. The grade is Smoke.
 
 ## Numerical anchors {#rpax-static-polarizability-numerical-anchors}
 
@@ -269,25 +282,34 @@ the `tdhf-static-polarizability` row of the capability table):
 | $\alpha$ against a numpy assembly of the same kernel (full 3×3 tensor) | H2O, NH3 / aug-cc-pVDZ at RHF, scissor 0; H2O / cc-pVDZ at PBE, scissor 0.36 Ha | $\le 5.3\times10^{-9}$ relative | `crates/ferric-gw/tests/validation_rpax_alpha.rs` |
 | bare-exchange limit against the same numpy build | same | $\le 5.4\times10^{-9}$ relative | same |
 | lowest eigenvalues of $\mathbf A\pm\mathbf B$ | same | $\le 7.5\times10^{-10}$ Ha | same |
-| physical accuracy: water / cc-pVDZ at PBE, scissor 0.36 Ha | $\alpha_{\rm iso}$ 5.20 a.u. against DOSD 9.64 | 46% low | `examples/water-tdhf-static-alpha.toml` |
+| water / aug-cc-pVDZ at PBE, scissor 0.20, 0.36, 0.50 Ha | $\alpha_{\rm iso}$ 11.05, 8.61, 7.33 a.u. against DOSD 9.64 and coupled-perturbed PBE 9.86 | +15%, −11%, −24% against DOSD | the example below |
+| water / cc-pVDZ at PBE, scissor 0.36 Ha | $\alpha_{\rm iso}$ 5.20 a.u. against coupled-perturbed PBE 5.375 in the same basis | −3% | `examples/water-tdhf-static-alpha.toml` |
+
+The cc-pVDZ number is far below DOSD (−46%) because the basis has no diffuse
+functions: coupled-perturbed PBE itself gives 5.375 a.u. and RHF 5.020 a.u.
+there, and the out-of-plane component is only 3.2 a.u. The coupled-perturbed
+values are PySCF finite-field derivatives of the SCF dipole (field
+$\pm10^{-3}$ a.u., PBE on grid level 4), run for this section; they are not
+in a test.
 
 Further tests are in `crates/ferric-gw/tests/rpax_*.rs`.
 
-The physical-accuracy row and the scissor-0 refusal, from the `589b50832`
-build. The script cuts the error message at 200 characters.
+The aug-cc-pVDZ rows and the scissor-0 refusal, from the `3f612e0b3`
+build. Each run takes under a second. The script cuts the error message at
+200 characters.
 
 ```python
-# Water / cc-pVDZ at PBE, scissor 0.36 Ha: statically screened RPAx alpha tensor and alpha_iso (DOSD 9.64 a.u.).
+# Water / aug-cc-pVDZ at PBE: statically screened RPAx alpha at three scissors, and the scissor-0 refusal.
 import ferric
 
 mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
-bs = ferric.BasisSet.bundled("cc-pvdz")
-aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+bs = ferric.BasisSet.bundled("aug-cc-pvdz")
+aux = ferric.BasisSet.bundled("aug-cc-pvdz-ri")
 
-r = ferric.run_tdhf_static_polarizability(mol, bs, aux, xc="PBE", scissor=0.36, trunc_thresh=0.0)
-print("alpha tensor (a.u.):")
-print(r.tensor)
-print(f"alpha_iso = {r.iso:.3f} a.u.; DOSD 9.64; ratio {r.iso/9.64:.3f}")
+for scissor in (0.20, 0.36, 0.50):
+    r = ferric.run_tdhf_static_polarizability(mol, bs, aux, xc="PBE", scissor=scissor, trunc_thresh=0.0)
+    xx, yy, zz = (r.tensor[k][k] for k in range(3))
+    print(f"scissor {scissor:.2f} Ha: diag {xx:7.3f} {yy:7.3f} {zz:7.3f}  alpha_iso {r.iso:6.3f} a.u.")
 try:
     ferric.run_tdhf_static_polarizability(mol, bs, aux, xc="PBE", scissor=0.0, trunc_thresh=0.0)
     print("scissor 0: no error raised")
@@ -296,13 +318,15 @@ except Exception as e:
 ```
 
 ```text
-alpha tensor (a.u.):
-[[3.17316347e+00 4.29357137e-16 9.80918785e-16]
- [4.29357137e-16 7.12027031e+00 1.76776903e-14]
- [9.80918785e-16 1.70340909e-14 5.31800015e+00]]
-alpha_iso = 5.204 a.u.; DOSD 9.64; ratio 0.540
-scissor 0 raised: RuntimeError General error: run_rpax_static_polarizability: unphysical static polarizability -- every Cartesian diagonal element must be strictly positive, but alpha_xx = -2.682779e0 (negative). A non-positive alp
+scissor 0.20 Ha: diag  10.663  11.618  10.863  alpha_iso 11.048 a.u.
+scissor 0.36 Ha: diag   7.956   9.354   8.509  alpha_iso  8.606 a.u.
+scissor 0.50 Ha: diag   6.681   8.040   7.260  alpha_iso  7.327 a.u.
+scissor 0 raised: RuntimeError General error: run_rpax_static_polarizability: unphysical static polarizability -- every Cartesian diagonal element must be strictly positive, but alpha_xx = -6.779359e1 (negative). A non-positive alp
 ```
+
+The same run at cc-pVDZ gives the diagonal 3.173, 7.120, 5.318 and
+$\alpha_{\rm iso}$ 5.204 a.u. at scissor 0.36 Ha, and $\alpha_{xx} = -2.68$
+a.u. at scissor 0.
 
 ## Sources {#rpax-static-polarizability-sources}
 

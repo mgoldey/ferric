@@ -13,11 +13,11 @@ it then finds the root of the quasiparticle equation.
 The plan:
 
 1. Choose the line and the nodes, and fit a Thiele continued fraction
-   (@sec:continuation-and-qp-equation-continuation).
+   (section @sec:continuation-and-qp-equation-continuation).
 2. Write the quasiparticle equation, linearize it to get $Z$, and solve it by
-   Newton with a fallback (@sec:continuation-and-qp-equation-quasiparticle-equation).
+   Newton with a fallback (section @sec:continuation-and-qp-equation-quasiparticle-equation).
 3. Look at the options and limits, of which the continuation is the largest
-   (@sec:continuation-and-qp-equation-options-limits).
+   (section @sec:continuation-and-qp-equation-options-limits).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -25,7 +25,6 @@ The plan:
 | $z_k$ | continuation nodes, 18 by default | `pade_support_omegas` |
 | $C_N(z)$ | the Thiele continued fraction | `PadeCF` |
 | $\delta_p$ | static shift, $0$ (HF) or $\Sigma^x_p - v^{xc}_p$ (KS) | `static_shift` |
-| $c_{\rm sr}, c_{\rm lr}, \omega$ | exact-exchange fractions and range-separation parameter of a hybrid | `KMix { sr, lr, omega }` |
 | $Z_p$ | renormalization factor | `z_renorm` |
 
 | Entry point | Location |
@@ -45,16 +44,22 @@ $\mathrm{Re}(z - \epsilon_q)$ decides which states count as occupied
 
 **The nodes.** The default is 18 nodes (`GwConfig.pade_npts`), chosen by
 `ferric-gw/src/sigma.rs::pade_node_indices`, a port of PySCF's `_get_ac_idx`,
-from the grid $\{0\}\cup\mathrm{GL}(100, u_0 = 0.5)$ with a decreasing step:
-step ratio $2/3$, first index 1 (`pade_support_omegas`). The test
-`sigma::tests::pade_node_indices_matches_pyscf_get_ac_idx` pins the port. The
+from the 101-point grid $\{0\}\cup\mathrm{GL}(100, u_0 = 0.5)$
+(`pade_support_omegas`). The rule: take 18 steps that fall linearly from 1
+to $2/3$, scale them so that they sum to 101, accumulate them, shift the
+running sum so that it starts at index 1, and round. The indices are 1, 8,
+14, 20, 27, 33, 39, 44, 50, 56, 61, 66, 72, 77, 81, 86, 91 and 95, so the
+nodes thin out toward high frequency. The test
+`sigma::tests::pade_node_indices_matches_pyscf_get_ac_idx` pins that list. The
 nodes are independent of the grid on which $W$ was integrated: $\Sigma^c(z)$ is
 a closed-form function of $z$ once $W$ is fixed, and the nodes are where it
 is sampled.
 
 **Why a rational function.** Section @sec:correlation-self-energy shows that $\Sigma^c$ is a sum of
 simple poles, $s/(z - \text{pole})$. A sum of poles is a rational function,
-so a rational interpolant can reproduce it.
+so a rational interpolant can reproduce it. What the code samples is
+the product-rule approximation to it, accurate to the node errors of section
+@sec:correlation-self-energy-product-integration.
 
 **The Thiele continued fraction.** Write the interpolant as
 
@@ -112,9 +117,9 @@ and `pole_reproduction`.
 >
 > <!-- verified: id=gw.pade.thiele; script=scripts/gw_self_energy_sympy.py; claim=6; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/pade.rs::{fit,eval}; rust_test=ferric-gw/src/pade.rs::interpolation_identity; registry=gw -->
 
-**What real arithmetic gives.** The physical $\Sigma^c$ is a rational
-function of degree about $n_{\rm act}\times n_{\rm quad}$, far above 18. So
-18 nodes give an approximation, not a reconstruction. The measured
+**What real arithmetic gives.** The exact $\Sigma^c$ is a rational function
+with $n_{\rm act}\,n_on_v$ poles, one per state $q$ and RPA excitation, far
+above 18. So 18 nodes give an approximation, not a reconstruction. The measured
 sensitivity, 0.97 meV on the H2O@PBE HOMO between 16 and 18 nodes, is
 recorded in the module doc of `crates/ferric-gw/tests/validation_gw.rs`.
 
@@ -177,9 +182,10 @@ For the exact $\Sigma^c$, a sum of poles with nonnegative weights $s$
 real axis. So $1 - \Sigma^{c\prime} \ge 1$ and $0 < Z \le 1$. $Z$ is the
 fraction of the spectral weight the quasiparticle peak keeps; the rest goes
 to satellites. The code clamps $Z_p$ to $[0, 1.5]$. A value pinned at 0 or
-1.5 means the unclamped $Z$ of the Padé model was outside the physical range,
-a near-pole or a wrong-sign slope at $\epsilon_p$, and section @sec:bse-tda uses that
-as a flag.
+1.5 means the unclamped $Z$ of the Padé model was far outside the physical
+range, a near-pole or a wrong-sign slope at $\epsilon_p$, and section @sec:bse-tda uses that
+as a flag. A value in $(1, 1.5)$ is also unphysical, but it passes the clamp
+and is not flagged.
 
 **$Z$ is evaluated at the mean-field energy.** `GwResult.z_factor` is
 $Z_p$ at $\epsilon_p$, the linearization point, not at the converged root.
@@ -220,10 +226,14 @@ for k, mo in enumerate(r.mo_indices):
 $E_{k+1} = E_k - d\,f(E_k)/f'(E_k)$ with $f' = 1 - \partial_E\mathrm{Re}\,\Sigma^c$.
 The damping $d$ is `qp_newton_damp` clamped to $[0.1, 1]$. The loop takes at
 most 30 steps, converges when $|\text{step}| < 10^{-7}$ Ha, and stops
-unconverged if $|f'| < 10^{-3}$, which happens at a root near a pole of
-$C_N$. For a single-pole $\Sigma$ the quasiparticle equation has two roots,
-the quasiparticle and a satellite, and undamped Newton converges
-quadratically to the one nearest $\epsilon_p$. At a root $E^*$,
+unconverged if $|f'| < 10^{-3}$. That needs $\Sigma^{c\prime} \approx 1$.
+The exact $\Sigma^c$ has slope $\le 0$ on the real axis, so $f' \ge 1$, and
+near a pole of positive weight $f'$ is large, not small. A small $|f'|$
+therefore marks a spurious feature of $C_N$: a pole of negative weight, or a
+complex pole close to the real axis. For a single-pole $\Sigma$ the
+quasiparticle equation has two roots, the quasiparticle and a satellite, and
+undamped Newton converges quadratically to the quasiparticle root when the
+start $E_0$ lies on its side of the pole. At a root $E^*$,
 $Z(E^*) = 1/(1-\Sigma'(E^*))$ is the residue of the quasiparticle pole of
 $G$.
 
@@ -290,101 +300,6 @@ every $n_{\rm quad} \ge 30$. A state with no root of weight in $(0, 1]$ is
 left unsolved: `GwResult.qp_converged` records it, and `run_gw` warns
 (`warn_gw_unconverged`).
 
-## Hybrid references {#continuation-and-qp-equation-hybrid-references}
-
-What does $v^{xc}_p$ mean when the reference is PBE0 or CAM-B3LYP? The shift
-$\delta_p$ removes from $\epsilon_p$ everything the Kohn–Sham Fock matrix holds
-besides $h + J$, and puts $\Sigma^x_p$ in its place. A hybrid's Fock matrix
-holds a fraction of exact exchange next to the semilocal potential. $\Sigma^x_p$
-is the full exchange, so a $v^{xc}_p$ without that fraction counts it twice.
-
-**The Fock matrix.** Closed shell, with $D = 2D^\alpha$, the SCF assembles
-(`ferric-scf/src/rhf.rs`, "F = H + J − ½ K_total")
-
-$$ F = h + J[D] + V^{\rm sl} - \tfrac12\big(c_{\rm sr} K^{\rm erfc}_\omega[D] + c_{\rm lr} K^{\rm erf}_\omega[D]\big), \qquad K[D]_{\mu\nu} = \sum_{\lambda\sigma} (\mu\lambda|\nu\sigma) D_{\lambda\sigma} . $$
-
-$V^{\rm sl}$ is the semilocal potential with VV10, and
-$(c_{\rm sr}, c_{\rm lr}, \omega)$ is the functional's `KMix`
-(`ferric-dft/src/ks.rs::KsXc`, method `k_mix`). A global hybrid has
-$\omega = 0$ and $c_{\rm sr} = c_{\rm lr} = c_x$ on one Coulomb $K$; a pure
-functional has all three zero. $K$ is linear in $D$, so
-$\tfrac12 K[D] = K[D^\alpha]$. Subtract $h + J$ and write the result per spin:
-
-$$ v^{\rm mf}_\sigma = V^{\rm sl}_\sigma - c_{\rm sr} K^{\rm erfc}_\omega[D^\sigma] - c_{\rm lr} K^{\rm erf}_\omega[D^\sigma], \qquad \delta_p = \Sigma^x_p - \big(C^{\sigma T} v^{\rm mf}_\sigma C^\sigma\big)_{pp} . \label{eq:gw-hybrid-vmf} $$
-
-The unrestricted Fock matrix has $-K[D^\sigma]$ in $F^\sigma$
-(`ferric-scf/src/uhf.rs`), so (@eq:gw-hybrid-vmf) is also the UKS and ROKS
-form.
-
-**The global hybrid.** Transform $K[D^\sigma]$ to the MO basis. With
-$D^\sigma = \sum_i C_{\mu i}C_{\nu i}$ over occupied $i$,
-$(K[D^\sigma])_{pp} = \sum_i (pi|ip) = -\Sigma^x_p$. Substitute into
-(@eq:gw-hybrid-vmf) with $\omega = 0$:
-
-$$ \delta_p = (1 - c_x)\,\Sigma^x_p - V^{\rm sl}_{pp} . \label{eq:gw-hybrid-shift} $$
-
-Check the limits. At $c_x = 0$ the shift reduces to the semilocal one of
-section @sec:ri-factors-and-exchange-ks-reference-changes. At $c_x = 1$ and
-$V^{\rm sl} = 0$, Hartree–Fock, it is zero, which is the shift an HF
-reference gets. For a range-separated hybrid, $\mathrm{erf} + \mathrm{erfc} = 1$
-splits $\Sigma^x$ into short- and long-range parts, and
-$c_{\rm sr} = c_{\rm lr}$ collapses the result to (@eq:gw-hybrid-shift).
-
-**The size of the double count.** Leave the $K$ term out and $\delta_p$ is
-too large by $c_x \Sigma^x_p$. $\Sigma^x_p \le 0$, so every quasiparticle
-energy moves down by $c_x\lvert\Sigma^x_p\rvert$. For an occupied valence
-state $\lvert\Sigma^x_p\rvert$ is of order an hartree, so at $c_x = 1/4$ the
-error is several eV.
-
-> **Verified equation @eq:gw-hybrid-shift** · the static shift on a hybrid reference
->
-> The RKS Fock matrix's exchange term $-\tfrac12 c K[D]$ is $-cK[D^\alpha]$,
-> whose MO diagonal is $c\,\Sigma^x_p$; hence
-> $\Sigma^x_p - v^{\rm mf}_p = (1-c)\Sigma^x_p - V^{\rm sl}_{pp}$, equal to the
-> semilocal shift at $c = 0$ and to zero for Hartree–Fock; the erf/erfc split
-> reduces to it when $c_{\rm sr} = c_{\rm lr}$; and PySCF's
-> `get_veff − get_j` minus its semilocal potential equals $-\tfrac12 cK$
-> built separately (H2O/cc-pVDZ, PBE0 and CAM-B3LYP).
->
-> | | |
-> |---|---|
-> | Proof | `scripts/gw_hybrid_vmf_sympy.py`, claims H1 to H5 |
-> | Negative control | the Fock exchange without the $\tfrac12$, and a shift that subtracts $V^{\rm sl}$ alone, must fail |
-> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
-> | Code | `ferric-gw/src/vxc_mo.rs::{vxc_diagonal_mo_on_grids,add_exact_exchange}` |
-> | Code test | `g0w0_pbe0_h2o_vs_pyscf` in `crates/ferric-gw/tests/gw_hybrid_reference.rs` |
->
-> <!-- verified: id=gw.hybrid-shift; script=scripts/gw_hybrid_vmf_sympy.py; claim=H2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/vxc_mo.rs::{vxc_diagonal_mo_on_grids,add_exact_exchange}; rust_test=crates/ferric-gw/tests/gw_hybrid_reference.rs::g0w0_pbe0_h2o_vs_pyscf; registry=gw -->
-
-**The code.** `ferric-gw/src/vxc_mo.rs::add_exact_exchange` adds the $K$ term
-of (@eq:gw-hybrid-vmf) to the AO potential that `add_xc` built, before the MO
-transform. The excerpt is the operator choice. Each term's $K[D^\sigma]$ comes
-from `ferric-scf/src/rhf.rs::build_jk` and is subtracted with its coefficient:
-
-<!-- excerpt: ferric-gw/src/vxc_mo.rs::add_exact_exchange -->
-```rust
-    let terms: Vec<(Operator, f64)> = if k_mix.omega > 0.0 {
-        vec![
-            (Operator::erfc(k_mix.omega), k_mix.sr), // c_sr K^erfc_ω
-            (Operator::erf(k_mix.omega), k_mix.lr),  // c_lr K^erf_ω
-        ]
-    } else {
-        vec![(Operator::coulomb(), k_mix.sr)] // c_x K
-    };
-```
-
-- The closed-shell call passes $D^\alpha$ (`density_alpha`), which is
-  $\tfrac12 D$; the factor $\tfrac12$ of the Fock matrix is in that choice.
-- A term with a zero coefficient is dropped before any integral is computed.
-  A pure functional therefore builds nothing, and its $v^{\rm mf}$ is the
-  semilocal potential bit for bit (`pure_functional_has_no_k_term`).
-- The $K$ term uses exact four-centre integrals on the operator the SCF's
-  `k_mix` names. A reference SCF with RI-K, the default for a functional and
-  the only route ferric has for $\omega > 0$, holds $K^{\rm RI}$ in its Fock
-  matrix, so $\delta_p$ then carries $c\,(K^{\rm RI} - K)_{pp}$, the fitting
-  error. $\Sigma^x$ is the GW auxiliary basis's RI exchange in every case,
-  Hartree–Fock included.
-
 ## The algorithm {#continuation-and-qp-equation-algorithm}
 
 | Step | Quantity | Cost | Function |
@@ -396,13 +311,6 @@ from `ferric-scf/src/rhf.rs::build_jk` and is subtracted with its coefficient:
 | 5 | Newton, at most 30 steps, stops on $\lvert\text{step}\rvert < 10^{-7}$ Ha or $\lvert f'\rvert < 10^{-3}$ | $O(N)$ per step | `solve_qp_for_mo_with` |
 | 6 | if Newton did not converge: the root of largest weight $Z\in(0,1]$ in $\epsilon_p+\delta_p\pm1$ Ha (4001 samples) | $4001\,O(N)$ | `qp_root_by_weight` |
 
-The tests of the solve are `sigma::tests::qp_newton_converges_for_a_mild_self_energy`,
-`qp_newton_flags_nonconvergence_when_iteration_budget_exhausted`; in
-`crates/ferric-gw/tests/validation_gw.rs`, `g0w0_hf_{h2o,nh3,n2}_vs_pyscf_gw_ac`,
-`g0w0_pbe_{h2o,n2}_vs_pyscf_gw_ac`, `g0w0_hf_frozen_core_h2o_vs_pyscf_gw_ac`
-and `g0w0_hf_ecp_{i2,xe,ag2}_vs_pyscf_gw_ac`; and
-`crates/ferric-gw/tests/g0w0_pbe_h2o.rs`.
-
 ## Options and limits {#continuation-and-qp-equation-options-limits}
 
 | Option | Effect |
@@ -411,9 +319,9 @@ and `g0w0_hf_ecp_{i2,xe,ag2}_vs_pyscf_gw_ac`; and
 | `qp_newton_damp` | damping of the Newton step, clamped to $[0.1, 1]$ |
 | `qp_mos` | absolute MO range for which the QP energy is solved; default HOMO−2 … LUMO+2 (`default_qp_range`; open shell `default_u_qp_range`, around $\max(n_\alpha, n_\beta)$) |
 
-**Known limits (2026-11-15).** The physical $\Sigma^c$ is a rational function
-of degree about $n_{\rm act}\times n_{\rm quad}$, so 18 nodes give an
-approximation, not a reconstruction. The error is largest for KS references,
+**Known limits (2026-11-19).** The exact $\Sigma^c$ has
+$n_{\rm act}\,n_on_v$ poles, so 18 nodes give an approximation, not a
+reconstruction. The error is largest for KS references,
 whose $\epsilon_{\rm HOMO}$ lies far from $\epsilon_F$, so the continuation
 extrapolates further, and for states far from $\epsilon_F$ with split
 spectral weight. This is what "narrow" means in the grade. The
@@ -430,11 +338,17 @@ From `site/src/reference/validation.md` (`gw` row and G0W0 anchors), at
 | G0W0@HF with ECPs | grid-free dRPA pole sum | $\le 8.0\times10^{-10}$ Ha | `g0w0_hf_ecp_{i2,xe,ag2}_vs_pyscf_gw_ac` |
 | G0W0@PBE | grid-free dRPA pole sum | $\le 1.8\times10^{-8}$ Ha | `g0w0_pbe_{h2o,n2}_vs_pyscf_gw_ac` |
 | G0W0@HF with ECPs | PySCF `gw_ac` | $\le 2.5\times10^{-6}$ Ha | the site's `gw` row |
+| G0W0@HF with a frozen core, H2O | PySCF `gw_ac` frozen-core reference | bar $10^{-6}$ Ha (`TOL_QP`) | `g0w0_hf_frozen_core_h2o_vs_pyscf_gw_ac` |
+| Newton solve on model self-energies, and the unconverged flag | closed form | unit tests | `sigma::tests::{qp_newton_converges_for_a_mild_self_energy,qp_newton_flags_nonconvergence_when_iteration_budget_exhausted}` |
+| G0W0@PBE water smoke test | | | `crates/ferric-gw/tests/g0w0_pbe_h2o.rs` |
 
 A benchmark against experiment measures the method, not the
 implementation, so it carries no pinned tolerance. For GW100, G0W0@HF gives
 a mean absolute error of 0.353 eV at aug-cc-pVDZ and 0.491 eV at
-aug-cc-pVTZ; these numbers are kept in the working notes, not in a test.
+aug-cc-pVTZ. The error grows with the basis because G0W0@HF overbinds: the
+mean signed error is +0.07 eV at aug-cc-pVDZ and +0.38 eV at aug-cc-pVTZ,
+and the smaller basis hides part of it by error cancellation. These numbers
+are kept in the project's working notes, not in a test or a committed file.
 The algebra of this chapter is exact. The numerical error budget is the
 $W$ quadrature, the 18-node Padé extrapolation (largest for KS references,
 whose $\epsilon_{\rm HOMO}$ lies far from $\epsilon_F$), the RI basis, and
@@ -447,5 +361,5 @@ the PDEP truncation when it is enabled.
 | `scripts/gw_self_energy_sympy.py`, claims 4, 5, 6 | the proofs |
 | Vidberg and Serene, *J. Low Temp. Phys.* **29**, 179 (1977) | Thiele–Padé continuation |
 | Zhu and Chan, *J. Chem. Theory Comput.* **17**, 727 (2021) | the `gw_ac` conventions matched here |
-| J. Wilhelm, D. Golze, L. Talirz, J. Hutter, C. A. Pignedoli, *J. Phys. Chem. Lett.* **9**, 306 (2018) | analytic-continuation G0W0 for molecules |
-| M. J. van Setten *et al.*, *J. Chem. Theory Comput.* **11**, 5665 (2015) | the GW100 benchmark set |
+| Wilhelm, Golze, Talirz *et al.*, *J. Phys. Chem. Lett.* **9**, 306 (2018) | analytic-continuation G0W0 for molecules |
+| van Setten *et al.*, *J. Chem. Theory Comput.* **11**, 5665 (2015) | the GW100 benchmark set |
