@@ -3054,13 +3054,7 @@ fn run_oo_rimp2(
         );
         return;
     }
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).or_exit();
-    let dfbs = PreparedBasis::new(mol, &aux_bs).or_exit();
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
     // `[mp2] oo_*` override the orbital-rotation loop; unset keys keep the
     // library default (the same values the Python `run_oo_rimp2` defaults to).
     let d = OoRiMp2Config::default();
@@ -3088,7 +3082,7 @@ fn run_oo_rimp2(
     println!("  Total      = {:.10} Hartree", oo_result.total_energy);
     let cert = print_certificate(&ferric_mp2::certificate::oo_rimp2_certificate(
         scf_cert,
-        aux_name,
+        &aux_name,
         oo_config.frozen_core,
         &op,
         oo_result.converged,
@@ -3128,13 +3122,7 @@ fn run_u_oo_rimp2(
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
     scf_cert: &Certificate,
 ) {
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).or_exit();
-    let dfbs = PreparedBasis::new(mol, &aux_bs).or_exit();
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
     // Same `[mp2] oo_*` overrides as the closed-shell path.
     let d = ferric_mp2::u_oo_rimp2::UOoRiMp2Config::default();
     let oo_config = ferric_mp2::u_oo_rimp2::UOoRiMp2Config {
@@ -3166,7 +3154,7 @@ fn run_u_oo_rimp2(
     println!("  Total      = {:.10} Hartree", oo_result.total_energy);
     let cert = print_certificate(&ferric_mp2::certificate::oo_rimp2_certificate(
         scf_cert,
-        aux_name,
+        &aux_name,
         oo_config.frozen_core,
         &op,
         oo_result.converged,
@@ -3446,13 +3434,7 @@ fn run_rs_mp2_rpa(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).or_exit();
-    let dfbs = PreparedBasis::new(mol, &aux_bs).or_exit();
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
     if cfg.mp2.omega_scan.is_some() || cfg.mp2.formulations.is_some() {
         let ctx = RsScanCtx {
             cfg,
@@ -3460,7 +3442,7 @@ fn run_rs_mp2_rpa(
             bs,
             prep,
             dfbs: &dfbs,
-            aux_name,
+            aux_name: &aux_name,
             result,
             budget_bytes,
             scf_cert,
@@ -3582,7 +3564,7 @@ fn run_rs_mp2_rpa(
             bs,
             prep,
             &dfbs,
-            aux_name,
+            &aux_name,
             result,
             &rs_cfg,
             omega_ang_inv,
@@ -3932,13 +3914,7 @@ fn run_scs_mp2_2terfc(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).or_exit();
-    let dfbs = PreparedBasis::new(mol, &aux_bs).or_exit();
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
     let scs_config = scs_2terfc_config(cfg, mol, bs, budget_bytes);
     let r0_bonded_ang = scs_config.r0_bonded * ferric_core::units::BOHR_TO_ANGSTROM;
     let r0_nonbonded_ang = scs_config.r0_nonbonded * ferric_core::units::BOHR_TO_ANGSTROM;
@@ -3965,7 +3941,7 @@ fn run_scs_mp2_2terfc(
     println!("  Total      = {:.10} Hartree", scs_result.total_energy);
     let cert = print_certificate(&ferric_mp2::certificate::scs_mp2_2terfc_certificate(
         scf_cert,
-        aux_name,
+        &aux_name,
         &scs_config,
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
@@ -4081,13 +4057,7 @@ fn run_mp2_v(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).or_exit();
-    let dfbs = PreparedBasis::new(mol, &aux_bs).or_exit();
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
     let att_cfg = cfg.mp2.build_att_vv10_config(mol, budget_bytes).or_exit();
 
     // Dispatch on the reference's spin, exactly as `run_ccsd` does. The two
@@ -4173,7 +4143,7 @@ fn run_mp2_v(
     println!("  NLC grid   = {} points", mp2v.n_nlc_points);
     println!("  Total      = {:.10} Hartree", mp2v.total);
     let cert = print_certificate(&ferric_mp2::certificate::mp2_v_certificate(
-        scf_cert, aux_name, &att_cfg,
+        scf_cert, &aux_name, &att_cfg,
     ));
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -5005,13 +4975,7 @@ fn run_wb97x_l_v_arm(
     rhf_config: &RhfConfig,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg
-        .mp2
-        .auxbasis
-        .as_deref()
-        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
-    let aux_bs = basis::bundled(aux_name).or_exit();
-    let dfbs = PreparedBasis::new(mol, &aux_bs).or_exit();
+    let (aux_name, dfbs) = correlation_aux(cfg, mol);
     // Start from the published defaults and OVERRIDE only what the user set, so
     // an omitted `[dft] lambda`/`omega` gives the paper's parameter rather than
     // a zero from a `..Default::default()`-less struct literal.
@@ -5067,7 +5031,7 @@ fn run_wb97x_l_v_arm(
         bs,
     );
     print_and_note_certificate(&ferric_cc::certificate::wb97x_l_v_certificate(
-        &reference, aux_name, &dh_cfg,
+        &reference, &aux_name, &dh_cfg,
     ));
 }
 
