@@ -488,7 +488,9 @@ plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane and t
 ACONF20 conformers, the screen lowers the truncation error at every `eps` tried on
 both paths (by 34–49% at `1e-4`, by 62–99.6% at `1e-6` and below). Integral-direct it
 costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB more peak memory; in core
-6–10% on C24, and at equal error it is cheaper than the plain mask on both paths
+6–10% on C24. At equal error it is cheaper than the plain mask in core (cost
+ratio 0.74–0.98); integral-direct the ratio is 0.85–1.03, just above 1 on C24
+and C32 at `eps = 1e-4`
 (book chapter 13, "On by default in the CLI and Python" and "The in-core path").
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
