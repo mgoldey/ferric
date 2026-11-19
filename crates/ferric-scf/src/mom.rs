@@ -64,7 +64,7 @@ impl MomReference {
     /// stability descent. Any other reference is always accepted.
     ///
     /// Each layer words the typed conflict for its own vocabulary: the
-    /// solver backstop ([`check_reference`]) names `RhfConfig` fields, the
+    /// solver backstop (`check_reference`) names `RhfConfig` fields, the
     /// Python `run_uhf` frontend names its kwargs.
     pub fn check_initial(
         self,

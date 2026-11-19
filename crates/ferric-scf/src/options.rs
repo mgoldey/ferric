@@ -1,23 +1,23 @@
-//! Frontend-neutral SCF options and their lowering to [`RhfConfig`].
+//! Frontend-neutral SCF options and their lowering to [`RhfConfig`](crate::rhf::RhfConfig).
 //!
 //! Frontends (the Python `run_rhf` / `run_uhf` / `run_rohf` today; the CLI
 //! `[scf]` section and the KS entry points are follow-ups) parse their own
-//! surface syntax (strings, PyO3 objects, TOML) into an [`ScfOptions`], then
-//! call [`ScfOptions::into_rhf_config`]. The lowering is pure: no I/O, no
+//! surface syntax (strings, PyO3 objects, TOML) into an [`ScfOptions`](crate::options::ScfOptions), then
+//! call [`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config). The lowering is pure: no I/O, no
 //! environment reads, no process exit, no printing. It owns the defaults (the
-//! named consts below, which [`RhfConfig::default`] also reads) and the knob
+//! named consts below, which [`RhfConfig::default`](crate::rhf::RhfConfig::default) also reads) and the knob
 //! semantics (e.g. "an explicit `level_shift` turns off the meta-GGA automatic
 //! shift"), so two frontends cannot drift apart on them.
 //!
 //! Frontend-specific checks with their own error type and message (Python
 //! `ValueError`s, say) stay in the frontend and run BEFORE the lowering; the
-//! lowering's own checks are a backstop that returns [`FerricError`].
+//! lowering's own checks are a backstop that returns [`FerricError`](ferric_core::FerricError).
 //!
-//! `UhfConfig` and `RohfConfig` are aliases of [`RhfConfig`], so the one
+//! `UhfConfig` and `RohfConfig` are aliases of [`RhfConfig`](crate::rhf::RhfConfig), so the one
 //! lowering serves all three Hartree-Fock flavors. Per-flavor policy (which
 //! knobs a given entry point exposes) is expressed by which fields that
 //! entry point sets: an unset (`None`) field always keeps the
-//! [`RhfConfig::default`] value.
+//! [`RhfConfig::default`](crate::rhf::RhfConfig::default) value.
 
 use ferric_core::FerricError;
 use ndarray::Array2;

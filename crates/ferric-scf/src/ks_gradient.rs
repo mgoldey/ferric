@@ -48,7 +48,7 @@
 //! SCF's own densities, optional polarizable term) and
 //! `KsGradInputs::gradient_at` (the gradient expression at given densities),
 //! with the reference selected by [`Spin`] and the densities carried as a
-//! [`TwoElectronDensity`]. The closed and open paths keep their own kernels
+//! [`TwoElectronDensity`](crate::df_gradient::TwoElectronDensity). The closed and open paths keep their own kernels
 //! and summation order, so each entry point's result is bit-identical to the
 //! former per-reference implementations (`tests/ks_gradient_bit_identity.rs`).
 

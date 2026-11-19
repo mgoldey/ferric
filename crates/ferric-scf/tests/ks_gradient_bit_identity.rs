@@ -11,6 +11,14 @@
 //! `_on_grids` grid plumbing, meta-GGA and VV10 XC dispatch, and the
 //! standalone `xc_gradient_*` helpers.
 //!
+//! The recorded bits come from one machine. Another CPU or BLAS build
+//! reorders floating-point sums and moves the last bits (~1e-12 relative),
+//! so by default each component must match to `TOL` (1e-10 Hartree/Bohr):
+//! far below any change a refactor that drops, doubles or reorders a term
+//! would make, and far above cross-machine rounding. Set
+//! `FERRIC_GRADIENT_BIT_EXACT=1` to demand identical bits instead, which is
+//! the check to run on the machine that recorded the table when refactoring.
+//!
 //! Re-record (only when a numerical change is intended):
 //!   cargo test -p ferric-scf --test ks_gradient_bit_identity -- --nocapture
 //! with `EXPECTED` emptied, and paste the printed table.
@@ -876,8 +884,11 @@ const EXPECTED: &[(&str, &[u64])] = &[
     ),
 ];
 
+/// Per-component tolerance (Hartree/Bohr) for the default, cross-machine mode.
+const TOL: f64 = 1e-10;
+
 #[test]
-fn ks_gradients_are_bit_identical_to_recorded() {
+fn ks_gradients_match_recorded() {
     let cases = all_cases();
     if EXPECTED.is_empty() {
         for (name, g) in &cases {
@@ -886,9 +897,23 @@ fn ks_gradients_are_bit_identical_to_recorded() {
         }
         panic!("EXPECTED is empty: recorded table printed above");
     }
+    let bit_exact = std::env::var("FERRIC_GRADIENT_BIT_EXACT").is_ok_and(|v| v == "1");
     assert_eq!(cases.len(), EXPECTED.len(), "case count");
     for ((name, g), (ename, ebits)) in cases.iter().zip(EXPECTED) {
         assert_eq!(name, ename);
-        assert_eq!(bits(g).as_slice(), *ebits, "{name}: gradient bits changed");
+        if bit_exact {
+            assert_eq!(bits(g).as_slice(), *ebits, "{name}: gradient bits changed");
+            continue;
+        }
+        let got: Vec<f64> = g.iter().copied().collect();
+        assert_eq!(got.len(), ebits.len(), "{name}: component count");
+        for (i, (x, b)) in got.iter().zip(ebits.iter()).enumerate() {
+            let want = f64::from_bits(*b);
+            assert!(
+                (x - want).abs() <= TOL,
+                "{name}[{i}]: {x:e} vs recorded {want:e} (|diff| {:e} > {TOL:e})",
+                (x - want).abs()
+            );
+        }
     }
 }
