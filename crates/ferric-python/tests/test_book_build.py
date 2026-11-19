@@ -1096,3 +1096,34 @@ def test_dangling_link_into_the_book_is_an_error(tree, link):
     write(tree, {"crates/ferric-toy/src/doc.rs": f"//! See `{link}`.\n"})
     errs = check(tree).errors
     assert any("ferric-toy/src/doc.rs:1" in e for e in errs)
+
+
+TWO_IMPLS = """pub struct A;
+pub struct B<'a>(&'a f64);
+impl A {
+    fn run(&self) -> f64 {
+        1.0
+    }
+}
+impl<'a> B<'a> {
+    fn run(&self) -> f64 {
+        *self.0 + 2.0
+    }
+}
+"""
+
+
+def test_excerpt_owner_selects_the_impl_method(tree):
+    """`Type::method` resolves inside `impl Type`, not to the first `fn method`."""
+    p = tree / "crates/ferric-toy/src/lib.rs"
+    p.write_text(p.read_text() + TWO_IMPLS)
+    ref = "ferric-toy/src/lib.rs::B::run"
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        f"<!-- excerpt: {ref} -->\n```rust\n*self.0 + 2.0\n```\n\nInline math",
+    )
+    assert check(tree).errors == []
+    sub(tree, SEC, "*self.0 + 2.0", "1.0")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)

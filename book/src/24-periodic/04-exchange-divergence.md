@@ -224,6 +224,7 @@ every build. These are the last lines of the method `build_untimed` of
 `ferric-pbc/src/rsgdf.rs::RsGdfK`, with the shape check, the scratch-budget
 check and the return value removed:
 
+<!-- excerpt: ferric-pbc/src/rsgdf.rs::RsGdfK::build_untimed -->
 ```rust
         exchange_aux_grouped(&self.gdf.b, d, n, k)?;
         if self.madelung != 0.0 {

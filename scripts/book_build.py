@@ -650,18 +650,35 @@ def resolve_item(root: Path, path: str, item: str) -> tuple[Path, int] | None:
     f = find_rs(root, path)
     if f is None:
         return None
-    name = item.split("::")[-1]
+    parts = item.split("::")
+    name = parts[-1]
     pat = decl_re(name, py=f.suffix == ".py")
+    # `Type::method`: look inside `impl Type` / `impl Trait for Type` first, so
+    # two impls with a method of the same name resolve to the right one.
+    owner = (
+        re.compile(rf"\bimpl\b[^{{;]*?\b{re.escape(parts[-2])}\b[^{{;]*\{{")
+        if len(parts) > 1 and f.suffix != ".py"
+        else None
+    )
     cands = [f]
     sub = f.with_suffix("")
     if sub.is_dir():
         cands += sorted(sub.rglob("*.rs"))
     for c in cands:
         text = read(c)
-        m = pat.search(text)
-        if m:
-            # From the start of the line, so `pub` and `async` belong to the item.
-            return c, text.rfind("\n", 0, m.start()) + 1
+        spans = (
+            [
+                (m.start(), m.start() + len(item_body(text, m.start())))
+                for m in owner.finditer(text)
+            ]
+            if owner
+            else []
+        )
+        for lo, hi in spans or [(0, len(text))]:
+            m = pat.search(text, lo, hi)
+            if m:
+                # From the start of the line, so `pub` and `async` belong to the item.
+                return c, text.rfind("\n", 0, m.start()) + 1
     return None
 
 
