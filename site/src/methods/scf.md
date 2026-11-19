@@ -35,7 +35,7 @@ energy change draws a warning (see [sharp bits](../using/sharp-bits.md)).
 range-separated hybrid functionals (for example PBE, B3LYP, ωB97X-V), **VV10**
 nonlocal correlation, the **SCAN / r2SCAN / TPSS** meta-GGAs (τ-dependent;
 no density Laplacian), and the hybrid meta-GGAs **TPSSh, M06-2X, SCAN0,
-r2SCAN0** (libxc 6 or later) and **ωB97M-V** (range-separated, with VV10).
+r2SCAN0** and **ωB97M-V** (range-separated, with VV10).
 Any libxc meta-GGA identifier (`MGGA_*`, `HYB_MGGA_*`) is accepted unless libxc
 flags it as needing the density Laplacian (`XC_FLAGS_NEEDS_LAPLACIAN`, e.g.
 SCAN-L, BR89), which is refused with a message naming that component. A hybrid meta-GGA

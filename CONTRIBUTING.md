@@ -7,17 +7,17 @@
 | Rust       | 1.75+   | stable toolchain |
 | libint2    | 2.13.1  | `scripts/install-libint.sh` (prebuilt conda-forge build with second derivatives); a from-source 2.7+ build also links |
 | OpenBLAS   | any     | with LAPACK support (`libopenblas-dev` on Debian/Ubuntu) |
-| libxc      | as packaged | `libxc-dev` on Debian/Ubuntu (CI builds against Ubuntu 22.04's) |
+| libxc      | 7.0.0   | `scripts/install-libxc.sh` (source build, pin in `scripts/wheels/native-pins.env`; the same libxc PySCF 2.13 bundles) |
 | cmake      | 3.14+   | needed to build the vendored libecpint |
 | Python     | 3.10+   | matches `requires-python` in `pyproject.toml`; needed for `uv`, pytest, and the Python bindings |
 
 **Non-standard install locations.** If libint2 is not in
 `$HOME/.local/libint2-2.13.1` (the installer's default), `$HOME/.local` or
-`/usr/local`, set `LIBINT2_PREFIX` before building. libxc is linked by name
-(`crates/ferric-dft/build.rs` emits only `rustc-link-lib=xc`), so a libxc
-outside the default linker path goes on `LIBRARY_PATH` (or
-`RUSTFLAGS="-L/path/to/libxc/lib"`) for linking and on `LD_LIBRARY_PATH` at
-run time:
+`/usr/local`, set `LIBINT2_PREFIX` before building. Likewise `LIBXC_PREFIX`
+for a libxc outside `$HOME/.local/libxc-7.0.0` (the installer's default); an
+install made by `scripts/install-libxc.sh` needs nothing at run time (its
+SONAME is its absolute path). A libxc from elsewhere goes on `LIBRARY_PATH`
+for linking and on `LD_LIBRARY_PATH` at run time:
 
 ```
 export LIBINT2_PREFIX=/path/to/libint2   # expects $LIBINT2_PREFIX/include and $LIBINT2_PREFIX/lib

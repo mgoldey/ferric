@@ -118,6 +118,8 @@ env:
   # active BLAS/LAPACK alternatives so the next such drift is diagnosable.
   OPENBLAS_CORETYPE: Haswell
   LIBINT2_PREFIX: /home/runner/libint2
+  # libxc 7.0.0 (scripts/install-libxc.sh), read by crates/ferric-dft/build.rs.
+  LIBXC_PREFIX: /home/runner/libxc
   # Every job installs the sha256-pinned stock libint2 2.13.1
   # (scripts/install-libint.sh), whose boys.h ferric overrides (GmEval copy,
   # Boys/Tenno table-edge and overflow fixes; shim/libint2_overrides/). Make
@@ -192,7 +194,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -209,6 +211,22 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Verify libint2 capabilities
         run: |
@@ -526,7 +544,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -543,6 +561,22 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Verify libint2 capabilities
         run: |
@@ -1041,7 +1075,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -1058,6 +1092,22 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Verify libint2 capabilities
         run: |
@@ -1378,8 +1428,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Same runtime environment as test-shard: the archived binaries link
-      # libopenblas/liblapack/libxc from apt and libint2.so by ABSOLUTE SONAME
-      # under $LIBINT2_PREFIX, so all of these are required to even start them.
+      # libopenblas/liblapack from apt and libint2.so / libxc.so by ABSOLUTE
+      # SONAME under $LIBINT2_PREFIX / $LIBXC_PREFIX, so all of these are
+      # required to even start them.
       - name: Free runner disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
@@ -1398,10 +1449,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
@@ -1534,13 +1601,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Restore cargo cache
         # No target/ (see the push job's restore step); v3 key to match.
@@ -1746,13 +1829,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1894,10 +1993,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1993,7 +2108,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd \
+            libboost-dev patchelf zstd \
             libopenmpi-dev openmpi-bin clang libclang-dev
 
       - name: MPI toolchain identification
@@ -2010,6 +2125,22 @@ jobs:
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2700,13 +2831,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
       # installed by the same script developers use; see scripts/install-libint.sh
       # for the package, its AM limits and why the SONAME is rewritten.
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -2977,10 +3124,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev patchelf zstd
+            libboost-dev patchelf zstd
 
       - name: Install libint2
         run: scripts/install-libint.sh "$LIBINT2_PREFIX"
+
+      # libxc 7.0.0 from the sha256-pinned source tarball, built by the
+      # same script developers use (scripts/install-libxc.sh; SONAME set to
+      # the absolute path, as for libint2). Ubuntu 22.04's libxc-dev is
+      # 5.1.7, which lacks the r2SCAN hybrids. Cached: the build takes
+      # several minutes; the key follows the script and the pin file.
+      - name: Cache libxc
+        id: libxc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBXC_PREFIX }}
+          key: libxc-${{ runner.os }}-${{ hashFiles('scripts/install-libxc.sh', 'scripts/wheels/native-pins.env') }}
+
+      - name: Install libxc
+        if: steps.libxc-cache.outputs.cache-hit != 'true'
+        run: scripts/install-libxc.sh "$LIBXC_PREFIX"
 
       # Same install step as slow-tests -- the action SHA is
       # pinned, the Rust version floats on `stable` by design (see the

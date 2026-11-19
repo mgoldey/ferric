@@ -142,7 +142,10 @@ env:
   # if the wheel's OpenBLAS allows fewer (scripts/check_wheel_openblas_threads.py).
   # Part of the native-deps cache key.
   OPENBLAS_MAX_THREADS: "128"
-  LIBXC_VERSION: "6.2.2"
+  # Same pin as scripts/wheels/native-pins.env (macOS/Windows wheels, and
+  # scripts/install-libxc.sh for ci.yml / Dockerfile / developer boxes).
+  LIBXC_VERSION: "7.0.0"
+  LIBXC_SHA256: "8d4e343041c9cd869833822f57744872076ae709a613c118d70605539fb13a77" # pragma: allowlist secret
   EIGEN_VERSION: "3.4.0"
   # SHA-pinned manylinux image for the mpi-wheel job's own `docker run`
   # auditwheel-repair step (maturin-action pulls its own copy by tag for the
@@ -397,10 +400,11 @@ jobs:
           # --- libxc (dynamic; ferric-dft/build.rs: `cargo:rustc-link-lib=xc`) ---
           cd /tmp
           wget -q https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz
+          echo "${{ env.LIBXC_SHA256 }}  libxc-${LIBXC_VERSION}.tar.gz" | sha256sum -c -
           tar xzf libxc-${LIBXC_VERSION}.tar.gz
           cd libxc-${LIBXC_VERSION}
           mkdir build && cd build
-          # -DCMAKE_POLICY_VERSION_MINIMUM=3.5: libxc 6.2.2's CMakeLists.txt
+          # -DCMAKE_POLICY_VERSION_MINIMUM=3.5: libxc 7.0.0's CMakeLists.txt
           # declares a cmake_minimum_required below 3.5, and CMake 4.x REMOVED
           # compatibility with those — it hard-errors rather than warning
           # ("Compatibility with CMake < 3.5 has been removed from CMake",

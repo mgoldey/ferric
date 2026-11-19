@@ -1,6 +1,8 @@
 # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals), installed
 # by scripts/install-libint.sh into /opt/libint2. The script sets the library's
 # SONAME to /opt/libint2/lib/libint2.so, so the runtime stage must keep that path.
+# libxc: 7.0.0 built from source by scripts/install-libxc.sh into /opt/libxc,
+# SONAME likewise its absolute path (Ubuntu 22.04's libxc-dev is 5.1.7).
 
 # Stage 1: Build ferric
 FROM ubuntu:22.04 AS ferric-builder
@@ -9,13 +11,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake g++ gfortran wget ca-certificates curl \
     libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-    libopenmpi-dev openmpi-bin libxc-dev libboost-dev patchelf zstd \
+    libopenmpi-dev openmpi-bin libboost-dev patchelf zstd \
     python3-dev python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/install-libint.sh /tmp/install-libint.sh
 RUN /tmp/install-libint.sh /opt/libint2
 ENV LIBINT2_PREFIX=/opt/libint2
+COPY scripts/install-libxc.sh /tmp/scripts/install-libxc.sh
+COPY scripts/wheels/native-pins.env /tmp/scripts/wheels/native-pins.env
+RUN /tmp/scripts/install-libxc.sh /opt/libxc
+ENV LIBXC_PREFIX=/opt/libxc
 # The pinned 2.13.1 boys.h is stock, so ferric's boys.h override must apply;
 # fail the build if it cannot (crates/ferric-integrals/shim/libint2_overrides).
 # A build ARG, so it reaches the RUN steps below but not the runtime image.
@@ -56,6 +62,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ferric-builder /opt/libint2/lib/libint2.so /opt/libint2/lib/libint2.so
+COPY --from=ferric-builder /opt/libxc/lib /opt/libxc/lib
 COPY --from=ferric-builder /ferric/target/release/ferric-cli /usr/local/bin/ferric
 COPY --from=ferric-builder /usr/local/lib/python3/dist-packages /usr/local/lib/python3/dist-packages
 RUN ldconfig

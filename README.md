@@ -134,6 +134,7 @@ getting that object right where standard methods get it wrong. See
 git clone https://github.com/mgoldey/ferric && cd ferric
 scripts/install-libint.sh ~/.local/libint2-2.13.1   # prebuilt libint2, seconds
 export LIBINT2_PREFIX=~/.local/libint2-2.13.1
+scripts/install-libxc.sh ~/.local/libxc-7.0.0        # libxc 7.0.0 from source, minutes
 cargo build --release
 OPENBLAS_NUM_THREADS=1 ./target/release/ferric examples/water-rhf.toml
 OPENBLAS_NUM_THREADS=1 cargo test --workspace
