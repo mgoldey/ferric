@@ -12,6 +12,10 @@ There are two ways in. Most people want the first.
 Wheels are built for CPython 3.10–3.13 on Linux x86_64 (`manylinux_2_28`),
 macOS arm64 (macOS 11 or later) and Windows x86_64. PyPI releases up to
 0.1.0rc11 carry the Linux wheels only; later releases carry all three.
+Releases after 0.1.0rc12 carry one stable-ABI wheel per platform
+(`ferric-<version>-cp310-abi3-<platform>.whl`), which pip installs on CPython
+3.10 and every later version; each release is smoke-tested on 3.10–3.13.
+Earlier releases carry one wheel per CPython (`cp3NN-cp3NN`).
 
 | Platform | Wheel | Source build |
 |---|---|---|
@@ -76,13 +80,15 @@ so run example files from the repository root.
 ### The large-libint wheel (GitHub releases)
 
 Starting with 0.1.0rc8, each [GitHub release](https://github.com/mgoldey/ferric/releases)
-also carries a second wheel for each CPython. It has the same version and
+also carries a second wheel (one per CPython up to 0.1.0rc12, one `cp310-abi3`
+wheel for all of them after that). It has the same version and
 commit as the PyPI wheel, but it is built against conda-forge's libint2
 2.13.1 (the build `scripts/install-libint.sh` installs), which it bundles as a
 shared library. Its file name carries the wheel build tag `1largeam`:
 
 ```text
-ferric-0.1.0rc8-1largeam-cp311-cp311-manylinux_2_28_x86_64.whl
+ferric-0.1.0rc8-1largeam-cp311-cp311-manylinux_2_28_x86_64.whl   # per CPython, up to 0.1.0rc12
+ferric-<version>-1largeam-cp310-abi3-manylinux_2_28_x86_64.whl   # after 0.1.0rc12
 ```
 
 Compared with the PyPI wheel it adds l = 7 shells, analytic 3- and 2-centre
@@ -96,7 +102,8 @@ reach 6 / 6 / 6, so one-electron second derivatives of g, h or i functions
 are available only in the PyPI wheel.
 
 Install the PyPI wheel first, so its dependencies are present, then swap in
-the file for your Python from the release (check it against the release's
+the file for your Python (or, after 0.1.0rc12, the one `cp310-abi3` file) from
+the release (check it against the release's
 `SHA256SUMS`):
 
 ```bash
