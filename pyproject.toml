@@ -89,7 +89,8 @@ reference = [
 build = [
     "maturin[patchelf]>=1.13.3",
 ]
-# ferric.ase.FerricCalculator (ASE energies, forces, stress).
+# ferric.ase.FerricCalculator (ASE energies, forces, stress) and the
+# ferric.mlip writers (extended XYZ / ASE database).
 ase = [
     "ase>=3.23",
 ]

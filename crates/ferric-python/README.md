@@ -133,4 +133,5 @@ Pure-Python helpers under `ferric.*` (not part of the compiled API; their option
 * **`ferric.units`**: `BOHR_TO_ANGSTROM`, `ANGSTROM_TO_BOHR`, `HARTREE_TO_EV`, `HARTREE_TO_KCAL_MOL`, `HARTREE_TO_KJ_MOL` (the Rust crates' values).
 * **`ferric.serialize`**: `to_dict`, `to_json`, `molecule_from_dict`, `read_run_log` (plain-data views of molecules and results; the CLI JSON Lines run log).
 * **`ferric.qcschema`**: `run`, `molecule_from_qcschema`, `molecule_to_qcschema`.
+* **`ferric.mlip`**: `write_extxyz`, `write_asedb`, `frames`, `to_atoms` (QCSchema results or `FerricCalculator` atoms -> extended XYZ / ASE database, eV and eV/Angstrom, level-of-theory metadata; writing needs `pip install "ferric[ase]"`).
 * **`ferric.ase`** (`pip install "ferric[ase]"`) and **`ferric.viz`** (py3Dmol): ASE calculator and 3-D views.
