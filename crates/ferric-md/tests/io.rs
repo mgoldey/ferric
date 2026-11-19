@@ -7,8 +7,13 @@ use ferric_core::mol::Molecule;
 use ferric_md::{run_md, EnergyCsvWriter, MdConfig, Thermostat, XyzTrajectoryWriter};
 use std::path::PathBuf;
 
+/// A per-process path under the runtime temp dir. Not `CARGO_TARGET_TMPDIR`:
+/// that path is fixed at compile time, and CI runs test binaries on machines
+/// where the build's target directory does not exist.
 fn out_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("ferric-md-io-{name}"))
+    let dir = std::env::temp_dir().join(format!("ferric-md-io-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
 }
 
 #[test]
