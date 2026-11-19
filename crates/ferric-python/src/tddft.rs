@@ -2,9 +2,6 @@
 
 use super::*;
 
-/// ECP policy of `run_tddft`.
-pub(crate) const TDDFT_ECP: EcpPolicy = EcpPolicy::Apply;
-
 // ── TDDFT (closed-shell linear response) ──
 
 #[pyclass]
@@ -200,7 +197,7 @@ pub(crate) fn run_tddft(
              roots are not spin-adapted. Run the default and read TddftResult.s2.",
         ));
     }
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, TDDFT_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let mol = sys.mol();
 
     let tddft_method = match method.to_lowercase().as_str() {

@@ -20,30 +20,6 @@ use crate::result::ScfResult;
 use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
 
-/// Whether [`PreparedSystem::new`] applies the basis set's ECP core counts to
-/// the molecule.
-///
-/// The prepared basis always carries the ECP: [`PreparedBasis::new`] reduces
-/// each ECP atom's nuclear charge to `Z - n_core` and the core Hamiltonian
-/// adds `V_ECP`. The policy decides only whether the molecule's
-/// `n_core_ecp` (and so `nelec()` and `nuclear_repulsion()`) agrees with it.
-/// Both are no-ops without an ECP basis.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EcpPolicy {
-    /// Apply the basis set's ECP core counts (`Molecule::apply_ecp`): the
-    /// valence electron count and effective nuclear repulsion that match the
-    /// ECP potential in the prepared basis. What `run_rhf`/`run_uhf` do.
-    Apply,
-    /// Leave the molecule all-electron while the prepared basis still carries
-    /// the ECP: an inconsistent system for an ECP basis.
-    ///
-    /// Exists only to preserve the legacy behaviour of the correlated drivers
-    /// that never applied the ECP, so moving them onto [`PreparedSystem`] is
-    /// behaviour-preserving; slated for removal once each has been switched to
-    /// [`EcpPolicy::Apply`] (or made to refuse ECP inputs).
-    Skip,
-}
-
 /// A molecule with its ECP applied, the prepared orbital basis, the Coulomb
 /// operator, its Schwarz bounds and a parallel context.
 ///
@@ -59,17 +35,21 @@ pub struct PreparedSystem {
 }
 
 impl PreparedSystem {
-    /// Apply `ecp` to `mol`, prepare `basis` on it, and compute the Coulomb
-    /// Schwarz bounds of that basis with a default [`ParallelContext`].
+    /// Apply the basis set's ECP core counts to `mol`
+    /// ([`Molecule::apply_ecp`], a no-op without an ECP), prepare `basis` on
+    /// it, and compute the Coulomb Schwarz bounds of that basis with a default
+    /// [`ParallelContext`].
+    ///
+    /// The ECP is applied unconditionally: [`PreparedBasis::new`] always
+    /// reduces each ECP atom's nuclear charge to `Z - n_core` and the core
+    /// Hamiltonian adds `V_ECP`, so the molecule's `n_core_ecp` (and with it
+    /// `nelec()` and `nuclear_repulsion()`) must agree.
     ///
     /// Errors are those of [`PreparedBasis::new`] (e.g. an element the basis
     /// does not cover, or a shell the ECP integrals cannot handle) and of
     /// [`SchwarzBounds::compute`].
-    pub fn new(mut mol: Molecule, basis: &BasisSet, ecp: EcpPolicy) -> Result<Self, FerricError> {
-        match ecp {
-            EcpPolicy::Apply => mol.apply_ecp(basis),
-            EcpPolicy::Skip => {}
-        }
+    pub fn new(mut mol: Molecule, basis: &BasisSet) -> Result<Self, FerricError> {
+        mol.apply_ecp(basis);
         let basis = PreparedBasis::new(&mol, basis)?;
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &basis)?;
@@ -87,7 +67,7 @@ impl PreparedSystem {
         PreparedBasis::new(&self.mol, aux)
     }
 
-    /// The molecule, with the ECP core counts the policy applied.
+    /// The molecule, with the basis set's ECP core counts applied.
     pub fn mol(&self) -> &Molecule {
         &self.mol
     }
@@ -164,13 +144,15 @@ mod tests {
     }
 
     #[test]
-    fn apply_sets_the_ecp_core_and_skip_leaves_the_molecule_all_electron() {
+    fn the_constructor_applies_the_ecp_core_counts() {
         let bs = basis::bundled("def2-svp").unwrap();
-        let applied = PreparedSystem::new(hi(), &bs, EcpPolicy::Apply).unwrap();
-        assert_eq!(applied.mol().nelec(), 26);
-        assert_eq!(applied.mol().atoms[1].n_core_ecp, 28);
-        let skipped = PreparedSystem::new(hi(), &bs, EcpPolicy::Skip).unwrap();
-        assert_eq!(skipped.mol().nelec(), 54);
+        let sys = PreparedSystem::new(hi(), &bs).unwrap();
+        assert_eq!(hi().nelec(), 54);
+        assert_eq!(sys.mol().nelec(), 26);
+        assert_eq!(sys.mol().atoms[1].n_core_ecp, 28);
+        let mut applied = hi();
+        applied.apply_ecp(&bs);
+        assert_eq!(sys.mol().nuclear_repulsion(), applied.nuclear_repulsion());
     }
 
     #[test]
@@ -183,7 +165,7 @@ mod tests {
         .unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
-        let sys = PreparedSystem::new(mol.clone(), &bs, EcpPolicy::Apply).unwrap();
+        let sys = PreparedSystem::new(mol.clone(), &bs).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         assert_eq!(sys.mol().nelec(), mol.nelec());
         assert_eq!(sys.basis().nbasis(), prep.nbasis());

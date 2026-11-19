@@ -5,10 +5,6 @@ use crate::pdep_properties::{
     cube_spec, flat3, nd, run_property_bundle, BundleJob, PropertyKwargs,
 };
 
-/// ECP policy of the RPA drivers in this file (`run_rs_mp2_rpa`,
-/// `run_pdep_rpa`).
-pub(crate) const RPA_ECP: EcpPolicy = EcpPolicy::Apply;
-
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
 #[pyclass]
@@ -232,8 +228,7 @@ pub(crate) fn run_rs_mp2_rpa(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs, rhf) =
-        converged_reference_with_aux(mol, basis_set, auxbasis, &cfg_rhf, RPA_ECP)?;
+    let (sys, dfbs, rhf) = converged_reference_with_aux(mol, basis_set, auxbasis, &cfg_rhf)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
     let forms = forms
@@ -911,7 +906,7 @@ pub(crate) fn run_pdep_rpa(
 
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
 
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, RPA_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
     // The reference SCF must see the ENVIRONMENT, or the dielectric response
     // computed from it is that of an isolated molecule. Screening a

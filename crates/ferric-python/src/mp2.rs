@@ -4,13 +4,6 @@ use super::*;
 
 // ── RI-MP2 ──
 
-/// ECP policy of the MP2-family drivers in this file.
-pub(crate) const MP2_ECP: EcpPolicy = EcpPolicy::Apply;
-
-/// ECP policy of the dRPA / LinLCCD drivers in this file (`run_drpa`,
-/// `run_drpa_scan`, `run_linlccd`).
-pub(crate) const DRPA_ECP: EcpPolicy = EcpPolicy::Apply;
-
 /// Result of a `run_rimp2` calculation.
 #[pyclass]
 #[pyo3(name = "RiMp2Result")]
@@ -273,7 +266,7 @@ pub(crate) fn rimp2_energies(
     mp2_config: &RiMp2Config,
     with_gradient: bool,
 ) -> Result<Rimp2Energies, ferric_core::FerricError> {
-    let sys = PreparedSystem::new(mol, basis_set, MP2_ECP)?;
+    let sys = PreparedSystem::new(mol, basis_set)?;
     let dfbs = sys.with_aux(auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
     let open_shell = mol.multiplicity > 1;
@@ -767,9 +760,11 @@ pub(crate) fn mp2_exact_default_config(
 // operator, Schwarz bounds, parallel context) built by its single constructor,
 // any fitting basis prepared on the same molecule (`PreparedSystem::with_aux`),
 // the reference solved on the borrowed system, and a non-converged SCF
-// refused. Every later use of the molecule reads `sys.mol()`, so the kernels
-// see the electron count the reference was solved for. Each driver family
-// names its ECP policy in one constant next to its entry points.
+// refused. The constructor applies the basis set's ECP, as `run_rhf` does, and
+// every later use of the molecule reads `sys.mol()`, so the kernels see the
+// valence electron count the reference was solved for. (Kernels that cannot
+// handle ECP atoms refuse them themselves: the amplitude-threshold local MP2,
+// dRPA and LinLCCD in `ferric_mp2::lmp2_amplitude`.)
 
 /// `scf`, or `ScfConvergence` when it did not converge: the rule every
 /// `run_*` driver applies to its reference SCF.
@@ -794,12 +789,8 @@ pub(crate) fn converged(
 
 /// `PreparedSystem::new` on a copy of `mol`, for a binding returning
 /// `PyResult`.
-pub(crate) fn prepare(
-    mol: &PyMolecule,
-    basis: &PyBasisSet,
-    ecp: EcpPolicy,
-) -> PyResult<PreparedSystem> {
-    PreparedSystem::new(mol.inner.clone(), &basis.inner, ecp).map_err(make_err)
+pub(crate) fn prepare(mol: &PyMolecule, basis: &PyBasisSet) -> PyResult<PreparedSystem> {
+    PreparedSystem::new(mol.inner.clone(), &basis.inner).map_err(make_err)
 }
 
 /// [`prepare`] plus the fitting basis `aux` on the same molecule.
@@ -807,9 +798,8 @@ pub(crate) fn prepare_with_aux(
     mol: &PyMolecule,
     basis: &PyBasisSet,
     aux: &PyBasisSet,
-    ecp: EcpPolicy,
 ) -> PyResult<(PreparedSystem, PreparedBasis)> {
-    let sys = prepare(mol, basis, ecp)?;
+    let sys = prepare(mol, basis)?;
     let aux = sys.with_aux(&aux.inner).map_err(make_err)?;
     Ok((sys, aux))
 }
@@ -850,10 +840,9 @@ pub(crate) fn rhf_with_aux(
     basis: &basis::BasisSet,
     aux: &basis::BasisSet,
     config: &RhfConfig,
-    ecp: EcpPolicy,
 ) -> Result<(PreparedSystem, PreparedBasis, ferric_scf::result::ScfResult), ferric_core::FerricError>
 {
-    let sys = PreparedSystem::new(mol, basis, ecp)?;
+    let sys = PreparedSystem::new(mol, basis)?;
     let aux = sys.with_aux(aux)?;
     let rhf = rhf_reference(&sys, config)?;
     Ok((sys, aux, rhf))
@@ -865,9 +854,8 @@ pub(crate) fn converged_rhf_with_aux(
     basis: &PyBasisSet,
     aux: &PyBasisSet,
     config: &RhfConfig,
-    ecp: EcpPolicy,
 ) -> PyResult<(PreparedSystem, PreparedBasis, ferric_scf::result::ScfResult)> {
-    rhf_with_aux(mol.inner.clone(), &basis.inner, &aux.inner, config, ecp).map_err(make_err)
+    rhf_with_aux(mol.inner.clone(), &basis.inner, &aux.inner, config).map_err(make_err)
 }
 
 /// [`converged_rhf_with_aux`] with the reference rule of [`spin_reference`].
@@ -876,9 +864,8 @@ pub(crate) fn converged_reference_with_aux(
     basis: &PyBasisSet,
     aux: &PyBasisSet,
     config: &RhfConfig,
-    ecp: EcpPolicy,
 ) -> PyResult<(PreparedSystem, PreparedBasis, ferric_scf::result::ScfResult)> {
-    let (sys, aux) = prepare_with_aux(mol, basis, aux, ecp)?;
+    let (sys, aux) = prepare_with_aux(mol, basis, aux)?;
     let scf = converged_reference(&sys, config)?;
     Ok((sys, aux, scf))
 }
@@ -986,7 +973,7 @@ pub(crate) fn run_rimp2_local(
         )));
     }
     let op = local_correlation_operator(att_keys, model, &basis_set.inner.name)?;
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let eps = model.eps[0];
     let lcfg = AmplitudeLmp2Config {
@@ -1212,7 +1199,7 @@ pub(crate) fn run_drpa(
         Some(m) => (m.eps[0], m.reference),
     };
     let fc = frozen_core.unwrap_or(0);
-    let sys = prepare(mol, basis_set, DRPA_ECP)?;
+    let sys = prepare(mol, basis_set)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     if model.is_none() {
         // Refuse an exact run that cannot fit, BEFORE the SCF.
@@ -1348,7 +1335,7 @@ pub(crate) fn run_drpa_scan(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config, DRPA_ECP)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let base_cfg = drpa_config(
         None,
@@ -1460,7 +1447,7 @@ pub(crate) fn run_linlccd(
             mol.inner.multiplicity
         )));
     }
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, DRPA_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let rhf = local_rhf_reference(
         &sys,
@@ -1839,7 +1826,7 @@ pub(crate) fn run_oo_rimp2(
     } else {
         rhf_config
     };
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, MP2_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let rhf = converged_rhf(&sys, &rhf_config)?;
     // Orbital-rotation loop knobs default to OoRiMp2Config::default() (same
@@ -1977,7 +1964,7 @@ pub(crate) fn run_mp3(
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     // The VVVV size guard inside mp3_energy used to resolve the budget itself
     // with a hardcoded `None` (env/auto-detect only), so a caller's budget
@@ -2083,7 +2070,7 @@ pub(crate) fn run_laplace_mp2(
     )?;
     let op = Operator::coulomb();
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let r = laplace_ri_mp2(
         mol,
@@ -2240,7 +2227,7 @@ pub(crate) fn run_laplace_sos_mp2(
         scf_ri_j_precision,
     )?;
     let op = Operator::coulomb();
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let form =
         SosFormulation::parse_config_str(formulation, domain_cutoff_bohr).map_err(make_err)?;
@@ -2369,8 +2356,7 @@ pub(crate) fn run_attenuated_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs, rhf) =
-        converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
@@ -2445,8 +2431,7 @@ pub(crate) fn run_terfc_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs, rhf) =
-        converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     // r0 supplied in Å; convert to Bohr for the operator.
     let resolved = ferric_mp2::terfc_r0::resolve_terfc_r0(&basis_set.inner.name, r0)
@@ -2604,8 +2589,7 @@ pub(crate) fn run_scs_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs, rhf) =
-        converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0),
@@ -2665,8 +2649,7 @@ pub(crate) fn run_scs_mp2_2terfc(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs, rhf) =
-        converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_reference_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
@@ -2810,7 +2793,7 @@ pub(crate) fn run_mp2_v(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config, MP2_ECP)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
 
     // Start from the published MP2-V(terfc, aTZ) parameterization and override
@@ -2932,7 +2915,7 @@ pub(crate) fn run_mp2_v_scan(
             )));
         }
     }
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, MP2_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let mut rcfg = rhf_config_conv(
         k_builder,
@@ -3036,7 +3019,7 @@ pub(crate) fn run_vv10_variants(
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<Vec<f64>> {
     use ferric_dft::vv10::{Vv10Damping, Vv10Weight};
-    let sys = prepare(mol, basis_set, MP2_ECP)?;
+    let sys = prepare(mol, basis_set)?;
     let mol = sys.mol();
     let mut rcfg = rhf_config_conv(
         None,

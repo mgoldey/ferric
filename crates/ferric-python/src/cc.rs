@@ -4,9 +4,6 @@ use super::*;
 
 // ── CC (stub) ──
 
-/// ECP policy of the coupled-cluster drivers in this file.
-pub(crate) const CC_ECP: EcpPolicy = EcpPolicy::Apply;
-
 #[pyclass]
 #[pyo3(name = "CcResult")]
 pub(crate) struct PyCcResult {
@@ -62,7 +59,7 @@ fn run_u_ccsd_inner(
     cfg: &CcConfig,
     level: CcLevel,
 ) -> Result<PyCcResult, ferric_core::FerricError> {
-    let sys = PreparedSystem::new(mol, basis, CC_ECP)?;
+    let sys = PreparedSystem::new(mol, basis)?;
     let dfbs = sys.with_aux(aux)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
     let uhf = uhf_reference(&sys, scf_config)?;
@@ -178,7 +175,7 @@ pub(crate) fn run_ccd(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config, CC_ECP)?;
+    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
@@ -270,7 +267,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
     let (r, t_correction, certificate_data) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (sys, aux, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config, CC_ECP)?;
+            let (sys, aux, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config)?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
             let r = run_ccsd_cs_inner(mol, prep, &aux, op, &rhf, &cfg)?;
             let e_t = match level {
@@ -493,7 +490,7 @@ pub(crate) fn run_eom_ccsd(
     };
     let (rhf_energy, cc, eom, reference) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (sys, dfbs, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config, CC_ECP)?;
+            let (sys, dfbs, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config)?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
             let cc = run_ccsd_cs_inner(mol, prep, &dfbs, op, &rhf, &cfg)?;
             let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(

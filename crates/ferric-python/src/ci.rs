@@ -8,14 +8,9 @@
 use crate::{budget_bytes_from_gb, certificate_dict, make_err, prepare, PyBasisSet, PyMolecule};
 use ferric_ci::driver::{rhf_start_prepared, ScfStart};
 use ferric_core::certificate::{BuildStamp, Certificate};
-use ferric_scf::EcpPolicy;
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray4};
 use pyo3::prelude::*;
-
-/// ECP policy of the CAS drivers in this file: the valence count and V_ECP
-/// of an ECP basis, as the SCF bindings use.
-const CI_ECP: EcpPolicy = EcpPolicy::Apply;
 
 /// Library capability name on the certificate (no CLI `method.kind`).
 const CAPABILITY: &str = "casci";
@@ -130,7 +125,7 @@ fn run_casci(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCasCiResult> {
-    let sys = prepare(mol, basis_set, CI_ECP)?;
+    let sys = prepare(mol, basis_set)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let nelec = mol.nelec() as usize;
     let n_act_el = n_elec_active.0 + n_elec_active.1;
@@ -342,7 +337,7 @@ fn run_casscf(
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     let stability = ferric_ci::CasScfStabilityMode::parse_config_str(casscf_stability)
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
-    let sys = prepare(mol, basis_set, CI_ECP)?;
+    let sys = prepare(mol, basis_set)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let n_core = match n_core {
         Some(s) => s,
@@ -562,7 +557,7 @@ fn run_nevpt2(
         .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let on = ferric_ci::driver::Nevpt2On::parse_config_str(reference)
         .map_err(|e| make_err(format!("run_nevpt2: {e}")))?;
-    let sys = prepare(mol, basis_set, CI_ECP)?;
+    let sys = prepare(mol, basis_set)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let n_core = match n_core {
         Some(s) => s,

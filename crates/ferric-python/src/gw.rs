@@ -2,9 +2,6 @@
 
 use super::*;
 
-/// ECP policy of the GW / BSE / TDHF-polarizability drivers in this file.
-pub(crate) const GW_ECP: EcpPolicy = EcpPolicy::Apply;
-
 // ── GW (closed-shell: G0W0 / COHSEX / evGW0 / evGW) ──
 //
 // `run_u_gw` is wired below; `bse.rs`'s `run_bse_tda` is wired further down
@@ -232,7 +229,7 @@ pub(crate) fn run_gw(
 
     let gw_method = parse_gw_method(method)?;
 
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, GW_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let cfg = rhf_config_conv(
@@ -510,7 +507,7 @@ pub(crate) fn run_u_gw(
         }
     };
 
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, GW_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let mut cfg = rhf_config_conv(
@@ -782,7 +779,7 @@ pub(crate) fn run_bse_tda(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs, scf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &cfg, GW_ECP)?;
+    let (sys, dfbs, scf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &cfg)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let fc = frozen_core.unwrap_or(0);
@@ -930,7 +927,7 @@ pub(crate) fn run_tdhf_static_polarizability(
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
     use ferric_gw::bse::run_rpax_static_polarizability;
 
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis, GW_ECP)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     // KS reference (required — see doc comment above), same ladder path
