@@ -542,13 +542,6 @@ exponents below do not cover:
   exponent to about ±0.1, and the exponents with and without them do not
   differ by more than that.
 
-On the previous maps (`virt_radius` 12, `ao_tail` 1e-3, Fock screen off;
-2026-09-07, `bench_direct_alkane_series` in
-`crates/ferric-mp2/tests/lmp2_direct.rs`) the same series gave
-N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) and was at about
-parity with canonical RI-MP2 at C20 and about 6× faster at C32. That
-comparison with canonical RI-MP2 has not been repeated at the current maps.
-
 **How to read it (provisional):** sub-quadratic on this series, but the fit
 has three points on one family of molecules in one basis. It is not shown
 to be linear, and it is not measured on 3-D or diffuse systems.

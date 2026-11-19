@@ -101,8 +101,7 @@ so a correction has one row to change. Two matter when picking a method:
   integral_direct = true`) is measured sub-quadratic (about N<sup>1.35</sup>
   erfc, N<sup>1.45</sup> Coulomb at `eps = 1e-4`, excluding the O(N³) VV-HV
   virtual-space build) on alkanes C20–C48 at the current maps, a provisional
-  three-point fit whose slope is still falling. The comparison with exact
-  RI-MP2 was last measured on the previous maps. Local MP2 without
+  three-point fit whose slope is still falling. Local MP2 without
   `integral_direct` makes no scaling claim. See
   [The MP2 family](./mp2.md#exact-and-local-mp2).
 

@@ -414,12 +414,6 @@ C48), so the large-$N$ exponent is not settled. With the Fock screen and
 $N$; one repeat per point resolves the exponent to about $\pm 0.1$, and
 the two settings do not differ by more than that.
 
-On the previous maps (virtual radius 12 Bohr, AO tail 1e-3, Fock screen
-off) the same series gave $N^{1.24}$ (erfc) and $N^{1.4}$ (Coulomb), and the
-integral-direct path was about at parity with canonical RI-MP2 at C20 and
-about 6 times faster at C32. The comparison with canonical RI-MP2 has not
-been repeated at the current maps.
-
 The limits of that measurement:
 
 - It is a fit to **three points** on **one family of molecules in one
@@ -429,9 +423,8 @@ The limits of that measurement:
   whose cost the fitted exponents do not cover.
 
 Local MP2 without `integral_direct` still builds the global tensor and
-makes no scaling claim. The current-map measurement runs the CLI (`rimp2`
-and `att-rimp2` with `[local] integral_direct = true`); the previous-map one
-is `bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`.
+makes no scaling claim. The measurement runs the CLI (`rimp2` and
+`att-rimp2` with `[local] integral_direct = true`).
 
 ## Sources
 
