@@ -1937,6 +1937,31 @@ CASES = [
                 "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=False):",
                 "def kmesh_jk(dms, madelung_scale=1.0, kernel_at_g=True):",
                 "[FAIL] (claim krhf-supercell)",
+            (
+                "vm = -2.0 * ewald(sc,",
+                "vm = -1.0 * ewald(sc,",
+                "[FAIL] S1 simple-cubic",
+            ),
+            (
+                "grad[m][c] += -4.0 * math.pi / vol",
+                "grad[m][c] += 4.0 * math.pi / vol",
+                "[FAIL] S1 Ewald gradient",
+            ),
+            (
+                "* mp.exp(-1j * Gv * Pv)",
+                "* mp.exp(1j * Gv * Pv)",
+                "[FAIL] S2 MD expansion",
+            ),
+            (
+                "dE = -sp.Rational(1, 4) * vm",
+                "dE = -sp.Rational(1, 2) * vm",
+                "[FAIL] S4 Delta E",
+            ),
+            (
+                "return math.pi / (w * w * det3(lat)) - math.fsum(acc)",
+                "return -math.fsum(acc)",
+                "[FAIL] S4 v_M^LR",
+            ),
             ),
             (
                 "kb = (ki + kj - ka) % NK",

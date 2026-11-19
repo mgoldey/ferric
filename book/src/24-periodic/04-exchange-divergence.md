@@ -115,7 +115,7 @@ electron's exchange hole receives that energy once.
 > | | |
 > |---|---|
 > | Proof | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S4, claim `exxdiv-shift` |
-> | Negative control | none in the script |
+> | Negative control | the runner's mutation: $-\tfrac12$ in place of $-\tfrac14$ in $\Delta E$ |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pbc/src/rsgdf.rs::k_builder` |
 > | Code test | `h2_rhf_ewald_minus_none_is_the_madelung_strain` in `crates/ferric-pbc/tests/pbc_stress.rs` |
@@ -154,12 +154,51 @@ given. Per spin it carries $v_MSD_\sigma S$ with coefficient 1, and the energy
 term is $-\tfrac{\alpha v_M}{2}\sum_\sigma\operatorname{tr}(D_\sigma SD_\sigma S)$,
 with $\alpha$ the exact-exchange fraction (1 for HF). The occupied levels of
 each spin move by $-v_M$ (times $\alpha$ in Kohn–Sham), and the energy by
-$-\alpha v_M(N_\alpha + N_\beta)/2$. Writing the term on the total density
-instead, $-\tfrac{\alpha v_M}{2}DSD$, agrees only for a closed shell; section
-@sec:forces shows where the difference would show up. The RS-GDF builders of
-section @sec:rsgdf use the same constant. A range-separated hybrid on a mesh uses
-the mixed supercell constant $c_\text{sr}v_M^\text{full} + (c_\text{lr} - c_\text{sr})v_M^\text{LR}(\omega)$
-(`ferric-pbc/src/rsh.rs::kpoint_madelung`).
+$-\alpha v_M(N_\alpha + N_\beta)/2$. The closed-shell shortcut on the total
+density, $-\tfrac{\alpha v_M}{4}\operatorname{tr}(DSDS)$, equals it only for
+$D_\alpha = D_\beta$; on an open shell it adds
+$-\tfrac{\alpha v_M}{2}\operatorname{tr}(D_\alpha SD_\beta S)$. Section
+@sec:forces shows where the difference shows up in the force. The RS-GDF
+builders of section @sec:rsgdf use the same constant.
+
+**Range-separated hybrids.** Only here in the chapter is
+$\omega$ a range-separation parameter (chapter @sec:operators), not the
+Ewald split. A CAM hybrid's exact-exchange kernel is
+
+$$ v(\mathbf G) = \frac{4\pi}{G^2}\Big[c_\text{sr} + (c_\text{lr} - c_\text{sr})\,e^{-G^2/4\omega^2}\Big], $$
+
+with $c_\text{sr}$ and $c_\text{lr}$ the exact-exchange fractions at short
+and long range. The missing $\mathbf G = 0$ piece is linear in the kernel,
+so the probe-charge constant is the same combination of the constants of its
+two kernels. The bare $4\pi/G^2$ gives $v_M$. The erf kernel
+$(4\pi/G^2)e^{-G^2/4\omega^2}$ gives the probe charge's own erf potential
+with its images and background, sign reversed:
+
+$$ v_M^\text{LR}(\omega) = \frac{2\omega}{\sqrt\pi} - \frac{4\pi}{\Omega}\sum_{\mathbf G\neq0}\frac{e^{-G^2/4\omega^2}}{G^2}, \qquad v_M^\text{RSH} = c_\text{sr}v_M + (c_\text{lr} - c_\text{sr})\,v_M^\text{LR}(\omega) . $$
+
+The first term is the self value $\lim_{r\to0}\operatorname{erf}(\omega r)/r$.
+Read against the Ewald sum of section @sec:ewald at $\eta = \omega$, the
+remainder $v_M - v_M^\text{LR}(\omega)$ is the real-space erfc part,
+$\pi/(\omega^2\Omega) - \sum_{\mathbf L\neq0}\operatorname{erfc}(\omega L)/L$,
+which vanishes as $\omega \to \infty$; then $v_M^\text{RSH} \to c_\text{lr}v_M$, the
+global-hybrid constant. On a mesh the lattice is the $\operatorname{diag}(N)$
+supercell's (`ferric-pbc/src/rsh.rs::kpoint_madelung`; the constant is
+`ferric-pbc/src/rsh.rs::madelung_lr`).
+
+> **Verified equation {#eq:pbc-exxdiv-rsh-madelung}** · the range-separated Madelung constant
+>
+> The reciprocal-space $v_M^\text{LR}(\omega)$ plus the real-space erfc
+> constant equals $v_M$ on a triclinic cell at $\omega = 0.3, 0.8, 1.5$, to
+> $10^{-11}$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S4, claim `rsh-madelung` |
+> | Negative control | the runner's mutation: the real-space constant without its background $\pi/(\omega^2\Omega)$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-pbc/src/rsh.rs::madelung_lr` |
+>
+> <!-- verified: id=pbc.exxdiv.rsh-madelung; script=scripts/pbc_ewald_pairft_stress_sympy.py; claim=rsh-madelung; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/rsh.rs::madelung_lr; registry=pbc-ewald-pairft-stress -->
 
 The consequences, each proven here or in section @sec:kpoint-scf:
 
@@ -175,16 +214,14 @@ changes which states are self-consistent under aufbau. A state with a hole
 shallower than $v_M$ below the Fermi level can be self-consistent under
 `ewald` only. The open-shell drivers therefore converge with `none` first and
 continue with `ewald` (`EwaldStart::Staged`, the default), and report each
-spin's gap against $v_M$. The $k$-point UHF module documentation records the
-measurement behind the default: on a triclinic four-hydrogen s+p triplet a
-direct `ewald` start stopped 15 mHa high on a $1\times1\times1$ mesh and
-93 mHa high on $1\times1\times2$, and was not trapped on $1\times1\times3$.
-In the measured staged run, the `ewald` continuation from the `none` density
-took one iteration.
+spin's gap against $v_M$. The $k$-point UHF module documentation records a
+prototype measurement behind the default, on a triclinic four-hydrogen s+p
+triplet, where a direct `ewald` start stopped above the staged energy on the
+$1\times1\times1$ and $1\times1\times2$ meshes; no test pins that trap.
 
 **The code.** In the RS-GDF exchange builder the term is the last step of
-every build. These are the last lines of `RsGdfK::build_untimed` in
-`crates/ferric-pbc/src/rsgdf.rs`, with the shape check, the scratch-budget
+every build. These are the last lines of the method `build_untimed` of
+`ferric-pbc/src/rsgdf.rs::RsGdfK`, with the shape check, the scratch-budget
 check and the return value removed:
 
 ```rust
@@ -195,7 +232,7 @@ check and the return value removed:
         }
 ```
 
-`exchange_aux_grouped` forms the fitted $\sum_kB_kDB_k^{\mathsf T}$ of section
+`exchange_aux_grouped` forms the fitted $\sum_\kappa B_\kappa DB_\kappa^{\mathsf T}$ of section
 @sec:rsgdf, and `madelung` is $v_M$ for `ewald` and 0 for `none`. The builder
 does not override the trait's occupied-orbital path, which rebuilds
 $D = CC^{\mathsf T}$ and calls this function, so the term is kept there
@@ -207,7 +244,7 @@ too; a test guards that (`k_builders_keep_madelung_on_the_occupied_path` in
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `[cell] exxdiv`, `exxdiv=` | `"ewald"`, `"none"` (strict) | `"ewald"` | adds $v_MSDS$ to every exchange build |
-| `ewald_start=` (open-shell Python drivers) | `"staged"`, `"direct"` | `"staged"` | converge with `none` first, then `ewald` |
+| `[cell] ewald_start`, `ewald_start=` (open-shell routes) | `"staged"`, `"direct"` | `"staged"` | converge with `none` first, then `ewald` |
 
 Correlation methods read the reference's `exxdiv` as a stated input, because
 the occupied orbital energies differ by $v_M$ between the two (section @sec:mp2-drpa).
