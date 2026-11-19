@@ -206,6 +206,28 @@ def test_linlccd_reference_is_run_rhf_and_drpa_refuses_the_ecp():
         ferric.run_drpa(hi(), bs, aux)
 
 
+def test_tune_omega_references_are_run_dft_and_run_uks():
+    # A bracket of width 2e-4 around wB97X-V's own omega = 0.3 puts every
+    # evaluation within 1e-4 of it, where both energies sit within 2.1e-5 Ha
+    # of run_dft's / run_uks's (measured): the bar is 1e-4 Ha, against the
+    # old errors of 152.6 Ha (neutral) and 139.5 Ha (cation).
+    bs = bases()[0]
+    r = ferric.tune_omega(
+        hi(),
+        bs,
+        "wB97X-V",
+        omega_lo=0.2999,
+        omega_hi=0.3001,
+        max_evals=2,
+        check_cation_stability=False,
+    )
+    neutral = ferric.run_dft(hi(), bs, "wB97X-V").energy
+    cation = ferric.run_uks(hi(1, 2), bs, "wB97X-V").energy
+    for e in r["evals"]:
+        assert abs(e["e_neutral"] - neutral) < 1e-4
+        assert abs(e["e_cation"] - cation) < 1e-4
+
+
 def test_a_molecule_reused_from_an_ecp_run_is_all_electron_in_sto3g():
     # run_aimd returns its molecule with def2-SVP's ECP counts on I; run in
     # STO-3G (no ECP) it must be the all-electron HI a fresh parse gives.

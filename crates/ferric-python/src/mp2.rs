@@ -1504,10 +1504,7 @@ pub(crate) fn tune_omega(
     check_cation_stability: Option<bool>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let sys = prepare(mol, basis_set)?;
     let defaults = OmegaTuneConfig::default();
     let cfg = OmegaTuneConfig {
         functional: functional.to_string(),
@@ -1527,7 +1524,7 @@ pub(crate) fn tune_omega(
         check_cation_stability: check_cation_stability.unwrap_or(defaults.check_cation_stability),
         ..defaults
     };
-    let r = tune(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
+    let r = tune(sys.ctx(), sys.mol(), sys.basis(), sys.bounds(), &cfg).map_err(make_err)?;
     let d = pyo3::types::PyDict::new(py);
     d.set_item("omega", r.omega)?;
     d.set_item("j", r.j)?;
