@@ -11,13 +11,13 @@
         "BASIS_COVERAGE_ONLY": "6-31g*/h2o"
       },
       "result": {
-        "patch_sha256": "478923099f5c825620fe2fc1841af32b8d8317a93fdc27050965dac38bc2bc92",
-        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "patch_sha256": "b488a086e3cff9f6baeee4a661448b8d6e70385f1a79c9edcec2bc1c0852bdb7",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "orbital_sets_match_pyscf_rhf",
         "assertion": "crates/ferric-mp2/tests/common/basis_coverage.rs:244",
         "message": "1 of 1 rhf cases failed:",
         "baseline_run": true,
-        "date": "2026-11-11"
+        "date": "2026-11-19"
       }
     },
     {
@@ -27,29 +27,29 @@
       "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
       "test": "uhf_ho2_vs_pyscf",
       "result": {
-        "patch_sha256": "186131e3590aee7f37bd1663c590e6cdd8f38d375ed0c6817f35f45418c0bc09",
-        "base_commit": "ab19ac3fc3c020619c7604c5e470e7cef66a8676",
+        "patch_sha256": "65f02c674df9a02219faff93aaf14a39e75b6ccb64c51121ba157004552f2ef3",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "uhf_ho2_vs_pyscf",
         "assertion": "crates/ferric-scf/tests/validation_open_shell_scf.rs:241",
         "message": "ho2/6-31g/UHF: energy -150.310124650835 vs reference -150.111420160174 (|d| 1.99e-1 >= 1e-10)",
         "baseline_run": true,
-        "date": "2026-11-11"
+        "date": "2026-11-19"
       }
     },
     {
       "anchor": "ROHF",
       "patch": "testdata/mutations/rohf.patch",
-      "mutation": "rohf.rs: the beta Fock matrix subtracts K_alpha instead of K_beta.",
+      "mutation": "driver.rs (OpenShellJk::build_fock, shared by ROHF and UHF): the beta Fock matrix subtracts K_alpha instead of K_beta.",
       "evidence": "crates/ferric-scf/tests/validation_open_shell_scf.rs",
       "test": "rohf_ho2_vs_pyscf",
       "result": {
-        "patch_sha256": "9ef58f54e32696aefda5444a50a946c91bc405f159ca4fa54e64d74c1e146ecf",
-        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "patch_sha256": "303037b751447f605048e23ec17694dd296e218b2a121f4d31fe38d47b3dc894",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "rohf_ho2_vs_pyscf",
         "assertion": "crates/ferric-scf/tests/validation_open_shell_scf.rs:241",
         "message": "ho2/6-31g/ROHF: energy -150.319881238879 vs reference -150.108147407523 (|d| 2.12e-1 >= 1e-10)",
         "baseline_run": true,
-        "date": "2026-11-11"
+        "date": "2026-11-19"
       }
     },
     {
@@ -91,13 +91,13 @@
       "evidence": "crates/ferric-scf/tests/validation_roks_energies.rs",
       "test": "roks_nh2_pbe_vs_pyscf",
       "result": {
-        "patch_sha256": "176d426b48a77d422aaad57280b5a0acebcae603ae43f7928884a5379cbf8d7f",
-        "base_commit": "afaf50376db407671d10a415eb949be9fd0ae679",
+        "patch_sha256": "efd4c52cc730c3066bef3ca742cb7e648aff9bb39424c27f939f1409e06501fe",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "roks_nh2_pbe_vs_pyscf",
         "assertion": "crates/ferric-scf/tests/validation_roks_energies.rs:250",
-        "message": "nh2/6-31g/ROKS-pbe: energy -56.364363774467 vs reference -55.776390555882 (|d| 5.88e-1 >= 1e-11)",
+        "message": "nh2/6-31g/ROKS-pbe: energy -56.364363774466 vs reference -55.776390555882 (|d| 5.88e-1 >= 1e-11)",
         "baseline_run": true,
-        "date": "2026-11-11"
+        "date": "2026-11-19"
       }
     },
     {
@@ -158,13 +158,13 @@
       "evidence": "crates/ferric-cc/tests/validation_cc.rs",
       "test": "ccsd_spin_adapted_matches_df_reference",
       "result": {
-        "patch_sha256": "72b6ed3af1304eda3423e00ff9d9ef95f881b46edb1e5b5a2c67ef03a56b9b83",
-        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "patch_sha256": "64ed42f75c863bc4638e879043125262e4793d97ffa799d0454aeb083a084a9a",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "ccsd_spin_adapted_matches_df_reference",
         "assertion": "crates/ferric-cc/tests/validation_cc.rs:301",
-        "message": "RI-CCSD spin-adapted: 17 failure(s):",
+        "message": "RI-CCSD spin-adapted: 25 failure(s):",
         "baseline_run": true,
-        "date": "2026-11-13"
+        "date": "2026-11-19"
       }
     },
     {
@@ -174,13 +174,13 @@
       "evidence": "crates/ferric-mp2/tests/validation_attenuated_mp2.rs",
       "test": "attenuated_ri_mp2_h2o_vs_pyscf",
       "result": {
-        "patch_sha256": "dc5fd489e08adac10b4ae94ed6cccc9a30d368cae5c7df2eac084d41f132eb66",
-        "base_commit": "3c49625213f684d0d2ae9d997b5732bc7c253ae3",
+        "patch_sha256": "5e340d827b5e8f4ab25093c32ddf035cdb96b7dca804baa0b57219f388aaea8e",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "attenuated_ri_mp2_h2o_vs_pyscf",
         "assertion": "crates/ferric-mp2/tests/validation_attenuated_mp2.rs:139",
         "message": "h2o/aug-cc-pvdz/omega=0.2: E_corr -0.212850863738 vs reference -0.216506983498 (|d| 3.66e-3 >= 1e-10)",
         "baseline_run": true,
-        "date": "2026-11-13"
+        "date": "2026-11-19"
       }
     },
     {
@@ -254,13 +254,13 @@
       "evidence": "crates/ferric-ci/tests/casscf_vs_pyscf.rs",
       "test": "h2o_cas44_631g_matches_pyscf",
       "result": {
-        "patch_sha256": "980e9d39a762526c9ebfa04034864bf067fbaae5f3c001d326f89b987f7e694d",
-        "base_commit": "8c86e08508794e0e0182c70527b4553a566ca04d",
+        "patch_sha256": "e2c5a688172850429441d936f1607a70a24b63fc29ab9b5e50b1a98806bba8b0",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "h2o_cas44_631g_matches_pyscf",
-        "assertion": "crates/ferric-ci/tests/casscf_vs_pyscf.rs:160",
-        "message": "h2o_cas44_631g: |dE| 3.63671533235636e0 > bar 3.210388254915033e-10",
+        "assertion": "crates/ferric-ci/tests/casscf_vs_pyscf.rs:121",
+        "message": "h2o_cas44_631g: not converged in 300 iterations",
         "baseline_run": true,
-        "date": "2026-11-13"
+        "date": "2026-11-19"
       }
     },
     {
@@ -282,33 +282,33 @@
     {
       "anchor": "RS-MP2-RPA",
       "patch": "testdata/mutations/rs-mp2-rpa.patch",
-      "mutation": "rs_mp2_rpa.rs: the DeltaLr (B) ring subtraction uses 1\u00b7E_OS[erf] instead of 2\u00b7E_OS[erf].",
+      "mutation": "rs_mp2_rpa.rs (Rings::assemble): the DeltaLr (B) ring subtraction uses 1\u00b7E_OS[erf] (half of dMP2[lr] = 2\u00b7E_OS[erf]) instead of 2\u00b7E_OS[erf].",
       "evidence": "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs",
       "test": "rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf",
       "result": {
-        "patch_sha256": "aaef8eb84697bb3375ac1769fd34c17b8a8995346e1716fd4db3f15f41811cce",
-        "base_commit": "96c4494f6492d7b57e4ebf1f8cd4aff1b942cc34",
+        "patch_sha256": "e35a28064f88cfd80eb71eab2610dc03e59516d49e4f1b2a48dfeca8679fafb6",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "rs_mp2_rpa_h2o_cc_pvdz_vs_pyscf",
         "assertion": "crates/ferric-rpa/tests/validation_rs_mp2_rpa_pyscf.rs:447",
         "message": "h2o/cc-pvdz GL-20: B_e_corr: ferric -0.204126208447 vs PySCF -0.204030980885 (|d| 9.52e-5 Ha) exceeds the bar 6.07e-12 Ha (metric shift 3.33e-13, integral shift 6.80e-15, floor 5.73e-12)",
         "baseline_run": true,
-        "date": "2026-11-14"
+        "date": "2026-11-19"
       }
     },
     {
       "anchor": "B2PLYP",
       "patch": "testdata/mutations/b2plyp.patch",
-      "mutation": "double_hybrid.rs: the B2PLYP PT2 fraction is 0.26 (c_os = c_ss) instead of 0.27.",
+      "mutation": "double_hybrid.rs: the B2PLYP PT2 fraction (shared with B2PLYP-D3BJ) is 0.26 (c_os = c_ss) instead of 0.27.",
       "evidence": "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs",
       "test": "b2plyp_h2o_cc_pvdz_vs_pyscf",
       "result": {
-        "patch_sha256": "2b39fe8d7a9ad5927537206f8589e45679d23583528d5efb0c1dd0f8aa2575c9",
-        "base_commit": "c1399fbdedf7761cd8979e79862af25ecf0b4378",
+        "patch_sha256": "e78c9b9e11cd290d9cf0202a14351efe0bbb2959b6821953bed882cce0796e0b",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "b2plyp_h2o_cc_pvdz_vs_pyscf",
         "assertion": "crates/ferric-mp2/tests/validation_b2plyp_pyscf.rs:257",
-        "message": "h2o/cc-pvdz fc0: total -76.351370433849 vs reference -76.353789597077 (|d| 2.42e-3 >= 6e-11)",
+        "message": "h2o/cc-pvdz fc0: total -76.351370433848 vs reference -76.353789597077 (|d| 2.42e-3 >= 6e-11)",
         "baseline_run": true,
-        "date": "2026-11-14"
+        "date": "2026-11-19"
       }
     },
     {
@@ -318,13 +318,13 @@
       "evidence": "crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs",
       "test": "dsd_pbep86_h2o_cc_pvdz_vs_pyscf",
       "result": {
-        "patch_sha256": "813fa2d8f60eac73af4894732c4b708fbf758a5dce52f4a03853ace4fa844f74",
-        "base_commit": "ca55076bd0e053897301433e4da5315a4500ee02",
+        "patch_sha256": "3c85e9f797e2429af5f4046cbeb3e0a3cc73f27f9b945ad11b8b51f1af29316c",
+        "base_commit": "ef22daf7dab73341019c86ca0f1a699099ebb1d9",
         "failing_test": "dsd_pbep86_h2o_cc_pvdz_vs_pyscf",
         "assertion": "crates/ferric-mp2/tests/validation_dsd_pbep86_pyscf.rs:264",
-        "message": "h2o/cc-pvdz fc0: total -76.281045389203 vs reference -76.285015637144 (|d| 3.97e-3 >= 1e-10)",
+        "message": "h2o/cc-pvdz fc0: total -76.281045389202 vs reference -76.285015637144 (|d| 3.97e-3 >= 1e-10)",
         "baseline_run": true,
-        "date": "2026-11-15"
+        "date": "2026-11-19"
       }
     }
   ]
