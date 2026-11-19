@@ -612,8 +612,10 @@ pub(crate) fn run_dft(
         df_j_aux: Some(ks_aux(df_j_aux)),
         // RI-K only matters for ω = 0 hybrids and HF (`solve_rhf` skips the
         // DfK for a pure functional or an RSH). RIJCOSX: under
-        // k_builder="cosx" COSX replaces RI-K, so no RI-K default applies (an
-        // explicit df_k_aux next to COSX is a conflict the SCF refuses).
+        // k_builder="cosx" COSX replaces RI-K, so no RI-K default applies (a
+        // NAMED df_k_aux next to COSX, with HF exchange or a global hybrid, is
+        // a conflict the SCF refuses; df_k_aux="" is fine, and pure or
+        // range-separated functionals ignore COSX).
         df_k_aux: df_k_aux_or_default(
             k_builder,
             df_k_aux.map(AuxBasis::parse),
@@ -1195,8 +1197,9 @@ fn run_open_ks(
         cosx: None,
         // RI-J / RI-K on by default for a KS SCF, as in run_dft and the CLI.
         // RIJCOSX, as in run_dft: under k_builder="cosx" COSX replaces RI-K,
-        // so no RI-K default applies (an explicit df_k_aux next to COSX is
-        // the conflict the SCF refuses). Before this rule the RI-K default
+        // so no RI-K default applies (a NAMED df_k_aux next to COSX, with HF
+        // exchange or a global hybrid, is the conflict the SCF refuses;
+        // df_k_aux="" is fine). Before this rule the RI-K default
         // applied whatever `k_builder` said, so k_builder="cosx" with HF
         // exchange or a global hybrid (where COSX takes the exchange) and
         // df_k_aux unset failed with a df_k_aux conflict the caller never
