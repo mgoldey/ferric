@@ -15,6 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .units import BOHR_TO_ANGSTROM
+
 __all__ = [
     "cube_surfaces",
     "diverging_colors",
@@ -25,7 +27,6 @@ __all__ = [
     "show_surface_values",
 ]
 
-_BOHR_TO_ANGSTROM = 0.529_177_210_92
 _INSTALL_HINT = "py3Dmol is required for ferric.viz views: pip install py3Dmol"
 # Default isosurface level for orbitals (Bohr^-3/2) and densities (e/Bohr^3).
 DEFAULT_ISOVALUE = 0.05
@@ -192,7 +193,7 @@ def show_surface_values(
         raise ValueError("points must be (N, 3) with N values")
     v = show_molecule(mol, width=width, height=height, view=view)
     for (x, y, z), color in zip(
-        points * _BOHR_TO_ANGSTROM, diverging_colors(values, vlim), strict=True
+        points * BOHR_TO_ANGSTROM, diverging_colors(values, vlim), strict=True
     ):
         v.addSphere(
             {"center": {"x": x, "y": y, "z": z}, "radius": radius, "color": color}
