@@ -51,6 +51,13 @@ Claims (each prints "ok [label]" or "FAIL [label]"):
   8 [qqr-erfc]    The same envelope over erfc Schwarz factors holds on the
                   same sweep for w in {0.2, 1, 5} (measured worst ratio
                   reported; a bound, not a proof).
+  9 [fourier-self] The Fourier form of the self-interaction,
+                  (rho|w|rho) = (2 pi)^-3 int |rho~(k)|^2 K^(k) dk, gives for a
+                  unit s Gaussian of exponent a under Coulomb
+                  (2/pi) int_0^inf exp(-k^2/2a) dk = sqrt(2a/pi) = 2 theta/sqrt(pi),
+                  theta^2 = a/2 (sympy).
+ 10 [diffuse]     With x = P/w^2, phi/theta = sqrt(2/(2 + x)) and the Schwarz
+                  ratio 1 - phi/theta = x/4 + O(x^2) for a diffuse pair (sympy).
 
 Mutations (each turns the script red; the runner applies them as exact
 one-occurrence substitutions):
@@ -58,6 +65,7 @@ one-occurrence substitutions):
   - terf same-centre value exp(-s) -> 1 (the erf kernel)      ("FAIL [indefinite]")
   - QQR safety factor 1.10 -> 0.50                            ("FAIL [qqr-s]")
   - Schwarz factor of a pair left squared (no square root)     ("FAIL [schwarz]")
+  - diffuse-limit coefficient x/4 -> x/2                       ("FAIL [diffuse]")
 Exits nonzero when any claim fails.
 """
 
@@ -351,6 +359,32 @@ check(
     "qqr-erfc",
     all(v <= 1 for v in worst_e.values()),
     " ".join(f"w={k}: {mp.nstr(v, 4)}" for k, v in worst_e.items()),
+)
+
+# 9. Fourier form of the self-interaction, unit s Gaussian under Coulomb -----
+a_, k_ = sp.symbols("a k", positive=True)
+rho_k = sp.exp(-(k_**2) / (4 * a_))  # transform of (a/pi)^(3/2) exp(-a r^2)
+self_int = (
+    sp.integrate(4 * sp.pi * k_**2 * rho_k**2 * 4 * sp.pi / k_**2, (k_, 0, sp.oo))
+    / (2 * sp.pi) ** 3
+)
+check(
+    "fourier-self",
+    sp.simplify(self_int - sp.sqrt(2 * a_ / sp.pi)) == 0
+    and sp.simplify(self_int - 2 * sp.sqrt(a_ / 2) / sp.sqrt(sp.pi)) == 0,
+    f"(rho|1/r|rho) = {sp.simplify(self_int)}",
+)
+
+# 10. diffuse-pair limit of the Schwarz ratio ---------------------------------
+x_ = sp.symbols("x", positive=True)
+ratio_x = 1 - (1 / sp.sqrt(2 / P + 1 / w**2)) / sp.sqrt(P / 2)
+ratio_x = sp.simplify(ratio_x.subs(P, x_ * w**2))
+diffuse_coeff = sp.Rational(1, 4)
+check(
+    "diffuse",
+    sp.simplify(ratio_x - (1 - sp.sqrt(2 / (2 + x_)))) == 0
+    and sp.series(ratio_x, x_, 0, 2).removeO() - diffuse_coeff * x_ == 0,
+    f"1 - phi/theta = {sp.series(ratio_x, x_, 0, 2)}",
 )
 
 if failures:

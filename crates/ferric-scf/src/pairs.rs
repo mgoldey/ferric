@@ -112,17 +112,18 @@ impl DensityPairs {
     ///
     /// That IS valid, and it is what shipped. It is also nearly vacuous, for a
     /// structural reason rather than a coding error. `qmax(x)` maximizes over
-    /// ALL partners `y` in the molecule, and for any given `x` that maximum is
-    /// realized by a tight core s-shell pair whose value barely depends on `x`.
-    /// So `qmax(j)·qmax(σ)` is not a per-pair quantity at all — it is a
-    /// molecule-wide constant `≈ Qmax²`, and the criterion degenerates to
+    /// ALL partners `y` in the molecule, and that maximum is the shell's own
+    /// diagonal factor `Q(x,x)` (12 of 12 shells on water, 54 of 54 on butane,
+    /// def2-SVP, PySCF diagonals), which lies between 0.6 and 2.2. So
+    /// `qmax(j)·qmax(σ)` is of order 1 for every pair, and the criterion
+    /// degenerates to
     ///
     /// ```text
-    ///   max|D[j,σ]| > threshold / Qmax²
+    ///   max|D[j,σ]| > ~threshold
     /// ```
     ///
-    /// With `Qmax²` of order 1 and a 1e-12 threshold this asks only whether the
-    /// block exceeds ~1e-12. Across ~50 Bohr of alkane the density tail is still
+    /// With a 1e-12 threshold this asks only whether the block exceeds
+    /// ~1e-12. Across ~50 Bohr of alkane the density tail is still
     /// above that (the alkane density-matrix decay length is ~30 Bohr), so the
     /// answer is "yes" for EVERY pair. MEASURED at thresh 1e-12 / def2-SVP on a
     /// converged density: 10404/10404 kept on alkane_8 and 39204/39204 on

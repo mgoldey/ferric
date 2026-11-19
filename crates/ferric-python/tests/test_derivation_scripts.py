@@ -1274,6 +1274,11 @@ CASES = [
                 "CURVATURE_R0W = sp.Rational(1, 2)",
                 "FAIL [curvature]",
             ),
+            (
+                "(4 * w**4 * r0**2 - 2 * w**2) * sp.exp",
+                "(4 * w**4 * r0**2 - w**2) * sp.exp",
+                "FAIL [taylor-steps]",
+            ),
         ],
     ),
     (
@@ -1299,6 +1304,11 @@ CASES = [
                 "return mp.sqrt(eri_s(name, fa, fb, fa, fb, w, r0v))",
                 "return eri_s(name, fa, fb, fa, fb, w, r0v)",
                 "FAIL [schwarz]",
+            ),
+            (
+                "diffuse_coeff = sp.Rational(1, 4)",
+                "diffuse_coeff = sp.Rational(1, 2)",
+                "FAIL [diffuse]",
             ),
         ],
     ),

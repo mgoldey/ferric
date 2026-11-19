@@ -21,7 +21,7 @@ list tests, then read how `LinkK` combines them with a per-quartet screen.
 | Rust | `ferric-scf/src/pairs.rs::{SignificantPairs,DensityPairs,intersect_sorted}` |
 | Consumer | `ferric-scf/src/link_k.rs::LinkK` |
 
-### Geometry pairs
+## Geometry pairs {#pair-lists-geometry-pairs}
 
 A quartet $(ij|kl)$ is computed only if $Q_{ij}Q_{kl}|D| \ge \tau$ for the
 density element it multiplies, where $\tau$ is the threshold. To get a
@@ -35,12 +35,9 @@ $$ Q_{ij}\,Q_{\max}\,D_{\max} \ge \tau . $$
 
 $$ Q_{ij}\, Q_{\max} > \tau, \qquad Q_{\max} = \max_{kl} Q_{kl} , $$
 
-the density-free test of PySCF's `q_cond`. It is the necessary condition when
-$D_{\max} \le 1$. Where density elements exceed 1 in magnitude, which a
-non-orthogonal basis allows, the list is stricter than necessary by the factor
-$D_{\max}$: a pair with $\tau/D_{\max} < Q_{ij}Q_{\max} \le \tau$ is dropped
-although a quartet through it can pass the per-quartet screen. How often that
-happens has not been measured (section @sec:pair-lists-open-point-geometry-list).
+the density-free test of PySCF's `q_cond`. It is the necessary condition only
+when $D_{\max} \le 1$, and section @sec:pair-lists-open-point-geometry-list
+shows that this fails for every closed-shell molecule.
 
 The pair factor is read back from the bound as
 $Q_{ij} = \texttt{estimate}(i, j, i, j)^{1/2}$, so the list works with any
@@ -60,7 +57,7 @@ if q(i, j) * q_max > threshold {                                 // Q_ij Q_max >
 
 Each row is sorted ascending because $j$ runs in order.
 
-### Density pairs
+## Density pairs {#pair-lists-density-pairs}
 
 A density block $D_{j\sigma}$ enters exchange only through quartets
 $(ij|\sigma l)$, each bounded by $Q_{ij}Q_{\sigma l}|D_{j\sigma}|$. The bra
@@ -81,10 +78,11 @@ if dmax * qmax[j] * qmax[sigma] > threshold {  // max|D_{j sigma}| q_max(j) q_ma
 }
 ```
 
-It prunes little. $q_{\max}(x)$ is nearly always realized by a tight core
-pair, so the product $q_{\max}(j)q_{\max}(\sigma)$ is close to a
-molecule-wide constant, and the test asks only whether the density block is
-above a fixed small number. Tightening the list does not help, because the
+It prunes little. $q_{\max}(x)$ is the shell's own factor $Q_{xx}$ (12 of 12
+shells on water and 54 of 54 on butane, def2-SVP, from PySCF diagonals
+checked for this section), which lies between 0.60 and 2.19. The product
+$q_{\max}(j)q_{\max}(\sigma)$ is therefore of order one for every pair, and
+the test asks only whether the density block is above about $\tau$. Tightening the list does not help, because the
 bound is attained. Let $i^*$ and $l^*$ be the partners that realize
 $q_{\max}(j)$ and $q_{\max}(\sigma)$. The quartet $(i^*j|\sigma l^*)$ has
 exactly the Schwarz estimate $q_{\max}(j)\,q_{\max}(\sigma)\max|D_{j\sigma}|$,
@@ -157,10 +155,16 @@ kept, which is the trivial limit
 ## An open point in the geometry list {#pair-lists-open-point-geometry-list}
 
 The geometry list drops the density factor, which is the necessary condition
-only when every density element satisfies $|D| \le 1$ (see "Geometry pairs"
-above). The book records this as derived, not measured: no committed test
-sweeps a basis with density elements above 1 against the direct exchange. The
-LinK anchors below pass on the systems they run.
+only when every density element satisfies $|D| \le 1$
+(section @sec:pair-lists-geometry-pairs). With the closed-shell density
+$D = 2CC^{\mathsf T}$ that fails in every molecule: $\max|D| = 2.14$ on water
+and $2.08$ on butane (def2-SVP, PySCF, on the core $s$ functions). So the
+list is stricter than the necessary condition by a factor of about 2 in
+every run: a pair with $\tau/D_{\max} < Q_{ij}Q_{\max} \le \tau$ is dropped
+although a quartet through it can pass the per-quartet screen. The effect on
+$K$ has not been measured: no committed test compares LinK with and without
+the factor $D_{\max}$ in this test. The LinK anchors below, including the
+threshold sweep on alkane_8, pass on the systems they run.
 
 ## Numerical anchors {#pair-lists-numerical-anchors}
 
