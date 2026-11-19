@@ -384,7 +384,8 @@ pub(crate) fn run_double_hybrid(
     let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
 
     let (ks, cfg) = if open_shell {
-        (uhf_reference(&sys, &cfg).map_err(make_err)?, cfg)
+        let ks = sys.solve_uhf(&cfg).and_then(ScfResult::into_converged);
+        (ks.map_err(make_err)?, cfg)
     } else {
         ks_ladder_reference(&sys, cfg)?
     };
@@ -395,7 +396,7 @@ pub(crate) fn run_double_hybrid(
     }
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
-    let r = if open_shell {
+    let r = if ks.spin == ferric_scf::Spin::Unrestricted {
         u_mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
     } else {
         mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)

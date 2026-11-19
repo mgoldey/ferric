@@ -261,7 +261,7 @@ pub(crate) fn run_tddft(
         .map_err(make_err)?;
         (scf, ferric_dft::grid::AtomicGridConfig::default())
     };
-    let scf = converged(scf)?;
+    let scf = scf.into_converged().map_err(make_err)?;
 
     let grid_used = functional.map(|_| {
         (

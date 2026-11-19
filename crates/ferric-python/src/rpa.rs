@@ -228,7 +228,8 @@ pub(crate) fn run_rs_mp2_rpa(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs, rhf) = converged_reference_with_aux(mol, basis_set, auxbasis, &cfg_rhf)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys.solve_reference(&cfg_rhf).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
     let forms = forms
@@ -929,7 +930,10 @@ pub(crate) fn run_pdep_rpa(
     scf_config.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.external_potential = build_external_potential(point_charges, external_field);
     scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
-    let rhf = converged_rhf(&sys, &scf_config)?;
+    let rhf = sys
+        .solve_rhf(&scf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
 
     // Canonical parser (shared with the CLI): unknown schemes error rather than
     // silently running Gauss-Legendre.

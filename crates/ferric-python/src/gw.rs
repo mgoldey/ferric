@@ -256,7 +256,10 @@ pub(crate) fn run_gw(
         };
         (scf, cfg, Some(diag))
     } else {
-        let scf = converged_rhf(&sys, &cfg)?;
+        let scf = sys
+            .solve_rhf(&cfg)
+            .and_then(ScfResult::into_converged)
+            .map_err(make_err)?;
         (scf, cfg, None)
     };
 
@@ -526,7 +529,7 @@ pub(crate) fn run_u_gw(
     } else {
         sys.solve_uhf(&cfg)
     };
-    let scf = converged(scf.map_err(make_err)?)?;
+    let scf = scf.and_then(ScfResult::into_converged).map_err(make_err)?;
     let vxc_diag = if let Some(xc_name) = xc {
         // The certificate's reference is the SCF as solved (a ROKS reference
         // is graded `rohf`), before the semi-canonical conversion below.
@@ -779,7 +782,11 @@ pub(crate) fn run_bse_tda(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs, scf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &cfg)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let scf = sys
+        .solve_rhf(&cfg)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let fc = frozen_core.unwrap_or(0);

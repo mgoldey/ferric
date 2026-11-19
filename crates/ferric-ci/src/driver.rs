@@ -47,7 +47,7 @@ pub fn rhf_start(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep)?;
     let cfg = start_config(start, memory_budget_bytes);
-    converged(solve_rhf(ctx, mol, prep, op, &bounds, &cfg)?)
+    solve_rhf(ctx, mol, prep, op, &bounds, &cfg)?.into_converged()
 }
 
 /// [`rhf_start`] on a [`PreparedSystem`], reusing its Schwarz bounds.
@@ -57,7 +57,7 @@ pub fn rhf_start_prepared(
     memory_budget_bytes: Option<usize>,
 ) -> Result<ScfResult, FerricError> {
     let cfg = start_config(start, memory_budget_bytes);
-    converged(sys.solve_rhf(&cfg)?)
+    sys.solve_rhf(&cfg)?.into_converged()
 }
 
 /// The [`RhfConfig`] of the RHF start.
@@ -70,17 +70,6 @@ fn start_config(start: ScfStart, memory_budget_bytes: Option<usize>) -> RhfConfi
     cfg.energy_conv = start.energy_conv.unwrap_or(cfg.energy_conv);
     cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
     cfg
-}
-
-/// `rhf`, or [`FerricError::ScfConvergence`] when it did not converge.
-fn converged(rhf: ScfResult) -> Result<ScfResult, FerricError> {
-    if !rhf.converged {
-        return Err(FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        });
-    }
-    Ok(rhf)
 }
 
 /// The doubly occupied core count `(nelec − n_α − n_β) / 2` that the active

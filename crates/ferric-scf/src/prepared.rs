@@ -21,7 +21,7 @@ use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
 
 /// A molecule with its ECP applied, the prepared orbital basis, the Coulomb
-/// operator, its Schwarz bounds and a parallel context.
+/// Schwarz bounds of that basis and a parallel context.
 ///
 /// Built by [`PreparedSystem::new`] only, and borrowed afterwards: fields are
 /// private and read through `&self` accessors, so the molecule, the basis it
@@ -29,7 +29,6 @@ use crate::screening::SchwarzBounds;
 pub struct PreparedSystem {
     mol: Molecule,
     basis: PreparedBasis,
-    op: Operator,
     bounds: SchwarzBounds,
     ctx: ParallelContext,
 }
@@ -52,19 +51,18 @@ impl PreparedSystem {
     pub fn new(mut mol: Molecule, basis: &BasisSet) -> Result<Self, FerricError> {
         mol.apply_ecp(basis);
         let basis = PreparedBasis::new(&mol, basis)?;
-        let op = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op, &basis)?;
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &basis)?;
         Ok(Self {
             mol,
             basis,
-            op,
             bounds,
             ctx: ParallelContext::default(),
         })
     }
 
-    /// An auxiliary (fitting) basis prepared on the same molecule.
-    pub fn with_aux(&self, aux: &BasisSet) -> Result<PreparedBasis, FerricError> {
+    /// An auxiliary (fitting) basis prepared on the same molecule, returned
+    /// as a separate [`PreparedBasis`] (the system does not keep it).
+    pub fn prepare_aux(&self, aux: &BasisSet) -> Result<PreparedBasis, FerricError> {
         PreparedBasis::new(&self.mol, aux)
     }
 
@@ -78,9 +76,10 @@ impl PreparedSystem {
         &self.basis
     }
 
-    /// The two-electron operator of the reference SCF (Coulomb).
+    /// The two-electron operator of the reference SCF and of the bounds:
+    /// always Coulomb.
     pub fn op(&self) -> Operator {
-        self.op
+        Operator::coulomb()
     }
 
     /// Schwarz bounds of [`Self::basis`] for [`Self::op`].
@@ -99,7 +98,7 @@ impl PreparedSystem {
             &self.ctx,
             &self.mol,
             &self.basis,
-            self.op,
+            self.op(),
             &self.bounds,
             config,
         )
@@ -116,10 +115,23 @@ impl PreparedSystem {
             &self.ctx,
             &self.mol,
             &self.basis,
-            self.op,
+            self.op(),
             &self.bounds,
             config,
         )
+    }
+
+    /// The converged reference by the spin rule of the correlated drivers:
+    /// [`Self::solve_uhf`] when the multiplicity is above 1, else
+    /// [`Self::solve_rhf`]; non-convergence is
+    /// [`FerricError::ScfConvergence`] ([`ScfResult::into_converged`]).
+    pub fn solve_reference(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {
+        let scf = if self.mol.multiplicity > 1 {
+            self.solve_uhf(config)?
+        } else {
+            self.solve_rhf(config)?
+        };
+        scf.into_converged()
     }
 
     /// [`solve_rhf_ladder`](crate::ladder::solve_rhf_ladder) on this system.
@@ -128,7 +140,7 @@ impl PreparedSystem {
             &self.ctx,
             &self.mol,
             &self.basis,
-            self.op,
+            self.op(),
             &self.bounds,
             ladder,
         )
@@ -157,18 +169,6 @@ mod tests {
     }
 
     #[test]
-    fn the_system_matches_a_hand_built_basis_bounds_and_aux() {
-        let mol = Molecule::parse_xyz(
-            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
-            0,
-            1,
-        )
-        .unwrap();
-        let bs = basis::bundled("sto-3g").unwrap();
-        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
-        let sys = PreparedSystem::new(mol.clone(), &bs).unwrap();
-        let prep = PreparedBasis::new(&mol, &bs).unwrap();
-    #[test]
     fn an_already_applied_molecule_prepares_like_a_fresh_one() {
         let ecp = basis::bundled("def2-svp").unwrap();
         let fresh = PreparedSystem::new(hi(), &ecp).unwrap();
@@ -189,12 +189,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_system_matches_a_hand_built_basis_bounds_and_aux() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let sys = PreparedSystem::new(mol.clone(), &bs).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
         assert_eq!(sys.mol().nelec(), mol.nelec());
         assert_eq!(sys.basis().nbasis(), prep.nbasis());
         assert_eq!(sys.op(), Operator::coulomb());
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
         assert_eq!(sys.bounds().q, bounds.q);
-        let aux = sys.with_aux(&aux_bs).unwrap();
+        let aux = sys.prepare_aux(&aux_bs).unwrap();
         assert_eq!(
             aux.nbasis(),
             PreparedBasis::new(&mol, &aux_bs).unwrap().nbasis()

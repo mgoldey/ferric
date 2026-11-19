@@ -60,9 +60,9 @@ fn run_u_ccsd_inner(
     level: CcLevel,
 ) -> Result<PyCcResult, ferric_core::FerricError> {
     let sys = PreparedSystem::new(mol, basis)?;
-    let dfbs = sys.with_aux(aux)?;
+    let dfbs = sys.prepare_aux(aux)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
-    let uhf = uhf_reference(&sys, scf_config)?;
+    let uhf = sys.solve_uhf(scf_config)?.into_converged()?;
     let cc = ferric_cc::u_ccsd::u_ccsd(mol, prep, &dfbs, op, &uhf, cfg)?;
     let mut comps = std::collections::HashMap::from([
         ("e_aa".to_string(), cc.e_aa),
@@ -175,7 +175,11 @@ pub(crate) fn run_ccd(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs, rhf) = converged_rhf_with_aux(mol, basis_set, auxbasis, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
@@ -232,7 +236,7 @@ struct CcsdArgs<'a> {
 /// `run_ccsd` / `run_ccsd_t`: UCCSD(/T) for an open-shell molecule, else the
 /// spin-adapted closed-shell CCSD and, at `CcLevel::CcsdT`, its (T).
 fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<PyCcResult> {
-    let emol = a.mol.inner.clone();
+    let raw_mol = a.mol.inner.clone();
     let ebasis = a.basis_set.inner.clone();
     let eaux = a.auxbasis.inner.clone();
     let rhf_config = rhf_config_conv(
@@ -241,10 +245,10 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
         a.conv,
     );
     let cfg = cc_config(a.frozen_core, a.memory_budget_gb, a.ladder)?;
-    refuse_open_shell_ladder(&emol, a.ladder)?;
-    if emol.multiplicity > 1 {
+    refuse_open_shell_ladder(&raw_mol, a.ladder)?;
+    if raw_mol.multiplicity > 1 {
         return py
-            .allow_threads(|| run_u_ccsd_inner(emol, &ebasis, &eaux, &rhf_config, &cfg, level))
+            .allow_threads(|| run_u_ccsd_inner(raw_mol, &ebasis, &eaux, &rhf_config, &cfg, level))
             .map_err(make_err);
     }
     // Release the GIL for the SCF + CCSD (+ (T)) compute. All captured values
@@ -267,7 +271,9 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
     let (r, t_correction, certificate_data) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (sys, aux, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config)?;
+            let sys = PreparedSystem::new(raw_mol, &ebasis)?;
+            let aux = sys.prepare_aux(&eaux)?;
+            let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
             let r = run_ccsd_cs_inner(mol, prep, &aux, op, &rhf, &cfg)?;
             let e_t = match level {
@@ -468,7 +474,7 @@ pub(crate) fn run_eom_ccsd(
             "run_eom_ccsd: n_roots and max_iter must be at least 1 and conv_tol positive",
         ));
     }
-    let emol = mol.inner.clone();
+    let raw_mol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
     let eaux = auxbasis.inner.clone();
     let budget = budget_bytes_from_gb(memory_budget_gb);
@@ -490,7 +496,9 @@ pub(crate) fn run_eom_ccsd(
     };
     let (rhf_energy, cc, eom, reference) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (sys, dfbs, rhf) = rhf_with_aux(emol, &ebasis, &eaux, &rhf_config)?;
+            let sys = PreparedSystem::new(raw_mol, &ebasis)?;
+            let dfbs = sys.prepare_aux(&eaux)?;
+            let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
             let cc = run_ccsd_cs_inner(mol, prep, &dfbs, op, &rhf, &cfg)?;
             let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
