@@ -363,34 +363,19 @@ pub(crate) fn run_double_hybrid(
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
 
-    let mut cfg = rhf_config_conv(
+    let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    cfg.xc = Some(dh_kind.xc_name().to_string());
-    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
-    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+    let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
 
-    let ks = if open_shell {
-        solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?
+    let (ks, cfg) = if open_shell {
+        let ks = solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
+        (converged(ks)?, cfg)
     } else {
-        let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-        let lr =
-            ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-                .map_err(make_err)?;
-        if let Some(r) = ladder.get(lr.rung_reached) {
-            cfg = r.config.clone();
-        }
-        lr.result
+        ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?
     };
-    if !ks.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: ks.iterations,
-            last_energy: ks.energy,
-        }));
-    }
 
     let mut mp2_cfg = dh_kind.mp2_config();
     if let Some(fc) = frozen_core {

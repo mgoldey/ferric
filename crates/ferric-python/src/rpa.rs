@@ -231,9 +231,8 @@ pub(crate) fn run_rs_mp2_rpa(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let rhf = crate::mp2::converged_reference(&mol.inner, &prep, &cfg_rhf)?;
+    let (prep, dfbs, rhf) =
+        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &cfg_rhf)?;
     let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
     let forms = forms
         .unwrap_or_else(|| vec!["delta-lr".to_string()])
@@ -941,13 +940,7 @@ pub(crate) fn run_pdep_rpa(
     scf_config.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.external_potential = build_external_potential(point_charges, external_field);
     scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_config).map_err(make_err)?;
-    if !rhf.converged {
-        return Err(make_err(ferric_core::FerricError::ScfConvergence {
-            iterations: rhf.iterations,
-            last_energy: rhf.energy,
-        }));
-    }
+    let rhf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &scf_config)?;
 
     // Canonical parser (shared with the CLI): unknown schemes error rather than
     // silently running Gauss-Legendre.
