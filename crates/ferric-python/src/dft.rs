@@ -1197,8 +1197,10 @@ fn run_open_ks(
         // RIJCOSX, as in run_dft: under k_builder="cosx" COSX replaces RI-K,
         // so no RI-K default applies (an explicit df_k_aux next to COSX is
         // the conflict the SCF refuses). Before this rule the RI-K default
-        // applied whatever `k_builder` said, so k_builder="cosx" always
-        // failed with a df_k_aux conflict the caller never wrote.
+        // applied whatever `k_builder` said, so k_builder="cosx" with HF
+        // exchange or a global hybrid (where COSX takes the exchange) and
+        // df_k_aux unset failed with a df_k_aux conflict the caller never
+        // wrote.
         df_j_aux: Some(ks_aux(df_j_aux)),
         df_k_aux: df_k_aux_or_default(
             k_builder,

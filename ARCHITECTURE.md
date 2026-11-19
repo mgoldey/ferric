@@ -167,9 +167,11 @@ Done:
    bindings (`PbcArgs` carries its `PbcRole`).
 -  COSX for `run_uks`/`run_roks`: they now apply
    `df_k_aux_or_default`. Before, they applied the RI-K default even under
-   COSX, so a COSX call that left `df_k_aux` unset or named a basis failed
-   with a `df_k_aux` conflict; an explicit opt-out (`df_k_aux=""`) already
-   worked.
+   COSX, so a COSX call with HF exchange or a global hybrid (the functionals
+   whose exchange COSX takes) that left `df_k_aux` unset or named a basis
+   failed with a `df_k_aux` conflict. An explicit opt-out (`df_k_aux=""`)
+   already worked, and pure or range-separated functionals ignore COSX, so
+   they never hit the conflict.
 
 Next, each as its own PR following the patterns above:
 
