@@ -1544,6 +1544,7 @@ CASES = [
         "cc_triples_weights_and_linlccd_spin_adaptation_sympy.py",
         15,
         [
+            ("SO_DIVISOR = 6.0", "SO_DIVISOR = 36.0", "[FAIL] claim 4"),
             ("4.0 * Wf", "2.0 * Wf", "[FAIL] claim 4b"),
             ('"jbkc,ia->ijkabc"', '"jckb,ia->ijkabc"', "[FAIL] claim 4b"),
             (
