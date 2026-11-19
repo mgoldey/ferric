@@ -468,14 +468,15 @@ coupling to kept ones but sitting on a zero integral is never kept. On
 adamantane/6-31G the error stays at 2.4e-7 Ha at `eps = 1e-8` with 99.998% of
 amplitudes kept. The Fock-propagated screen also keeps the amplitudes whose
 one-step Fock-dressed integral exceeds `eps`, which removes this floor. It is on by
-default on the integral-direct path (`[local] fock_screen`, default `true`;
-Python `fock_screen=`), and `false` keeps the plain integral mask. The in-core
-path and the Rust library default (`AmplitudeLmp2Config::fock_screen = None`)
-use the plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane
-and the ACONF20 conformers with the production maps, the screen lowers the
-truncation error at every `eps` tried (by a third to a half at `1e-4`, by 60–98% at
-`1e-6` and below). It costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB
-more peak memory (book chapter 13, "On by default on the integral-direct path").
+default in the CLI and Python, in core and integral-direct (`[local] fock_screen`,
+default `true`; Python `fock_screen=`), and `false` keeps the plain integral mask.
+The Rust library default (`AmplitudeLmp2Config::fock_screen = None`) uses the
+plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane and the
+ACONF20 conformers, the screen lowers the truncation error at every `eps` tried on
+both paths (by 34–49% at `1e-4`, by 62–99.6% at `1e-6` and below). Integral-direct it
+costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB more peak memory; in core
+6–10% on C24, and at equal error it is cheaper than the plain mask on both paths
+(book chapter 13, "On by default in the CLI and Python" and "The in-core path").
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.
 
@@ -520,21 +521,27 @@ domains (`aux_radius`, `virt_radius`), and truncation of each orbital's AO
 support (`ao_tail`). With every map at its trivial setting it reproduces the
 global 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
 
-<!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 --> **What is measured for the integral-direct local MP2** (n-alkanes C20 → C48, 6-31G with
-cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
-`bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`).
-The run froze the carbon cores (`frozen_core` = number of carbons) and
-calibrated the pair gate (0.7 Coulomb, 0.02 erfc with ω = 1.0) at
-`eps = 1e-4`; the defaults are all-electron with no pair gate. Timings are the correlation
-stage (assembly + solve) and exclude the canonical reference. They also
-exclude the VV-HV virtual-space build (`t_spaces_s` in the JSON log and the
-Python `local` dict), a dense O(N³) step whose cost the fitted exponents
-below do not cover:
+**What is measured for the integral-direct local MP2** (n-alkanes C20,
+C32 and C48, 6-31G with cc-pVDZ-RI, 2026-11-18, CLI `rimp2` and
+`att-rimp2` with `[local] integral_direct = true`). The runs froze the
+carbon cores (`frozen_core` = number of carbons) and calibrated the pair
+gate (0.7 Coulomb, 0.02 erfc with ω = 1.0); every other map was at its
+default (`virt_radius` 20, `ao_tail` 1e-4, Fock screen κ = 1, λ-Boys
+λ = 10). The defaults are all-electron with no pair gate. Timings are the
+correlation stage (assembly + solve) and exclude the canonical reference.
+They also exclude the VV-HV virtual-space build (`t_spaces_s` in the JSON
+log and the Python `local` dict), a dense O(N³) step whose cost the fitted
+exponents below do not cover:
 
-- Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
-  kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.
-- It is at about parity with canonical RI-MP2 at C20 (about 1.1× slower)
-  and about 6× faster at C32 (5.7–6.3×). <!-- pending: re-measure at virt_radius=20/ao_tail=1e-4 -->
+- Correlation-stage cost grows as about N<sup>1.45</sup> with Coulomb and
+  N<sup>1.35</sup> with erfc at `eps = 1e-4`, and N<sup>1.61</sup> and
+  N<sup>1.55</sup> at `eps = 1e-3`, fitted to the three sizes.
+- The slope falls from C20→C32 to C32→C48 (Coulomb, `eps = 1e-4`: 1.56 then
+  1.31), so the large-N exponent is not settled.
+- The Fock screen and λ-Boys together cost 0–10% of the correlation stage
+  at each size, with no trend in N. One repeat per point resolves the
+  exponent to about ±0.1, and the exponents with and without them do not
+  differ by more than that.
 
 **How to read it (provisional):** sub-quadratic on this series, but the fit
 has three points on one family of molecules in one basis. It is not shown

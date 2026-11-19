@@ -160,9 +160,9 @@ pub struct AmplitudeLmp2Config {
     /// the amplitudes the integral-size mask misses because they are driven
     /// through the off-diagonal VV-HV Fock coupling, not by their own
     /// integral. `None` (the library default) is the plain WSHG23 mask,
-    /// bitwise. Inert at ε = 0. The CLI and Python integral-direct paths set
-    /// it to [`crate::lmp2_direct::DIRECT_FOCK_SCREEN_KAPPA`] unless the user
-    /// turns it off.
+    /// bitwise. Inert at ε = 0. The CLI and Python local MP2 (in-core and
+    /// integral-direct) set it to [`FOCK_SCREEN_KAPPA_DEFAULT`] unless the
+    /// user turns it off.
     pub fock_screen: Option<f64>,
     /// λ of the λ-Boys occupied localization (Bohr²/Ha²,
     /// [`crate::boys::lambda_boys_localize_checked`]): Boys plus
@@ -173,6 +173,18 @@ pub struct AmplitudeLmp2Config {
     /// occupied rotations); at finite ε it changes the mask.
     pub lambda_boys: f64,
 }
+
+/// κ of the Fock-propagated screen ([`AmplitudeLmp2Config::fock_screen`])
+/// that the user-facing local MP2 entry points (CLI `[local]` with `scheme =
+/// "amplitude-threshold"`, Python `run_rimp2(local=...)`) switch on by
+/// default on both the in-core and the integral-direct path; `[local]
+/// fock_screen = false` / `fock_screen=False` turns it off. The library
+/// default (`AmplitudeLmp2Config::default`) stays `None`, the plain Eq-8 mask
+/// bitwise. The decision measurements (integral-direct 2026-11-18; in-core
+/// 2026-11-18, n-alkanes C12-C24, naphthalene, adamantane, ACONF20, 6-31G /
+/// cc-pVDZ-RI, all-electron) are in book chapter 13,
+/// §amplitude-lmp2-fock-screen-default.
+pub const FOCK_SCREEN_KAPPA_DEFAULT: f64 = 1.0;
 
 impl Default for AmplitudeLmp2Config {
     fn default() -> Self {

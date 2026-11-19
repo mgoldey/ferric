@@ -58,8 +58,9 @@ what comes out of that sum.
   not regression tests.
 - **Local MP2 (amplitude threshold)** has localized virtuals and per-pair
   domain-local RI fits. The integral-direct variant (`rimp2` with `[local]
-  integral_direct = true`) is measured at about N<sup>1.24</sup> (erfc) to N<sup>1.4</sup> (Coulomb) on
-  alkanes C20–C48, three points in one basis, so the reading is provisional.
+  integral_direct = true`) is measured at about N<sup>1.35</sup> (erfc) to N<sup>1.45</sup> (Coulomb) on
+  alkanes C20–C48 at `eps = 1e-4` and the current maps, three points in one
+  basis with the slope still falling, so the reading is provisional.
   That fit excludes the VV-HV virtual-space build, a dense O(N³) step.
   Local MP2 without `integral_direct` still builds the global 3-index tensor
   and makes no scaling claim.
