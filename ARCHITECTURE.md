@@ -151,6 +151,18 @@ Done:
     `run_roks` (oracle-tested against their old `rhf_config_budgeted`
     construction), with the RIJCOSX rule as
     `ferric_scf::options::df_k_aux_or_default`.
+6b. The keyword-argument drift between the six SCF entry points filled
+    additively (appended kwargs, default `None` = the old behaviour, and in
+    `ferric.pyi`) wherever a sibling with the same solver already took the
+    knob, and all six bindings call one policy,
+    `ferric_scf::options::entry::ScfEntryPoint::options`, which also names
+    the knobs each entry point refuses because its solver cannot honour them
+    (`ScfEntryPoint::refused`: `diis`, `smearing_sigma`, `aurora` outside
+    `solve_rhf`; `diis`/`smearing_sigma`/`soscf` on `run_dft`, whose ladder
+    sets them per rung; ROHF/ROKS `trah_trigger`, `stability_descent`,
+    `mom_reference`; open-shell `symmetry`, which needs a result class of its
+    own). The `options` oracle tests run the old literals against that
+    function.
 7. The CLI `[scf]` section lowered through `ferric_scf::options`
    (`try_scf_config` in ferric-cli, oracle-tested against the old
    `RhfConfig` literal), removing the hand-kept "CLI and Python agree"
@@ -175,8 +187,6 @@ Done:
 
 Next, each as its own PR following the patterns above:
 
-6b. Fill the keyword-argument drift between the six SCF entry points
-    additively (and in `ferric.pyi`).
 8. Grow the existing `converged_*` reference-SCF helpers in
    `ferric-python/src/mp2.rs` into a borrowed `PreparedSystem` (molecule,
    prepared basis, operator, bounds, context) used by every correlated
