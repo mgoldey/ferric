@@ -207,7 +207,7 @@ fn approximations(
         scf_jk_route(result, config).and_then(|r| r.pluggable_k(config.k_builder.as_deref()));
     match pluggable {
         Some("link") => out.push(("link", "LinK screened exchange".to_string())),
-        Some("cosx") => {
+        Some(crate::options::COSX_K_BUILDER) => {
             let fin = result.cosx_final.map_or_else(
                 || "no final pass".to_string(),
                 |f| format!("final pass on {} points reported", f.npts_final),

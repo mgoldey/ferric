@@ -178,6 +178,12 @@ pub(crate) struct PyRhfResult {
 
 #[pymethods]
 impl PyRhfResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Analytic nuclear gradient `dE/dR` as an (natoms, 3) array in
     /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
     /// result came from `run_rhf(..., with_gradient=True)`.
@@ -361,7 +367,7 @@ pub(crate) fn check_trah_trigger(t: Option<f64>) -> PyResult<Option<TrahTrigger>
 }
 
 /// The `guess=` kwarg as parsed by [`parse_guess`] (`true` = SAD/MINAO).
-fn guess_from_use_sad(use_sad_guess: bool) -> Guess {
+pub(crate) fn guess_from_use_sad(use_sad_guess: bool) -> Guess {
     if use_sad_guess {
         Guess::Sad
     } else {
@@ -371,7 +377,7 @@ fn guess_from_use_sad(use_sad_guess: bool) -> Guess {
 
 /// The `stability_descent=` kwarg: `True` checks stability and descends from
 /// a saddle (both halves: the descent needs a verdict to act on).
-fn stability_from_kwarg(stability_descent: Option<bool>) -> Option<Stability> {
+pub(crate) fn stability_from_kwarg(stability_descent: Option<bool>) -> Option<Stability> {
     stability_descent.map(|d| {
         if d {
             Stability::Descend
@@ -646,8 +652,8 @@ pub(crate) fn run_rhf(
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
-    // Defaults come from ferric_scf::options; the CLI `[scf]` section does not
-    // use this lowering yet and will share it (ARCHITECTURE.md roadmap 7).
+    // Defaults come from ferric_scf::options, the lowering the CLI `[scf]`
+    // section also goes through; the CLI-only knobs stay `None` here.
     let options = ScfOptions {
         max_iter,
         energy_conv,
@@ -686,6 +692,13 @@ pub(crate) fn run_rhf(
         relativistic,
         aurora,
         trah_trigger,
+        // Hartree-Fock: no functional, no KS grid.
+        xc: None,
+        dft_grid: None,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let mut config = options.into_rhf_config().py()?;
     if with_gradient {
@@ -714,17 +727,21 @@ pub(crate) fn run_rhf(
     );
     let user_set = energy_conv.is_some();
     if with_gradient {
-        let hooked = fock_hook.zip(hook_grad.as_ref());
-        return solve_rhf_with_gradient(
-            py,
-            &ctx,
-            &emol,
-            &prep,
-            &basis_set.inner,
-            &bounds,
+        let hooked = fock_hook
+            .zip(hook_grad.as_ref())
+            .map(|(hook, grad)| RhfGradientHook {
+                hook,
+                grad,
+                user_set_energy_conv: user_set,
+            });
+        let args = RhfGradientArgs {
+            mol: &emol,
+            prep: &prep,
+            bounds: &bounds,
             config,
-            hooked.map(|h| (h, user_set)),
-        );
+            hooked,
+        };
+        return solve_rhf_with_gradient(py, &ctx, args);
     }
     solve_rhf_outcome(
         py, &ctx, &emol, &prep, op, &bounds, config, fock_hook, user_set,
@@ -797,14 +814,14 @@ pub(crate) fn scf_gradient_config(
 /// `kind`, by the dispatcher that differentiates the J/K, exchange and
 /// solvation the SCF used (`restricted_scf_gradient` and its open-shell
 /// siblings). An unconverged SCF raises: its gradient is not the derivative
-/// of its energy.
-#[allow(clippy::too_many_arguments)]
+/// of its energy. The orbital basis is `prep`'s own
+/// ([`PreparedBasis::basis_set`]), so the gradient cannot be taken in a
+/// different basis from the one the SCF was solved in.
 pub(crate) fn scf_gradient(
     py: Python<'_>,
     kind: ScfGradientKind,
     mol: &Molecule,
     prep: &PreparedBasis,
-    basis: &ferric_core::basis::BasisSet,
     bounds: &SchwarzBounds,
     config: &RhfConfig,
     r: &ScfResult,
@@ -819,6 +836,7 @@ pub(crate) fn scf_gradient(
         }));
     }
     let op = Operator::coulomb();
+    let basis = prep.basis_set();
     py.allow_threads(|| match kind {
         ScfGradientKind::Rhf => restricted_scf_gradient(mol, prep, basis, op, bounds, config, r),
         ScfGradientKind::Uhf => unrestricted_scf_gradient(mol, prep, basis, op, bounds, config, r),
@@ -829,48 +847,60 @@ pub(crate) fn scf_gradient(
     .map_err(make_err)
 }
 
+/// A `fock_hook` with its `fock_hook_grad`, for [`solve_rhf_with_gradient`].
+pub(crate) struct RhfGradientHook<'a, 'py> {
+    pub(crate) hook: &'a Bound<'py, PyAny>,
+    pub(crate) grad: &'a blocks::PyFockHookGrad,
+    /// The caller passed `energy_conv=` (for [`warn_hook_noise_floor`]).
+    pub(crate) user_set_energy_conv: bool,
+}
+
+/// What [`solve_rhf_with_gradient`] solves and differentiates. There is no
+/// separate orbital basis: the result uses `prep`'s
+/// ([`PreparedBasis::basis_set`]), as [`solve_open_shell_entry`] does.
+pub(crate) struct RhfGradientArgs<'a, 'py> {
+    pub(crate) mol: &'a Molecule,
+    pub(crate) prep: &'a PreparedBasis,
+    pub(crate) bounds: &'a SchwarzBounds,
+    pub(crate) config: RhfConfig,
+    /// `Some`: the solve is the hooked one and the gradient gains the hook's
+    /// explicit term.
+    pub(crate) hooked: Option<RhfGradientHook<'a, 'py>>,
+}
+
 /// `run_rhf(with_gradient=True)`: the closed-shell solve (the refusals of
-/// [`scf_gradient_config`] already ran) and its analytic gradient. `hooked`:
-/// the `fock_hook` and its `fock_hook_grad`, with whether `energy_conv` was
-/// passed (for [`warn_hook_noise_floor`]); the solve is then the hooked one
-/// and the gradient gains the hook's explicit term.
-#[allow(clippy::too_many_arguments)]
+/// [`scf_gradient_config`] already ran) and its analytic gradient.
 pub(crate) fn solve_rhf_with_gradient(
     py: Python<'_>,
     ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    basis: &ferric_core::basis::BasisSet,
-    bounds: &SchwarzBounds,
-    config: RhfConfig,
-    hooked: Option<((&Bound<'_, PyAny>, &blocks::PyFockHookGrad), bool)>,
+    args: RhfGradientArgs<'_, '_>,
 ) -> PyResult<PyObject> {
+    let RhfGradientArgs {
+        mol,
+        prep,
+        bounds,
+        config,
+        hooked,
+    } = args;
     let op = Operator::coulomb();
-    let r = match hooked {
+    let r = match &hooked {
         None => py
             .allow_threads(|| solve_rhf(ctx, mol, prep, op, bounds, &config))
             .map_err(make_err)?,
-        Some(((hook, _), user_set)) => {
+        Some(h) => {
             let (r, term) =
-                blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, hook)?;
+                blocks::solve_rhf_hooked(py, ctx, mol, prep, op, bounds, &config, h.hook)?;
             let family = SolverFamily::ClosedShell;
+            let user_set = h.user_set_energy_conv;
             warn_hook_noise_floor(py, "run_rhf", family, user_set, mol, prep, &config, term);
             r
         }
     };
-    let mut g = scf_gradient(
-        py,
-        ScfGradientKind::Rhf,
-        mol,
-        prep,
-        basis,
-        bounds,
-        &config,
-        &r,
-    )?;
-    if let Some(((_, grad), _)) = hooked {
-        g = grad.add_to(py, g, &r, false, mol)?;
+    let mut g = scf_gradient(py, ScfGradientKind::Rhf, mol, prep, bounds, &config, &r)?;
+    if let Some(h) = &hooked {
+        g = h.grad.add_to(py, g, &r, false, mol)?;
     }
+    let basis = prep.basis_set();
     let mut result = PyRhfResult::from_scf(mol, basis, r, config, hooked.is_some());
     result.gradient_data = Some(g);
     Ok(Py::new(py, result)?.into_any())
@@ -1123,6 +1153,12 @@ symmetry=False for density/MO coefficients/gradients.";
 
 #[pymethods]
 impl PySymmetricRhfResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Orbital energies (Hartree) in MO-column order, aligned with
     /// `orbital_irreps`. Occupied columns come first (energy-ordered), then
     /// the virtuals, so with `irrep_nelec` the list need not be globally
@@ -1266,6 +1302,12 @@ impl PyUhfResult {
 
 #[pymethods]
 impl PyUhfResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
     #[getter]
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
@@ -1474,8 +1516,8 @@ pub(crate) fn run_uhf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same default values as run_rhf (the CLI [scf] section has equal values but
-    // its own lowering until roadmap 7).
+    // Same default values as run_rhf (and the CLI `[scf]` section, which
+    // shares this lowering).
     let options = ScfOptions {
         max_iter,
         energy_conv,
@@ -1513,21 +1555,27 @@ pub(crate) fn run_uhf(
         relativistic,
         aurora: None,
         trah_trigger,
+        // Hartree-Fock: no functional, no KS grid.
+        xc: None,
+        dft_grid: None,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let config: UhfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Uhf,
-        &emol,
-        &prep,
-        &basis_set.inner,
-        op,
-        &bounds,
-        config,
-        fock_hook,
-        hook_grad,
-        dm0,
-        OpenShellRun {
+        OpenShellEntry {
+            emol: &emol,
+            prep: &prep,
+            op,
+            bounds: &bounds,
+            config,
+            fock_hook,
+            hook_grad,
+            dm0,
             with_gradient,
             user_set_energy_conv: energy_conv.is_some(),
         },
@@ -1607,8 +1655,8 @@ pub(crate) fn run_rohf(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
-    // Same default values as run_rhf / run_uhf (the CLI has equal values, own
-    // lowering until roadmap 7). `None` for a knob run_rohf does not take
+    // Same default values as run_rhf / run_uhf (and the CLI `[scf]` section,
+    // which shares this lowering). `None` for a knob run_rohf does not take
     // keeps the RhfConfig default.
     let options = ScfOptions {
         max_iter,
@@ -1645,30 +1693,48 @@ pub(crate) fn run_rohf(
         relativistic,
         aurora: None,
         trah_trigger: None,
+        // Hartree-Fock: no functional, no KS grid.
+        xc: None,
+        dft_grid: None,
+        diis_switch_thresh: None,
+        ri_j_task: None,
+        screening: None,
+        verbose: None,
     };
     let config: RohfConfig = options.into_rhf_config().py()?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Rohf,
-        &emol,
-        &prep,
-        &basis_set.inner,
-        op,
-        &bounds,
-        config,
-        fock_hook,
-        hook_grad,
-        dm0,
-        OpenShellRun {
+        OpenShellEntry {
+            emol: &emol,
+            prep: &prep,
+            op,
+            bounds: &bounds,
+            config,
+            fock_hook,
+            hook_grad,
+            dm0,
             with_gradient,
             user_set_energy_conv: energy_conv.is_some(),
         },
     )
 }
 
-/// The per-call switches of [`solve_open_shell_entry`].
-#[derive(Clone, Copy)]
-struct OpenShellRun {
+/// The per-call inputs of [`solve_open_shell_entry`]: the prepared system,
+/// the lowered config, the optional `fock_hook` (and its gradient term), the
+/// optional `dm0` and the run switches. There is no separate orbital basis:
+/// the gradient uses `prep`'s ([`PreparedBasis::basis_set`]), so the solve
+/// and the gradient cannot be handed different bases.
+struct OpenShellEntry<'a, 'py> {
+    // TODO(ARCHITECTURE.md roadmap: PreparedSystem)
+    emol: &'a Molecule,
+    prep: &'a PreparedBasis,
+    op: Operator,
+    bounds: &'a SchwarzBounds,
+    config: RhfConfig,
+    fock_hook: Option<&'a Bound<'py, PyAny>>,
+    hook_grad: Option<blocks::PyFockHookGrad>,
+    dm0: Option<(Array2<f64>, Array2<f64>)>,
     /// `with_gradient=True`: also return the analytic nuclear gradient.
     with_gradient: bool,
     /// The caller passed `energy_conv=` (gates the noise-floor warnings).
@@ -1680,30 +1746,27 @@ struct OpenShellRun {
 /// hook refusal, the noise-floor warnings, the (GIL-released) solve, the
 /// optional gradient and the `UhfResult`. `shell` picks the solver, the
 /// gradient and the `run_*` name in messages, so they cannot disagree.
-#[allow(clippy::too_many_arguments)]
 fn solve_open_shell_entry(
     py: Python<'_>,
     shell: blocks::OpenShell,
-    // TODO(ARCHITECTURE.md roadmap: PreparedSystem)
-    emol: &Molecule,
-    prep: &PreparedBasis,
-    basis: &ferric_core::basis::BasisSet,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    mut config: RhfConfig,
-    fock_hook: Option<&Bound<'_, PyAny>>,
-    hook_grad: Option<blocks::PyFockHookGrad>,
-    dm0: Option<(Array2<f64>, Array2<f64>)>,
-    run: OpenShellRun,
+    args: OpenShellEntry<'_, '_>,
 ) -> PyResult<PyUhfResult> {
     let (who, gradient_kind) = match shell {
         blocks::OpenShell::Uhf => ("run_uhf", ScfGradientKind::Uhf),
         blocks::OpenShell::Rohf => ("run_rohf", ScfGradientKind::Rohf),
     };
-    let OpenShellRun {
+    let OpenShellEntry {
+        emol,
+        prep,
+        op,
+        bounds,
+        mut config,
+        fock_hook,
+        hook_grad,
+        dm0,
         with_gradient,
         user_set_energy_conv,
-    } = run;
+    } = args;
     if with_gradient {
         config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
         if fock_hook.is_some() && hook_grad.is_none() {
@@ -1749,7 +1812,7 @@ fn solve_open_shell_entry(
     let gradient = with_gradient
         .then(|| {
             let k = gradient_kind;
-            let g = scf_gradient(py, k, emol, prep, basis, bounds, &config, &r)?;
+            let g = scf_gradient(py, k, emol, prep, bounds, &config, &r)?;
             match &hook_grad {
                 Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),

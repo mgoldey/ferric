@@ -189,6 +189,12 @@ pub(crate) struct PyCdftResult {
 
 #[pymethods]
 impl PyCdftResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate of this result (dict form of
     /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
     /// `capability` is `"cdft:uhf"` or `"cdft:uks"` and the grade is

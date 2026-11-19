@@ -163,7 +163,7 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     ) {
         return refuse("differentiates dense chi0 only: omit chi0_sparsity".into());
     }
-    if s.k_builder == Some("cosx") {
+    if s.k_builder == Some(ferric_scf::options::COSX_K_BUILDER) {
         return refuse("has no COSX exchange response: use an exact k_builder or omit it".into());
     }
     if s.df_aux {

@@ -10,6 +10,7 @@ stress from ferric's analytic derivatives:
     atoms.calc = FerricCalculator(method="rhf", basis="6-31g")
     atoms.get_forces()                    # eV/Angstrom
     atoms.calc.results["certificate"]     # ferric's validation certificate
+                                          # (None for a symmetry-frame result)
 
 Units are ASE's: positions and cell in Angstrom, energy in eV, forces in
 eV/Angstrom, stress in eV/Angstrom^3 (Voigt order xx, yy, zz, yz, xz, xy,
@@ -217,7 +218,9 @@ class FerricCalculator(Calculator):
             self.results = {
                 "energy": energy * Hartree,
                 "free_energy": energy * Hartree,
-                "certificate": result.certificate,
+                "certificate": None
+                if isinstance(result, ferric.SymmetricRhfResult)
+                else result.certificate,
             }
         result = self.ferric_result
         if want_forces and "forces" not in self.results:

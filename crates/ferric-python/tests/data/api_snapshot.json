@@ -1246,6 +1246,9 @@
     "targets": {
      "kind": "attribute"
     },
+    "total_energy": {
+     "kind": "attribute"
+    },
     "weight_matrix": {
      "kind": "method",
      "signature": [
@@ -1599,6 +1602,9 @@
      "kind": "attribute"
     },
     "e_xc": {
+     "kind": "attribute"
+    },
+    "energy": {
      "kind": "attribute"
     },
     "exit_reason": {
@@ -2066,6 +2072,9 @@
     },
     "timings": {
      "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -2173,6 +2182,9 @@
     },
     "timings": {
      "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -2264,6 +2276,9 @@
      ]
     },
     "timings": {
+     "kind": "attribute"
+    },
+    "total_energy": {
      "kind": "attribute"
     }
    }
@@ -2548,6 +2563,9 @@
     },
     "timings": {
      "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -2684,6 +2702,9 @@
      ]
     },
     "timings": {
+     "kind": "attribute"
+    },
+    "total_energy": {
      "kind": "attribute"
     }
    }
@@ -3837,6 +3858,9 @@
     "stationarity_tol": {
      "kind": "attribute"
     },
+    "total_energy": {
+     "kind": "attribute"
+    },
     "unmet_criteria": {
      "kind": "attribute"
     }
@@ -4139,6 +4163,9 @@
        "name": "self"
       }
      ]
+    },
+    "total_energy": {
+     "kind": "attribute"
     }
    }
   },
@@ -4461,6 +4488,9 @@
      "kind": "attribute"
     },
     "stationarity_tol": {
+     "kind": "attribute"
+    },
+    "total_energy": {
      "kind": "attribute"
     }
    }
@@ -11814,5 +11844,538 @@
     "name": "shape"
    }
   ]
+ },
+ "submodules": {
+  "ase": {
+   "classes": {
+    "FerricCalculator": {
+     "default_parameters": {
+      "auxbasis": "None",
+      "basis": "'sto-3g'",
+      "charge": "None",
+      "charge_scheme": "'mulliken'",
+      "functional": "None",
+      "kpts": "None",
+      "method": "'hf'",
+      "multiplicity": "None",
+      "options": "None"
+     },
+     "implemented_properties": [
+      "energy",
+      "free_energy",
+      "forces",
+      "stress",
+      "dipole",
+      "charges"
+     ]
+    }
+   },
+   "constants": {},
+   "functions": {}
+  },
+  "fcidump": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "integrals": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "basis_set"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mo_coeff"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "n_core"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "n_active"
+     }
+    ],
+    "read": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "path"
+     }
+    ],
+    "to_string": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "h"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "eri"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "ecore"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "nelec"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "ms2"
+     }
+    ],
+    "write": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "path"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "basis_set"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mo_coeff"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "n_core"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "n_active"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "nelec"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "ms2"
+     }
+    ]
+   }
+  },
+  "molden": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "ao_map": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "basis_set"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "overlap"
+     }
+    ],
+    "casscf_natural_orbitals": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "result"
+     }
+    ],
+    "orbitals": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "basis_set"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "result"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "overlap"
+     }
+    ],
+    "to_string": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "basis_set"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "result"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "title"
+     }
+    ],
+    "write": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "path"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "basis_set"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "result"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "title"
+     }
+    ]
+   }
+  },
+  "qcschema": {
+   "classes": {},
+   "constants": {
+    "SCHEMA_VERSION": "1"
+   },
+   "functions": {
+    "molecule_from_qcschema": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "d"
+     }
+    ],
+    "molecule_to_qcschema": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "charge"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "multiplicity"
+     }
+    ],
+    "run": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "input_data"
+     }
+    ]
+   }
+  },
+  "rdkit": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "from_rdkit": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "charge"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "multiplicity"
+     },
+     {
+      "default": "-1",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "conf_id"
+     }
+    ],
+    "from_smiles": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "smiles"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "charge"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "multiplicity"
+     },
+     {
+      "default": "61453",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "seed"
+     },
+     {
+      "default": "True",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "optimize"
+     }
+    ],
+    "to_rdkit": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "charge"
+     },
+     {
+      "default": "True",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "perceive_bonds"
+     }
+    ]
+   }
+  },
+  "serialize": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "molecule_from_dict": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "d"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "charge"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "multiplicity"
+     }
+    ],
+    "read_run_log": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "path"
+     }
+    ],
+    "to_dict": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "obj"
+     },
+     {
+      "default": "False",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "arrays"
+     }
+    ],
+    "to_json": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "obj"
+     },
+     {
+      "default": "False",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "arrays"
+     },
+     {
+      "kind": "VAR_KEYWORD",
+      "name": "json_kw"
+     }
+    ]
+   }
+  },
+  "units": {
+   "classes": {},
+   "constants": {
+    "ANGSTROM_TO_BOHR": "1.8897261245650618",
+    "BOHR_TO_ANGSTROM": "0.52917721092",
+    "HARTREE_TO_EV": "27.211386245988",
+    "HARTREE_TO_KCAL_MOL": "627.5094740631",
+    "HARTREE_TO_KJ_MOL": "2625.4996394800105"
+   },
+   "functions": {}
+  },
+  "viz": {
+   "classes": {},
+   "constants": {},
+   "functions": {
+    "cube_surfaces": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "values"
+     },
+     {
+      "default": "0.05",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "isovalue"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "signed"
+     }
+    ],
+    "diverging_colors": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "values"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "vlim"
+     }
+    ],
+    "molecule_to_xyz": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     }
+    ],
+    "read_cube": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "path"
+     }
+    ],
+    "show_cube": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "path"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "mol"
+     },
+     {
+      "default": "0.05",
+      "kind": "KEYWORD_ONLY",
+      "name": "isovalue"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "signed"
+     },
+     {
+      "default": "('#3b6fd6', '#d64545')",
+      "kind": "KEYWORD_ONLY",
+      "name": "colors"
+     },
+     {
+      "default": "0.8",
+      "kind": "KEYWORD_ONLY",
+      "name": "opacity"
+     },
+     {
+      "default": "480",
+      "kind": "KEYWORD_ONLY",
+      "name": "width"
+     },
+     {
+      "default": "360",
+      "kind": "KEYWORD_ONLY",
+      "name": "height"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "view"
+     }
+    ],
+    "show_molecule": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "default": "'stick'",
+      "kind": "KEYWORD_ONLY",
+      "name": "style"
+     },
+     {
+      "default": "480",
+      "kind": "KEYWORD_ONLY",
+      "name": "width"
+     },
+     {
+      "default": "360",
+      "kind": "KEYWORD_ONLY",
+      "name": "height"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "view"
+     }
+    ],
+    "show_surface_values": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mol"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "points"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "values"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "vlim"
+     },
+     {
+      "default": "0.1",
+      "kind": "KEYWORD_ONLY",
+      "name": "radius"
+     },
+     {
+      "default": "480",
+      "kind": "KEYWORD_ONLY",
+      "name": "width"
+     },
+     {
+      "default": "360",
+      "kind": "KEYWORD_ONLY",
+      "name": "height"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "view"
+     }
+    ]
+   }
+  }
  }
 }

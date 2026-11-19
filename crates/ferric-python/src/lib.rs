@@ -661,7 +661,7 @@ fn resolve_cosx_kwargs(
         || cosx_final_pass.is_some()
         || cosx_final_grid.is_some()
         || cosx_overlap_fit.is_some();
-    if any && k_builder != Some("cosx") {
+    if any && k_builder != Some(ferric_scf::options::COSX_K_BUILDER) {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit are only read with \
              k_builder=\"cosx\" (got k_builder={k_builder:?})"

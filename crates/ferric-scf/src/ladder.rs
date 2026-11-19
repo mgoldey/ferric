@@ -715,7 +715,9 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
                 c.df_j_aux = Some("def2-universal-jkfit".to_string());
             }
             // RIJCOSX: COSX replaces RI-K, so no RI-K default under it.
-            if c.df_k_aux.is_none() && c.k_builder.as_deref() != Some("cosx") {
+            if c.df_k_aux.is_none()
+                && c.k_builder.as_deref() != Some(crate::options::COSX_K_BUILDER)
+            {
                 c.df_k_aux = Some("def2-universal-jkfit".to_string());
             }
         }

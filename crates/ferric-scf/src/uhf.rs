@@ -1661,7 +1661,7 @@ impl UhfState {
         // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
         // `k_a_buf`/`k_b_buf` hold K_scf(D_σ) from this iteration's build.
         let (energy, cosx_final) = match (inp.pluggable_k_kind, config.cosx.final_grid.as_ref()) {
-            (Some("cosx"), Some(fg)) => {
+            (Some(crate::options::COSX_K_BUILDER), Some(fg)) => {
                 let rec = crate::cosx_k::run_final_pass(
                     ctx,
                     inp.mol,

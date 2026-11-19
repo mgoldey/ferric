@@ -70,6 +70,12 @@ pub(crate) struct PyGammaRhfResult {
 
 #[pymethods]
 impl PyGammaRhfResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (see `GammaOpenShellResult.certificate`):
     /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
     #[getter]

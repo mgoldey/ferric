@@ -291,16 +291,71 @@ struct PbcArgs<'a, 'py> {
     auxbasis: Option<&'a Bound<'py, PyAny>>,
     max_eri_gb: Option<f64>,
     memory_budget_gb: Option<f64>,
+    /// What the binding runs; decides the cell's electron-count gate and,
+    /// for an SCF, the method the shared prologues read.
+    role: PbcRole<'a>,
+}
+
+/// What a [`PbcArgs`] is for: the one place a binding names its method.
+#[derive(Clone, Copy)]
+enum PbcRole<'f> {
+    /// A periodic SCF binding and the method it runs.
+    Scf(PbcKind<'f>),
+    /// The closed-shell correlation bindings (MP2 / dRPA).
+    Correlation,
+    /// A cell-only utility (`auto_gdf_omega`): no closed-shell gate.
+    CellOnly,
+}
+
+impl<'a> PbcArgs<'a, '_> {
     /// RHF/RKS/MP2/dRPA: multiplicity 1 and an even electron count.
-    closed_shell: bool,
+    fn closed_shell(&self) -> bool {
+        match self.role {
+            PbcRole::Scf(k) => k.closed_shell(),
+            PbcRole::Correlation => true,
+            PbcRole::CellOnly => false,
+        }
+    }
+
+    /// The SCF method of an SCF binding's args (the shared prologues are
+    /// only ever handed those).
+    fn scf_kind(&self) -> PyResult<PbcKind<'a>> {
+        match self.role {
+            PbcRole::Scf(k) => Ok(k),
+            PbcRole::Correlation | PbcRole::CellOnly => Err(PyRuntimeError::new_err(format!(
+                "{}: internal: SCF prologue on non-SCF args",
+                self.fname
+            ))),
+        }
+    }
+
+    /// The open-shell method of an open-shell SCF binding's args.
+    fn open_method(&self) -> PyResult<OpenMethod> {
+        Ok(match self.scf_kind()? {
+            PbcKind::Uhf => OpenMethod::Uhf,
+            PbcKind::Rohf => OpenMethod::Rohf,
+            PbcKind::Uks(f) => OpenMethod::Uks(f.to_string()),
+            PbcKind::Roks(f) => OpenMethod::Roks(f.to_string()),
+            PbcKind::Rhf | PbcKind::Rks(_) => {
+                return Err(PyRuntimeError::new_err(format!(
+                    "{}: internal: open-shell entry on a closed-shell kind",
+                    self.fname
+                )))
+            }
+        })
+    }
 }
 
 /// The [`PbcArgs`] of a `run_*` binding from its kwargs, which every binding
-/// names alike: `pbc_args!(fname, closed_shell; mol, lattice, basis_set,
-/// exxdiv, omega, gdf_omega, jk, auxbasis, max_eri_gb, memory_budget_gb)`.
+/// names alike: `pbc_args!(fname, kind = k; mol, lattice, basis_set, exxdiv,
+/// omega, gdf_omega, jk, auxbasis, max_eri_gb, memory_budget_gb)`.
+///
+/// SCF bindings name their [`PbcKind`] here and only here (`kind = k`): the
+/// closed-shell gate and the SCF prologues read it from the args. The MP2 /
+/// dRPA bindings have no kind: `pbc_args!(fname, correlation; ...)`.
 macro_rules! pbc_args {
     (
-        $fname:expr, $closed_shell:expr; $mol:ident, $lattice:ident, $basis:ident,
+        @build $fname:expr, $role:expr; $mol:ident, $lattice:ident, $basis:ident,
         $exxdiv:ident, $omega:ident, $gdf_omega:ident, $jk:ident, $auxbasis:ident,
         $max_eri_gb:ident, $memory_budget_gb:ident $(,)?
     ) => {
@@ -316,8 +371,18 @@ macro_rules! pbc_args {
             auxbasis: $auxbasis,
             max_eri_gb: $max_eri_gb,
             memory_budget_gb: $memory_budget_gb,
-            closed_shell: $closed_shell,
+            role: $role,
         }
+    };
+    (
+        $fname:expr, kind = $kind:expr; $($rest:tt)*
+    ) => {
+        pbc_args!(@build $fname, PbcRole::Scf($kind); $($rest)*)
+    };
+    (
+        $fname:expr, correlation; $($rest:tt)*
+    ) => {
+        pbc_args!(@build $fname, PbcRole::Correlation; $($rest)*)
     };
 }
 
@@ -428,7 +493,7 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
     let gdf_omega_bohr = parse_gdf_omega(a.fname, a.gdf_omega, a.auxbasis.is_some())?;
     // The ECP (if the basis carries one) is applied here, before the Cell is
     // built; `periodic_hcore(_kpts)` adds V_ECP and re-checks it.
-    let emol = if a.closed_shell {
+    let emol = if a.closed_shell() {
         validate_gamma_cell(a.fname, &a.mol.inner, &a.basis.inner)?
     } else {
         validate_periodic_cell(a.fname, &a.mol.inner, &a.basis.inner)?
@@ -581,28 +646,16 @@ impl ScfKw<'_, '_> {
     }
 }
 
-/// The SCF bindings pass `closed_shell` to [`pbc_args!`] by hand (MP2/dRPA
-/// have no [`PbcKind`], so the flag stays); it must agree with the kind.
-fn debug_assert_closed_shell_agrees(a: &PbcArgs<'_, '_>, kind: PbcKind<'_>) {
-    debug_assert_eq!(
-        a.closed_shell,
-        kind.closed_shell(),
-        "{}: pbc_args! closed_shell disagrees with PbcKind::closed_shell()",
-        a.fname
-    );
-}
-
 /// The shared prologue of the Gamma SCF bindings (`run_rhf_gamma` lives in
 /// `gamma.rs`): setup, the functional / derivative gate, the SR knobs, then
 /// `ewald_start` and the grid, in that order (the first refusal wins).
 fn gamma_scf_prep(
     a: &PbcArgs<'_, '_>,
-    kind: PbcKind<'_>,
     kw: &ScfKw<'_, '_>,
     sr_column_rotation: Option<bool>,
 ) -> PyResult<ScfPrep> {
     let fname = a.fname;
-    debug_assert_closed_shell_agrees(a, kind);
+    let kind = a.scf_kind()?;
     let mut s = kw.setup(a)?;
     match kind {
         // Before any integral is built: the meta-GGA allowlist (SCAN / r2SCAN /
@@ -666,12 +719,11 @@ struct KScfPrep {
 /// thresholds, in that order (the first refusal wins).
 fn kpoint_scf_prep(
     a: &PbcArgs<'_, '_>,
-    kind: PbcKind<'_>,
     kw: &ScfKw<'_, '_>,
     k: &KpointKw<'_>,
 ) -> PyResult<KScfPrep> {
     let fname = a.fname;
-    debug_assert_closed_shell_agrees(a, kind);
+    let kind = a.scf_kind()?;
     let mut s = kw.setup(a)?;
     if let Some(f) = kind.functional() {
         check_kpoint_ks_support(fname, f, kind.ks_kind(), &s)?;
@@ -1261,6 +1313,12 @@ struct PyGammaOpenShellResult {
 
 #[pymethods]
 impl PyGammaOpenShellResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
@@ -1628,13 +1686,13 @@ fn run_open_shell(
 /// then [`run_open_shell`].
 fn gamma_open_entry(
     py: Python<'_>,
-    method: OpenMethod,
     a: &PbcArgs<'_, '_>,
     kw: ScfKw<'_, '_>,
     sr_column_rotation: Option<bool>,
     scf: RhfConfig,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let p = gamma_scf_prep(a, method.kind(), &kw, sr_column_rotation)?;
+    let method = a.open_method()?;
+    let p = gamma_scf_prep(a, &kw, sr_column_rotation)?;
     let o = OpenOpts {
         method,
         start: p.start,
@@ -1703,9 +1761,8 @@ fn run_uhf_gamma(
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let method = OpenMethod::Uhf;
     let a = pbc_args!(
-        "run_uhf_gamma", false;
+        "run_uhf_gamma", kind = PbcKind::Uhf;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -1718,7 +1775,6 @@ fn run_uhf_gamma(
     };
     gamma_open_entry(
         py,
-        method,
         &a,
         kw,
         sr_column_rotation,
@@ -1769,9 +1825,8 @@ fn run_rohf_gamma(
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let method = OpenMethod::Rohf;
     let a = pbc_args!(
-        "run_rohf_gamma", false;
+        "run_rohf_gamma", kind = PbcKind::Rohf;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -1784,7 +1839,6 @@ fn run_rohf_gamma(
     };
     gamma_open_entry(
         py,
-        method,
         &a,
         kw,
         sr_column_rotation,
@@ -1876,9 +1930,8 @@ fn run_uks_gamma(
     sr_column_rotation: Option<bool>,
     neighbour_switch: f64,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let method = OpenMethod::Uks(functional.to_string());
     let a = pbc_args!(
-        "run_uks_gamma", false;
+        "run_uks_gamma", kind = PbcKind::Uks(functional);
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -1896,7 +1949,6 @@ fn run_uks_gamma(
     };
     gamma_open_entry(
         py,
-        method,
         &a,
         kw,
         sr_column_rotation,
@@ -1965,9 +2017,8 @@ fn run_roks_gamma(
     sr_column_rotation: Option<bool>,
     neighbour_switch: f64,
 ) -> PyResult<PyGammaOpenShellResult> {
-    let method = OpenMethod::Roks(functional.to_string());
     let a = pbc_args!(
-        "run_roks_gamma", false;
+        "run_roks_gamma", kind = PbcKind::Roks(functional);
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -1985,7 +2036,6 @@ fn run_roks_gamma(
     };
     gamma_open_entry(
         py,
-        method,
         &a,
         kw,
         sr_column_rotation,
@@ -2038,6 +2088,12 @@ struct PyGammaRksResult {
 
 #[pymethods]
 impl PyGammaRksResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
@@ -2221,7 +2277,7 @@ fn run_rks_gamma(
 ) -> PyResult<PyGammaRksResult> {
     let fname = "run_rks_gamma";
     let a = pbc_args!(
-        fname, true;
+        fname, kind = PbcKind::Rks(functional);
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -2237,8 +2293,7 @@ fn run_rks_gamma(
             neighbour_switch,
         }),
     };
-    let ScfPrep { s, grid, .. } =
-        gamma_scf_prep(&a, PbcKind::Rks(functional), &kw, sr_column_rotation)?;
+    let ScfPrep { s, grid, .. } = gamma_scf_prep(&a, &kw, sr_column_rotation)?;
     gamma_rks_preflight(&s, functional)?;
     let scf = gamma_scf_config(max_iter, density_conv);
     let (r, derivs, e_nuc, timings_data) = py
@@ -2528,7 +2583,7 @@ fn run_mp2_gamma(
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_mp2_gamma";
     let mut s = pbc_setup(&pbc_args!(
-        fname, true;
+        fname, correlation;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     ))?;
@@ -2582,7 +2637,7 @@ fn run_drpa_gamma(
 ) -> PyResult<PyGammaCorrelationResult> {
     let fname = "run_drpa_gamma";
     let mut s = pbc_setup(&pbc_args!(
-        fname, true;
+        fname, correlation;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     ))?;
@@ -2725,6 +2780,12 @@ struct PyKpointScfResult {
 
 #[pymethods]
 impl PyKpointScfResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
@@ -3133,7 +3194,7 @@ fn run_rhf_kpts(
 ) -> PyResult<PyKpointScfResult> {
     let fname = "run_rhf_kpts";
     let a = pbc_args!(
-        fname, true;
+        fname, kind = PbcKind::Rhf;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -3145,7 +3206,7 @@ fn run_rhf_kpts(
         grid: None,
     };
     let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
-    let KScfPrep { p, mesh: m, scf } = kpoint_scf_prep(&a, PbcKind::Rhf, &kw, &k)?;
+    let KScfPrep { p, mesh: m, scf } = kpoint_scf_prep(&a, &kw, &k)?;
     let s = p.s;
     let (r, madelung, derivs) = py
         .allow_threads(|| krhf_driver(&s, &m, scf))
@@ -3225,7 +3286,7 @@ fn run_uhf_kpts(
     with_stress: bool,
 ) -> PyResult<PyKpointScfResult> {
     let a = pbc_args!(
-        "run_uhf_kpts", false;
+        "run_uhf_kpts", kind = PbcKind::Uhf;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -3237,7 +3298,7 @@ fn run_uhf_kpts(
         grid: None,
     };
     let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
-    kpoint_open_entry(py, OpenMethod::Uhf, &a, kw, k, None)
+    kpoint_open_entry(py, &a, kw, k, None)
 }
 
 // ─────────────────────────────────────────────────── k-point RKS ──
@@ -3395,6 +3456,12 @@ struct PyKpointRksResult {
 
 #[pymethods]
 impl PyKpointRksResult {
+    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+
     /// Validation certificate (schema of `RhfResult.certificate`). Periodic
     /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
     /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
@@ -3532,7 +3599,7 @@ fn run_rks_kpts(
 ) -> PyResult<PyKpointRksResult> {
     let fname = "run_rks_kpts";
     let a = pbc_args!(
-        fname, true;
+        fname, kind = PbcKind::Rks(functional);
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -3553,7 +3620,7 @@ fn run_rks_kpts(
         p: ScfPrep { s, grid, .. },
         mesh: m,
         scf,
-    } = kpoint_scf_prep(&a, PbcKind::Rks(functional), &kw, &k)?;
+    } = kpoint_scf_prep(&a, &kw, &k)?;
     let (r, madelung, derivs) = py
         .allow_threads(|| krks_driver(&s, &m, functional, grid, scf))
         .map_err(pbc_err(fname))?;
@@ -3769,7 +3836,7 @@ fn run_uks_kpts(
     neighbour_switch: f64,
 ) -> PyResult<PyKpointScfResult> {
     let a = pbc_args!(
-        "run_uks_kpts", false;
+        "run_uks_kpts", kind = PbcKind::Uks(functional);
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -3786,7 +3853,7 @@ fn run_uks_kpts(
         }),
     };
     let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
-    kpoint_open_entry(py, OpenMethod::Uks(functional.to_string()), &a, kw, k, None)
+    kpoint_open_entry(py, &a, kw, k, None)
 }
 
 /// The [`KOpenParts`] of a k-point UHF / UKS / ROHF / ROKS driver result
@@ -3826,7 +3893,6 @@ macro_rules! k_open_parts {
 /// check (ROHF / ROKS), [`kpoint_scf_prep`], the driver, the result.
 fn kpoint_open_entry(
     py: Python<'_>,
-    method: OpenMethod,
     a: &PbcArgs<'_, '_>,
     kw: ScfKw<'_, '_>,
     k: KpointKw<'_>,
@@ -3840,7 +3906,8 @@ fn kpoint_open_entry(
             )));
         }
     }
-    let KScfPrep { p, mesh: m, scf } = kpoint_scf_prep(a, method.kind(), &kw, &k)?;
+    let method = a.open_method()?;
+    let KScfPrep { p, mesh: m, scf } = kpoint_scf_prep(a, &kw, &k)?;
     let ScfPrep {
         s,
         start,
@@ -3947,7 +4014,7 @@ fn run_roks_kpts(
     neighbour_switch: f64,
 ) -> PyResult<PyKpointScfResult> {
     let a = pbc_args!(
-        "run_roks_kpts", false;
+        "run_roks_kpts", kind = PbcKind::Roks(functional);
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -3964,14 +4031,7 @@ fn run_roks_kpts(
         }),
     };
     let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
-    kpoint_open_entry(
-        py,
-        OpenMethod::Roks(functional.to_string()),
-        &a,
-        kw,
-        k,
-        level_shift,
-    )
+    kpoint_open_entry(py, &a, kw, k, level_shift)
 }
 
 /// **k-point ROHF** (restricted open-shell Hartree-Fock, Roothaan effective
@@ -4009,7 +4069,7 @@ fn run_rohf_kpts(
     gdf_omega: Option<f64>,
 ) -> PyResult<PyKpointScfResult> {
     let a = pbc_args!(
-        "run_rohf_kpts", false;
+        "run_rohf_kpts", kind = PbcKind::Rohf;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     );
@@ -4021,7 +4081,7 @@ fn run_rohf_kpts(
         grid: None,
     };
     let k = KpointKw::new(mesh, centring, max_iter, energy_conv, grad_conv);
-    kpoint_open_entry(py, OpenMethod::Rohf, &a, kw, k, None)
+    kpoint_open_entry(py, &a, kw, k, None)
 }
 
 // ─────────────────────────────────────────────── k-point MP2 / dRPA ──
@@ -4364,7 +4424,7 @@ fn run_mp2_kpts(
 ) -> PyResult<PyKpointCorrelationResult> {
     let fname = "run_mp2_kpts";
     let s = pbc_setup(&pbc_args!(
-        fname, true;
+        fname, correlation;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     ))?;
@@ -4421,7 +4481,7 @@ fn run_drpa_kpts(
 ) -> PyResult<PyKpointCorrelationResult> {
     let fname = "run_drpa_kpts";
     let s = pbc_setup(&pbc_args!(
-        fname, true;
+        fname, correlation;
         mol, lattice, basis_set, exxdiv, omega, gdf_omega,
         jk, auxbasis, max_eri_gb, memory_budget_gb
     ))?;
@@ -4489,7 +4549,7 @@ fn auto_gdf_omega(
         auxbasis: Some(auxbasis),
         max_eri_gb: None,
         memory_budget_gb,
-        closed_shell: false,
+        role: PbcRole::CellOnly,
     })?;
     s.set_sr_knobs(range_split, sr_column_rotation)?;
     let Some(aux) = s.aux.as_ref() else {

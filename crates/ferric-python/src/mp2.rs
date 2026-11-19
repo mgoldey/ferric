@@ -613,7 +613,9 @@ pub(crate) fn refuse_rimp2_gradient(
         return refuse("does not differentiate kappa-regularized MP2: remove kappa".into());
     }
     let rijk = jk.mode == ferric_scf::scf_jk::ScfJkMode::RiJk;
-    if (jk.is_fitted() && !rijk) || rhf_config.k_builder.as_deref() == Some("cosx") {
+    if (jk.is_fitted() && !rijk)
+        || rhf_config.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
+    {
         return refuse(format!(
             "differentiates a four-centre or an RI-JK reference only (it has no COSX \
              exchange response); got the SCF J/K \"{}\". Use scf_jk=\"exact\" with an exact \

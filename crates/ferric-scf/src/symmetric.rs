@@ -553,7 +553,7 @@ pub(crate) fn validate_config(config: &RhfConfig) -> Result<(), FerricError> {
     if config.mom_enabled() {
         return no("MOM", "it pins orbitals by overlap, not by irrep");
     }
-    if config.k_builder.as_deref() == Some("cosx") {
+    if config.k_builder.as_deref() == Some(crate::options::COSX_K_BUILDER) {
         return no(
             "COSX exchange",
             "the seminumerical exchange grid and its final-grid pass are not wired to the symmetry frame",
