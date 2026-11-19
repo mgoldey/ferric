@@ -19,22 +19,24 @@ def _water():
     return ferric.Molecule.from_xyz_string(XYZ, 0, 1), ferric.BasisSet.bundled("sto-3g")
 
 
-def _results():
-    mol, bs = _water()
-    oh = ferric.Molecule.from_xyz_string(OH, 0, 2)
-    yield "RhfResult", ferric.run_rhf(mol, bs)
-    yield "SymmetricRhfResult", ferric.run_rhf(mol, bs, symmetry=True)
-    yield "UhfResult", ferric.run_uhf(oh, bs)
-    yield "UhfResult(rohf)", ferric.run_rohf(oh, bs)
-    yield "DftResult", ferric.run_dft(mol, bs, "LDA")
-    yield "UhfResult(uks)", ferric.run_uks(oh, bs, "LDA")
-    yield "UhfResult(roks)", ferric.run_roks(oh, bs, "LDA")
+_OH = lambda: ferric.Molecule.from_xyz_string(OH, 0, 2)  # noqa: E731
+
+# Solvers are built inside the test, not at collection time, so collecting
+# (or deselecting) these cases does no numerical work.
+_SOLVERS = {
+    "RhfResult": lambda mol, bs: ferric.run_rhf(mol, bs),
+    "SymmetricRhfResult": lambda mol, bs: ferric.run_rhf(mol, bs, symmetry=True),
+    "UhfResult": lambda mol, bs: ferric.run_uhf(_OH(), bs),
+    "UhfResult(rohf)": lambda mol, bs: ferric.run_rohf(_OH(), bs),
+    "DftResult": lambda mol, bs: ferric.run_dft(mol, bs, "LDA"),
+    "UhfResult(uks)": lambda mol, bs: ferric.run_uks(_OH(), bs, "LDA"),
+    "UhfResult(roks)": lambda mol, bs: ferric.run_roks(_OH(), bs, "LDA"),
+}
 
 
-@pytest.mark.parametrize(
-    "name,result", list(_results()), ids=lambda x: x if isinstance(x, str) else ""
-)
-def test_energy_and_total_energy_agree(name, result):
+@pytest.mark.parametrize("name", sorted(_SOLVERS))
+def test_energy_and_total_energy_agree(name):
+    result = _SOLVERS[name](*_water())
     assert result.energy == result.total_energy, name
     assert isinstance(result.energy, float)
 

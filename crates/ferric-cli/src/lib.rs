@@ -9459,10 +9459,14 @@ solvent = \"water\"
     }
 
     /// The bundled Thole fixture: a QM water and three MM point charges.
-    const QMMM_PQR: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../testdata/molecules/water_thole_sites.pqr"
-    );
+    /// Resolved at run time (not via `CARGO_MANIFEST_DIR`), so an archived
+    /// test binary run from another checkout still finds it.
+    fn qmmm_pqr() -> String {
+        crate::config::tests::runtime_workspace_root()
+            .join("testdata/molecules/water_thole_sites.pqr")
+            .display()
+            .to_string()
+    }
 
     /// `[qmmm]`: the MM point charges reach `external_potential` and the
     /// Thole sites `polarizable` (with the default and an explicit `thole_a`,
@@ -9470,7 +9474,8 @@ solvent = \"water\"
     /// a polarizability list with no MM entry is the polarizable error path.
     #[test]
     fn qmmm_matches_old_literal() {
-        let base = format!("[qmmm]\npqr = {QMMM_PQR:?}\nqm_indices = [0, 1, 2]\n");
+        let pqr = qmmm_pqr();
+        let base = format!("[qmmm]\npqr = {pqr:?}\nqm_indices = [0, 1, 2]\n");
         let alphas = "polarizabilities_angstrom3 = \
                       [0.0, 0.0, 0.0, 0.0740923557432, 0.0740923557432, 0.163003182635]\n";
         let qmmm = [

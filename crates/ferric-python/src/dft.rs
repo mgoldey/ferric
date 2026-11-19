@@ -1277,9 +1277,10 @@ fn run_open_ks(
 /// meta-GGAs run (energy and gradient); for a VV10 functional (`wB97X-V`) the
 /// gradient agrees with finite differences of the energy to 6e-6 Ha/Bohr
 /// (NH2/6-31G), against ~1e-7 for the others. `run_dft` stays the
-/// closed-shell entry point and refuses `multiplicity > 1`. `k_builder="cosx"`
-/// runs RIJCOSX (COSX replaces RI-K; no RI-K default, as in `run_dft`) on the
-/// default COSX settings, which are not tunable here. Not offered here:
+/// closed-shell entry point and refuses `multiplicity > 1`. With
+/// `k_builder="cosx"`, COSX replaces RI-K (no RI-K default, as in `run_dft`)
+/// on the default COSX settings, which are not tunable here; with RI-J left on
+/// that is RIJCOSX, and an explicit `df_j_aux=""` keeps exact J. Not offered here:
 /// dispersion, the COSX knobs, symmetry, `fock_hook`.
 #[pyfunction]
 #[pyo3(signature = (

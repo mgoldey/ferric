@@ -5675,6 +5675,47 @@ mod compat_guard_tests {
         toml::from_str::<Config>(&src).expect("test config must parse")
     }
 
+    /// `scf_xc_and_aux_defaults` pinned to literal expectations, independent
+    /// of the lowering oracle (which calls the same helper on both sides).
+    #[test]
+    fn scf_xc_and_aux_defaults_table() {
+        use ferric_scf::options::AuxBasis;
+        let jk = || Some(AuxBasis::Named("def2-universal-jkfit".into()));
+        let xc = |s: &str| Some(s.to_string());
+        let cases: Vec<(
+            &str,
+            &str,
+            (Option<String>, Option<AuxBasis>, Option<AuxBasis>),
+        )> = vec![
+            ("rhf", "", (None, None, None)),
+            ("rimp2", "", (None, None, None)),
+            ("ksdft", "", (xc("LDA"), jk(), jk())),
+            (
+                "ksdft",
+                "[dft]\nfunctional = \"PBE0\"\n",
+                (xc("PBE0"), jk(), jk()),
+            ),
+            (
+                "uhf",
+                "[dft]\nfunctional = \"B3LYP\"\n",
+                (xc("B3LYP"), jk(), jk()),
+            ),
+            ("gw", "", (None, jk(), jk())),
+            ("gw", "[rpa]\nxc = \"PBE\"\n", (xc("PBE"), jk(), jk())),
+            ("rs-mp2-rpa", "", (None, jk(), jk())),
+            ("tda", "", (None, jk(), jk())),
+            (
+                "tddft",
+                "[tddft]\nxc = \"PBE0\"\n",
+                (xc("PBE0"), jk(), jk()),
+            ),
+        ];
+        for (kind, extra, want) in cases {
+            let got = cfg(kind, "energy", extra).scf_xc_and_aux_defaults();
+            assert_eq!(got, want, "{kind} with {extra:?}");
+        }
+    }
+
     /// `(n_radial, n_angular, prune, weight_cut)` of the run's main KS grid.
     type GridKey = (
         usize,
@@ -9604,7 +9645,7 @@ kind = "ccsd"
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Water — the stand-in molecule for the config tests that only need
@@ -9782,7 +9823,7 @@ json = [1, 2]
     /// `all_shipped_examples_parse` from CC 6 to 13 and the complexity gate
     /// caught it -- correctly, since path-walking has nothing to do with what
     /// that test asserts.
-    pub(super) fn runtime_workspace_root() -> std::path::PathBuf {
+    pub(crate) fn runtime_workspace_root() -> std::path::PathBuf {
         let looks_like_root = |p: &std::path::Path| {
             p.join("Cargo.toml").is_file()
                 && p.join("examples").is_dir()

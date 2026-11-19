@@ -166,8 +166,10 @@ Done:
    shims), and shared reference-SCF/Gamma/k-point helpers in the periodic
    bindings (`PbcArgs` carries its `PbcRole`).
 -  COSX for `run_uks`/`run_roks`: they now apply
-   `df_k_aux_or_default`, which they previously skipped (every
-   `k_builder="cosx"` call failed with a `df_k_aux` conflict).
+   `df_k_aux_or_default`. Before, they applied the RI-K default even under
+   COSX, so a COSX call that left `df_k_aux` unset or named a basis failed
+   with a `df_k_aux` conflict; an explicit opt-out (`df_k_aux=""`) already
+   worked.
 
 Next, each as its own PR following the patterns above:
 
