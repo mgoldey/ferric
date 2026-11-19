@@ -423,14 +423,8 @@ fn localized_with_virtuals(
     eri3_budget_bytes: Option<usize>,
     vvhv: &VvHv,
 ) -> Result<LocalizedProblem, FerricError> {
-    let lcfg = AmplitudeLmp2Config {
-        eps: 0.0, // this lane is untruncated: no amplitude threshold
-        frozen_core,
-        eri3_budget_bytes,
-        // plain Boys: λ-Boys is the local-MP2 default only
-        lambda_boys: 0.0,
-        ..Default::default()
-    };
+    // eps = 0: this lane is untruncated (no amplitude threshold)
+    let lcfg = AmplitudeLmp2Config::plain_boys(0.0, frozen_core, eri3_budget_bytes);
     assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)
 }
 

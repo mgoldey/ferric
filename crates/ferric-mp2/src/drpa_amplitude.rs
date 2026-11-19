@@ -286,14 +286,7 @@ pub fn amplitude_drpa_with_virtuals(
     cfg: &AmplitudeDrpaConfig,
     vvhv: &VvHv,
 ) -> Result<AmplitudeDrpaResult, FerricError> {
-    let lcfg = AmplitudeLmp2Config {
-        eps: cfg.eps,
-        frozen_core: cfg.frozen_core,
-        eri3_budget_bytes: cfg.eri3_budget_bytes,
-        // plain Boys: λ-Boys is the local-MP2 default only
-        lambda_boys: 0.0,
-        ..Default::default()
-    };
+    let lcfg = AmplitudeLmp2Config::plain_boys(cfg.eps, cfg.frozen_core, cfg.eri3_budget_bytes);
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
     amplitude_drpa_from_basis(mol, obs, dfbs, op, rhf, cfg, &lb)
 }
@@ -323,14 +316,8 @@ pub fn amplitude_drpa_scan(
     // Fock blocks + unwhitened RI B once). Built with eps=0 in the local
     // AmplitudeLmp2Config since that struct's `eps` field is unused by
     // assemble_basis itself (see its body: eps never appears).
-    let lcfg = AmplitudeLmp2Config {
-        eps: 0.0,
-        frozen_core: base_cfg.frozen_core,
-        eri3_budget_bytes: base_cfg.eri3_budget_bytes,
-        // plain Boys: λ-Boys is the local-MP2 default only
-        lambda_boys: 0.0,
-        ..Default::default()
-    };
+    let lcfg =
+        AmplitudeLmp2Config::plain_boys(0.0, base_cfg.frozen_core, base_cfg.eri3_budget_bytes);
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
     let mut out = Vec::with_capacity(eps_list.len());
     for &eps in eps_list {
@@ -364,14 +351,8 @@ pub fn amplitude_drpa_scan_timed(
     use std::time::Instant;
     let t_prefix = Instant::now();
     let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "drpa_amplitude")?;
-    let lcfg = AmplitudeLmp2Config {
-        eps: 0.0,
-        frozen_core: base_cfg.frozen_core,
-        eri3_budget_bytes: base_cfg.eri3_budget_bytes,
-        // plain Boys: λ-Boys is the local-MP2 default only
-        lambda_boys: 0.0,
-        ..Default::default()
-    };
+    let lcfg =
+        AmplitudeLmp2Config::plain_boys(0.0, base_cfg.frozen_core, base_cfg.eri3_budget_bytes);
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
     let prefix_wall_s = t_prefix.elapsed().as_secs_f64();
     let mut out = Vec::with_capacity(eps_list.len());
@@ -732,14 +713,7 @@ pub fn amplitude_drpa_dense(
     vvhv: &VvHv,
 ) -> Result<AmplitudeDrpaResult, FerricError> {
     // reuse the LMP2 assembly (Boys occupieds, localized Fock blocks, RI J)
-    let lcfg = AmplitudeLmp2Config {
-        eps: cfg.eps,
-        frozen_core: cfg.frozen_core,
-        eri3_budget_bytes: cfg.eri3_budget_bytes,
-        // plain Boys: λ-Boys is the local-MP2 default only
-        lambda_boys: 0.0,
-        ..Default::default()
-    };
+    let lcfg = AmplitudeLmp2Config::plain_boys(cfg.eps, cfg.frozen_core, cfg.eri3_budget_bytes);
     let lp = assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
     let (no, nv) = (lp.no, lp.nv);
     let n = no * nv;

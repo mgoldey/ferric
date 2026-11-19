@@ -192,6 +192,10 @@ pub fn boys_localize_checked(
 /// amplitude-threshold local MP2. `0` is plain Boys.
 pub const LAMBDA_BOYS_DEFAULT: f64 = 10.0;
 
+/// λ of PLAIN Boys (the λ-Boys optimiser does not run): the occupied
+/// localization of the dRPA / LinLCCD / rCCD members of the amplitude family.
+pub const LAMBDA_BOYS_PLAIN: f64 = 0.0;
+
 /// Convergence target of [`lambda_boys_rotation`]: the largest pair
 /// gradient `|∂G/∂κ_pq|` (Bohr², the units of the Boys term) after a sweep.
 pub const LAMBDA_BOYS_GRAD_TOL: f64 = 1e-8;

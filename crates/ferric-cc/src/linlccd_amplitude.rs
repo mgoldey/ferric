@@ -155,14 +155,7 @@ pub fn amplitude_linlccd_with_virtuals(
     variant: LadderVariant,
     vvhv: &VvHv,
 ) -> Result<AmplitudeLinLccdResult, FerricError> {
-    let lcfg = AmplitudeLmp2Config {
-        eps: cfg.eps,
-        frozen_core: cfg.frozen_core,
-        eri3_budget_bytes: cfg.eri3_budget_bytes,
-        // plain Boys: λ-Boys is the local-MP2 default only
-        lambda_boys: 0.0,
-        ..Default::default()
-    };
+    let lcfg = AmplitudeLmp2Config::plain_boys(cfg.eps, cfg.frozen_core, cfg.eri3_budget_bytes);
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
     let (no, nv) = (lb.no, lb.nv);
     // (ia|jb) directly onto ragged blocks — the dense (no·nv)² tensor is

@@ -168,8 +168,8 @@ pub struct AmplitudeLmp2Config {
     /// [`crate::boys::lambda_boys_localize_checked`]): Boys plus
     /// `λ Σ_i F_ii²`, started from the converged Boys orbitals. `0.0` is
     /// plain Boys, bit for bit. Default [`crate::boys::LAMBDA_BOYS_DEFAULT`]
-    /// for local MP2; the dRPA / LinLCCD / rCCD drivers that build this
-    /// struct set `0.0`. Invisible at ε = 0 (the energy is invariant under
+    /// for local MP2; the dRPA / LinLCCD / rCCD drivers build this struct
+    /// with [`AmplitudeLmp2Config::plain_boys`] (`0.0`). Invisible at ε = 0 (the energy is invariant under
     /// occupied rotations); at finite ε it changes the mask.
     pub lambda_boys: f64,
 }
@@ -202,6 +202,23 @@ impl Default for AmplitudeLmp2Config {
             virtual_space: crate::vvhv_local::VirtualSpace::Dense,
             fock_screen: None,
             lambda_boys: crate::boys::LAMBDA_BOYS_DEFAULT,
+        }
+    }
+}
+
+impl AmplitudeLmp2Config {
+    /// The assembly configuration of the NON-MP2 members of the family
+    /// (dRPA, LinLCCD, rCCD): `eps`, `frozen_core` and the 3-index budget
+    /// from the caller, plain Boys occupieds (λ =
+    /// [`crate::boys::LAMBDA_BOYS_PLAIN`]; λ-Boys is the local-MP2 default
+    /// only), every other field at its default.
+    pub fn plain_boys(eps: f64, frozen_core: usize, eri3_budget_bytes: Option<usize>) -> Self {
+        Self {
+            eps,
+            frozen_core,
+            eri3_budget_bytes,
+            lambda_boys: crate::boys::LAMBDA_BOYS_PLAIN,
+            ..Default::default()
         }
     }
 }
@@ -3333,6 +3350,28 @@ mod tests {
         );
         assert!(r_new.e_corr < -0.1, "vacuous energy");
         assert!(de.abs() <= 1e-12, "dE {de:+.3e}");
+    }
+
+    /// The non-MP2 members' assembly configuration is plain Boys: λ = 0
+    /// (the dRPA / LinLCCD / rCCD drivers all build theirs through
+    /// `plain_boys`), the caller's eps / frozen core / budget, every other
+    /// field at its default — while local MP2's own default stays λ-Boys.
+    #[test]
+    fn plain_boys_config_is_lambda_zero() {
+        let c = AmplitudeLmp2Config::plain_boys(3e-5, 2, Some(1 << 20));
+        assert_eq!(c.lambda_boys.to_bits(), 0.0f64.to_bits());
+        assert_eq!(crate::boys::LAMBDA_BOYS_PLAIN.to_bits(), 0.0f64.to_bits());
+        assert_eq!(
+            (c.eps, c.frozen_core, c.eri3_budget_bytes),
+            (3e-5, 2, Some(1 << 20))
+        );
+        let d = AmplitudeLmp2Config::default();
+        assert_eq!(d.lambda_boys, crate::boys::LAMBDA_BOYS_DEFAULT);
+        assert_ne!(d.lambda_boys, c.lambda_boys);
+        assert_eq!(
+            (c.cg_max_iter, c.fock_screen, c.pair_gate_cal),
+            (d.cg_max_iter, d.fock_screen, d.pair_gate_cal)
+        );
     }
 
     /// Fix (b): the randomized probe passes the real space far below the
