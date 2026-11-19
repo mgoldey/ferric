@@ -1,6 +1,7 @@
 //! RHF, UHF, ROHF drivers: moved verbatim from `lib.rs`.
 
 use super::*;
+use ferric_scf::options::{AuxBasis, Guess, ScfOptions, Stability, TrahTrigger};
 
 // ── RHF ──
 
@@ -351,25 +352,33 @@ impl PyRhfResult {
     }
 }
 
-/// `trah_trigger` must be a positive finite DIIS-error threshold.
-pub(crate) fn check_trah_trigger(t: Option<f64>) -> PyResult<Option<f64>> {
-    match t {
-        Some(v) if !(v.is_finite() && v > 0.0) => Err(pyo3::exceptions::PyValueError::new_err(
-            format!("trah_trigger must be a positive number, got {v}"),
-        )),
-        other => Ok(other),
+/// `trah_trigger` must be a positive finite DIIS-error threshold
+/// ([`TrahTrigger::new`]); a `ValueError` carrying its message otherwise.
+pub(crate) fn check_trah_trigger(t: Option<f64>) -> PyResult<Option<TrahTrigger>> {
+    t.map(TrahTrigger::new)
+        .transpose()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// The `guess=` kwarg as parsed by [`parse_guess`] (`true` = SAD/MINAO).
+fn guess_from_use_sad(use_sad_guess: bool) -> Guess {
+    if use_sad_guess {
+        Guess::Sad
+    } else {
+        Guess::Core
     }
 }
 
-/// Apply the opt-in `aurora=` / `trah_trigger=` kwargs (both off when omitted).
-pub(crate) fn apply_accelerators(
-    config: &mut RhfConfig,
-    aurora: Option<bool>,
-    trah_trigger: Option<f64>,
-) -> PyResult<()> {
-    config.aurora.enabled = aurora.unwrap_or(false);
-    config.trah_trigger = check_trah_trigger(trah_trigger)?;
-    Ok(())
+/// The `stability_descent=` kwarg: `True` checks stability and descends from
+/// a saddle (both halves: the descent needs a verdict to act on).
+fn stability_from_kwarg(stability_descent: Option<bool>) -> Option<Stability> {
+    stability_descent.map(|d| {
+        if d {
+            Stability::Descend
+        } else {
+            Stability::Off
+        }
+    })
 }
 
 /// The non-convergence RuntimeWarning of `run_rhf` (no control-flow change).
@@ -611,9 +620,6 @@ pub(crate) fn run_rhf(
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
     let hook_grad = parse_fock_hook_grad("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    // The descent needs a stability verdict to act on, so the kwarg turns on
-    // both halves (as run_uhf does).
-    let descent = stability_descent.unwrap_or(false);
     // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
     // gives the valence count; the effective nuclear charge is set inside
     // PreparedBasis::new from basis_set.ecps.
@@ -623,33 +629,45 @@ pub(crate) fn run_rhf(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_rhf")?;
-    // Defaults mirror the CLI `[scf]` section (config.rs) so CLI and Python agree.
-    let mut config = RhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        diis_size: diis_size.unwrap_or(8),
-        integral_thresh: integral_thresh.unwrap_or(1e-12),
-        k_builder: k_builder.map(|s| s.to_string()),
-        cosx: resolve_cosx_kwargs(
-            k_builder,
-            cosx_grid,
-            cosx_final_pass,
-            cosx_final_grid,
-            cosx_overlap_fit,
-        )?,
+    // Parse the string/PyO3 kwargs in the order the pre-`ScfOptions` literal
+    // evaluated them, so a call with several bad kwargs raises the same error.
+    let cosx = resolve_cosx_kwargs(
+        k_builder,
+        cosx_grid,
+        cosx_final_pass,
+        cosx_final_grid,
+        cosx_overlap_fit,
+    )?;
+    let ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
+    let diis_flavor = parse_diis_flavor(diis)?;
+    let use_sad_guess = parse_guess(guess)?;
+    let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    let eri = parse_eri(eri)?;
+    let relativistic = parse_relativistic(relativistic)?;
+    let trah_trigger = check_trah_trigger(trah_trigger)?;
+    // Defaults (ferric_scf::options) mirror the CLI `[scf]` section (config.rs)
+    // so CLI and Python agree.
+    let options = ScfOptions {
+        max_iter,
+        energy_conv,
+        density_conv,
+        diis_size,
+        diis_flavor: Some(diis_flavor),
+        integral_thresh,
+        k_builder: k_builder.map(str::to_string),
+        cosx: Some(cosx),
         // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
-        ri_j_precision: parse_ri_j_precision(ri_j_precision)?,
-        ri_k_precision: parse_ri_k_precision(ri_k_precision)?,
-        level_shift: level_shift.unwrap_or(0.0),
-        meta_gga_auto_level_shift: level_shift.is_none(),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        diis_flavor: parse_diis_flavor(diis)?,
+        df_j_aux: df_j_aux.map(AuxBasis::parse),
+        df_k_aux: df_k_aux.map(AuxBasis::parse),
+        ri_j_precision,
+        ri_k_precision,
+        level_shift,
+        mom_after_iter,
+        mom_reference: None,
         smearing_sigma,
-        newton_trigger: if soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
-        use_sad_guess: parse_guess(guess)?,
+        soscf,
+        guess: Some(guess_from_use_sad(use_sad_guess)),
         guess_basis,
         init_guess_density,
         external_potential: build_external_potential_with_smeared(
@@ -657,19 +675,19 @@ pub(crate) fn run_rhf(
             smeared_charges,
             external_field,
         ),
-        pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
-        // 0 means "unset -> auto" (ferric_scf::rhf::resolve_three_index_budget),
+        pcm,
+        // None = "unset -> auto" (ferric_scf::rhf::resolve_three_index_budget),
         // so an omitted kwarg preserves the previous auto-detect behaviour.
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        check_stability: descent,
-        scf_stability_descent: descent,
-        symmetry,
+        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        stability: stability_from_kwarg(stability_descent),
+        symmetry: Some(symmetry),
         irrep_nelec: irrep_nelec.map(|m| m.into_iter().collect()),
-        eri: parse_eri(eri)?,
-        relativistic: parse_relativistic(relativistic)?,
-        ..Default::default()
+        eri: Some(eri),
+        relativistic,
+        aurora,
+        trah_trigger,
     };
-    apply_accelerators(&mut config, aurora, trah_trigger)?;
+    let mut config = options.into_rhf_config().py()?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
         if fock_hook.is_some() && hook_grad.is_none() {
@@ -1433,9 +1451,6 @@ pub(crate) fn run_uhf(
     // silently select a different SCF state (on O2/STO-3G the two guesses
     // land on states 0.255 Ha apart).
     let use_sad_guess = parse_guess(guess)?;
-    // The descent needs a stability verdict to act on, so the kwarg turns on
-    // both halves; `scf_stability_descent` alone only prints a SKIPPED notice.
-    let descent = stability_descent.unwrap_or(false);
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
@@ -1448,98 +1463,74 @@ pub(crate) fn run_uhf(
         }
         None => None,
     };
+    let cosx = resolve_cosx_kwargs(
+        k_builder,
+        cosx_grid,
+        cosx_final_pass,
+        cosx_final_grid,
+        cosx_overlap_fit,
+    )?;
+    let ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
+    let eri = parse_eri(eri)?;
+    let relativistic = parse_relativistic(relativistic)?;
     // Same defaults as run_rhf / the CLI [scf] section.
-    let mut config = UhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        diis_size: diis_size.unwrap_or(8),
-        integral_thresh: integral_thresh.unwrap_or(1e-12),
-        k_builder: k_builder.map(|s| s.to_string()),
-        cosx: resolve_cosx_kwargs(
-            k_builder,
-            cosx_grid,
-            cosx_final_pass,
-            cosx_final_grid,
-            cosx_overlap_fit,
-        )?,
+    let options = ScfOptions {
+        max_iter,
+        energy_conv,
+        density_conv,
+        diis_size,
+        diis_flavor: None,
+        integral_thresh,
+        k_builder: k_builder.map(str::to_string),
+        cosx: Some(cosx),
         // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
-        ri_j_precision: parse_ri_j_precision(ri_j_precision)?,
-        ri_k_precision: parse_ri_k_precision(ri_k_precision)?,
-        level_shift: level_shift.unwrap_or(0.0),
-        meta_gga_auto_level_shift: level_shift.is_none(),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        mom_reference,
-        external_potential: build_external_potential(point_charges, external_field),
-        // 0 means "unset -> auto" (resolve_three_index_budget), so an
-        // omitted kwarg preserves the previous auto-detect behaviour.
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        use_sad_guess,
+        df_j_aux: df_j_aux.map(AuxBasis::parse),
+        df_k_aux: df_k_aux.map(AuxBasis::parse),
+        ri_j_precision,
+        ri_k_precision,
+        level_shift,
+        mom_after_iter,
+        mom_reference: Some(mom_reference),
+        smearing_sigma: None,
+        soscf: None,
+        guess: Some(guess_from_use_sad(use_sad_guess)),
         guess_basis,
-        eri: parse_eri(eri)?,
-        relativistic: parse_relativistic(relativistic)?,
+        init_guess_density: None,
+        external_potential: build_external_potential(point_charges, external_field),
+        pcm: None,
+        // None = "unset -> auto" (resolve_three_index_budget), so an
+        // omitted kwarg preserves the previous auto-detect behaviour.
+        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        // The descent needs a stability verdict to act on, so the kwarg turns
+        // on both halves; `scf_stability_descent` alone only prints a SKIPPED
+        // notice.
+        stability: stability_from_kwarg(stability_descent),
+        symmetry: None,
+        irrep_nelec: None,
+        eri: Some(eri),
+        relativistic,
+        aurora: None,
         trah_trigger,
-        check_stability: descent,
-        scf_stability_descent: descent,
-        ..Default::default()
     };
-    if with_gradient {
-        config = scf_gradient_config("run_uhf", ScfGradientKind::Uhf, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
-            return refuse_hook_without_grad("run_uhf");
-        }
-    }
-    let ctx = ParallelContext::default();
-    // Release the GIL for the duration of the SCF. Every argument below is an
-    // owned Rust value (`emol` is a clone; `prep`/`bounds`/`config` are built
-    // above), so nothing Python-borrowed crosses the closure boundary.
-    warn_energy_conv_noise_floor(
-        py,
-        "run_uhf",
-        SolverFamily::OpenShell,
-        energy_conv.is_some(),
-        &emol,
-        &prep,
-        &config,
-    );
-    let fock_hooked = fock_hook.is_some();
-    let (r, term) = blocks::solve_open_shell(
+    let config: UhfConfig = options.into_rhf_config().py()?;
+    solve_open_shell_entry(
         py,
         blocks::OpenShell::Uhf,
-        &ctx,
         &emol,
         &prep,
-        Operator::coulomb(),
+        &basis_set.inner,
+        op,
         &bounds,
-        &config,
+        config,
         fock_hook,
-        dm0.as_ref(),
-    )?;
-    warn_hook_noise_floor(
-        py,
-        "run_uhf",
-        SolverFamily::OpenShell,
-        energy_conv.is_some(),
-        &emol,
-        &prep,
-        &config,
-        term,
-    );
-    let gradient = with_gradient
-        .then(|| {
-            let k = ScfGradientKind::Uhf;
-            let g = scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)?;
-            match &hook_grad {
-                Some(h) => h.add_to(py, g, &r, true, &emol),
-                None => Ok(g),
-            }
-        })
-        .transpose()?;
-    let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hooked);
-    result.gradient_data = gradient;
-    Ok(result)
+        hook_grad,
+        dm0,
+        OpenShellRun {
+            with_gradient,
+            user_set_energy_conv: energy_conv.is_some(),
+        },
+    )
 }
 
 // ── ROHF (open-shell, spin-pure) ──
@@ -1611,35 +1602,110 @@ pub(crate) fn run_rohf(
         }
         None => None,
     };
-    // Same defaults as run_rhf / run_uhf / the CLI [scf] section.
-    let mut config: RohfConfig = RhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        diis_size: diis_size.unwrap_or(8),
-        integral_thresh: integral_thresh.unwrap_or(1e-12),
-        k_builder: k_builder.map(|s| s.to_string()),
+    let ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
+    let eri = parse_eri(eri)?;
+    let relativistic = parse_relativistic(relativistic)?;
+    // Same defaults as run_rhf / run_uhf / the CLI [scf] section. `None` for
+    // a knob run_rohf does not take keeps the RhfConfig default.
+    let options = ScfOptions {
+        max_iter,
+        energy_conv,
+        density_conv,
+        diis_size,
+        diis_flavor: None,
+        integral_thresh,
+        k_builder: k_builder.map(str::to_string),
+        // run_rohf takes no cosx_* kwargs: the RhfConfig default COSX knobs.
+        cosx: None,
         // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
-        ri_j_precision: parse_ri_j_precision(ri_j_precision)?,
-        ri_k_precision: parse_ri_k_precision(ri_k_precision)?,
-        level_shift: level_shift.unwrap_or(0.0),
-        meta_gga_auto_level_shift: level_shift.is_none(),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        external_potential: build_external_potential(point_charges, external_field),
-        // 0 means "unset -> auto" (resolve_three_index_budget), so an
-        // omitted kwarg preserves the previous auto-detect behaviour.
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
+        df_j_aux: df_j_aux.map(AuxBasis::parse),
+        df_k_aux: df_k_aux.map(AuxBasis::parse),
+        ri_j_precision,
+        ri_k_precision,
+        level_shift,
+        mom_after_iter,
+        mom_reference: None,
+        smearing_sigma: None,
+        soscf: None,
+        guess: None,
         guess_basis,
-        eri: parse_eri(eri)?,
-        relativistic: parse_relativistic(relativistic)?,
-        ..Default::default()
+        init_guess_density: None,
+        external_potential: build_external_potential(point_charges, external_field),
+        pcm: None,
+        // None = "unset -> auto" (resolve_three_index_budget), so an
+        // omitted kwarg preserves the previous auto-detect behaviour.
+        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        stability: None,
+        symmetry: None,
+        irrep_nelec: None,
+        eri: Some(eri),
+        relativistic,
+        aurora: None,
+        trah_trigger: None,
     };
+    let config: RohfConfig = options.into_rhf_config().py()?;
+    solve_open_shell_entry(
+        py,
+        blocks::OpenShell::Rohf,
+        &emol,
+        &prep,
+        &basis_set.inner,
+        op,
+        &bounds,
+        config,
+        fock_hook,
+        hook_grad,
+        dm0,
+        OpenShellRun {
+            with_gradient,
+            user_set_energy_conv: energy_conv.is_some(),
+        },
+    )
+}
+
+/// The per-call switches of [`solve_open_shell_entry`].
+#[derive(Clone, Copy)]
+struct OpenShellRun {
+    /// `with_gradient=True`: also return the analytic nuclear gradient.
+    with_gradient: bool,
+    /// The caller passed `energy_conv=` (gates the noise-floor warnings).
+    user_set_energy_conv: bool,
+}
+
+/// The shared tail of `run_uhf` / `run_rohf` once the molecule, basis,
+/// bounds and lowered config are built: the `with_gradient` config and its
+/// hook refusal, the noise-floor warnings, the (GIL-released) solve, the
+/// optional gradient and the `UhfResult`. `shell` picks the solver, the
+/// gradient and the `run_*` name in messages, so they cannot disagree.
+#[allow(clippy::too_many_arguments)]
+fn solve_open_shell_entry(
+    py: Python<'_>,
+    shell: blocks::OpenShell,
+    // TODO(ARCHITECTURE.md roadmap 7: PreparedSystem)
+    emol: &Molecule,
+    prep: &PreparedBasis,
+    basis: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    mut config: RhfConfig,
+    fock_hook: Option<&Bound<'_, PyAny>>,
+    hook_grad: Option<blocks::PyFockHookGrad>,
+    dm0: Option<(Array2<f64>, Array2<f64>)>,
+    run: OpenShellRun,
+) -> PyResult<PyUhfResult> {
+    let (who, gradient_kind) = match shell {
+        blocks::OpenShell::Uhf => ("run_uhf", ScfGradientKind::Uhf),
+        blocks::OpenShell::Rohf => ("run_rohf", ScfGradientKind::Rohf),
+    };
+    let OpenShellRun {
+        with_gradient,
+        user_set_energy_conv,
+    } = run;
     if with_gradient {
-        config = scf_gradient_config("run_rohf", ScfGradientKind::Rohf, &config, fock_hook)?;
+        config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
         if fock_hook.is_some() && hook_grad.is_none() {
-            return refuse_hook_without_grad("run_rohf");
+            return refuse_hook_without_grad(who);
         }
     }
     let ctx = ParallelContext::default();
@@ -1648,47 +1714,47 @@ pub(crate) fn run_rohf(
     // above), so nothing Python-borrowed crosses the closure boundary.
     warn_energy_conv_noise_floor(
         py,
-        "run_rohf",
+        who,
         SolverFamily::OpenShell,
-        energy_conv.is_some(),
-        &emol,
-        &prep,
+        user_set_energy_conv,
+        emol,
+        prep,
         &config,
     );
     let fock_hooked = fock_hook.is_some();
     let (r, term) = blocks::solve_open_shell(
         py,
-        blocks::OpenShell::Rohf,
+        shell,
         &ctx,
-        &emol,
-        &prep,
+        emol,
+        prep,
         op,
-        &bounds,
+        bounds,
         &config,
         fock_hook,
         dm0.as_ref(),
     )?;
     warn_hook_noise_floor(
         py,
-        "run_rohf",
+        who,
         SolverFamily::OpenShell,
-        energy_conv.is_some(),
-        &emol,
-        &prep,
+        user_set_energy_conv,
+        emol,
+        prep,
         &config,
         term,
     );
     let gradient = with_gradient
         .then(|| {
-            let k = ScfGradientKind::Rohf;
-            let g = scf_gradient(py, k, &emol, &prep, &basis_set.inner, &bounds, &config, &r)?;
+            let k = gradient_kind;
+            let g = scf_gradient(py, k, emol, prep, basis, bounds, &config, &r)?;
             match &hook_grad {
-                Some(h) => h.add_to(py, g, &r, true, &emol),
+                Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }
         })
         .transpose()?;
-    let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hooked);
+    let mut result = PyUhfResult::from_scf(r, emol, &config, prep, fock_hooked);
     result.gradient_data = gradient;
     Ok(result)
 }
