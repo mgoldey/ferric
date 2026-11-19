@@ -1496,6 +1496,26 @@ CASES = [
                 "+ 1.0 * ((r2 - r2.transpose(0, 1, 3, 2)) ** 2).sum()",
                 "FAIL [spin-norm]",
             ),
+            (
+                "    return x + x.transpose(1, 0, 3, 2)  # P(ij)(ab)",
+                "    return 2 * x  # P(ij)(ab)",
+                "FAIL [rccsd-factorization]",
+            ),
+            (
+                "def rccsd_r(t1, t2, wvovo_t2=-0.5):",
+                "def rccsd_r(t1, t2, wvovo_t2=0.5):",
+                "FAIL [rccsd-factorization]",
+            ),
+            (
+                "def eom_sigma(r1, r2, t1, t2, g, im, ladder_half=0.5):",
+                "def eom_sigma(r1, r2, t1, t2, g, im, ladder_half=1.0):",
+                "FAIL [eom-closed-shell]",
+            ),
+            (
+                "def claim_bch_termination(last=5):",
+                "def claim_bch_termination(last=4):",
+                "FAIL [bch-termination]",
+            ),
         ],
     ),
     (

@@ -1177,7 +1177,8 @@
     },
     "ccsd": {
       "book": [
-        "book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations"
+        "book/src/16-coupled-cluster/01-ccd-ccsd-spin-orbital.md#ccd-ccsd-spin-orbital-equations",
+        "book/src/16-coupled-cluster/02-closed-shell-ccsd.md#closed-shell-ccsd-equations"
       ],
       "scripts": [
         "scripts/cc_ccsd_eom_brute_force_sympy.py"
