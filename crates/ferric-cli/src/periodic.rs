@@ -13,6 +13,7 @@
 //! by the plan; energies are Hartree PER CELL.
 
 use crate::config::{Config, PeriodicJk, PeriodicPlan, PeriodicRoute, ANGSTROM_TO_BOHR};
+use crate::error::die;
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -57,12 +58,6 @@ use ferric_pbc::{
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
-
-/// Print `error: {msg}` and exit 1, the CLI's convention.
-fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!("error: {msg}");
-    std::process::exit(1)
-}
 
 /// What every periodic handler reports back for the run log.
 struct Outcome {

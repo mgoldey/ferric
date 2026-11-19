@@ -10,6 +10,7 @@
 //! time.
 
 use crate::config::Config;
+use crate::error::die;
 use ferric_core::basis;
 use ferric_core::certificate::BuildStamp;
 use ferric_core::mol::Molecule;
@@ -149,11 +150,6 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<Opmp3Plan>, Strin
     };
     config.resolved_x_ss().map_err(|e| format!("[opmp3] {e}"))?;
     Ok(Some(Opmp3Plan { config, auxbasis }))
-}
-
-fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!("error: {msg}");
-    std::process::exit(1);
 }
 
 /// Run `cfg`'s OP-MP3 plan; `gpu_flag` is whether `--gpu` was given (refused:

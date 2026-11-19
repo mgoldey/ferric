@@ -30,6 +30,7 @@
 //! two solves sharing one Hamiltonian and is Python-only.
 
 use crate::config::Config;
+use crate::error::die;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -344,11 +345,6 @@ fn constraints_for(c: &CdftCfg, mol: &Molecule) -> Result<Vec<Constraint>, Strin
         });
     }
     Ok(out)
-}
-
-fn die(msg: impl std::fmt::Display) -> ! {
-    eprintln!("error: {msg}");
-    std::process::exit(1);
 }
 
 /// Run the constrained solve of `cfg.cdft` on the already-built molecule and
