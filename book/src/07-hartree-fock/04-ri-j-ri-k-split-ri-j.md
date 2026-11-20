@@ -342,10 +342,9 @@ the `None` arm runs the density route.
 
 The f32 RI-J storage is described with the example above: the energy error
 is first order in the rounding (`site/src/methods/scf.md` states the same).
-`DfJ::f64_exit_coulomb_energy` would make that error second order by
-recomputing $E_J$ once at the converged density in f64. It is implemented and
-tested (`crates/ferric-scf/tests/dfj_f32_storage.rs`), and no production path
-calls it, so the reported energy is the f32 functional's.
+There is no f64 exit: the reported energy is the f32 functional's, and
+`crates/ferric-scf/tests/dfj_f32_storage.rs` checks that it lies in the
+first-order window the `df_j.rs` module doc derives.
 
 RI-K stores the dressed tensor as the packed lower triangle on the CPU, f64 by
 default; that tier is bit-identical to the square tensor
