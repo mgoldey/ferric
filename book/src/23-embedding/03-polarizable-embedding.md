@@ -438,7 +438,7 @@ Check the trivial limit. With every $\alpha_i\to0$ the dipoles vanish and
 every term of this section is zero (claim T5).
 
 Here is one QM water at RHF/cc-pVDZ with two TIP3P waters whose oxygens
-carry $\alpha = 1.44$ Å$^3$, from the `589b50832` build. `thole_a=None` is
+carry $\alpha = 1.44$ Å$^3$, from the `65fb7fd57` build. `thole_a=None` is
 the default damping, $a = 2.1304$, and `thole_a=0.0` is the bare tensor. The
 last line is a central difference of the energy, partition rebuilt, against
 the site row of `full_gradient`.
@@ -456,9 +456,10 @@ xyz = [
     (2.900, 1.200, 0.500), (3.400, 1.900, 0.900), (3.300, 0.400, 0.800),
 ]
 chg = [0.0, 0.0, 0.0, -0.834, 0.417, 0.417, -0.834, 0.417, 0.417]
+water = [0, 0, 0, 1, 1, 1, 2, 2, 2]  # molecule of each atom
 def system(coords, alpha_o, alpha_h=0.0):
     pol = [0.0, 0.0, 0.0, alpha_o, alpha_h, alpha_h, alpha_o, alpha_h, alpha_h]
-    return ferric.QmmmSystem(sym, coords, chg, qm_indices=[0, 1, 2],
+    return ferric.QmmmSystem(sym, coords, chg, qm_indices=[0, 1, 2], residue_ids=water,
                              polarizabilities_angstrom3=pol)
 
 e_fixed = ferric.run_qmmm(system(xyz, 0.0), "cc-pvdz").energy
@@ -466,6 +467,8 @@ for a in (None, 0.0):
     r = ferric.run_qmmm(system(xyz, 1.44), "cc-pvdz", thole_a=a)
     print(f"thole_a={a}: E = {r.energy:.10f}  E_pol = {r.e_pol:.3e}  E - E(fixed) = {r.energy - e_fixed:+.3e}")
     print("  induced dipoles (a.u.):\n", r.induced_dipoles())
+r_none = ferric.run_qmmm(system(xyz, 1.44), "cc-pvdz", polarization_exclusions="none")
+print(f"no exclusions: E_pol = {r_none.e_pol:.3e}")
 r_small = ferric.run_qmmm(system(xyz, 1e-8), "cc-pvdz")
 print(f"alpha -> 0: E - E(fixed) = {r_small.energy - e_fixed:+.1e}")
 
@@ -481,61 +484,31 @@ print(f"dE/dx(O of water 2): analytic {G[3, 0]:+.8f}  central difference {fd:+.8
 ```
 
 ```text
-thole_a=None: E = -76.2678003386  E_pol = -2.422e-01  E - E(fixed) = -2.413e-01
+thole_a=None: E = -76.0272680507  E_pol = -7.741e-04  E - E(fixed) = -7.655e-04
   induced dipoles (a.u.):
- [[-2.16830475e-04  1.59611279e+00  3.36944627e-03]
- [-1.11815606e+00  1.50527566e-01 -9.10630529e-01]]
-thole_a=0.0: E = -76.2677591678  E_pol = -2.422e-01  E - E(fixed) = -2.413e-01
+ [[-0.00458144  0.09564159 -0.00471397]
+ [ 0.07252388 -0.01198876  0.02563516]]
+thole_a=0.0: E = -76.0272681885  E_pol = -7.743e-04  E - E(fixed) = -7.656e-04
   induced dipoles (a.u.):
- [[-3.32698195e-04  1.59587228e+00  3.38253745e-03]
- [-1.11778880e+00  1.50970297e-01 -9.10567341e-01]]
-alpha -> 0: E - E(fixed) = -1.7e-09
-dE/dx(O of water 2): analytic +0.00022669  central difference +0.00022669  diff -7.2e-10
+ [[-0.00457469  0.09565669 -0.00471341]
+ [ 0.07254572 -0.01196299  0.02563914]]
+no exclusions: E_pol = -2.422e-01
+alpha -> 0: E - E(fixed) = -5.2e-12
+dE/dx(O of water 2): analytic -0.00020227  central difference -0.00020227  diff 8.5e-12
 ```
 
-The only pair of polarizable sites is the two MM oxygens, 5.05 Å apart
-($u = 4.5$, $\lambda_3 = 0.996$), so damping moves the energy by only
-$4\times10^{-5}$ Ha out of an $E_{\mathrm{pol}}$ of $-0.24$ Ha. The distance to
-the QM region does not enter: the QM field at a site is not damped.
-
-Nearly all of that $E_{\mathrm{pol}}$ is each MM oxygen polarized by the
-charges of its own two hydrogens: Python and the CLI set no exclusions
-(section @sec:polarizable-embedding-exclusions). The two sites with the QM
-water removed give $-0.2398$ Ha (numpy below; $-0.2398$ Ha undamped too), so
-the interaction with the QM water is the remainder of about
-$-2.4\times10^{-3}$ Ha.
-
-```python
-# E_pol of the two MM oxygens alone (no QM region), same geometry and alpha.
-import numpy as np
-
-ang = 1 / 0.529177210903
-xyz = np.array([(0.000, -2.900, 0.000), (0.757, -3.486, 0.000), (-0.757, -3.486, 0.000),
-                (2.900, 1.200, 0.500), (3.400, 1.900, 0.900), (3.300, 0.400, 0.800)]) * ang
-chg = np.array([-0.834, 0.417, 0.417, -0.834, 0.417, 0.417])
-alpha, sites = 1.44 * ang**3, [0, 3]
-for a in (2.1304, 0.0):
-    e = []
-    for i in sites:  # permanent field, skipping the site's own charge
-        d = xyz[i] - np.delete(xyz, i, axis=0)
-        e.append((np.delete(chg, i)[:, None] * d / np.linalg.norm(d, axis=1)[:, None] ** 3).sum(0))
-    e = np.concatenate(e)
-    r = xyz[0] - xyz[3]; dist = np.linalg.norm(r); rh = r / dist
-    v = a * dist / alpha ** (1 / 3); x = np.exp(-v)
-    l3 = 1 - (1 + v + v * v / 2) * x if a else 1.0
-    l5 = l3 - v**3 / 6 * x if a else 1.0
-    t = (3 * l5 * np.outer(rh, rh) - l3 * np.eye(3)) / dist**3
-    b = np.block([[np.eye(3) / alpha, -t], [-t, np.eye(3) / alpha]])
-    mu = np.linalg.solve(b, e)
-    print(f"thole_a={a}: E_pol(MM only) = {-0.5 * mu @ e:.4f} Ha")
-```
-
-```text
-thole_a=2.1304: E_pol(MM only) = -0.2398 Ha
-thole_a=0.0: E_pol(MM only) = -0.2398 Ha
-``` With $\alpha = 10^{-8}$ Å$^3$ the energy is that of fixed charges
-to $2\times10^{-9}$ Ha, the trivial limit above, and the site row matches the
-central difference to $7\times10^{-10}$ Ha/Bohr.
+Each oxygen ignores its own hydrogens' charges, because they share its
+molecule label (section @sec:polarizable-embedding-exclusions). $E_{\mathrm{pol}}$
+is then the interaction with the QM water and the other MM water,
+$-7.7\times10^{-4}$ Ha. Without the exclusion it is $-0.242$ Ha, almost all
+of it each oxygen polarized by its own hydrogens
+($-\tfrac12\alpha\lvert\mathbf E\rvert^2\approx-0.12$ Ha per site). The only
+pair of polarizable sites is the two MM oxygens, 5.05 Å apart ($u = 4.5$,
+$\lambda_3 = 0.996$), so damping moves the energy by $1.4\times10^{-7}$ Ha;
+the QM field at a site is not damped. With $\alpha = 10^{-8}$ Å$^3$ the
+energy is that of fixed charges to $5\times10^{-12}$ Ha, the trivial limit
+above, and the site row matches the central difference to
+$9\times10^{-12}$ Ha/Bohr.
 
 ## The algorithm {#polarizable-embedding-algorithm}
 
@@ -572,6 +545,20 @@ a permanently charged MM atom (one `QmmmAtom` with both `charge` and
 charge goes with the neighbour. With no exclusions, every site sees every
 other site's permanent charge and induced dipole.
 
+The second list, `PolarizableSites::excluded_charges`, holds per site the
+positions of permanent charges it does not feel. It covers charges that are
+not sites, such as the TIP3P hydrogens of an oxygen-only polarizable water.
+`QmmmSystem::polarizable_embedding` fills both lists from per-atom molecule
+labels: a site feels neither the charges nor the induced dipoles of its own
+molecule, the PE/CPPE exclusion-list convention, and an RC/RCD midpoint
+charge belongs to both hosts' molecules. Python `run_qmmm` and the CLI do
+this by default (`polarization_exclusions = "molecule"`). The labels come
+from `residue_ids`, else from the bonds of `mm_topology`; the CLI uses the
+PQR residue number. With no labels, `run_qmmm` raises `ValueError`.
+`"none"` switches exclusion off, which is right only for isolated sites such
+as ions. A whole residue counts as one molecule. AMOEBA's variant, which
+keeps induction between dipoles of the same group, is not offered.
+
 A Gaussian-smeared permanent charge enters $\mathbf E^{\mathrm{perm}}$ with
 the point-charge field $q\,\mathbf r/r^3$, not the field of the Gaussian
 (`permanent_field_at_sites`). The gradients use the same point form, so the
@@ -583,7 +570,8 @@ gradient is that of the energy computed.
 |---|---|---|---|
 | `[qmmm] polarizabilities_angstrom3` | one entry per PQR atom, Å$^3$; 0.0 = not polarizable | empty | the sites; entries on QM atoms are ignored; a nonempty list with no positive MM entry is an error |
 | `[qmmm] thole_a`, Python `thole_a=` | float; `0.0` disables damping | 2.1304 | the Thole parameter; needs polarizabilities. In Rust `PolarizableSites::thole_a = None` is undamped; in Python `thole_a=None` is the default 2.1304 and `thole_a=0.0` is undamped |
-| `PolarizableSites::exclusions` | site-index pairs | empty | section @sec:polarizable-embedding-exclusions; library only: Python `run_qmmm` and the CLI always pass an empty set |
+| `[qmmm] polarization_exclusions`, Python `polarization_exclusions=` | `molecule`, `none` | `molecule` | a site ignores its own molecule's charges and sites (molecule = PQR residue / `residue_ids` / `mm_topology` bonds); `none` turns this off |
+| `PolarizableSites::exclusions`, `excluded_charges` | site-index pairs; per-site charge positions | empty | section @sec:polarizable-embedding-exclusions; Python and the CLI fill them from molecule labels |
 | `PolarizableSites::dipole_zeta` | Bohr$^{-2}$ | $10^4$ | the point-dipole p shell; library only |
 | `PolarizableSites::max_sites_dense` | integer | 4000 | the dense-solve ceiling; more sites is a typed error |
 | a site with non-positive or non-finite $\alpha$ | | | an error |
@@ -592,7 +580,7 @@ gradient is that of the energy computed.
 
 | Quantity | System | Result | Source |
 |---|---|---|---|
-| total energy, $E_{\mathrm{pol}}$, induced dipoles, QM and MM gradients, against a numpy induction model on PySCF point-dipole field integrals, self-consistent in the SCF | H2O + 4 TIP3P waters, with and without intramolecular exclusions / cc-pVDZ, RHF; NH2 + 3 waters / cc-pVDZ, UHF | total energy $\le 3.7\times10^{-12}$ Ha; $E_{\mathrm{pol}} \le 1.5\times10^{-9}$; dipoles $\le 1.5\times10^{-9}$ a.u.; gradients $\le 3.0\times10^{-9}$ Ha/Bohr | `site/src/reference/validation.md`, Thole row |
+| total energy, $E_{\mathrm{pol}}$, induced dipoles, QM and MM gradients, against a numpy induction model on PySCF point-dipole field integrals, self-consistent in the SCF | H2O + 4 TIP3P waters, with and without intramolecular exclusions, and oxygen-only sites with same-molecule exclusion / cc-pVDZ, RHF; NH2 + 3 waters / cc-pVDZ, UHF | total energy $\le 3.7\times10^{-12}$ Ha; $E_{\mathrm{pol}} \le 1.5\times10^{-9}$; dipoles $\le 1.5\times10^{-9}$ a.u.; gradients $\le 3.0\times10^{-9}$ Ha/Bohr | `site/src/reference/validation.md`, Thole row |
 | one site 30 Å away | same | $E_{\mathrm{pol}}$ within $7.7\times10^{-8}$ relative of the classical limit $-\tfrac12\alpha\lvert E_0\rvert^2$ | same |
 | $\alpha\to0$ (every $\alpha$ scaled by $10^{-12}$), against PySCF `qmmm.mm_charge` | same, with exclusions | $3.0\times10^{-12}$ Ha (bar $3\times10^{-11}$) | `anchor_tiny_alpha_is_point_charge_embedding` in `crates/ferric-scf/tests/validation_thole.rs` |
 
@@ -623,9 +611,9 @@ of the reference model, not an analytic reference.
   error.
 - The dense solve limits a run to `max_sites_dense` sites; an iterative solve
   is a documented follow-up.
-- `PolarizableSites::exclusions` is library only. Python `run_qmmm` and the
-  CLI always pass an empty set, so every MM site is polarized by its own
-  molecule's charges; the example above shows the size of that term.
+- Exclusion is by whole molecule (residue). Group-level exclusion within a
+  molecule, as AMOEBA uses, is library only, through explicit
+  `exclusions` and `excluded_charges` lists.
 - `optimize_qmmm` refuses a polarizable embedding. The CLI carries the
   polarizable terms for the energy task on `rhf`, `uhf` and `ksdft` only, and
   refuses a geometry or frequency task, a correlated kind, `rohf`, `[cosmo]`
