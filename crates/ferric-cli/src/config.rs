@@ -13136,6 +13136,22 @@ fn element_from_pqr_name(name: &str) -> String {
 /// Deliberately strict: a record whose field count is not 10 is an ERROR, not
 /// a skipped line. A silently dropped atom changes the MM field without
 /// changing anything a user would look at.
+/// Molecule labels from the PQR residue field, numbered in order of first
+/// appearance (read by same-molecule polarization exclusion).
+fn pqr_residue_ids(atoms: &[PqrAtom]) -> Vec<usize> {
+    let mut seen: Vec<&str> = Vec::new();
+    atoms
+        .iter()
+        .map(|a| match seen.iter().position(|r| *r == a.res_seq) {
+            Some(k) => k,
+            None => {
+                seen.push(&a.res_seq);
+                seen.len() - 1
+            }
+        })
+        .collect()
+}
+
 pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         ferric_core::FerricError::General(format!("[qmmm] pqr: cannot read {path}: {e}"))
@@ -13271,13 +13287,44 @@ impl QmmmCfg {
     /// `qm_charge`/`qm_multiplicity` come from `[molecule]` and apply to the QM
     /// REGION, not the whole structure -- the MM atoms carry their own partial
     /// charges and are not part of the SCF.
+    /// The QM region: explicit `qm_indices`, or every atom within
+    /// `qm_radius_angstrom` of a `qm_seeds` atom.
+    fn qm_selection(
+        &self,
+        have_indices: bool,
+    ) -> Result<ferric_scf::qmmm::QmSelection, ferric_core::FerricError> {
+        use ferric_core::units::ANGSTROM_TO_BOHR;
+        use ferric_core::FerricError;
+        use ferric_scf::qmmm::QmSelection;
+        if have_indices {
+            return Ok(QmSelection::Indices(self.qm_indices.clone()));
+        }
+        let r = self.qm_radius_angstrom.ok_or_else(|| {
+            FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
+        })?;
+        if self.qm_seeds.is_empty() {
+            return Err(FerricError::General(
+                "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
+            ));
+        }
+        if !(r.is_finite() && r > 0.0) {
+            return Err(FerricError::General(format!(
+                "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
+            )));
+        }
+        Ok(QmSelection::WithinRadius {
+            seeds: self.qm_seeds.clone(),
+            radius: r * ANGSTROM_TO_BOHR,
+        })
+    }
+
     pub fn to_system(
         &self,
         qm_charge: i32,
         qm_multiplicity: usize,
     ) -> Result<ferric_scf::qmmm::QmmmSystem, ferric_core::FerricError> {
         use ferric_core::FerricError;
-        use ferric_scf::qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
+        use ferric_scf::qmmm::{BoundaryChargeScheme, QmmmAtom, QmmmSystem};
 
         use ferric_core::units::ANGSTROM_TO_BOHR;
 
@@ -13354,43 +13401,9 @@ impl QmmmCfg {
             check("qm_seeds", i)?;
         }
 
-        let selection = if have_indices {
-            QmSelection::Indices(self.qm_indices.clone())
-        } else {
-            let r = self.qm_radius_angstrom.ok_or_else(|| {
-                FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
-            })?;
-            if self.qm_seeds.is_empty() {
-                return Err(FerricError::General(
-                    "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
-                ));
-            }
-            if !(r.is_finite() && r > 0.0) {
-                return Err(FerricError::General(format!(
-                    "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
-                )));
-            }
-            QmSelection::WithinRadius {
-                seeds: self.qm_seeds.clone(),
-                radius: r * ANGSTROM_TO_BOHR,
-            }
-        };
-
-        // Molecule labels from the PQR residue field, in order of first
-        // appearance (read by same-molecule polarization exclusion).
-        let mut seen: Vec<&str> = Vec::new();
-        let residue_ids: Vec<usize> = atoms_pqr
-            .iter()
-            .map(|a| match seen.iter().position(|r| *r == a.res_seq) {
-                Some(k) => k,
-                None => {
-                    seen.push(&a.res_seq);
-                    seen.len() - 1
-                }
-            })
-            .collect();
+        let selection = self.qm_selection(have_indices)?;
         let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?
-            .with_residue_ids(residue_ids)?;
+            .with_residue_ids(pqr_residue_ids(&atoms_pqr))?;
 
         if !self.link_bonds.is_empty() {
             for b in &self.link_bonds {
