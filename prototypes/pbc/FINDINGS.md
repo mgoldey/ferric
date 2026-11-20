@@ -3931,6 +3931,8 @@ mechanism** (it remains a candidate for the last few %).
 - Consequence for Iteration 12's claims: "head-restored MP2 accurate to 1e-7 at 4^3" is a property of this cell and
   orientation, not of the construction. A flat head-restored series does not show the finite-size error is gone:
   a residual that is itself n^-3 is invisible to consistency across n (CONSISTENCY IS NOT CORROBORATION).
+- SUPERSEDED (2026-11-19, #230): the "stable MP2 residual" in the next bullet is not a residual. It is n = 3, 4
+  aliasing read through a two-point E_inf; E3d is correct at N_k^-1 (see "Addendum 2026-11-19: resolution").
 - Still open: E3 leaves a stable MP2 residual of -7.0e-5/n^3 at z (3.2% of R; E_inf uncertainty +-3.7e-5 at n = 4)
   and ~-1.7e-4 at [111] from its (3,4) drift (~5%); dRPA's E3 is within its own non-asymptotic scatter at n = 3-4.
   Candidates: Bloch-paired vs fixed-k heads (H5, ~1-2%), first-order-only Fock correction (orbital relaxation not
@@ -5885,6 +5887,10 @@ Fixture: H2/STO-3G a = 6, bond along z and [111], n = 3, 4; per-cell MP2; "x n^3
 Here E3d is E3 with the Phi weight applied to the direct |H|^2 term only; see (b). Both columns are stable in
 x n^3 from n = 3 to 4, so the residual is a genuine 1/N_k term.
 
+SUPERSEDED (2026-11-19, #230): "genuine 1/N_k term" is retracted. A stable x n^3 product at n = 3, 4 against an
+E_inf taken from the same two points is n^-3 by construction, and both meshes are aliased. At n = 5, 6, 7 the free
+n^-3 term of E3d is <= 0.4% of c3 (z). Table kept as the historical record; see "Addendum 2026-11-19: resolution".
+
 | candidate | z, n = 3 | z, n = 4 | [111], n = 3 | verdict |
 |---|---|---|---|---|
 | (a) beyond-quadratic in h / higher order in q | MP2 is exactly quadratic in the head (A3); odd-degree terms cancel under time reversal; degree >= 2 is n^-5 | | | excluded: the residual is n^-3 (x n^3 stable) |
@@ -5915,6 +5921,8 @@ kz = 0 plane and at TRIM points by symmetry. So an n = 2 mesh (all TRIM points) 
 0.49 at Gamma and 1.46 at kz = pi/a, against a fixed-k average of ~0.93. After the k sums only ~1% of L survives.
 
 ### Interpretation (provisional; H2/STO-3G, a = 6, two orientations, n <= 4)
+SUPERSEDED (2026-11-19, #230): there was no residual to explain. The interpretation below reads aliased n = 3, 4
+points and a two-point E_inf; see "Addendum 2026-11-19: resolution". Kept as the historical record.
 - None of (a)-(e) explains the residual. Relaxation and the Bloch-paired Fock head (both negative) cancel the
   Bloch-paired ERI head (positive) to within 2e-6 (z) / 1.5e-5 ([111]). The fully corrected estimator,
   "E3 + H5 + true Fock + relax", still misses -5.8e-5 (z, 2.6% of R) and -2.0e-4 ([111], 5.9% of R).
@@ -5929,6 +5937,10 @@ kz = 0 plane and at TRIM points by symmetry. So an n = 2 mesh (all TRIM points) 
   on a synthetic f0(q^) g(q) with a known integral at n = 3..10. Then run a third orientation ([110]) and a = 8.
 
 ### For the Rust port
+SUPERSEDED (2026-11-19, #230): "accurate to ~6% of the 1/N_k term" and the "flatness bar at <= 6% of c3" below are
+retracted. The three-part construction listed here (E3d) has the correct N_k^-1 coefficient to <= 0.5% (z, n = 5..7);
+what remains decays as n^-5 to n^-7, and meshes with n <= 4 are aliased. The flatness bar is replaced by the
+convergence-ratio tests in `kmp2_head/test_head_residual.py`. See "Addendum 2026-11-19: resolution".
 - Do not port E3 as an exact 1/N_k correction. On this fixture it leaves 2.5% (z) to 5.5% ([111]) of the 1/N_k
   coefficient.
 - If a head correction is ported, it should be:
@@ -5989,6 +6001,7 @@ The statement above that the work "rules out n^-5 terms and the fit form" is str
 | E1 plateau | -1.335696 +- 7e-8 | disfavours the n^-5 reading |
 
 So an extrapolation artifact is unlikely but the residual is better stated as 1.4-3.1% (z) than 2.5%.
+SUPERSEDED (2026-11-19, #230): the extrapolation artifact is what it was. See "Addendum 2026-11-19: resolution".
 Decisive, not yet run: E3d at n = 5 for z. n^-3 predicts (E3d - E_inf) x n^3 = -5.5e-5; n^-5 predicts about -3.5e-5.
 (Needs the full n = 5 mesh SCF + ERI pipeline of `prototypes/pbc/kmp2_head`; beyond a 30 min budget here.)
 
@@ -6099,6 +6112,9 @@ n = 3, 4, and the self-consistent pure-n^-5 value is -7.69e-5.
 - Within each parity E1 is effectively converged: c3 = +1.0e-6 from the odd points, -1.3e-6 from the even points.
   Not every E1 value lies in the S-series E_inf range: the even points (n = 4, 6) do, but the odd points sit 2.1e-7 to
   2.4e-7 above its upper end -- the parity offset again.
+- SUPERSEDED (2026-11-19, #230): both readings below are refuted. E1 is missing the (Qlat - Qcub) + F share and its
+  apparent flatness at n <= 6 is aliasing plus the n^-5 tail (E1(5) - E1(7) = +2.0e-7). E3d is correct at n^-3.
+  See "Addendum 2026-11-19: resolution".
 - So the n^-3 term in E3d, about -6.2e-5 x n^-3 (2.8% of R), comes entirely from the added terms (Qlat - Qcub) + F.
   Two readings fit that equally well:
   - (i) the cubic head E1 already captures the full 1/N_k term, and the Phi re-weighting and/or the Fock head
@@ -6344,6 +6360,65 @@ interpolant's own eigenvalues (eps_occ - v_M) everywhere; that is G_int. The pre
 - The wedge reduction needs anchor A3 first. Only time reversal has been checked so far.
 - At 15-20 s per q per worker on this box: about 3.5-4.6 h on 6 workers. The design assumed 8 s per q and 2.5 h.
 - The pair FT is Python-loop bound. A vectorised s-shell kernel (anchored by A0) would probably cut this 2-3x.
+
+### Addendum 2026-11-19: resolution (issue #230)
+
+There is no missing q = 0 head term. E3d (cubic linear head, Phi-tensor quadratic head on the direct term,
+first-order Fock head) has the correct N_k^-1 coefficient. The "3-5% residual" was three effects read together:
+- k-sampling aliasing on the Gamma-centred n = 3, 4 meshes (option C: shifting the n = 3 mesh moves E1 by -4.6e-6);
+- a tail faster than n^-3 (n^-5 to n^-7);
+- an E_inf taken from n = 3, 4, which is circular because E3d - S is n^-3 by construction.
+
+**Code.** `kmp2_head/fastk.py`: an independent re-implementation of the k-MP2 pipeline for s-only bases in an
+orthorhombic cell. The pair Fourier transform factorises per Cartesian axis, which makes n = 7 reachable. It
+reproduces the stored z, a = 6 values of `e3d_n5.py` (S, E1, E3d at n = 3, 4, 5 to <= 2e-13) and its own a = 10,
+n = 2 values bitwise from a serial re-run.
+
+**Pre-registered** (before any n = 6, 7 number existed): H-tail predicted E3d(7) = -1.3357284e-2 (+-5e-9) for z;
+H-res (a genuine n^-3 residual) predicted -1.3357082e-2. [111]: H-tail predicted E3d(5) - E3d(6) in
+[-3.5e-7, -1.5e-7]; H-res predicted -6.3e-7.
+
+**Measured** (H2/STO-3G, per-cell MP2, prec 1e-10).
+
+| a, orientation | n | S | E1 | E3d |
+|---|---|---|---|---|
+| 6, z | 5 | -1.3339249122e-2 | -1.3356898982e-2 | -1.3357400949e-2 |
+| 6, z | 6 | -1.3346805124e-2 | -1.3357019192e-2 | -1.3357310802e-2 |
+| 6, z | 7 | -1.3350666551e-2 | -1.3357098742e-2 | -1.3357282761e-2 |
+| 6, [111] | 5 | -1.3171209140e-2 | -1.3189179582e-2 | -1.3200000054e-2 |
+| 6, [111] | 6 | -1.3183066264e-2 | -1.3193465823e-2 | -1.3199730908e-2 |
+| 10, z | 2 | -1.3089458513e-2 | -1.3153951931e-2 | -1.3168499556e-2 |
+| 10, z | 3 | -1.3143374618e-2 | -1.3162484702e-2 | -1.3166816027e-2 |
+| 10, z | 4 | -1.3156738807e-2 | -1.3164800984e-2 | -1.3166630449e-2 |
+
+| check | measured | H-tail | H-res |
+|---|---|---|---|
+| E3d(7), z | -1.33572828e-2 | -1.3357284e-2 | -1.3357082e-2 |
+| E3d(5) - E3d(6), [111] | -2.69e-7 | [-3.5e-7, -1.5e-7] | -6.3e-7 |
+| E1(5) - E1(7), z | +2.0e-7 | [1.3e-7, 2.5e-7] | ~0 |
+
+Step ratios rho = (E(n) - E(n+1)) / (E(n+1) - E(n+2)), which need no E_inf:
+
+| | E3d | E1 | S | pure n^-3 | pure n^-5 |
+|---|---|---|---|---|---|
+| a = 10, n = 2, 3, 4 | 9.07 | 3.68 | 4.03 | 4.11 | 8.65 |
+| a = 6, n = 5, 6, 7 | 3.21 | 1.51 | 1.96 | 1.97 | 2.77 |
+
+Exact fit E_inf + c3 n^-3 + c5 n^-5 of E3d through z, n = 5, 6, 7: c3 = +9.1e-6, 0.4% of the S coefficient 2.27e-3.
+With n^-7 or n^-6 in place of n^-5, c3 is -5.9e-6 and -0.9e-6.
+
+**Interpretation (2026-11-19).** E3d is correct at N_k^-1 to <= 0.5% of c3 (z). E1's flatness at n <= 6 was
+aliasing plus tail: E1 lacks the (Qlat - Qcub) + F share (about +6.3e-5 n^-3), which shows once n = 7 is in hand. Both readings (i) and (ii) of the 2026-10-19 addendum are refuted. [111] follows the tail reading at n = 5, 6 (inside the
+pre-registered band); its larger old figure came from the same n = 3, 4 fit.
+
+**For the Rust port** (replaces the 2026-09-30 guidance above): port E3d with the Bloch-paired Fock head. Take
+E_inf from n >= 5 or twist-averaged meshes with an n^-5 two-point extrapolation. Do not fit Gamma-centred n <= 4.
+Tests: `kmp2_head/test_head_residual.py`. The default run checks the recorded series (E3d passes; the
+correction-removed series S and E1 fail both bars). PBC_HEAD=1 recomputes a = 10, n = 2..4 and asserts
+rho in [7.5, 11.5]; PBC_SLOW=1 recomputes a = 6, n = 5..7 and asserts rho >= 2.6 and |c3| <= 1.5e-5.
+
+**Not measured.** a = 10 beyond n = 4; [111] at n = 7; non-cubic cells; more than one occupied or virtual band;
+dRPA.
 
 ## Full timing series on libint 2.13.1: MWE, baseline, ω sweep, column rotation (measured 2026-09-30 16:25-16:55, head 24c53e63)
 

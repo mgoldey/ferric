@@ -1,9 +1,14 @@
 """Candidate (d): extrapolation / fitting choice.  Series from FINDINGS (Iteration 12 + n = 5, 6 addenda),
 H2/STO-3G a = 6 z, per-cell MP2.  Theory for a Gamma-centred mesh: odd-degree head terms cancel, so the
-expansion is E_inf + c3 n^-3 + c5 n^-5 (+ exponentially small band sampling); an n^-1 term exists only for
+expansion is E_inf + c3 n^-3 + c5 n^-5 (+ band sampling); an n^-1 term exists only for
 UNshifted denominators (Madelung), never for shifted.  Artifact hypothesis: if E1's flatness were a fit artefact,
 E1's c3 would change sign/magnitude between fit forms; if E_inf were ill-determined at the 7e-5/n^3 level, the E_inf
-spread across fits would exceed 7e-5/27 = 2.6e-6."""
+spread across fits would exceed 7e-5/27 = 2.6e-6.
+
+INVALID AT n <= 4 (2026-11-19, issue #230): the band sampling is NOT exponentially small on these Gamma-centred
+meshes. n = 3, 4 are aliased (k-sampling of the dispersive band) and the tail runs n^-5 to n^-7, so every fit here
+that leans on n = 3, 4 misreads E_inf. Use n >= 5 or twist-averaged meshes (FINDINGS.md, "Addendum 2026-11-19:
+resolution"; test_head_residual.py)."""
 
 import itertools
 import numpy as np

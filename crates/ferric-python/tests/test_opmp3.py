@@ -89,3 +89,52 @@ def test_bad_arguments_raise(res):
         ferric.run_opmp3(mol, ferric.BasisSet.bundled("cc-pvdz"), reference="b3lyp")
     with pytest.raises(ValueError):
         ferric.run_opmp3(mol, ferric.BasisSet.bundled("cc-pvdz"), reference=" ")
+
+
+# ---------------------------------------------------------------------------
+# local="amplitude-threshold": the binding of ferric_mp2::local_opmp3 (the
+# construction is anchored in crates/ferric-mp2/tests/local_opmp3.rs).
+# ---------------------------------------------------------------------------
+
+PROPANE = ROOT / "testdata/molecules/alkane_3.xyz"
+
+
+@pytest.mark.parametrize("reference", ["hf", "pbe0"])
+def test_local_eps0_equals_the_canonical_run(reference):
+    """eps = 0 keeps every amplitude: every model equals the canonical RI run
+    (same aux basis, carried in local["canonical"]) to the CG floor."""
+    mol = ferric.Molecule.from_xyz(str(PROPANE))
+    r = ferric.run_opmp3(
+        mol,
+        ferric.BasisSet.bundled("6-31g"),
+        reference=reference,
+        auxbasis=ferric.BasisSet.bundled("cc-pvdz-ri"),
+        local="amplitude-threshold",
+        eps=0.0,
+        compute_reference=True,
+    )
+    loc = r.local
+    assert loc["scheme"] == "amplitude-threshold" and loc["eps"] == 0.0
+    assert loc["keep_fraction"] == pytest.approx(1.0, abs=1e-15)
+    for k, e in r.correlation.items():
+        assert abs(e - loc["canonical"][k]) < 1e-10, (k, e, loc["canonical"][k])
+    assert abs(loc["e3"] - loc["e3_2n1"]) < 1e-10
+    assert any(
+        a["name"] == "amplitude-threshold" for a in r.certificate["approximations"]
+    )
+
+
+def test_local_arguments_follow_the_cli_rules():
+    mol = ferric.Molecule.from_xyz(str(PROPANE))
+    bs, aux = ferric.BasisSet.bundled("6-31g"), ferric.BasisSet.bundled("cc-pvdz-ri")
+    with pytest.raises(ValueError, match="eps"):
+        ferric.run_opmp3(mol, bs, auxbasis=aux, local="amplitude-threshold")
+    with pytest.raises(ValueError, match="auxbasis"):
+        ferric.run_opmp3(mol, bs, local="amplitude-threshold", eps=1e-4)
+    with pytest.raises(ValueError, match="none"):
+        ferric.run_opmp3(mol, bs, auxbasis=aux, eps=1e-4, lambda_boys=10.0)
+    exact = ferric.run_opmp3(
+        ferric.Molecule.from_xyz_string("1\n\nHe 0 0 0\n"),
+        ferric.BasisSet.bundled("cc-pvdz"),
+    )
+    assert exact.local is None

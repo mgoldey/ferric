@@ -83,6 +83,7 @@
   - [13.1 Amplitude-threshold local MP2](13-local-mp2/01-amplitude-lmp2.md)
   - [13.2 The integral-direct path](13-local-mp2/02-integral-direct.md)
   - [13.3 Pair natural orbitals and DLPNO-MP2](13-local-mp2/03-pno-dlpno.md)
+  - [13.4 Amplitude-threshold local OP-MP3](13-local-mp2/04-local-opmp3.md)
 - [14. SCF gradients, Hessians and geometry](14-derivatives/index.md)
   - [14.1 Hartree–Fock nuclear gradient](14-derivatives/01-hf-gradient.md)
   - [14.2 Gradients of density-fitted J and K](14-derivatives/02-df-jk-gradient.md)

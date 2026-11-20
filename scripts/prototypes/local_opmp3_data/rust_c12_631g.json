@@ -1,0 +1,52 @@
+[
+ {
+  "xyz": "alkane_12.xyz",
+  "basis": "6-31g",
+  "aux": "cc-pvdz-ri",
+  "rust_lmp2": [
+   {
+    "eps": 0.0001,
+    "dE2": 0.0034141569673027394,
+    "e2_ref": -1.1000226054740356,
+    "keep": 0.03958387542775437,
+    "pair_fraction": 0.8422205989773557,
+    "n_pairs_unique": 595,
+    "dom_mean": 85.91891891891892,
+    "dom_max": 111,
+    "cg_energy_error_bound": 1.4920940921943864e-12,
+    "wall_s": 8.95010232925415,
+    "build": "f85425e9daec92c08bf94a68c4ede39738d5b75d"
+   },
+   {
+    "eps": 3e-05,
+    "dE2": 0.000725557341543448,
+    "e2_ref": -1.1000226054740356,
+    "keep": 0.08804799113369188,
+    "pair_fraction": 0.985390796201607,
+    "n_pairs_unique": 693,
+    "dom_mean": 103.05405405405405,
+    "dom_max": 111,
+    "cg_energy_error_bound": 6.132722776315174e-13,
+    "wall_s": 9.80547285079956,
+    "build": "f85425e9daec92c08bf94a68c4ede39738d5b75d"
+   },
+   {
+    "eps": 1e-05,
+    "dE2": 0.0001707495835974182,
+    "e2_ref": -1.1000226054740356,
+    "keep": 0.1595438053495819,
+    "pair_fraction": 1.0,
+    "n_pairs_unique": 703,
+    "dom_mean": 110.13513513513513,
+    "dom_max": 111,
+    "cg_energy_error_bound": 1.5897388493955957e-12,
+    "wall_s": 12.293426275253296,
+    "build": "f85425e9daec92c08bf94a68c4ede39738d5b75d"
+   }
+  ],
+  "mask_arm": {
+   "arm": "eq8",
+   "kappa": 1.0
+  }
+ }
+]

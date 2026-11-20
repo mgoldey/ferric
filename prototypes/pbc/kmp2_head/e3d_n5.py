@@ -212,6 +212,8 @@ def analyze():
     print(
         f"  Delta_34 {d34:+.5e}  Delta_45 {d45:+.5e}  rho {rho:.4f}  (pure n^-3 0.3561, pure n^-5 0.2092)"
     )
+    # E_inf34 is INVALID (2026-11-19, issue #230): a two-point n^-3 limit from the aliased n = 3, 4 meshes makes
+    # E3d - E_inf34 n^-3 by construction. Kept to reproduce the 2026-10-19 record; see FINDINGS.md resolution.
     einf34 = (64 * S_SERIES[4] - 27 * S_SERIES[3]) / 37
     for m in (3, 4, 5):
         print(

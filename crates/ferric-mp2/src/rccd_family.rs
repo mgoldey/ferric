@@ -71,7 +71,7 @@ use ferric_scf::result::ScfResult;
 
 use crate::drpa_amplitude::AmplitudeDrpaConfig;
 use crate::lmp2_amplitude::{
-    assemble_localized, build_vvhv, check_vvhv, AmplitudeLmp2Config, LocalizedProblem, VvHv,
+    assemble_localized, checked_vvhv, AmplitudeLmp2Config, LocalizedProblem, VvHv,
 };
 
 /// Which member of the family to evaluate.
@@ -400,14 +400,7 @@ fn localized(
     frozen_core: usize,
     eri3_budget_bytes: Option<usize>,
 ) -> Result<LocalizedProblem, FerricError> {
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    let (dev_orth, dev_span) = check_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc);
-    if dev_orth > 1e-8 || dev_span > 1e-8 {
-        return Err(FerricError::General(format!(
-            "rccd_family: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
-        )));
-    }
+    let (vvhv, _) = checked_vvhv(mol, obs, obs_bs, rhf, "rccd_family")?;
     localized_with_virtuals(
         mol,
         obs,
@@ -430,14 +423,8 @@ fn localized_with_virtuals(
     eri3_budget_bytes: Option<usize>,
     vvhv: &VvHv,
 ) -> Result<LocalizedProblem, FerricError> {
-    let lcfg = AmplitudeLmp2Config {
-        eps: 0.0, // this lane is untruncated: no amplitude threshold
-        frozen_core,
-        eri3_budget_bytes,
-        // plain Boys: λ-Boys is the local-MP2 default only
-        lambda_boys: 0.0,
-        ..Default::default()
-    };
+    // eps = 0: this lane is untruncated (no amplitude threshold)
+    let lcfg = AmplitudeLmp2Config::plain_boys(0.0, frozen_core, eri3_budget_bytes);
     assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)
 }
 

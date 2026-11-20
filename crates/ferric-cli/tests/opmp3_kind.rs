@@ -18,6 +18,11 @@
 //!   deterministic code, same rayon width). `[opmp3] x_ss = 0.3` reaches the
 //!   SSD-OPMP3 number (it differs from the paper-default run).
 //! * `cli_refusals_are_named`: every refused key or section names itself.
+//! * `cli_local_equals_the_driver_bit_for_bit`: `[local] scheme =
+//!   "amplitude-threshold"` (singlet CH2, RHF and RKS/PBE0, RI) equals
+//!   `run_local_opmp3` with the production maps (Fock screen κ = 1, λ-Boys
+//!   default, dense VV-HV), and the logged `local` record carries ε and the
+//!   kept fraction.
 //!
 //! # MUTATIONS (run 2026-11-15; each failed on an assertion)
 //!
@@ -35,6 +40,8 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Config, FOCK_SCREEN_KAPPA_DEFAULT};
+use ferric_mp2::local_opmp3::run_local_opmp3;
 use ferric_mp2::opmp3_driver::{run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind};
 use serde_json::Value;
 
@@ -197,6 +204,86 @@ fn cli_equals_the_driver_bit_for_bit() {
     );
 }
 
+const RI: &str = "integrals = \"ri\"\nauxbasis = \"cc-pvdz-ri\"";
+
+/// An OP-MP3 input on the CH2 geometry with `[opmp3]` body `opmp3`, an
+/// amplitude-threshold `[local]` at ε = 1e-4 plus `extra`, multiplicity `mult`.
+fn local_toml(opmp3: &str, extra: &str, mult: usize) -> String {
+    format!(
+        "[molecule]\nxyz = \"{{xyz}}\"\nmultiplicity = {mult}\n\n[basis]\nname = \"cc-pvdz\"\n\n\
+         [method]\nkind = \"opmp3\"\n\n[opmp3]\n{opmp3}\n\n[local]\n\
+         scheme = \"amplitude-threshold\"\neps = 1e-4\n{extra}"
+    )
+}
+
+#[test]
+fn cli_local_equals_the_driver_bit_for_bit() {
+    let mol = Molecule::parse_xyz(&ch2_xyz(), 0, 1).unwrap();
+    let obs_bs = basis::bundled("cc-pvdz").unwrap();
+    let prep = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(CLI_THREADS)
+        .build()
+        .unwrap();
+    for (tag, reference, kind) in [
+        ("local_hf", "hf", Opmp3RefKind::Hf),
+        ("local_pbe0", "pbe0", Opmp3RefKind::Dft("pbe0".into())),
+    ] {
+        let body = format!("reference = \"{reference}\"\n{RI}");
+        let run = run_cli(tag, &local_toml(&body, "", 1));
+        assert!(run.ok, "{tag}:\n{}\n{}", run.stdout, run.stderr);
+        let hits: Vec<&Value> = run.log.iter().filter(|r| r["record"] == "result").collect();
+        assert_eq!(hits.len(), 1, "{tag}: {}", run.stderr);
+        let res = hits[0];
+        let cfg = Opmp3Config::new(kind);
+        let local = AmplitudeLmp2Config {
+            eps: 1e-4,
+            fock_screen: Some(FOCK_SCREEN_KAPPA_DEFAULT),
+            ..Default::default()
+        };
+        let lib = pool
+            .install(|| {
+                run_local_opmp3(
+                    &ParallelContext::default(),
+                    &mol,
+                    &prep,
+                    &obs_bs,
+                    &aux,
+                    &cfg,
+                    &local,
+                )
+            })
+            .unwrap();
+        let comps = &res["components"];
+        let m = &lib.opmp3.models;
+        assert_eq!(
+            comps["e_nbs"].as_f64(),
+            Some(lib.opmp3.e_nbs),
+            "{tag} e_nbs"
+        );
+        for (k, e) in [
+            ("MP2", m.mp2),
+            ("OP-MP3", m.op_mp3),
+            ("SSD-OPMP3", m.ssd_opmp3),
+        ] {
+            assert_eq!(comps["correlation"][k].as_f64(), Some(e), "{tag} {k}");
+        }
+        assert_eq!(comps["local"]["eps"].as_f64(), Some(1e-4), "{tag}");
+        assert_eq!(
+            comps["local"]["keep_fraction"].as_f64(),
+            Some(lib.keep_fraction),
+            "{tag}"
+        );
+        assert!(lib.keep_fraction < 1.0, "{tag}: eps 1e-4 kept everything");
+        assert!(
+            run.stdout.contains("amplitude-threshold eps = 1e-4"),
+            "{tag}: {}",
+            run.stdout
+        );
+    }
+}
+
 #[test]
 fn cli_refusals_are_named() {
     let cases: &[(&str, String, &str)] = &[
@@ -243,6 +330,21 @@ fn cli_refusals_are_named() {
             "auxbasis is read with integrals = \"ri\" only",
         ),
         ("unknown", toml_with("xss = 0.5", ""), "unknown field `xss`"),
+        (
+            "local_exact",
+            local_toml("reference = \"hf\"", "", 1),
+            "set [opmp3] integrals = \"ri\"",
+        ),
+        (
+            "local_direct",
+            local_toml(RI, "integral_direct = true\n", 1),
+            "integral_direct is the integral-direct local MP2",
+        ),
+        (
+            "local_open_shell",
+            local_toml(RI, "", 3),
+            "closed-shell only",
+        ),
     ];
     for (tag, toml, want) in cases {
         let r = run_cli(&format!("refuse_{tag}"), toml);

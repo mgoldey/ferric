@@ -514,6 +514,23 @@ pub fn opmp3_certificate(
         .with_approximation("ssd-opmp3", format!("x_ss = {x_ss}"))
 }
 
+/// [`opmp3_certificate`] of an amplitude-threshold local OP-MP3 run
+/// ([`crate::local_opmp3`]): the threshold and the retained fraction are
+/// part of the model.
+pub fn local_opmp3_certificate(
+    reference: &Certificate,
+    aux: &str,
+    frozen_core: usize,
+    x_ss: f64,
+    eps: f64,
+    keep_fraction: f64,
+) -> Certificate {
+    opmp3_certificate(reference, Some(aux), frozen_core, x_ss).with_approximation(
+        "amplitude-threshold",
+        format!("eps = {eps:e}, kept fraction {keep_fraction:.6}"),
+    )
+}
+
 /// MP2-based double hybrid (`kind` is `b2plyp` or `dsd-pbep86`) run with
 /// `cfg`: scaled RI-MP2 on the functional's own Kohn-Sham `reference`.
 /// Each kind carries its anchor inside the scope of its evidence (see

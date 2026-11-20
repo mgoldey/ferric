@@ -1591,6 +1591,14 @@
         "scripts/u_att_rimp2_gradient_sympy.py"
       ]
     },
+    "local-opmp3": {
+      "book": [
+        "book/src/13-local-mp2/04-local-opmp3.md#local-opmp3"
+      ],
+      "scripts": [
+        "scripts/local_opmp3_sympy.py"
+      ]
+    },
     "opmp3": {
       "book": [
         "book/src/10-mp2/11-opmp3.md#opmp3"

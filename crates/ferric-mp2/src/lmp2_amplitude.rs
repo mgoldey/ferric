@@ -168,8 +168,8 @@ pub struct AmplitudeLmp2Config {
     /// [`crate::boys::lambda_boys_localize_checked`]): Boys plus
     /// `λ Σ_i F_ii²`, started from the converged Boys orbitals. `0.0` is
     /// plain Boys, bit for bit. Default [`crate::boys::LAMBDA_BOYS_DEFAULT`]
-    /// for local MP2; the dRPA / LinLCCD / rCCD drivers that build this
-    /// struct set `0.0`. Invisible at ε = 0 (the energy is invariant under
+    /// for local MP2; the dRPA / LinLCCD / rCCD drivers build this struct
+    /// with [`AmplitudeLmp2Config::plain_boys`] (`0.0`). Invisible at ε = 0 (the energy is invariant under
     /// occupied rotations); at finite ε it changes the mask.
     pub lambda_boys: f64,
 }
@@ -202,6 +202,23 @@ impl Default for AmplitudeLmp2Config {
             virtual_space: crate::vvhv_local::VirtualSpace::Dense,
             fock_screen: None,
             lambda_boys: crate::boys::LAMBDA_BOYS_DEFAULT,
+        }
+    }
+}
+
+impl AmplitudeLmp2Config {
+    /// The assembly configuration of the NON-MP2 members of the family
+    /// (dRPA, LinLCCD, rCCD): `eps`, `frozen_core` and the 3-index budget
+    /// from the caller, plain Boys occupieds (λ =
+    /// [`crate::boys::LAMBDA_BOYS_PLAIN`]; λ-Boys is the local-MP2 default
+    /// only), every other field at its default.
+    pub fn plain_boys(eps: f64, frozen_core: usize, eri3_budget_bytes: Option<usize>) -> Self {
+        Self {
+            eps,
+            frozen_core,
+            eri3_budget_bytes,
+            lambda_boys: crate::boys::LAMBDA_BOYS_PLAIN,
+            ..Default::default()
         }
     }
 }
@@ -393,13 +410,10 @@ pub(crate) struct RaggedCounters {
 
 impl RaggedCounters {
     pub(crate) fn new(rg: &Ragged, no: usize, nv: usize) -> Self {
-        let total_el = (no * nv) as u64 * (no * nv) as u64;
-        let mut kept = 0u64;
         let (mut dens_sum, mut dens_min) = (0.0f64, f64::INFINITY);
         let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
         for pb in &rg.pairs {
             let k = pb.pat.iter().filter(|&&x| x).count();
-            kept += k as u64;
             let dens = k as f64 / pb.pat.len().max(1) as f64;
             dens_sum += dens;
             dens_min = dens_min.min(dens);
@@ -413,7 +427,7 @@ impl RaggedCounters {
             .collect();
         let npb = rg.pairs.len();
         Self {
-            keep_fraction: kept as f64 / total_el as f64,
+            keep_fraction: crate::ragged::kept_fraction(rg, no, nv),
             pair_fraction: npb as f64 / (no * no) as f64,
             dom_mean: if no > 0 {
                 dom.iter().sum::<usize>() as f64 / no as f64
@@ -747,7 +761,21 @@ pub fn build_vvhv(
     obs_bs: &BasisSet,
     rhf: &ScfResult,
 ) -> Result<VvHv, FerricError> {
-    build_vvhv_with(mol, obs, obs_bs, rhf, solve_spd)
+    build_vvhv_with_fock(mol, obs, obs_bs, rhf, rhf.fock_r())
+}
+
+/// [`build_vvhv`] with the AO Fock matrix `f_ao` that pseudo-canonicalizes
+/// the hard virtuals supplied by the caller (the seam for a reference whose
+/// Fock operator is not `rhf.fock_r()`). `build_vvhv` is this with
+/// `rhf.fock_r()`. The occupied MOs still come from `rhf`.
+pub fn build_vvhv_with_fock(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    f_ao: &Array2<f64>,
+) -> Result<VvHv, FerricError> {
+    build_vvhv_with(mol, obs, obs_bs, rhf, f_ao, solve_spd)
 }
 
 /// The SPD solve `S⁻¹·B` [`build_vvhv`] uses (a seam so tests can build the
@@ -759,9 +787,10 @@ fn build_vvhv_with(
     obs: &PreparedBasis,
     obs_bs: &BasisSet,
     rhf: &ScfResult,
+    f_ao: &Array2<f64>,
     solve: SpdSolve,
 ) -> Result<VvHv, FerricError> {
-    build_vvhv_traced(mol, obs, obs_bs, rhf, solve).map(|(v, _)| v)
+    build_vvhv_traced(mol, obs, obs_bs, rhf, f_ao, solve).map(|(v, _)| v)
 }
 
 /// [`build_vvhv_with`] that also returns the AO index of every selected
@@ -776,7 +805,7 @@ pub(crate) fn build_vvhv_traced_dense(
     obs_bs: &BasisSet,
     rhf: &ScfResult,
 ) -> Result<(VvHv, Vec<usize>), FerricError> {
-    build_vvhv_traced(mol, obs, obs_bs, rhf, solve_spd)
+    build_vvhv_traced(mol, obs, obs_bs, rhf, rhf.fock_r(), solve_spd)
 }
 
 fn build_vvhv_traced(
@@ -784,6 +813,7 @@ fn build_vvhv_traced(
     obs: &PreparedBasis,
     obs_bs: &BasisSet,
     rhf: &ScfResult,
+    f_ao: &Array2<f64>,
     solve: SpdSolve,
 ) -> Result<(VvHv, Vec<usize>), FerricError> {
     let s = overlap(obs);
@@ -877,7 +907,6 @@ fn build_vvhv_traced(
         // (the block gather below is the only use), so form F·C_h once and
         // contract each atom's columns against it: Σ_A nao·m_A² instead of
         // the full n_h × n_h product C_hᵀ (F C_h).
-        let f_ao = rhf.fock_r();
         let fch = f_ao.dot(&ch);
         let mut by_atom: HashMap<usize, Vec<usize>> = HashMap::new();
         for (k, &a) in sel_parents.iter().enumerate() {
@@ -951,8 +980,20 @@ pub(crate) fn column_expectations(m: &Array2<f64>, c: &Array2<f64>) -> Vec<f64> 
     column_dots(c, &m.dot(c))
 }
 
+/// `a.max(b)` that PROPAGATES NaN. `f64::max` returns the non-NaN operand,
+/// so a deviation reduced with it hides a NaN element and a construction
+/// check fed a NaN space reports a finite (passing) deviation.
+fn max_or_nan(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 /// Orthonormality + span check against the canonical virtuals (the
-/// construction half of the exactness anchor). Returns (dev_orth, dev_span).
+/// construction half of the exactness anchor). Returns (dev_orth, dev_span);
+/// a NaN element anywhere makes the deviation NaN (which the bar rejects).
 pub fn check_vvhv(
     obs: &PreparedBasis,
     rhf: &ScfResult,
@@ -966,7 +1007,7 @@ pub fn check_vvhv(
     for r in 0..n {
         for c in 0..n {
             let target = if r == c { 1.0 } else { 0.0 };
-            dev_orth = dev_orth.max((o[(r, c)] - target).abs());
+            dev_orth = max_or_nan(dev_orth, (o[(r, c)] - target).abs());
         }
     }
     let c_vcan = rhf.mos_r().slice(s![.., nocc_total..]).to_owned();
@@ -978,7 +1019,7 @@ pub fn check_vvhv(
         for r in 0..dim {
             for c in 0..dim {
                 let target = if r == c { 1.0 } else { 0.0 };
-                dev_span = dev_span.max((m[(r, c)] - target).abs());
+                dev_span = max_or_nan(dev_span, (m[(r, c)] - target).abs());
             }
         }
     }
@@ -993,6 +1034,25 @@ pub fn check_vvhv(
 // driver
 // ---------------------------------------------------------------------------
 
+/// Refuse a Kohn-Sham SCF reference for local MP2 (`who` names the driver).
+/// MP2 is defined on the Hartree-Fock Fock operator: the local drivers read
+/// the reference's Fock matrix for the denominators and the f_oo/f_vv
+/// coupling, so a KS reference would silently give MP2 with KS denominators.
+/// Reads [`ScfResult::xc`], which every SCF entry point stamps (`None` =
+/// Hartree-Fock; a hand-built result also says `None`).
+pub fn require_hf_reference(rhf: &ScfResult, who: &str) -> Result<(), FerricError> {
+    match &rhf.xc {
+        None => Ok(()),
+        Some(xc) => Err(FerricError::Unsupported {
+            feature: format!("{who} on a Kohn-Sham reference ({xc})"),
+            reason: "local MP2 takes its denominators and Fock coupling from the reference \
+                     Fock matrix, which here is the Kohn-Sham one; run it on a Hartree-Fock \
+                     (RHF) reference"
+                .to_string(),
+        }),
+    }
+}
+
 /// Amplitude-threshold local MP2 with the VV-HV space built internally.
 pub fn amplitude_lmp2(
     mol: &Molecule,
@@ -1003,6 +1063,7 @@ pub fn amplitude_lmp2(
     rhf: &ScfResult,
     cfg: &AmplitudeLmp2Config,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    require_hf_reference(rhf, "lmp2_amplitude")?;
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_amplitude", &cfg.virtual_space)?;
     let mut r = amplitude_lmp2_with_virtuals(mol, obs, dfbs, op, rhf, cfg, &vvhv)?;
@@ -1036,7 +1097,7 @@ fn max_column_ratio(y: &Array2<f64>, z: &Array2<f64>) -> f64 {
     yy.iter()
         .zip(&zz)
         .map(|(a, b)| (a / b).sqrt())
-        .fold(0.0f64, f64::max)
+        .fold(0.0f64, max_or_nan)
 }
 
 /// Randomized form of [`check_vvhv`]: applies `O − I` (`O = Cᵀ S C`) and
@@ -1073,7 +1134,7 @@ pub fn probe_vvhv(
     let utz2 = c_vloc.t().dot(&s.dot(&c_vcan.dot(&z2)));
     let uutz2 = c_vcan.t().dot(&s.dot(&c_vloc.dot(&utz2)));
     let d2 = max_column_ratio(&(uutz2 - &z2), &z2);
-    (dev_orth, d1.max(d2))
+    (dev_orth, max_or_nan(d1, d2))
 }
 
 /// Env knob selecting the FULL [`check_vvhv`] inside [`checked_vvhv`]:
@@ -1106,16 +1167,15 @@ pub fn checked_vvhv(
     rhf: &ScfResult,
     who: &str,
 ) -> Result<(VvHv, f64), FerricError> {
-    let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
-        Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
-        Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
-        Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
-    };
-    let t0 = std::time::Instant::now();
-    let vvhv = build_vvhv(mol, obs, obs_bs, rhf)?;
-    let nocc_total = (mol.nelec() as usize) / 2;
-    verify_vvhv(obs, rhf, nocc_total, &vvhv.c_vloc, full, who)?;
-    Ok((vvhv, t0.elapsed().as_secs_f64()))
+    checked_vvhv_with(
+        mol,
+        obs,
+        obs_bs,
+        rhf,
+        who,
+        &crate::vvhv_local::VirtualSpace::Dense,
+    )
+    .map(|(v, t, _)| (v, t))
 }
 
 /// [`checked_vvhv`] with the build selected by `vs`: the dense default or
@@ -1130,29 +1190,47 @@ pub fn checked_vvhv_with(
     who: &str,
     vs: &crate::vvhv_local::VirtualSpace,
 ) -> Result<(VvHv, f64, crate::vvhv_local::VirtualSpaceReport), FerricError> {
-    use crate::vvhv_local::{build_vvhv_local, VirtualSpace, VirtualSpaceReport};
-    match vs {
-        VirtualSpace::Dense => {
-            let (v, t) = checked_vvhv(mol, obs, obs_bs, rhf, who)?;
-            Ok((v, t, VirtualSpaceReport::Dense))
-        }
+    checked_vvhv_with_fock(mol, obs, obs_bs, rhf, rhf.fock_r(), who, vs)
+}
+
+/// [`checked_vvhv_with`] with the AO Fock matrix `f_ao` that
+/// pseudo-canonicalizes the hard virtuals supplied by the caller
+/// ([`build_vvhv_with_fock`], [`crate::vvhv_local::build_vvhv_local_with_fock`]):
+/// the seam for a reference whose Fock operator is not `rhf.fock_r()`.
+/// The construction check is the same.
+pub fn checked_vvhv_with_fock(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    f_ao: &Array2<f64>,
+    who: &str,
+    vs: &crate::vvhv_local::VirtualSpace,
+) -> Result<(VvHv, f64, crate::vvhv_local::VirtualSpaceReport), FerricError> {
+    use crate::vvhv_local::{build_vvhv_local_with_fock, VirtualSpace, VirtualSpaceReport};
+    let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
+        Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
+        Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
+        Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
+    };
+    let t0 = std::time::Instant::now();
+    let (vv, report) = match vs {
+        VirtualSpace::Dense => (
+            build_vvhv_with_fock(mol, obs, obs_bs, rhf, f_ao)?,
+            VirtualSpaceReport::Dense,
+        ),
         VirtualSpace::Local(lc) => {
-            let full = match std::env::var(FULL_VVHV_CHECK_ENV) {
-                Ok(raw) => full_vvhv_check_requested(Some(&raw))?,
-                Err(std::env::VarError::NotPresent) => full_vvhv_check_requested(None)?,
-                Err(e) => return Err(FerricError::General(format!("{FULL_VVHV_CHECK_ENV}: {e}"))),
-            };
-            let t0 = std::time::Instant::now();
-            let loc = build_vvhv_local(mol, obs, obs_bs, rhf, lc)?;
-            let nocc_total = (mol.nelec() as usize) / 2;
-            verify_vvhv(obs, rhf, nocc_total, &loc.vv.c_vloc, full, who)?;
+            let loc = build_vvhv_local_with_fock(mol, obs, obs_bs, rhf, f_ao, lc)?;
             let report = VirtualSpaceReport::Local {
                 config: lc.clone(),
                 stats: loc.stats,
             };
-            Ok((loc.vv, t0.elapsed().as_secs_f64(), report))
+            (loc.vv, report)
         }
-    }
+    };
+    let nocc_total = (mol.nelec() as usize) / 2;
+    verify_vvhv(obs, rhf, nocc_total, &vv.c_vloc, full, who)?;
+    Ok((vv, t0.elapsed().as_secs_f64(), report))
 }
 
 /// The pass/fail half of [`checked_vvhv`]: the full check (`full`) or the
@@ -1291,7 +1369,7 @@ pub fn localized_spaces(
     frozen_core: usize,
     vvhv: &VvHv,
 ) -> Result<LocalizedSpaces, FerricError> {
-    localized_spaces_capped(mol, obs, rhf, frozen_core, vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0)
+    localized_spaces_with_fock(mol, obs, rhf, rhf.fock_r(), frozen_core, vvhv, 0.0)
 }
 
 /// [`localized_spaces`] with λ-Boys occupieds
@@ -1305,10 +1383,28 @@ pub fn localized_spaces_lambda(
     vvhv: &VvHv,
     lambda_boys: f64,
 ) -> Result<LocalizedSpaces, FerricError> {
+    localized_spaces_with_fock(mol, obs, rhf, rhf.fock_r(), frozen_core, vvhv, lambda_boys)
+}
+
+/// [`localized_spaces_lambda`] with the AO Fock matrix `f_ao` supplied by
+/// the caller: it weights the λ-Boys objective and gives the localized
+/// `f_oo`/`f_vv` blocks (the seam for a reference whose Fock operator is
+/// not `rhf.fock_r()`). The occupied MOs still come from `rhf`.
+/// [`localized_spaces_lambda`] is this with `rhf.fock_r()`.
+pub fn localized_spaces_with_fock(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    rhf: &ScfResult,
+    f_ao: &Array2<f64>,
+    frozen_core: usize,
+    vvhv: &VvHv,
+    lambda_boys: f64,
+) -> Result<LocalizedSpaces, FerricError> {
     localized_spaces_capped(
         mol,
         obs,
         rhf,
+        f_ao,
         frozen_core,
         vvhv,
         LMP2_BOYS_MAX_SWEEPS,
@@ -1331,10 +1427,12 @@ fn boys_error(what: &str, e: FerricError) -> FerricError {
 
 /// [`localized_spaces_lambda`] with an explicit Boys sweep cap (the test
 /// hook for the non-convergence error).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn localized_spaces_capped(
     mol: &Molecule,
     obs: &PreparedBasis,
     rhf: &ScfResult,
+    f_ao: &Array2<f64>,
     frozen_core: usize,
     vvhv: &VvHv,
     boys_max_sweeps: usize,
@@ -1348,7 +1446,7 @@ pub(crate) fn localized_spaces_capped(
     let (boys, lambda_report) = crate::boys::lambda_boys_localize_checked(
         &c_occ_can,
         &dip,
-        rhf.fock_r(),
+        f_ao,
         lambda_boys,
         boys_max_sweeps,
         crate::boys::LAMBDA_BOYS_MAX_SWEEPS,
@@ -1374,7 +1472,6 @@ pub(crate) fn localized_spaces_capped(
             virt_centers[(a, x)] = v;
         }
     }
-    let f_ao = rhf.fock_r();
     let f_oo = c_locc.t().dot(&f_ao.dot(&c_locc));
     let f_vv = c_vloc.t().dot(&f_ao.dot(&c_vloc));
     Ok(LocalizedSpaces {
@@ -2015,6 +2112,72 @@ pub fn assemble_ragged_direct(
     .map(|(rg, g, _, _)| (rg, g))
 }
 
+/// Candidate virtuals of pair (i, j) for the in-core assembly. With the
+/// Fock screen off (`fock_kappa = None`): the plain Eq-8 Schwarz pre-filter
+/// `q_ia·max_b q_jb ≥ ε` (either orientation). With it on and the bound
+/// weights `fock_w = (w, wmax)`: the Fock-aware bound
+/// [`crate::ragged::fock_bound_keeps`]. No Schwarz factors, ε = 0, or the
+/// screen on with no valid bound (`fock_w = None`): every virtual.
+fn incore_candidates(
+    q: Option<&(Vec<f64>, Vec<f64>)>,
+    fock_kappa: Option<f64>,
+    fock_w: Option<&(Vec<f64>, Vec<f64>)>,
+    nv: usize,
+    i: usize,
+    j: usize,
+    eps: f64,
+) -> Vec<usize> {
+    use crate::ragged::fock_bound_keeps;
+    match (q, eps > 0.0, fock_kappa, fock_w) {
+        (Some((qv, qmax)), true, None, _) => (0..nv)
+            .filter(|&a| qv[i * nv + a] * qmax[j] >= eps || qv[j * nv + a] * qmax[i] >= eps)
+            .collect(),
+        (Some((qv, qmax)), true, Some(kappa), Some((w, wmax))) => (0..nv)
+            .filter(|&a| fock_bound_keeps(qv, qmax, w, wmax, nv, i, j, a, eps, kappa))
+            .collect(),
+        _ => (0..nv).collect(),
+    }
+}
+
+/// The Fock-screen inputs of [`fock_rect_blocks`].
+struct FockRectCtx<'a> {
+    f_vv: &'a Array2<f64>,
+    fo: &'a [f64],
+    fv: &'a [f64],
+    eps: f64,
+    kappa: f64,
+    scale: f64,
+}
+
+/// Pair blocks of (i, j) under the Fock screen on a proper candidate subset:
+/// `g[cand, :]` and `g[:, cand]` over the aux rows `rows`, the dressed gate
+/// with its Fock sums over every virtual
+/// ([`crate::ragged::fock_dressed_gate_rect`]), and the kept values from
+/// `g[cand, cand]`.
+fn fock_rect_blocks(
+    bt: &Array2<f64>,
+    i: usize,
+    j: usize,
+    cand: &[usize],
+    rows: &[usize],
+    c: &FockRectCtx<'_>,
+) -> Vec<PairBlock> {
+    let nv = c.fv.len();
+    let bi = bt.slice(s![.., i * nv..(i + 1) * nv]).select(Axis(0), rows);
+    let bj = bt.slice(s![.., j * nv..(j + 1) * nv]).select(Axis(0), rows);
+    let mut g_cf = bi.select(Axis(1), cand).t().dot(&bj);
+    let mut g_fc = bi.t().dot(&bj.select(Axis(1), cand));
+    if c.scale != 1.0 {
+        g_cf.mapv_inplace(|x| c.scale * x);
+        g_fc.mapv_inplace(|x| c.scale * x);
+    }
+    let g = g_cf.select(Axis(1), cand);
+    let gate = crate::ragged::fock_dressed_gate_rect(
+        &g_cf, &g_fc, cand, c.f_vv, c.fo[i], c.fo[j], c.fv, c.kappa,
+    );
+    crate::ragged::pair_blocks_with_gate(i, j, &g, Some(&gate), cand, nv, c.f_vv, c.fo, c.fv, c.eps)
+}
+
 /// [`assemble_ragged_direct`] with the ε-linked per-pair AUX truncation
 /// (see `AmplitudeLmp2Config::aux_tail_frac`) and the optional
 /// Fock-propagated gate (`AmplitudeLmp2Config::fock_screen`). Returns
@@ -2079,6 +2242,14 @@ pub fn assemble_ragged_direct_aux(
             .collect();
         (qv, qmax)
     });
+    // Fock-aware candidate bound (only with the screen on): the plain
+    // Schwarz pre-filter is a bound on the Eq-8 mask only. `fock_w = None`
+    // with the screen on and no valid bound means "keep every virtual".
+    let fock_kappa = fock_screen.filter(|_| eps > 0.0);
+    let fock_w: Option<(Vec<f64>, Vec<f64>)> = match (&q, fock_kappa) {
+        (Some((qv, _)), Some(_)) => crate::ragged::fock_bound_weights(qv, no, f_vv, &fo, &fv),
+        _ => None,
+    };
     // per-(P, i) row weights for the aux tail bound: n[P, i] = max_a |B̃_Pia|
     let n_block: Option<Array2<f64>> = match (&btilde, aux_tail_frac, eps > 0.0) {
         (Some(bt), Some(f), true) if f > 0.0 => {
@@ -2107,12 +2278,7 @@ pub fn assemble_ragged_direct_aux(
     let per_pair: Vec<Result<PairOut, FerricError>> = unique
         .par_iter()
         .map(|&(i, j)| {
-            let cand: Vec<usize> = match (&q, eps > 0.0) {
-                (Some((qv, qmax)), true) => (0..nv)
-                    .filter(|&a| qv[i * nv + a] * qmax[j] >= eps || qv[j * nv + a] * qmax[i] >= eps)
-                    .collect(),
-                _ => (0..nv).collect(),
-            };
+            let cand = incore_candidates(q.as_ref(), fock_kappa, fock_w.as_ref(), nv, i, j, eps);
             if cand.is_empty() {
                 return Ok((Vec::new(), 0));
             }
@@ -2144,6 +2310,18 @@ pub fn assemble_ragged_direct_aux(
                         _ => None,
                     };
                     let nc = cand.len();
+                    if let (Some(kappa), true) = (fock_kappa, nc < nv) {
+                        let rows: Vec<usize> = aux_sel.unwrap_or_else(|| (0..naux).collect());
+                        let ctx = FockRectCtx {
+                            f_vv,
+                            fo: &fo,
+                            fv: &fv,
+                            eps,
+                            kappa,
+                            scale,
+                        };
+                        return Ok((fock_rect_blocks(bt, i, j, &cand, &rows, &ctx), rows.len()));
+                    }
                     match aux_sel {
                         None => {
                             aux_used = naux;
@@ -2211,12 +2389,6 @@ pub fn assemble_ragged_direct_aux(
         }
         pairs.extend(blocks);
     }
-    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (pidx, pb) in pairs.iter().enumerate() {
-        by_i.entry(pb.i).or_default().push(pidx);
-        by_j.entry(pb.j).or_default().push(pidx);
-    }
     let aux_dom_mean = if aux_sizes.is_empty() {
         0.0
     } else {
@@ -2224,7 +2396,7 @@ pub fn assemble_ragged_direct_aux(
     };
     let aux_dom_max = aux_sizes.iter().copied().max().unwrap_or(0);
     Ok((
-        Ragged { pairs, by_i, by_j },
+        Ragged::from_pairs(pairs),
         n_pairs_gated,
         aux_dom_mean,
         aux_dom_max,
@@ -2243,6 +2415,7 @@ pub fn amplitude_lmp2_with_virtuals(
     cfg: &AmplitudeLmp2Config,
     vvhv: &VvHv,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
+    require_hf_reference(rhf, "lmp2_amplitude")?;
     if trace::trace_enabled() {
         eprintln!(
             "[ferric-mem] lmp2-amplitude entry rss={}",
@@ -2595,16 +2768,24 @@ mod tests {
     fn unconverged_occupied_boys_is_an_error() {
         let (mol, obs, bs, rhf) = c4_631g();
         let vvhv = build_vvhv(&mol, &obs, &bs, &rhf).unwrap();
-        let err = localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, 1, 0.0)
+        let err = localized_spaces_capped(&mol, &obs, &rhf, rhf.fock_r(), 4, &vvhv, 1, 0.0)
             .expect_err("a one-sweep Boys localization must be refused");
         let msg = err.to_string();
         assert!(
             msg.contains("occupieds") && msg.contains("Boys localization did not converge"),
             "{msg}"
         );
-        assert!(
-            localized_spaces_capped(&mol, &obs, &rhf, 4, &vvhv, LMP2_BOYS_MAX_SWEEPS, 0.0).is_ok()
-        );
+        assert!(localized_spaces_capped(
+            &mol,
+            &obs,
+            &rhf,
+            rhf.fock_r(),
+            4,
+            &vvhv,
+            LMP2_BOYS_MAX_SWEEPS,
+            0.0
+        )
+        .is_ok());
     }
 
     /// λ-Boys exactness anchors on C4/6-31G (frozen core 4, cc-pvdz-ri):
@@ -2752,8 +2933,9 @@ mod tests {
         bs: &BasisSet,
         rhf: &ScfResult,
     ) {
-        let (v_new, h_new) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd).unwrap();
-        let (v_old, h_old) = build_vvhv_traced(mol, obs, bs, rhf, solve_spd_lu_oracle).unwrap();
+        let (v_new, h_new) = build_vvhv_traced(mol, obs, bs, rhf, rhf.fock_r(), solve_spd).unwrap();
+        let (v_old, h_old) =
+            build_vvhv_traced(mol, obs, bs, rhf, rhf.fock_r(), solve_spd_lu_oracle).unwrap();
         assert_vvhv_spaces_match(obs, (&v_new, &h_new), (&v_old, &h_old), "LU oracle");
         let nocc = (mol.nelec() as usize) / 2;
         let (o, sp) = check_vvhv(obs, rhf, nocc, &v_new.c_vloc);
@@ -3119,7 +3301,8 @@ mod tests {
     fn vvhv_matches_the_pre_cubic_fix_oracle() {
         for xyz in ["alkane_8.xyz", "water.xyz", "benzene.xyz"] {
             let (mol, obs, bs, rhf) = rhf_631g(xyz);
-            let (v_new, h_new) = build_vvhv_traced(&mol, &obs, &bs, &rhf, solve_spd).unwrap();
+            let (v_new, h_new) =
+                build_vvhv_traced(&mol, &obs, &bs, &rhf, rhf.fock_r(), solve_spd).unwrap();
             let (v_old, h_old) = build_vvhv_pre_fix_oracle(&mol, &obs, &bs, &rhf).unwrap();
             assert_vvhv_spaces_match(&obs, (&v_new, &h_new), (&v_old, &h_old), xyz);
         }
@@ -3259,6 +3442,28 @@ mod tests {
         );
         assert!(r_new.e_corr < -0.1, "vacuous energy");
         assert!(de.abs() <= 1e-12, "dE {de:+.3e}");
+    }
+
+    /// The non-MP2 members' assembly configuration is plain Boys: λ = 0
+    /// (the dRPA / LinLCCD / rCCD drivers all build theirs through
+    /// `plain_boys`), the caller's eps / frozen core / budget, every other
+    /// field at its default — while local MP2's own default stays λ-Boys.
+    #[test]
+    fn plain_boys_config_is_lambda_zero() {
+        let c = AmplitudeLmp2Config::plain_boys(3e-5, 2, Some(1 << 20));
+        assert_eq!(c.lambda_boys.to_bits(), 0.0f64.to_bits());
+        assert_eq!(crate::boys::LAMBDA_BOYS_PLAIN.to_bits(), 0.0f64.to_bits());
+        assert_eq!(
+            (c.eps, c.frozen_core, c.eri3_budget_bytes),
+            (3e-5, 2, Some(1 << 20))
+        );
+        let d = AmplitudeLmp2Config::default();
+        assert_eq!(d.lambda_boys, crate::boys::LAMBDA_BOYS_DEFAULT);
+        assert_ne!(d.lambda_boys, c.lambda_boys);
+        assert_eq!(
+            (c.cg_max_iter, c.fock_screen, c.pair_gate_cal),
+            (d.cg_max_iter, d.fock_screen, d.pair_gate_cal)
+        );
     }
 
     /// Fix (b): the randomized probe passes the real space far below the

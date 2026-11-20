@@ -85,7 +85,9 @@
 //! shifted (MP, even N) meshes run through the same code, unanchored.
 //! NOT measured: meshes > 3 per axis in Rust, real aux fitting error at
 //! scale, cost, the q = 0 head correction (not ported — the prototype's
-//! fixed-k head is exact only for flat bands).
+//! fixed-k head is exact only for flat bands). Spec if ported (#230): the
+//! prototype's E3d with the Bloch-paired Fock head; E_inf from n ≥ 5 or
+//! twist-averaged meshes with an n⁻⁵ two-point extrapolation.
 //!
 //! # Memory
 //!
