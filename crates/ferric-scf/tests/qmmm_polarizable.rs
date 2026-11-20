@@ -61,9 +61,11 @@ fn sto3g_prep(mol: &Molecule) -> PreparedBasis {
     PreparedBasis::new(mol, &bs).unwrap()
 }
 
-/// Path (2), the independent reference: `∂/∂R_site ⟨μ|1/|r-R_site||ν⟩` for a
-/// unit point charge, contracted over ALL shell pairs into an (nbasis,
-/// nbasis) matrix per Cartesian component `[x, y, z]`.
+/// Path (2), the independent reference: `∂/∂R_site ⟨μ|-1/|r-R_site||ν⟩`, the
+/// libint `OP_NUCLEAR` derivative block for a +1 point charge (attraction
+/// carries the minus sign), contracted over ALL shell pairs into an (nbasis,
+/// nbasis) matrix per Cartesian component `[x, y, z]`. The p-shell potential
+/// is the derivative of `+1/|r-R|`, hence `reference == -norm_p * p_shell`.
 fn point_charge_field_matrix(prep: &PreparedBasis, site: [f64; 3]) -> [Array2<f64>; 3] {
     let nbas = prep.nbasis();
     let natoms = prep.atoms().len();
