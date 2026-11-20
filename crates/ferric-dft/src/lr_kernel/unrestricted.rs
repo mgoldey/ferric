@@ -1,7 +1,7 @@
 //! The f_xc kernel of an UNRESTRICTED (UKS) reference in the two-spin
 //! particle–hole space: the `(ia σ| f_στ |jb τ)` blocks spin-conserving
 //! TDA-DFT and Casida TDDFT add to A (and B) on a UKS reference
-//! (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`).
+//! (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`).
 //!
 //! The space is the concatenation of the α pairs (`ia = i·nvir_α + a`) and
 //! the β pairs (offset by `nocc_α·nvir_α`). For a block of vectors `x`, the

@@ -1010,13 +1010,13 @@
     },
     "gw": {
       "book": [
-        "book/src/19-gw-bse/03-correlation-self-energy.md#correlation-self-energy-frequency-integral",
+        "book/src/20-gw-bse/03-correlation-self-energy.md#correlation-self-energy-frequency-integral",
         "book/src/18-rpa/02-quadratures.md#quadratures-rule",
-        "book/src/19-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references",
-        "book/src/19-gw-bse/02-screened-interaction.md#screened-interaction-dielectric-matrix-single-pole",
-        "book/src/19-gw-bse/04-cohsex.md#cohsex-static-limit",
-        "book/src/19-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-quasiparticle-equation",
-        "book/src/19-gw-bse/06-eigenvalue-self-consistency.md#eigenvalue-self-consistency-update"
+        "book/src/20-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references",
+        "book/src/20-gw-bse/02-screened-interaction.md#screened-interaction-dielectric-matrix-single-pole",
+        "book/src/20-gw-bse/04-cohsex.md#cohsex-static-limit",
+        "book/src/20-gw-bse/05-continuation-and-qp-equation.md#continuation-and-qp-equation-quasiparticle-equation",
+        "book/src/20-gw-bse/06-eigenvalue-self-consistency.md#eigenvalue-self-consistency-update"
       ],
       "scripts": [
         "scripts/gw_self_energy_sympy.py",
@@ -1444,16 +1444,16 @@
     },
     "tddft": {
       "book": [
-        "book/src/20-tddft/01-response.md#response-matrices",
-        "book/src/20-tddft/01-response.md#response-tda-casida-reduction",
-        "book/src/20-tddft/01-response.md#response-tda-casida-reduction",
-        "book/src/20-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula",
-        "book/src/20-tddft/03-kernel.md#kernel-gate",
-        "book/src/20-tddft/04-rsh.md#rsh-split",
-        "book/src/20-tddft/05-triplets.md#triplets-spin-blocks",
-        "book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem",
-        "book/src/20-tddft/06-unrestricted.md#unrestricted-each-root",
-        "book/src/20-tddft/01-response.md#response-matrix-free-solvers"
+        "book/src/19-tddft/01-response.md#response-matrices",
+        "book/src/19-tddft/01-response.md#response-tda-casida-reduction",
+        "book/src/19-tddft/01-response.md#response-tda-casida-reduction",
+        "book/src/19-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula",
+        "book/src/19-tddft/03-kernel.md#kernel-gate",
+        "book/src/19-tddft/04-rsh.md#rsh-split",
+        "book/src/19-tddft/05-triplets.md#triplets-spin-blocks",
+        "book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem",
+        "book/src/19-tddft/06-unrestricted.md#unrestricted-each-root",
+        "book/src/19-tddft/01-response.md#response-matrix-free-solvers"
       ],
       "scripts": [
         "scripts/tddft_response_sympy.py",
@@ -1513,8 +1513,8 @@
     },
     "bse-tda": {
       "book": [
-        "book/src/19-gw-bse/08-bse-tda.md#bse-tda-matrix",
-        "book/src/20-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula"
+        "book/src/20-gw-bse/08-bse-tda.md#bse-tda-matrix",
+        "book/src/19-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula"
       ],
       "scripts": [
         "scripts/gw_bse_rpax_sympy.py",
@@ -1523,7 +1523,7 @@
     },
     "tdhf-static-polarizability": {
       "book": [
-        "book/src/19-gw-bse/09-rpax-static-polarizability.md#rpax-static-polarizability-response-matrices"
+        "book/src/20-gw-bse/09-rpax-static-polarizability.md#rpax-static-polarizability-response-matrices"
       ],
       "scripts": [
         "scripts/gw_bse_rpax_sympy.py"
@@ -1531,8 +1531,8 @@
     },
     "u-gw": {
       "book": [
-        "book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per",
-        "book/src/19-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references"
+        "book/src/20-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per",
+        "book/src/20-gw-bse/01-ri-factors-and-exchange.md#continuation-and-qp-equation-hybrid-references"
       ],
       "scripts": [
         "scripts/gw_ucohsex_sympy.py",

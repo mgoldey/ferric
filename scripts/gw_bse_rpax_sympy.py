@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: ferric-gw's BSE-TDA matrix and statically screened TDHF/RPAx polarizability.
 
-Derivation: `book/src/19-gw-bse/08-bse-tda.md#bse-tda-matrix` (BSE-TDA) and 12
+Derivation: `book/src/20-gw-bse/08-bse-tda.md#bse-tda-matrix` (BSE-TDA) and 12
 (TDHF/RPAx polarizability). The code transcribed here (index ia = i * nvir + a,
 chemist integrals, real orbitals, auxiliary index first, `M[xi,p,q] =
 sum_P U[P,xi] B[P,p,q]` from the eigenvectors U of the static dielectric):

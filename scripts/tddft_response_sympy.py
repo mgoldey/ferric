@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: ferric-tddft's spin-adapted response matrices, Casida reduction and oscillator strengths.
 
-Derivation: (`book/src/20-tddft/01-response.md#response-matrices`, `book/src/20-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula`, 8-11). The code
+Derivation: (`book/src/19-tddft/01-response.md#response-matrices`, `book/src/19-tddft/02-oscillator-strengths.md#oscillator-strengths-length-gauge-formula`, 8-11). The code
 transcribed here (index ia = i * nvir + a, chemist integrals, real orbitals):
 
   * tddft.rs build_a_matrix / build_b_matrix with coulomb_factor (c_J = 2
@@ -32,7 +32,7 @@ Checked:
       +-sqrt((a-b)(a+b)), and X+Y = W^{-1/2} sqrt(a-b) z with unit z gives
       X^2 - Y^2 = 1.
   A4  (symbolic) the range-separated exchange c_sr erfc + c_lr erf =
-      c_sr * 1 + (c_lr - c_sr) erf (`book/src/20-tddft/04-rsh.md#rsh-split`).
+      c_sr * 1 + (c_lr - c_sr) erf (`book/src/19-tddft/04-rsh.md#rsh-split`).
   B   Numerical, random closed-shell model (2 occ, 3 vir, RI tensors for
       Coulomb and erf, a random grid kernel f_aa, f_ab):
       B1  the spin-orbital A and B built directly from the textbook
@@ -57,7 +57,7 @@ Checked:
           body term making both Fock matrices diagonal) equals A elementwise;
           for C_a = C_b the unrestricted roots are the restricted singlet union
           triplet and the transition moment reduces to the sqrt2 form.
-  D   <S^2> of an unrestricted root (`book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`), against an
+  D   <S^2> of an unrestricted root (`book/src/19-tddft/06-unrestricted.md#unrestricted-each-root`), against an
       independent Fock-space construction <Psi|S^2|Psi> = M^2 + M +
       |S_+ Psi|^2 with S_+ = sum O_pq a+_{p alpha} a_{q beta} and Jordan-Wigner
       signs, 4 spatial orbitals per spin, (n_alpha, n_beta) = (2,1), (3,1),
@@ -69,7 +69,7 @@ Checked:
       D4  casida_x = the X block of the eigenvector of [[A, B], [-B, -A]]
           normalized to X.X - Y.Y = 1 (claim casidax).
   E   Davidson solvers and the triplet kernel coefficients:
-      E1  davidson.rs::diagonal_correction (`book/src/20-tddft/01-response.md`,
+      E1  davidson.rs::diagonal_correction (`book/src/19-tddft/01-response.md`,
           eq:response-4): Olsen's t = P r - eps P x with
           eps = x^T P r / x^T P x has x^T t = 0 (symbolic, and on the port
           for Ritz pairs of a random 40x40 A); the plain P r does not
@@ -80,7 +80,7 @@ Checked:
           full space, Omega are the positive roots of [[A, B], [-B, -A]]
           and u = X+Y of solve_casida (claim casidaritz).
       E3  fxc.rs::spin_coefficients(triplet = true)
-          (`book/src/20-tddft/05-triplets.md`): for a generic symmetric
+          (`book/src/19-tddft/05-triplets.md`): for a generic symmetric
           libxc Hessian H and the perturbation drho_b = -drho_a,
           grad drho_b = -grad drho_a, dtau_b = -dtau_a at a restricted
           point, the libxc variables move by (r, -r, 2 gamma, 0, -2 gamma,

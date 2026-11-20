@@ -48,8 +48,8 @@ The derivations, proofs and measurements for `ferric-mp2` are in the ferric book
 | Unrestricted RI-MP2 gradient | `u-rimp2-gradient` | [`book/src/15-correlated-gradients/07-u-rimp2-gradient.md`](../../book/src/15-correlated-gradients/07-u-rimp2-gradient.md) | `scripts/scs_2terfc_gradient_sympy.py`, `scripts/u_rimp2_gradient_sympy.py` | `mp2.u.grad.assembly`, `mp2.u.grad.scs-2terfc`, `mp2.u.grad.weights` |
 | dRPA three ways: frequency integral, plasmon formula, ring amplitudes | `drpa-three-ways` | [`book/src/18-rpa/01-drpa-three-ways.md`](../../book/src/18-rpa/01-drpa-three-ways.md) | `scripts/rpa_drpa_pdep_sympy.py` | `rpa.drpa.three-routes` |
 | Ring amplitudes with a threshold: local dRPA | `local-drpa` | [`book/src/18-rpa/06-local-drpa.md`](../../book/src/18-rpa/06-local-drpa.md) | — | — |
-| Response matrices, TDA and the Casida equations | `response` | [`book/src/20-tddft/01-response.md`](../../book/src/20-tddft/01-response.md) | — | — |
-| Range-separated hybrids | `rsh` | [`book/src/20-tddft/04-rsh.md`](../../book/src/20-tddft/04-rsh.md) | — | — |
+| Response matrices, TDA and the Casida equations | `response` | [`book/src/19-tddft/01-response.md`](../../book/src/19-tddft/01-response.md) | — | — |
+| Range-separated hybrids | `rsh` | [`book/src/19-tddft/04-rsh.md`](../../book/src/19-tddft/04-rsh.md) | — | — |
 | Second order in a split interaction | `cross-term` | [`book/src/26-rs-mp2-rpa/01-cross-term.md`](../../book/src/26-rs-mp2-rpa/01-cross-term.md) | `scripts/rpa_rs_mp2_rpa_sympy.py` | `rsrpa.ring2-2eos` |
 | The two formulations in the code | `two-formulations` | [`book/src/26-rs-mp2-rpa/04-two-formulations.md`](../../book/src/26-rs-mp2-rpa/04-two-formulations.md) | — | — |
 | Shared intermediates across the two kernels | `shared-intermediates` | [`book/src/26-rs-mp2-rpa/06-shared-intermediates.md`](../../book/src/26-rs-mp2-rpa/06-shared-intermediates.md) | — | — |

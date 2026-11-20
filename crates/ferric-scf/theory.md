@@ -39,9 +39,9 @@ The derivations, proofs and measurements for `ferric-scf` are in the ferric book
 | RI-MP2 gradient with exact and RI-JK references; SCS-MP2 | `rimp2-gradient` | [`book/src/15-correlated-gradients/02-rimp2-gradient.md`](../../book/src/15-correlated-gradients/02-rimp2-gradient.md) | — | — |
 | Kohn–Sham Z-vector for post-SCF corrections | `ks-zvector` | [`book/src/15-correlated-gradients/04-ks-zvector.md`](../../book/src/15-correlated-gradients/04-ks-zvector.md) | `scripts/ks_zvector_sympy.py` | `ks.zvector`, `ks.zvector.contraction`, `ks.zvector.open-shell` |
 | Unrestricted RI-MP2 gradient | `u-rimp2-gradient` | [`book/src/15-correlated-gradients/07-u-rimp2-gradient.md`](../../book/src/15-correlated-gradients/07-u-rimp2-gradient.md) | — | — |
-| Analytic continuation and the quasiparticle equation | `continuation-and-qp-equation` | [`book/src/19-gw-bse/05-continuation-and-qp-equation.md`](../../book/src/19-gw-bse/05-continuation-and-qp-equation.md) | — | — |
-| Range-separated hybrids | `rsh` | [`book/src/20-tddft/04-rsh.md`](../../book/src/20-tddft/04-rsh.md) | — | — |
-| Triplets | `triplets` | [`book/src/20-tddft/05-triplets.md`](../../book/src/20-tddft/05-triplets.md) | — | — |
+| Analytic continuation and the quasiparticle equation | `continuation-and-qp-equation` | [`book/src/20-gw-bse/05-continuation-and-qp-equation.md`](../../book/src/20-gw-bse/05-continuation-and-qp-equation.md) | — | — |
+| Range-separated hybrids | `rsh` | [`book/src/19-tddft/04-rsh.md`](../../book/src/19-tddft/04-rsh.md) | — | — |
+| Triplets | `triplets` | [`book/src/19-tddft/05-triplets.md`](../../book/src/19-tddft/05-triplets.md) | — | — |
 | Static and dynamic polarizabilities from the dielectric modes | `polarizabilities-from-dielectric-modes` | [`book/src/21-polarizabilities/01-polarizabilities-from-dielectric-modes.md`](../../book/src/21-polarizabilities/01-polarizabilities-from-dielectric-modes.md) | — | — |
 | Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits | `atomic-partitions` | [`book/src/21-polarizabilities/02-atomic-partitions.md`](../../book/src/21-polarizabilities/02-atomic-partitions.md) | `scripts/atomic_charges_sympy.py` | `charges.chelpg.bordered`, `charges.population.sums`, `charges.resp.fixed.point` |
 | The reaction field in the Fock matrix | `reaction-field` | [`book/src/22-implicit-solvation/03-reaction-field.md`](../../book/src/22-implicit-solvation/03-reaction-field.md) | `scripts/pcm_ief_sympy.py` | `pcm.fock.reaction-field` |

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: ferric-gw's open-shell (per-spin) static self-energy and the per-spin Fermi level.
 
-Derivation: `book/src/19-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per` (open shell). The code
+Derivation: `book/src/20-gw-bse/07-open-shell-gw.md#open-shell-gw-spin-summed-screening-per` (open shell). The code
 transcribed here (auxiliary index first, `B_s[P,p,q]` per spin, `M_s[xi,p,q] =
 sum_P U[P,xi] B_s[P,p,q]` with U the eigenvectors of the SPIN-SUMMED static
 dielectric):

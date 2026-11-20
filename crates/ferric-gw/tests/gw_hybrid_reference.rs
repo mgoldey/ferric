@@ -4,7 +4,7 @@
 //!
 //! The QP shift at a KS reference is Σx − v_mf, where v_mf is everything in
 //! the KS Fock besides h + J: the semilocal V_xc AND the exact exchange a
-//! hybrid put there (book/src/19-gw-bse/05-continuation-and-qp-equation.md,
+//! hybrid put there (book/src/20-gw-bse/05-continuation-and-qp-equation.md,
 //! "Hybrid references"). Σx is
 //! the FULL exchange, so a v_mf without the K term counts the exact-exchange
 //! fraction twice. `vxc_mo::vxc_diagonal_mo_on_grids` is that v_mf.

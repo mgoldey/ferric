@@ -25,12 +25,12 @@
 //! `c_sr (pq|rs) + (c_lr − c_sr) (pq|rs)_ω`, the second term over a second set
 //! of RI tensors of the erf(ωr)/r operator in its own metric. Triplets drop
 //! the Coulomb term and take the `f_αα − f_αβ` kernel. Derivations:
-//! `book/src/20-tddft/04-rsh.md#rsh-split` (range separation) and §9 (triplets).
+//! `book/src/19-tddft/04-rsh.md#rsh-split` (range separation) and §9 (triplets).
 //!
 //! Scope: this module assembles the closed-shell (restricted) problem.
 //! [`run_tddft`] sends an unrestricted (UHF / UKS) reference to
 //! `crate::unrestricted`, which builds the two-spin A/B space; only ROHF /
-//! ROKS references are refused (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`).
+//! ROKS references are refused (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`).
 //!
 //! # Solvers
 //!
@@ -243,7 +243,7 @@ pub struct TddftResult {
     /// The reference the roots were computed on: restricted or unrestricted.
     pub reference: ferric_scf::Spin,
     /// `<S²>` of each root, same ordering as the energies
-    /// (`book/src/20-tddft/06-unrestricted.md#unrestricted-each-root`):
+    /// (`book/src/19-tddft/06-unrestricted.md#unrestricted-each-root`):
     /// exactly 0 (singlet) or 2 (triplet) on a restricted reference; on an
     /// unrestricted one, `<S²>` of the excited determinant expansion with
     /// coefficients `X` (TDA) or `X = ((X+Y) + (X−Y))/2` renormalized to
@@ -354,7 +354,7 @@ pub(crate) fn build_b_tensors(
     Ok((b_ov, b_oo, b_vv))
 }
 
-/// The erf(ωr)/r tensors of a range-separated hybrid (`book/src/20-tddft/04-rsh.md#rsh-split`):
+/// The erf(ωr)/r tensors of a range-separated hybrid (`book/src/19-tddft/04-rsh.md#rsh-split`):
 /// `B^ω = M_ω (Q|erf|pq)` with `M_ωᵀ M_ω` the pseudo-inverse of the erf
 /// metric `(P|erf|Q)` (eigendecomposition, near-null modes dropped:
 /// [`metric_inverse_sqrt`] for the erf operator), over the same auxiliary
@@ -548,8 +548,8 @@ fn subtract_exchange_b(
 /// A_{ia,jb} = δ_{ij}δ_{ab}(ε_a − ε_i) + c_J (ia|jb) − c_sr (ij|ab) − Δc (ij|ab)_ω
 ///
 /// with `c_J` = 2 (singlet) or 0 (triplet) and the long-range term only for a
-/// range-separated hybrid (`book/src/20-tddft/04-rsh.md#rsh-split`,
-/// `book/src/20-tddft/05-triplets.md#triplets-spin-blocks`). The `+ K_{ia,jb}` f_xc block is
+/// range-separated hybrid (`book/src/19-tddft/04-rsh.md#rsh-split`,
+/// `book/src/19-tddft/05-triplets.md#triplets-spin-blocks`). The `+ K_{ia,jb}` f_xc block is
 /// added by the caller.
 pub(crate) fn build_a_matrix(
     eps: &[f64],
@@ -671,7 +671,7 @@ fn oscillator_strengths(
     Ok((osc, tdips))
 }
 
-/// Exact-exchange coefficients of a response run (`book/src/20-tddft/04-rsh.md#rsh-split`):
+/// Exact-exchange coefficients of a response run (`book/src/19-tddft/04-rsh.md#rsh-split`):
 /// `c_sr (pq|rs) + (c_lr − c_sr) (pq|rs)_ω`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ExchangeMix {
@@ -765,7 +765,7 @@ fn restricted_s2(spin: ResponseSpin) -> f64 {
 }
 
 /// The refusal of an ROHF / ROKS reference
-/// (`book/src/20-tddft/06-unrestricted.md#unrestricted-spin-problem`).
+/// (`book/src/19-tddft/06-unrestricted.md#unrestricted-spin-problem`).
 fn roks_refusal() -> FerricError {
     FerricError::General(
         "run_tddft: ROHF/ROKS references are refused. Their orbitals diagonalize one \
@@ -927,7 +927,7 @@ pub(crate) fn solve_casida(
 /// root list. The dense path's positive-root cut, mirrored.
 pub(crate) const NEGATIVE_OMEGA_SQ: f64 = crate::davidson::POSITIVE_ROOT;
 
-/// The error for a Casida `Ω² < 0` (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`).
+/// The error for a Casida `Ω² < 0` (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`).
 pub(crate) fn negative_omega_sq_error(w2: f64) -> FerricError {
     FerricError::General(format!(
         "TDDFT: Casida has an imaginary root (Omega^2 = {w2:.6e} Ha^2): A+B is not \
@@ -1019,7 +1019,7 @@ impl RiTensors {
 }
 
 /// The Coulomb coefficient `c_J` of `spin`
-/// (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`).
+/// (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`).
 pub(crate) fn coulomb_factor(spin: ResponseSpin) -> f64 {
     match spin {
         ResponseSpin::Singlet => 2.0,
@@ -1262,7 +1262,7 @@ fn plan_response_memory(
 }
 
 /// The Coulomb-metric RI tensors, plus the erf-metric set for a
-/// range-separated hybrid (`book/src/20-tddft/04-rsh.md#rsh-split`).
+/// range-separated hybrid (`book/src/19-tddft/04-rsh.md#rsh-split`).
 pub(crate) fn build_response_tensors(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
@@ -1294,7 +1294,7 @@ pub(crate) fn build_response_tensors(
 /// Oscillator strengths and transition dipoles of the roots. Triplets are
 /// spin-forbidden: the spin-free dipole couples the closed-shell reference
 /// to no triplet, so both are exactly zero
-/// (`book/src/20-tddft/05-triplets.md#triplets-spin-blocks`).
+/// (`book/src/19-tddft/05-triplets.md#triplets-spin-blocks`).
 fn transition_properties(
     obs: &PreparedBasis,
     space: &OvSpace,
@@ -1722,7 +1722,7 @@ mod tests {
         (Some("HYB_GGA_XC_CAM_B3LYP"), ResponseSpin::Triplet),
     ];
 
-    /// Exactness anchors of the range-separated exchange (`book/src/20-tddft/04-rsh.md#rsh-split`),
+    /// Exactness anchors of the range-separated exchange (`book/src/19-tddft/04-rsh.md#rsh-split`),
     /// water/cc-pVDZ on a B3LYP reference and kernel, singlet and triplet:
     ///
     /// * ω = 0 with `c_lr ≠ c_sr` (0.20, 0.65) assembles A, B and the

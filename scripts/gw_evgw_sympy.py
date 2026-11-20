@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proofs: the eigenvalue-self-consistent GW updates (evGW0 and evGW) of ferric-gw.
 
-Derivation: `book/src/19-gw-bse/06-eigenvalue-self-consistency.md`. The code
+Derivation: `book/src/20-gw-bse/06-eigenvalue-self-consistency.md`. The code
 transcribed here (ferric-gw/src/sigma.rs):
 
   * run_evgw0: eps_qp starts at eps_mf; sweep k copies the previous sweep's

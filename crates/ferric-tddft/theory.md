@@ -7,9 +7,9 @@ The derivations, proofs and measurements for `ferric-tddft` are in the ferric bo
 | Section | Label | Page | Proof scripts | Verified boxes |
 |---|---|---|---|---|
 | $f_{xc}$ response kernels | `fxc` | [`book/src/09-kohn-sham/06-fxc.md`](../../book/src/09-kohn-sham/06-fxc.md) | — | — |
-| Response matrices, TDA and the Casida equations | `response` | [`book/src/20-tddft/01-response.md`](../../book/src/20-tddft/01-response.md) | `scripts/tddft_response_sympy.py` | `td.casida.reduction`, `td.matrices.spin-adaptation` |
-| Transition dipoles and oscillator strengths | `oscillator-strengths` | [`book/src/20-tddft/02-oscillator-strengths.md`](../../book/src/20-tddft/02-oscillator-strengths.md) | `scripts/tddft_response_sympy.py` | `td.osc.sum-rule` |
-| The kernel and the functional gate | `kernel` | [`book/src/20-tddft/03-kernel.md`](../../book/src/20-tddft/03-kernel.md) | — | — |
-| Range-separated hybrids | `rsh` | [`book/src/20-tddft/04-rsh.md`](../../book/src/20-tddft/04-rsh.md) | `scripts/tddft_response_sympy.py` | `td.rsh.split` |
-| Triplets | `triplets` | [`book/src/20-tddft/05-triplets.md`](../../book/src/20-tddft/05-triplets.md) | `scripts/tddft_response_sympy.py` | `td.triplet.blocks` |
-| Unrestricted references and $\langle S^2\rangle$ | `unrestricted` | [`book/src/20-tddft/06-unrestricted.md`](../../book/src/20-tddft/06-unrestricted.md) | `scripts/tddft_response_sympy.py` | `td.s2.per-root`, `td.unrestricted.matrices` |
+| Response matrices, TDA and the Casida equations | `response` | [`book/src/19-tddft/01-response.md`](../../book/src/19-tddft/01-response.md) | `scripts/tddft_response_sympy.py` | `td.casida.reduction`, `td.matrices.spin-adaptation` |
+| Transition dipoles and oscillator strengths | `oscillator-strengths` | [`book/src/19-tddft/02-oscillator-strengths.md`](../../book/src/19-tddft/02-oscillator-strengths.md) | `scripts/tddft_response_sympy.py` | `td.osc.sum-rule` |
+| The kernel and the functional gate | `kernel` | [`book/src/19-tddft/03-kernel.md`](../../book/src/19-tddft/03-kernel.md) | — | — |
+| Range-separated hybrids | `rsh` | [`book/src/19-tddft/04-rsh.md`](../../book/src/19-tddft/04-rsh.md) | `scripts/tddft_response_sympy.py` | `td.rsh.split` |
+| Triplets | `triplets` | [`book/src/19-tddft/05-triplets.md`](../../book/src/19-tddft/05-triplets.md) | `scripts/tddft_response_sympy.py` | `td.triplet.blocks` |
+| Unrestricted references and $\langle S^2\rangle$ | `unrestricted` | [`book/src/19-tddft/06-unrestricted.md`](../../book/src/19-tddft/06-unrestricted.md) | `scripts/tddft_response_sympy.py` | `td.s2.per-root`, `td.unrestricted.matrices` |

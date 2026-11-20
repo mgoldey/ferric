@@ -16,7 +16,7 @@ Checked (claim names are the check labels):
   M1  the dielectric form equals an independent direct solve of the dRPA
       response, alpha(iu) = 4 mu^T [Delta (Delta + 4 K) + u^2]^-1 Delta mu
       (A - B = Delta, A + B = Delta + 4 K, the form of
-      `book/src/19-gw-bse/09-rpax-static-polarizability.md#rpax-static-polarizability-response-matrices` with
+      `book/src/20-gw-bse/09-rpax-static-polarizability.md#rpax-static-polarizability-response-matrices` with
       W = 0), at u = 0 and u = 0.9, for the full tensor.
   M2  polarizability_from_modes with every mode kept equals the dielectric
       form; keeping fewer modes does not (negative control: the truncated
