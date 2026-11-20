@@ -259,24 +259,22 @@ pub(crate) fn set_certificate(
 /// molecule; see `ferric_scf::rhf::require_closed_shell`). A non-converged
 /// SCF is an error on both routes.
 pub(crate) fn rimp2_energies(
-    mol: &Molecule,
+    mol: Molecule,
     basis_set: &basis::BasisSet,
     auxbasis: &basis::BasisSet,
     rhf_config: &RhfConfig,
     mp2_config: &RiMp2Config,
     with_gradient: bool,
 ) -> Result<Rimp2Energies, ferric_core::FerricError> {
-    let prep = PreparedBasis::new(mol, basis_set)?;
-    let dfbs = PreparedBasis::new(mol, auxbasis)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep)?;
-    let open_shell = mol.multiplicity > 1;
-    let scf = spin_reference(&prep, &bounds, mol, rhf_config)?;
-    let (mp2_corr, total_energy, precision) = if open_shell {
-        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
+    let sys = PreparedSystem::new(mol, basis_set)?;
+    let dfbs = sys.prepare_aux(auxbasis)?;
+    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let scf = sys.solve_reference(rhf_config)?;
+    let (mp2_corr, total_energy, precision) = if scf.spin == ferric_scf::Spin::Unrestricted {
+        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, prep, &dfbs, op, &scf, mp2_config)?;
         (u.mp2_corr, u.total_energy, u.precision)
     } else {
-        let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
+        let mp2 = ri_mp2(mol, prep, &dfbs, op, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
     // Closed shell only: `run_rimp2` refuses an open-shell gradient first.
@@ -284,10 +282,10 @@ pub(crate) fn rimp2_energies(
         .then(|| {
             ferric_mp2::gradient::rimp2_gradient_analytical(
                 mol,
-                &prep,
+                prep,
                 &dfbs,
                 op,
-                &bounds,
+                sys.bounds(),
                 &scf,
                 mp2_config,
                 rhf_config.external_potential.as_ref(),
@@ -460,6 +458,12 @@ pub(crate) fn local_correlation_operator(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `local="amplitude-threshold"` refuses an ECP basis set: its localized virtual space cannot count
+/// valence virtuals on ECP atoms.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None))]
 #[allow(clippy::too_many_arguments)]
@@ -640,17 +644,17 @@ pub(crate) fn run_rimp2_exact(
     (rhf_config, jk): (RhfConfig, ferric_scf::scf_jk::ScfJk),
     with_gradient: bool,
 ) -> PyResult<PyRiMp2Result> {
-    let emol = mol.inner.clone();
+    let raw_mol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
     let eaux = auxbasis.inner.clone();
     let mp2_budget = budget_bytes_from_gb(memory_budget_gb);
-    let open_shell = emol.multiplicity > 1;
+    let open_shell = raw_mol.multiplicity > 1;
     if open_shell && kappa.is_some() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "run_rimp2: kappa is not supported for an open-shell molecule (multiplicity {}): \
              kappa-regularization exists for the closed-shell kernel only. Omit kappa for \
              plain unrestricted RI-MP2.",
-            emol.multiplicity
+            raw_mol.multiplicity
         )));
     }
     let mp2_config = RiMp2Config {
@@ -672,7 +676,7 @@ pub(crate) fn run_rimp2_exact(
     let r = py
         .allow_threads(|| {
             rimp2_energies(
-                &emol,
+                raw_mol,
                 &ebasis,
                 &eaux,
                 &rhf_config,
@@ -757,107 +761,33 @@ pub(crate) fn mp2_exact_default_config(
 
 // ── Reference-SCF preamble of the correlated drivers ──
 //
-// Every correlated `run_*` entry point solves its reference the same way:
-// prepare the orbital (and fitting) basis on `mol`, Coulomb Schwarz bounds, a
-// default `ParallelContext`, solve, and refuse a non-converged SCF. These
-// helpers are that preamble. None of them applies the basis set's ECP: the
-// drivers that use them never have (ECP-aware drivers such as `ci.rs` apply
-// it themselves before calling in). Making that uniform is the
-// `PreparedSystem` item of the ARCHITECTURE.md refactoring roadmap and a
-// behaviour change, kept out of this deduplication.
+// The correlated `run_*` entry points of this crate solve their reference the
+// same way: one `ferric_scf::PreparedSystem` (molecule with the basis set's
+// ECP applied, prepared orbital basis, Coulomb Schwarz bounds, parallel
+// context) built by its single constructor, any fitting basis prepared on the
+// same molecule (`PreparedSystem::prepare_aux`), the reference solved on the
+// borrowed system (`solve_rhf` / `solve_uhf` / `solve_reference`), and a
+// non-converged SCF refused (`ScfResult::into_converged`). Every later use of
+// the molecule reads `sys.mol()`, so the kernels see the valence electron
+// count the reference was solved for. (Kernels that cannot handle ECP atoms
+// refuse them themselves: the amplitude-threshold local MP2, dRPA and
+// LinLCCD in `ferric_mp2::lmp2_amplitude`.)
 
-/// `scf`, or `ScfConvergence` when it did not converge: the rule every
-/// `run_*` driver applies to its reference SCF.
-pub(crate) fn require_converged(
-    scf: ferric_scf::result::ScfResult,
-) -> Result<ferric_scf::result::ScfResult, ferric_core::FerricError> {
-    if !scf.converged {
-        return Err(ferric_core::FerricError::ScfConvergence {
-            iterations: scf.iterations,
-            last_energy: scf.energy,
-        });
-    }
-    Ok(scf)
+/// `PreparedSystem::new` on a copy of `mol`, for a binding returning
+/// `PyResult`.
+pub(crate) fn prepare(mol: &PyMolecule, basis: &PyBasisSet) -> PyResult<PreparedSystem> {
+    PreparedSystem::new(mol.inner.clone(), &basis.inner).map_err(make_err)
 }
 
-/// [`require_converged`] for a binding returning `PyResult`.
-pub(crate) fn converged(
-    scf: ferric_scf::result::ScfResult,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    require_converged(scf).map_err(make_err)
-}
-
-/// The converged closed-shell Coulomb RHF on `prep` (FerricError-typed, so it
-/// also runs inside `allow_threads`).
-pub(crate) fn rhf_reference(
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    mol: &Molecule,
-    config: &RhfConfig,
-) -> Result<ferric_scf::result::ScfResult, ferric_core::FerricError> {
-    let ctx = ParallelContext::default();
-    require_converged(solve_rhf(
-        &ctx,
-        mol,
-        prep,
-        Operator::coulomb(),
-        bounds,
-        config,
-    )?)
-}
-
-/// The converged reference by the rule of `run_rimp2`: the closed-shell RHF
-/// for a singlet, the UHF for multiplicity > 1.
-pub(crate) fn spin_reference(
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    mol: &Molecule,
-    config: &RhfConfig,
-) -> Result<ferric_scf::result::ScfResult, ferric_core::FerricError> {
-    if mol.multiplicity <= 1 {
-        return rhf_reference(prep, bounds, mol, config);
-    }
-    let ctx = ParallelContext::default();
-    require_converged(solve_uhf(&ctx, mol, prep, bounds, config)?)
-}
-
-/// The orbital basis and fitting basis prepared on `mol` and the converged
-/// closed-shell Coulomb RHF on them (FerricError-typed, for `allow_threads`).
-pub(crate) fn rhf_with_aux(
-    mol: &Molecule,
-    basis: &basis::BasisSet,
-    aux: &basis::BasisSet,
-    config: &RhfConfig,
-) -> Result<(PreparedBasis, PreparedBasis, ferric_scf::result::ScfResult), ferric_core::FerricError>
-{
-    let prep = PreparedBasis::new(mol, basis)?;
-    let aux = PreparedBasis::new(mol, aux)?;
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep)?;
-    let rhf = rhf_reference(&prep, &bounds, mol, config)?;
-    Ok((prep, aux, rhf))
-}
-
-/// [`rhf_with_aux`] for a binding returning `PyResult`.
-pub(crate) fn converged_rhf_with_aux(
-    mol: &Molecule,
-    basis: &basis::BasisSet,
-    aux: &basis::BasisSet,
-    config: &RhfConfig,
-) -> PyResult<(PreparedBasis, PreparedBasis, ferric_scf::result::ScfResult)> {
-    rhf_with_aux(mol, basis, aux, config).map_err(make_err)
-}
-
-/// [`converged_rhf_with_aux`] with the reference rule of [`spin_reference`].
-pub(crate) fn converged_reference_with_aux(
-    mol: &Molecule,
-    basis: &basis::BasisSet,
-    aux: &basis::BasisSet,
-    config: &RhfConfig,
-) -> PyResult<(PreparedBasis, PreparedBasis, ferric_scf::result::ScfResult)> {
-    let prep = PreparedBasis::new(mol, basis).map_err(make_err)?;
-    let aux = PreparedBasis::new(mol, aux).map_err(make_err)?;
-    let rhf = converged_reference(mol, &prep, config)?;
-    Ok((prep, aux, rhf))
+/// [`prepare`] plus the fitting basis `aux` on the same molecule.
+pub(crate) fn prepare_with_aux(
+    mol: &PyMolecule,
+    basis: &PyBasisSet,
+    aux: &PyBasisSet,
+) -> PyResult<(PreparedSystem, PreparedBasis)> {
+    let sys = prepare(mol, basis)?;
+    let aux = sys.prepare_aux(&aux.inner).map_err(make_err)?;
+    Ok((sys, aux))
 }
 
 /// `cfg` turned into the KS reference config of the GW/TDHF/TDDFT entry
@@ -879,46 +809,19 @@ pub(crate) fn ks_jkfit_config(
 /// level-shift ladder (the DIIS-oscillation fallback KS-DFT gets elsewhere),
 /// with the config of the rung that ran.
 pub(crate) fn ks_ladder_reference(
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    mol: &Molecule,
+    sys: &PreparedSystem,
     cfg: RhfConfig,
 ) -> PyResult<(ferric_scf::result::ScfResult, RhfConfig)> {
-    let ctx = ParallelContext::default();
-    let op = Operator::coulomb();
     let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
-    let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, mol, prep, op, bounds, &ladder)
-        .map_err(make_err)?;
+    let lr = sys.solve_rhf_ladder(&ladder).map_err(make_err)?;
     let cfg = match ladder.get(lr.rung_reached) {
         Some(r) => r.config.clone(),
         None => cfg,
     };
-    Ok((converged(lr.result)?, cfg))
+    Ok((lr.result.into_converged().map_err(make_err)?, cfg))
 }
 
-/// Solve the closed-shell Coulomb RHF reference, building its Schwarz table.
-pub(crate) fn converged_rhf(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    config: &RhfConfig,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).map_err(make_err)?;
-    converged_rhf_with_bounds(mol, prep, &bounds, config)
-}
-
-/// The reference of the attenuated / SCS / rs-mp2-rpa entry points: the
-/// closed-shell RHF for a singlet, the UHF for multiplicity > 1 (the rule of
-/// `run_rimp2`). Non-convergence is an error on both routes.
-pub(crate) fn converged_reference(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    config: &RhfConfig,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), prep).map_err(make_err)?;
-    spin_reference(prep, &bounds, mol, config).map_err(make_err)
-}
-
-/// "RHF" or "UHF": what `converged_reference` solved.
+/// "RHF" or "UHF": what `PreparedSystem::solve_reference` solved.
 pub(crate) fn reference_name(scf: &ferric_scf::result::ScfResult) -> String {
     match scf.spin {
         ferric_scf::Spin::Restricted => "RHF",
@@ -928,27 +831,17 @@ pub(crate) fn reference_name(scf: &ferric_scf::result::ScfResult) -> String {
     .to_string()
 }
 
-/// Solve the closed-shell Coulomb RHF reference every MP2-family entry point
-/// shares, erroring on non-convergence (same rule as every `run_*` driver).
-pub(crate) fn converged_rhf_with_bounds(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    config: &RhfConfig,
-) -> PyResult<ferric_scf::result::ScfResult> {
-    rhf_reference(prep, bounds, mol, config).map_err(make_err)
-}
-
 /// The exact-J/K RHF reference of the local dRPA / LinLCCD paths.
 pub(crate) fn local_rhf_reference(
-    mol: &Molecule,
-    prep: &PreparedBasis,
+    sys: &PreparedSystem,
     k_builder: Option<&str>,
     memory_budget_gb: Option<f64>,
     conv: ScfConv,
 ) -> PyResult<ferric_scf::result::ScfResult> {
     let config = rhf_config_conv(k_builder, budget_bytes_from_gb(memory_budget_gb), conv);
-    converged_rhf(mol, prep, &config)
+    sys.solve_rhf(&config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)
 }
 
 /// `run_rimp2(local="amplitude-threshold", ...)`: the amplitude-threshold
@@ -984,8 +877,12 @@ pub(crate) fn run_rimp2_local(
         )));
     }
     let op = local_correlation_operator(att_keys, model, &basis_set.inner.name)?;
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let eps = model.eps[0];
     // The same builder as the CLI's `[local]` run (`LocalModel::rimp2_configs`).
     let (lcfg, dcfg) = model.rimp2_configs(
@@ -994,22 +891,14 @@ pub(crate) fn run_rimp2_local(
     );
     let (r, st) = match &dcfg {
         None => (
-            amplitude_lmp2(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)
+            amplitude_lmp2(mol, prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)
                 .map_err(make_err)?,
             None,
         ),
         Some(dc) => {
-            let (r, st) = amplitude_lmp2_direct(
-                &mol.inner,
-                &prep,
-                &basis_set.inner,
-                &dfbs,
-                op,
-                &rhf,
-                &lcfg,
-                dc,
-            )
-            .map_err(make_err)?;
+            let (r, st) =
+                amplitude_lmp2_direct(mol, prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg, dc)
+                    .map_err(make_err)?;
             (r, Some(st))
         }
     };
@@ -1017,13 +906,13 @@ pub(crate) fn run_rimp2_local(
         &lcfg,
         dcfg.as_ref(),
         &r,
-        &ferric_mp2::lmp2_certificate::SystemShape::new(&mol.inner, &basis_set.inner),
+        &ferric_mp2::lmp2_certificate::SystemShape::new(mol, &basis_set.inner),
         &op,
     )
     .with_direct_stats(st.as_ref());
     let mut certificate_data = ferric_mp2::certificate::local_rimp2_certificate(
         &cert,
-        &reference_certificate(&mol.inner, &rhf, rhf_config, &basis_set.inner),
+        &reference_certificate(mol, &rhf, rhf_config, &basis_set.inner),
     );
     if op.kind != ferric_integrals::operator::OperatorKind::Coulomb {
         certificate_data = certificate_data.with_approximation(
@@ -1162,6 +1051,10 @@ pub(crate) fn drpa_result_to_dict(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// An ECP basis set is refused: the amplitude solver's localized virtual space cannot count valence
+/// virtuals on ECP atoms.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, local=None, eps=None, compute_reference=None, diis=None, eps_rtol_factor=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1203,10 +1096,11 @@ pub(crate) fn run_drpa(
         Some(m) => (m.eps[0], m.reference),
     };
     let fc = frozen_core.unwrap_or(0);
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let sys = prepare(mol, basis_set)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     if model.is_none() {
         // Refuse an exact run that cannot fit, BEFORE the SCF.
-        let nocc = (mol.inner.nelec() as usize) / 2;
+        let nocc = (mol.nelec() as usize) / 2;
         let no = nocc.saturating_sub(fc);
         let nv = prep.nbasis().saturating_sub(nocc);
         let diis_sub = match diis.unwrap_or(8) {
@@ -1229,10 +1123,9 @@ pub(crate) fn run_drpa(
             )));
         }
     }
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let dfbs = sys.prepare_aux(&auxbasis.inner).map_err(make_err)?;
     let rhf = local_rhf_reference(
-        &mol.inner,
-        &prep,
+        &sys,
         k_builder,
         memory_budget_gb,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
@@ -1246,8 +1139,8 @@ pub(crate) fn run_drpa(
         eps_rtol_factor,
     );
     let r = amplitude_drpa(
-        &mol.inner,
-        &prep,
+        mol,
+        prep,
         &basis_set.inner,
         &dfbs,
         Operator::coulomb(),
@@ -1262,7 +1155,7 @@ pub(crate) fn run_drpa(
     };
     let certificate = ferric_mp2::certificate::drpa_certificate(
         &reference_certificate(
-            &mol.inner,
+            mol,
             &rhf,
             &rhf_config_conv(
                 k_builder,
@@ -1301,6 +1194,10 @@ pub(crate) fn run_drpa(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// An ECP basis set is refused: the amplitude solver's localized virtual space cannot count valence
+/// virtuals on ECP atoms.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, eps_list, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1339,8 +1236,12 @@ pub(crate) fn run_drpa_scan(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let base_cfg = drpa_config(
         None,
         frozen_core,
@@ -1350,8 +1251,8 @@ pub(crate) fn run_drpa_scan(
         eps_rtol_factor,
     );
     let (results, prefix_wall_s, per_point_walls) = amplitude_drpa_scan_timed(
-        &mol.inner,
-        &prep,
+        mol,
+        prep,
         &basis_set.inner,
         &dfbs,
         op,
@@ -1362,7 +1263,7 @@ pub(crate) fn run_drpa_scan(
     .map_err(make_err)?;
     let out = pyo3::types::PyList::empty(py);
     let scf_certificate = reference_certificate(
-        &mol.inner,
+        mol,
         &rhf,
         &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
         &basis_set.inner,
@@ -1408,6 +1309,12 @@ pub(crate) fn run_drpa_scan(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `local="amplitude-threshold"` refuses an ECP basis set: its localized virtual space cannot count
+/// valence virtuals on ECP atoms.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, variant=None, local=None, eps=None, compute_reference=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1451,11 +1358,10 @@ pub(crate) fn run_linlccd(
             mol.inner.multiplicity
         )));
     }
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let rhf = local_rhf_reference(
-        &mol.inner,
-        &prep,
+        &sys,
         k_builder,
         memory_budget_gb,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
@@ -1465,8 +1371,8 @@ pub(crate) fn run_linlccd(
     let budget = budget_bytes_from_gb(memory_budget_gb);
     let exact = |var: LadderVariant| -> PyResult<f64> {
         let cc = linlccd(
-            &mol.inner,
-            &prep,
+            mol,
+            prep,
             &dfbs,
             op,
             &rhf,
@@ -1492,8 +1398,8 @@ pub(crate) fn run_linlccd(
         Some(m) => {
             let eps = m.eps[0];
             let r = amplitude_linlccd(
-                &mol.inner,
-                &prep,
+                mol,
+                prep,
                 &basis_set.inner,
                 &dfbs,
                 op,
@@ -1524,7 +1430,7 @@ pub(crate) fn run_linlccd(
     d.set_item("variant", var.as_str())?;
     let certificate = ferric_cc::certificate::linlccd_certificate(
         &reference_certificate(
-            &mol.inner,
+            mol,
             &rhf,
             &rhf_config_conv(
                 k_builder,
@@ -1587,6 +1493,9 @@ pub(crate) fn run_linlccd(
 /// printed, `stability_warning` is set, and the returned omega is not
 /// certified stable. `False` skips the analysis and reproduces the previous
 /// results bit for bit.
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_dft` for the neutral molecule and `run_uks` for the cation solves.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, functional, omega_lo=None, omega_hi=None, omega_tol=None, max_evals=None, continuation=None, branch_tol=None, check_cation_stability=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1604,10 +1513,7 @@ pub(crate) fn tune_omega(
     check_cation_stability: Option<bool>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let sys = prepare(mol, basis_set)?;
     let defaults = OmegaTuneConfig::default();
     let cfg = OmegaTuneConfig {
         functional: functional.to_string(),
@@ -1627,7 +1533,7 @@ pub(crate) fn tune_omega(
         check_cation_stability: check_cation_stability.unwrap_or(defaults.check_cation_stability),
         ..defaults
     };
-    let r = tune(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
+    let r = tune(sys.ctx(), sys.mol(), sys.basis(), sys.bounds(), &cfg).map_err(make_err)?;
     let d = pyo3::types::PyDict::new(py);
     d.set_item("omega", r.omega)?;
     d.set_item("j", r.j)?;
@@ -1759,6 +1665,10 @@ impl PyOoRiMp2Result {
 /// `max_iter` is a deprecated alias of it. `scf_max_iter`, `scf_energy_conv`,
 /// `scf_density_conv` control the internal reference RHF (names and defaults of
 /// `run_rhf`'s `max_iter`, `energy_conv`, `density_conv`; 200, 1e-3, 1e-6).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, frozen_core=None, k_builder=None,
@@ -1831,11 +1741,12 @@ pub(crate) fn run_oo_rimp2(
     } else {
         rhf_config
     };
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let rhf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
     // Orbital-rotation loop knobs default to OoRiMp2Config::default() (same
     // library default the CLI's oo-rimp2 arm uses); frozen_core/memory_budget
     // follow the run_rimp2 convention.
@@ -1854,12 +1765,12 @@ pub(crate) fn run_oo_rimp2(
     // ExternalPotential, so `ext` is always None here. Adding QM/MM support to
     // this binding is out of Lane F1's scope; this just keeps behavior
     // unchanged after `oo_ri_mp2`'s hcore-bug fix.
-    let r = oo_ri_mp2(&mol.inner, &prep, &dfbs, op, &bounds, &rhf, &cfg, None).map_err(make_err)?;
+    let r = oo_ri_mp2(mol, prep, &dfbs, op, bounds, &rhf, &cfg, None).map_err(make_err)?;
     let gradient_data = with_gradient
-        .then(|| oo_rimp2_gradient(py, &mol.inner, &prep, &dfbs, &bounds, &r))
+        .then(|| oo_rimp2_gradient(py, mol, prep, &dfbs, bounds, &r))
         .transpose()?;
     let certificate_data = ferric_mp2::certificate::oo_rimp2_certificate(
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+        &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         cfg.frozen_core,
         &op,
@@ -1950,6 +1861,10 @@ impl PyMp3Result {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -1971,21 +1886,17 @@ pub(crate) fn run_mp3(
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     // The VVVV size guard inside mp3_energy used to resolve the budget itself
     // with a hardcoded `None` (env/auto-detect only), so a caller's budget
     // never reached it; it is now a parameter.
-    let mp3 = mp3_energy(
-        &mol.inner,
-        &prep,
-        &dfbs,
-        op,
-        &rhf,
-        frozen_core.unwrap_or(0),
-        budget,
-    )
-    .map_err(make_err)?;
+    let mp3 = mp3_energy(mol, prep, &dfbs, op, &rhf, frozen_core.unwrap_or(0), budget)
+        .map_err(make_err)?;
     Ok(PyMp3Result {
         e_hf: mp3.e_hf,
         e_mp2: mp3.e_mp2,
@@ -1994,13 +1905,13 @@ pub(crate) fn run_mp3(
         e_total: mp3.e_total,
         certificate_data: ferric_mp2::certificate::with_anchor_envelope(
             ferric_mp2::certificate::mp3_certificate(
-                &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+                &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
                 &auxbasis.inner.name,
                 frozen_core.unwrap_or(0),
                 &op,
             ),
             "MP3",
-            &mol.inner,
+            mol,
             &basis_set.inner,
             Some(&auxbasis.inner),
         ),
@@ -2056,6 +1967,10 @@ impl PyLaplaceMp2Result {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2085,11 +2000,15 @@ pub(crate) fn run_laplace_mp2(
     )?;
     let op = Operator::coulomb();
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let r = laplace_ri_mp2(
-        &mol.inner,
-        &prep,
+        mol,
+        prep,
         &dfbs,
         op,
         &rhf,
@@ -2100,14 +2019,14 @@ pub(crate) fn run_laplace_mp2(
     .map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_mp2::certificate::laplace_mp2_certificate(
-            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
             &auxbasis.inner.name,
             frozen_core.unwrap_or(0),
             &op,
             n_quad.unwrap_or(7),
         ),
         "Laplace RI-MP2",
-        &mol.inner,
+        mol,
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
@@ -2209,6 +2128,10 @@ impl PySosMp2Result {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, n_quad=None, frozen_core=None,
                     formulation=None, domain_cutoff_bohr=None, k_builder=None,
@@ -2242,8 +2165,12 @@ pub(crate) fn run_laplace_sos_mp2(
         scf_ri_j_precision,
     )?;
     let op = Operator::coulomb();
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let form =
         SosFormulation::parse_config_str(formulation, domain_cutoff_bohr).map_err(make_err)?;
     let cfg = SosMp2Config {
@@ -2253,27 +2180,18 @@ pub(crate) fn run_laplace_sos_mp2(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         domain_cutoff_bohr,
     };
-    let r = laplace_sos_mp2_with_basis(
-        &mol.inner,
-        &prep,
-        &basis_set.inner,
-        &dfbs,
-        op,
-        &rhf,
-        &cfg,
-        form,
-    )
-    .map_err(make_err)?;
+    let r = laplace_sos_mp2_with_basis(mol, prep, &basis_set.inner, &dfbs, op, &rhf, &cfg, form)
+        .map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_mp2::certificate::sos_mp2_certificate(
-            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
             &auxbasis.inner.name,
             &cfg,
             form,
             &op,
         ),
         "Laplace SOS-MP2",
-        &mol.inner,
+        mol,
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
@@ -2353,6 +2271,10 @@ impl PyAttenuatedMp2Result {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2380,8 +2302,9 @@ pub(crate) fn run_attenuated_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (prep, dfbs, rhf) =
-        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -2390,15 +2313,15 @@ pub(crate) fn run_attenuated_rimp2(
         screen_thresh: None,
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
-    let r = attenuated_ri_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = attenuated_ri_mp2(mol, prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_mp2::certificate::att_rimp2_certificate(
-            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
             &auxbasis.inner.name,
             &cfg,
         ),
         "Attenuated RI-MP2",
-        &mol.inner,
+        mol,
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
@@ -2428,6 +2351,10 @@ pub(crate) fn run_attenuated_rimp2(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2455,8 +2382,9 @@ pub(crate) fn run_terfc_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (prep, dfbs, rhf) =
-        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     // r0 supplied in Å; convert to Bohr for the operator.
     let resolved = ferric_mp2::terfc_r0::resolve_terfc_r0(&basis_set.inner.name, r0)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -2471,21 +2399,20 @@ pub(crate) fn run_terfc_rimp2(
         ..Default::default()
     };
     // Open shell: the unrestricted RI-MP2 under the same terfc operator.
-    let mp2 = if mol.inner.multiplicity > 1 {
-        let u =
-            ferric_mp2::u_rimp2::u_ri_mp2(&mol.inner, &prep, &dfbs, terfc_op, &rhf, &mp2_config)
-                .map_err(make_err)?;
+    let mp2 = if rhf.spin == ferric_scf::Spin::Unrestricted {
+        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, prep, &dfbs, terfc_op, &rhf, &mp2_config)
+            .map_err(make_err)?;
         ferric_mp2::rimp2::RiMp2Result {
             mp2_corr: u.mp2_corr,
             total_energy: u.total_energy,
             precision: u.precision,
         }
     } else {
-        ri_mp2(&mol.inner, &prep, &dfbs, terfc_op, &rhf, &mp2_config).map_err(make_err)?
+        ri_mp2(mol, prep, &dfbs, terfc_op, &rhf, &mp2_config).map_err(make_err)?
     };
     let certificate_data = ferric_mp2::certificate::ri_correlation_certificate(
         "att-rimp2",
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+        &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         frozen_core.unwrap_or(0),
         &terfc_op,
@@ -2586,6 +2513,10 @@ impl PyScsMp2Result {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2614,23 +2545,24 @@ pub(crate) fn run_scs_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (prep, dfbs, rhf) =
-        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0),
         c_ss: c_ss.unwrap_or(1.0 / 3.0),
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
-    let r = scs_mp2(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = scs_mp2(mol, prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_mp2::certificate::scs_mp2_certificate(
-            &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+            &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
             &auxbasis.inner.name,
             &cfg,
         ),
         "SCS-MP2",
-        &mol.inner,
+        mol,
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
@@ -2644,6 +2576,10 @@ pub(crate) fn run_scs_mp2(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2674,8 +2610,9 @@ pub(crate) fn run_scs_mp2_2terfc(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (prep, dfbs, rhf) =
-        converged_reference_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
         &basis_set.inner.name,
@@ -2701,9 +2638,9 @@ pub(crate) fn run_scs_mp2_2terfc(
             "r0_nonbonded must be > r0_bonded",
         ));
     }
-    let r = scs_mp2_2terfc(&mol.inner, &prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = scs_mp2_2terfc(mol, prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::scs_mp2_2terfc_certificate(
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+        &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
     );
@@ -2786,6 +2723,10 @@ impl PyMp2VResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2818,8 +2759,12 @@ pub(crate) fn run_mp2_v(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
 
     // Start from the published MP2-V(terfc, aTZ) parameterization and override
     // only what the caller set (same construction order as the CLI's
@@ -2868,14 +2813,13 @@ pub(crate) fn run_mp2_v(
     cfg.frozen_core = frozen_core.unwrap_or(0);
     cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
-    let r =
-        att_mp2_vv10(&mol.inner, &prep, &basis_set.inner, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = att_mp2_vv10(mol, prep, &basis_set.inner, &dfbs, &rhf, &cfg).map_err(make_err)?;
     let (e_os, e_ss) = match &r.spin_components {
         AttVv10SpinComponents::Restricted(s) => (s.e_os, s.e_ss),
         AttVv10SpinComponents::Unrestricted(_) => unreachable!("closed-shell entry point"),
     };
     let certificate_data = ferric_mp2::certificate::mp2_v_certificate(
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+        &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
     );
@@ -2910,6 +2854,10 @@ pub(crate) fn run_mp2_v(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, arms, bs, c=None, frozen_core=None, nlc_grid=None, df_j_aux=None, df_k_aux=None, k_builder=None, memory_budget_gb=None, include_coulomb_mp2=false, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None))]
 #[allow(clippy::too_many_arguments)]
@@ -2941,8 +2889,8 @@ pub(crate) fn run_mp2_v_scan(
             )));
         }
     }
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let mut rcfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
@@ -2951,7 +2899,10 @@ pub(crate) fn run_mp2_v_scan(
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     rcfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
-    let rhf = converged_rhf(&mol.inner, &prep, &rcfg)?;
+    let rhf = sys
+        .solve_rhf(&rcfg)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
     let mut base = AttVv10Config::mp2_v_terfc_atz();
     if let Some(c) = c {
         base.vv10.c = c;
@@ -2970,8 +2921,8 @@ pub(crate) fn run_mp2_v_scan(
         })
         .collect();
     let r = att_mp2_vv10_scan(
-        &mol.inner,
-        &prep,
+        mol,
+        prep,
         &basis_set.inner,
         &dfbs,
         &rhf,
@@ -2986,7 +2937,7 @@ pub(crate) fn run_mp2_v_scan(
     out.set_item("n_nlc_points", r.n_nlc_points)?;
     out.set_item("mp2_coulomb_corr", r.e_c_mp2_coulomb)?;
     let lst = PyList::empty(py);
-    let scf_certificate = reference_certificate(&mol.inner, &rhf, &rcfg, &basis_set.inner);
+    let scf_certificate = reference_certificate(mol, &rhf, &rcfg, &basis_set.inner);
     for ((arm, res), scan_arm) in arms.iter().zip(r.arms.iter()).zip(&scan_arms) {
         let d = PyDict::new(py);
         // The config this arm ran with, as `att_mp2_vv10_scan` builds it; the
@@ -3027,6 +2978,9 @@ pub(crate) fn run_mp2_v_scan(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, specs, b=11.0, c=0.0089, nlc_grid=None, df_j_aux=None, df_k_aux=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None))]
 #[allow(clippy::too_many_arguments)]
@@ -3045,7 +2999,8 @@ pub(crate) fn run_vv10_variants(
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<Vec<f64>> {
     use ferric_dft::vv10::{Vv10Damping, Vv10Weight};
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    let sys = prepare(mol, basis_set)?;
+    let mol = sys.mol();
     let mut rcfg = rhf_config_conv(
         None,
         None,
@@ -3054,7 +3009,10 @@ pub(crate) fn run_vv10_variants(
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     rcfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
-    let rhf = converged_rhf(&mol.inner, &prep, &rcfg)?;
+    let rhf = sys
+        .solve_rhf(&rcfg)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
     let mut weights = Vec::new();
     for (kind, r0, rw, power) in &specs {
         let r0_bohr = r0 * ferric_mp2::att_vv10::BOHR_PER_ANG;
@@ -3088,7 +3046,7 @@ pub(crate) fn run_vv10_variants(
         grid.n_angular = na;
     }
     ferric_mp2::att_vv10::vv10_weighted_energies_on_density(
-        &mol.inner,
+        mol,
         &basis_set.inner,
         rhf.density_total(),
         &ferric_dft::libxc::Vv10Params { c, b },

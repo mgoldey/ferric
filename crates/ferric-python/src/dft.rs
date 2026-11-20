@@ -326,6 +326,10 @@ impl PyDoubleHybridResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_dft` (`run_uks` for the unrestricted route) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false))]
 #[allow(clippy::too_many_arguments)]
@@ -365,11 +369,8 @@ pub(crate) fn run_double_hybrid(
     };
     let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
 
     let cfg = rhf_config_conv(
         k_builder,
@@ -379,10 +380,10 @@ pub(crate) fn run_double_hybrid(
     let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
 
     let (ks, cfg) = if open_shell {
-        let ks = solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg).map_err(make_err)?;
-        (converged(ks)?, cfg)
+        let ks = sys.solve_uhf(&cfg).and_then(ScfResult::into_converged);
+        (ks.map_err(make_err)?, cfg)
     } else {
-        ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?
+        ks_ladder_reference(&sys, cfg)?
     };
 
     let mut mp2_cfg = dh_kind.mp2_config();
@@ -391,20 +392,20 @@ pub(crate) fn run_double_hybrid(
     }
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
-    let r = if open_shell {
-        u_mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+    let r = if ks.spin == ferric_scf::Spin::Unrestricted {
+        u_mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
     } else {
-        mp2_double_hybrid(&mol.inner, &prep, &dfbs, &ks, &mp2_cfg)
+        mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
     }
     .map_err(make_err)?;
     let e_dispersion = match dh_kind.d3bj_functional() {
         Some(f) => {
             let params = ferric_d3::d3bj_params_for_functional(f).map_err(make_err)?;
-            Some(ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)?)
+            Some(ferric_d3::d3bj_energy_for_molecule(mol, &params).map_err(make_err)?)
         }
         None => None,
     };
-    let mut reference = reference_certificate(&mol.inner, &ks, &cfg, &basis_set.inner);
+    let mut reference = reference_certificate(mol, &ks, &cfg, &basis_set.inner);
     if let Some(f) = dh_kind.d3bj_functional() {
         reference =
             reference.with_approximation("dispersion", format!("D3(BJ) with {f} parameters"));

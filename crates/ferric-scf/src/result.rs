@@ -547,6 +547,18 @@ impl DfJkRoute {
 }
 
 impl ScfResult {
+    /// `self`, or [`ferric_core::FerricError::ScfConvergence`] when it did not converge:
+    /// the one rule every driver applies to a reference SCF.
+    pub fn into_converged(self) -> Result<Self, ferric_core::FerricError> {
+        if !self.converged {
+            return Err(ferric_core::FerricError::ScfConvergence {
+                iterations: self.iterations,
+                last_energy: self.energy,
+            });
+        }
+        Ok(self)
+    }
+
     /// Storage precision of the RI-K dressed tensor(s) this SCF's exchange was
     /// built from, or `None` when K was not density-fitted.
     pub fn ri_k_precision(&self) -> Option<crate::df_k::RiKPrecision> {

@@ -138,6 +138,9 @@ impl PyTddftResult {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` / `run_uhf` (`run_dft` / `run_uks` with `functional`) solves.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, functional=None, n_roots=3, method="tda",
@@ -197,11 +200,8 @@ pub(crate) fn run_tddft(
              roots are not spin-adapted. Run the default and read TddftResult.s2.",
         ));
     }
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let mol = sys.mol();
 
     let tddft_method = match method.to_lowercase().as_str() {
         "tda" | "cis" => TddftMethod::Tda,
@@ -248,26 +248,23 @@ pub(crate) fn run_tddft(
             .clone()
             .unwrap_or_else(ferric_dft::grid::AtomicGridConfig::production);
         if unrestricted {
-            let scf = solve_uhf(&ctx, &mol.inner, &prep, &bounds, cfg).map_err(make_err)?;
-            (scf, grid)
+            (sys.solve_uhf(cfg).map_err(make_err)?, grid)
         } else {
             let ladder = ferric_scf::ladder::ksdft_ladder(cfg);
-            let lr =
-                ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
-                    .map_err(make_err)?;
+            let lr = sys.solve_rhf_ladder(&ladder).map_err(make_err)?;
             (lr.result, grid)
         }
     } else {
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
         let scf = if unrestricted {
-            solve_uhf(&ctx, &mol.inner, &prep, &bounds, &scf_cfg)
+            sys.solve_uhf(&scf_cfg)
         } else {
-            solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_cfg)
+            sys.solve_rhf(&scf_cfg)
         }
         .map_err(make_err)?;
         (scf, ferric_dft::grid::AtomicGridConfig::default())
     };
-    let scf = converged(scf)?;
+    let scf = scf.into_converged().map_err(make_err)?;
 
     let grid_used = functional.map(|_| {
         (
@@ -302,15 +299,14 @@ pub(crate) fn run_tddft(
         spin,
         ..Default::default()
     };
-    // All closure arguments are owned Rust values (an owned Molecule clone
-    // plus locals built above) so nothing Python-borrowed crosses the
-    // boundary; safe to release the GIL for the TDDFT compute.
-    let emol_tddft = mol.inner.clone();
+    // The closure borrows only Rust values (the prepared system and locals
+    // built above), so nothing Python-borrowed crosses the boundary; safe to
+    // release the GIL for the TDDFT compute.
     let r = py
-        .allow_threads(|| ferric_tddft::run_tddft(&emol_tddft, &prep, &dfbs, &scf, &config))
+        .allow_threads(|| ferric_tddft::run_tddft(mol, sys.basis(), &dfbs, &scf, &config))
         .map_err(make_err)?;
     let certificate_data = ferric_tddft::certificate::tddft_certificate(
-        &reference_certificate(&mol.inner, &scf, &scf_cfg, &basis_set.inner),
+        &reference_certificate(mol, &scf, &scf_cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &config,
         &r,

@@ -188,6 +188,10 @@ fn gw_config(
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_dft` with `xc`) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -229,10 +233,8 @@ pub(crate) fn run_gw(
 
     let gw_method = parse_gw_method(method)?;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let cfg = rhf_config_conv(
         k_builder,
@@ -242,12 +244,12 @@ pub(crate) fn run_gw(
     let (scf, cfg, vxc_diag) = if let Some(xc_name) = xc {
         // KS reference through the level-shift ladder.
         let cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
-        let (scf, cfg) = ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?;
+        let (scf, cfg) = ks_ladder_reference(&sys, cfg)?;
         let (diag, _beta) = {
             // The grids this reference SCF ran on.
             let grids = ferric_scf::ks_gradient::KsGradGrids::from_config(&cfg);
             vxc_diagonal_mo_on_grids(
-                &mol.inner,
+                mol,
                 &basis_set.inner,
                 xc_name,
                 &scf,
@@ -258,7 +260,10 @@ pub(crate) fn run_gw(
         };
         (scf, cfg, Some(diag))
     } else {
-        let scf = converged_rhf_with_bounds(&mol.inner, &prep, &bounds, &cfg)?;
+        let scf = sys
+            .solve_rhf(&cfg)
+            .and_then(ScfResult::into_converged)
+            .map_err(make_err)?;
         (scf, cfg, None)
     };
 
@@ -283,15 +288,14 @@ pub(crate) fn run_gw(
         &pdep_cfg,
     );
 
-    // All closure arguments are owned Rust values (an owned Molecule clone
-    // plus locals built above) so nothing Python-borrowed crosses the
-    // boundary; safe to release the GIL for the expensive GW compute.
-    let emol_gw = mol.inner.clone();
+    // The closure borrows only Rust values (the prepared system and locals
+    // built above), so nothing Python-borrowed crosses the boundary; safe to
+    // release the GIL for the expensive GW compute.
     let r = py
         .allow_threads(|| {
             run_gw_inner(
-                &emol_gw,
-                &prep,
+                mol,
+                prep,
                 &dfbs,
                 op,
                 &scf,
@@ -322,7 +326,7 @@ pub(crate) fn run_gw(
         );
     }
     let certificate_data = ferric_gw::certificate::gw_certificate(
-        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
+        &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         &gw_cfg,
@@ -460,6 +464,10 @@ impl PyUGwResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_uhf` / `run_rohf` (`run_uks` / `run_roks` with `xc`) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -498,7 +506,6 @@ pub(crate) fn run_u_gw(
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyUGwResult> {
     use ferric_gw::{run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids};
-    use ferric_scf::rohf::solve_rohf;
 
     let gw_method = parse_gw_method(method)?;
     let reference = match reference.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
@@ -511,11 +518,8 @@ pub(crate) fn run_u_gw(
         }
     };
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let mut cfg = rhf_config_conv(
         k_builder,
@@ -529,26 +533,26 @@ pub(crate) fn run_u_gw(
         cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
     }
     let scf = if reference == "rohf" {
-        solve_rohf(&ctx, &mol.inner, &prep, op, &bounds, &cfg)
+        sys.solve_rohf(&cfg)
     } else {
-        solve_uhf(&ctx, &mol.inner, &prep, &bounds, &cfg)
+        sys.solve_uhf(&cfg)
     };
-    let scf = converged(scf.map_err(make_err)?)?;
+    let scf = scf.and_then(ScfResult::into_converged).map_err(make_err)?;
     let vxc_diag = if let Some(xc_name) = xc {
         // The certificate's reference is the SCF as solved (a ROKS reference
         // is graded `rohf`), before the semi-canonical conversion below.
-        let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
+        let ref_cert = reference_certificate(mol, &scf, &cfg, &basis_set.inner);
         // ROKS -> semi-canonical per-spin orbitals (what run_u_gw uses
         // internally), so v_xc is diagonalized in the QP equation's own basis;
         // UKS is unchanged.
-        let scf = ferric_scf::semicanonical::unrestricted_reference(&mol.inner, &scf)
+        let scf = ferric_scf::semicanonical::unrestricted_reference(mol, &scf)
             .map_err(make_err)?
             .into_owned();
         let (diag_a, diag_b) = {
             // The grids this reference SCF ran on.
             let grids = ferric_scf::ks_gradient::KsGradGrids::from_config(&cfg);
             vxc_diagonal_mo_on_grids(
-                &mol.inner,
+                mol,
                 &basis_set.inner,
                 xc_name,
                 &scf,
@@ -559,7 +563,7 @@ pub(crate) fn run_u_gw(
         };
         (scf, Some((diag_a, diag_b)), ref_cert)
     } else {
-        let ref_cert = reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner);
+        let ref_cert = reference_certificate(mol, &scf, &cfg, &basis_set.inner);
         (scf, None, ref_cert)
     };
     let (scf, vxc_diag, reference_cert) = vxc_diag;
@@ -586,8 +590,8 @@ pub(crate) fn run_u_gw(
     );
 
     let r = run_u_gw_inner(
-        &mol.inner,
-        &prep,
+        mol,
+        prep,
         &dfbs,
         op,
         &scf,
@@ -753,6 +757,10 @@ impl PyBseResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis,
@@ -781,14 +789,17 @@ pub(crate) fn run_bse_tda(
 ) -> PyResult<PyBseResult> {
     use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
 
-    let op = Operator::coulomb();
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (prep, dfbs, scf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &cfg)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let scf = sys
+        .solve_rhf(&cfg)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let fc = frozen_core.unwrap_or(0);
     let pdep_cfg = PdepArgs {
@@ -803,10 +814,9 @@ pub(crate) fn run_bse_tda(
     }
     .config(20)?;
 
-    let r =
-        run_bse_tda_inner(&mol.inner, &prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
+    let r = run_bse_tda_inner(mol, prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::bse_tda_certificate(
-        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
+        &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         &r,
@@ -905,6 +915,10 @@ impl PyTdhfStaticPolarizabilityResult {
 ///
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_dft` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set, auxbasis, xc,
@@ -936,10 +950,8 @@ pub(crate) fn run_tdhf_static_polarizability(
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
     use ferric_gw::bse::run_rpax_static_polarizability;
 
-    let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
-    let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     // KS reference (required — see doc comment above), same ladder path
     // run_gw's xc branch uses.
@@ -949,7 +961,7 @@ pub(crate) fn run_tdhf_static_polarizability(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
     let cfg = ks_jkfit_config(cfg, xc, scf_ri_j_precision)?;
-    let (scf, cfg) = ks_ladder_reference(&prep, &bounds, &mol.inner, cfg)?;
+    let (scf, cfg) = ks_ladder_reference(&sys, cfg)?;
 
     let fc = frozen_core.unwrap_or(0);
     let pdep_cfg = ferric_rpa::PdepRpaConfig {
@@ -971,8 +983,8 @@ pub(crate) fn run_tdhf_static_polarizability(
     };
 
     let r = run_rpax_static_polarizability(
-        &mol.inner,
-        &prep,
+        mol,
+        prep,
         &dfbs,
         op,
         &scf,
@@ -982,7 +994,7 @@ pub(crate) fn run_tdhf_static_polarizability(
     )
     .map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::tdhf_static_polarizability_certificate(
-        &reference_certificate(&mol.inner, &scf, &cfg, &basis_set.inner),
+        &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
         &pdep_cfg,
         scissor.unwrap_or(0.0),

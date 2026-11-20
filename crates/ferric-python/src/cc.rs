@@ -52,27 +52,25 @@ impl CcLevel {
 /// of the open-shell `mol` (the open-shell branch of `run_ccsd` /
 /// `run_ccsd_t`). Returns the result for Python, built without the GIL.
 fn run_u_ccsd_inner(
-    mol: &Molecule,
+    mol: Molecule,
     basis: &ferric_core::basis::BasisSet,
     aux: &ferric_core::basis::BasisSet,
     scf_config: &RhfConfig,
     cfg: &CcConfig,
     level: CcLevel,
 ) -> Result<PyCcResult, ferric_core::FerricError> {
-    let prep = PreparedBasis::new(mol, basis)?;
-    let dfbs = PreparedBasis::new(mol, aux)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep)?;
-    let ctx = ParallelContext::default();
-    let uhf = require_converged(solve_uhf(&ctx, mol, &prep, &bounds, scf_config)?)?;
-    let cc = ferric_cc::u_ccsd::u_ccsd(mol, &prep, &dfbs, op, &uhf, cfg)?;
+    let sys = PreparedSystem::new(mol, basis)?;
+    let dfbs = sys.prepare_aux(aux)?;
+    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let uhf = sys.solve_uhf(scf_config)?.into_converged()?;
+    let cc = ferric_cc::u_ccsd::u_ccsd(mol, prep, &dfbs, op, &uhf, cfg)?;
     let mut comps = std::collections::HashMap::from([
         ("e_aa".to_string(), cc.e_aa),
         ("e_ab".to_string(), cc.e_ab),
         ("e_bb".to_string(), cc.e_bb),
     ]);
     let t_correction = if level == CcLevel::CcsdT {
-        let t = ferric_cc::u_ccsd_t::u_ccsd_t(mol, &prep, &dfbs, op, &uhf, &cc, cfg)?;
+        let t = ferric_cc::u_ccsd_t::u_ccsd_t(mol, prep, &dfbs, op, &uhf, &cc, cfg)?;
         comps.extend([
             ("t_aaa".to_string(), t.aaa),
             ("t_aab".to_string(), t.aab),
@@ -157,6 +155,10 @@ impl PyCcResult {
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -177,17 +179,21 @@ pub(crate) fn run_ccd(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (prep, dfbs, rhf) =
-        converged_rhf_with_aux(&mol.inner, &basis_set.inner, &auxbasis.inner, &rhf_config)?;
+    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let rhf = sys
+        .solve_rhf(&rhf_config)
+        .and_then(ScfResult::into_converged)
+        .map_err(make_err)?;
+    let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         ..Default::default()
     };
-    let r = run_ccd_inner(&mol.inner, &prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    let r = run_ccd_inner(mol, prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_cc::certificate::cc_certificate(
         "ccd",
-        &reference_certificate(&mol.inner, &rhf, &rhf_config, &basis_set.inner),
+        &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
         &cfg,
         &r,
@@ -234,7 +240,7 @@ struct CcsdArgs<'a> {
 /// `run_ccsd` / `run_ccsd_t`: UCCSD(/T) for an open-shell molecule, else the
 /// spin-adapted closed-shell CCSD and, at `CcLevel::CcsdT`, its (T).
 fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<PyCcResult> {
-    let emol = a.mol.inner.clone();
+    let raw_mol = a.mol.inner.clone();
     let ebasis = a.basis_set.inner.clone();
     let eaux = a.auxbasis.inner.clone();
     let rhf_config = rhf_config_conv(
@@ -243,10 +249,10 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
         a.conv,
     );
     let cfg = cc_config(a.frozen_core, a.memory_budget_gb, a.ladder)?;
-    refuse_open_shell_ladder(&emol, a.ladder)?;
-    if emol.multiplicity > 1 {
+    refuse_open_shell_ladder(&raw_mol, a.ladder)?;
+    if raw_mol.multiplicity > 1 {
         return py
-            .allow_threads(|| run_u_ccsd_inner(&emol, &ebasis, &eaux, &rhf_config, &cfg, level))
+            .allow_threads(|| run_u_ccsd_inner(raw_mol, &ebasis, &eaux, &rhf_config, &cfg, level))
             .map_err(make_err);
     }
     // Release the GIL for the SCF + CCSD (+ (T)) compute. All captured values
@@ -267,35 +273,40 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     // 1.82 GB -> 0.48 GB; (T) 1.87 -> 0.14 s. The two (T) implementations
     // agree to 1.9e-16 when fed identical amplitudes, and to 7.8e-10..6.9e-7
     // against PySCF's `ccsd_t()` — inside the ~5e-6 Ha RI floor.
-    let (r, t_correction, reference) = py
+    let (r, t_correction, certificate_data) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (prep, aux, rhf) = rhf_with_aux(&emol, &ebasis, &eaux, &rhf_config)?;
-            let op = Operator::coulomb();
-            let r = run_ccsd_cs_inner(&emol, &prep, &aux, op, &rhf, &cfg)?;
+            let sys = PreparedSystem::new(raw_mol, &ebasis)?;
+            let aux = sys.prepare_aux(&eaux)?;
+            let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
+            let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+            let r = run_ccsd_cs_inner(mol, prep, &aux, op, &rhf, &cfg)?;
             let e_t = match level {
                 CcLevel::Ccsd => None,
-                CcLevel::CcsdT => {
-                    Some(run_ccsd_t_cs_inner(&emol, &prep, &aux, op, &rhf, &r, &cfg)?)
-                }
+                CcLevel::CcsdT => Some(run_ccsd_t_cs_inner(mol, prep, &aux, op, &rhf, &r, &cfg)?),
             };
-            let reference = reference_certificate(&emol, &rhf, &rhf_config, &ebasis);
-            Ok((r, e_t, reference))
+            let reference = reference_certificate(mol, &rhf, &rhf_config, &ebasis);
+            let certificate = ferric_cc::certificate::cc_certificate(
+                level.kind(),
+                &reference,
+                &eaux.name,
+                &cfg,
+                &r,
+            );
+            let certificate_data = match level {
+                CcLevel::Ccsd => ferric_mp2::certificate::with_anchor_envelope(
+                    certificate,
+                    "CCSD",
+                    mol,
+                    &ebasis,
+                    Some(&eaux),
+                ),
+                // `run_ccsd_t` has never carried the anchor envelope.
+                CcLevel::CcsdT => certificate,
+            };
+            Ok((r, e_t, certificate_data))
         })
         .map_err(make_err)?;
     let (ladder_route, ladder_block) = py_ladder_route(&r);
-    let certificate =
-        ferric_cc::certificate::cc_certificate(level.kind(), &reference, &eaux.name, &cfg, &r);
-    let certificate_data = match level {
-        CcLevel::Ccsd => ferric_mp2::certificate::with_anchor_envelope(
-            certificate,
-            "CCSD",
-            &emol,
-            &ebasis,
-            Some(&eaux),
-        ),
-        // `run_ccsd_t` has never carried the anchor envelope.
-        CcLevel::CcsdT => certificate,
-    };
     Ok(PyCcResult {
         correlation_energy: r.correlation_energy,
         t_correction,
@@ -309,6 +320,10 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -341,6 +356,10 @@ pub(crate) fn run_ccsd(
 
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` (`run_uhf` for an open-shell molecule) solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -442,6 +461,10 @@ impl PyEomCcsdResult {
 /// spin-adapted CCSD (amplitudes converged to |dE| < 1e-10), then the
 /// non-symmetric Davidson. `scf_*` control the reference SCF as in
 /// `run_rhf`; `n_roots`, `conv_tol`, `max_iter`, `max_space` the Davidson.
+///
+/// With an ECP basis set the ECP is applied to the molecule, so the reference SCF is the one
+/// `run_rhf` solves.
+/// `frozen_core` counts orbitals of the valence occupied space, after the ECP has removed its core.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, n_roots=5, conv_tol=1e-6, max_iter=100, max_space=None, frozen_core=None, k_builder=None, memory_budget_gb=None, ladder="auto", scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
@@ -467,7 +490,7 @@ pub(crate) fn run_eom_ccsd(
             "run_eom_ccsd: n_roots and max_iter must be at least 1 and conv_tol positive",
         ));
     }
-    let emol = mol.inner.clone();
+    let raw_mol = mol.inner.clone();
     let ebasis = basis_set.inner.clone();
     let eaux = auxbasis.inner.clone();
     let budget = budget_bytes_from_gb(memory_budget_gb);
@@ -489,12 +512,14 @@ pub(crate) fn run_eom_ccsd(
     };
     let (rhf_energy, cc, eom, reference) = py
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let (prep, dfbs, rhf) = rhf_with_aux(&emol, &ebasis, &eaux, &rhf_config)?;
-            let op = Operator::coulomb();
-            let cc = run_ccsd_cs_inner(&emol, &prep, &dfbs, op, &rhf, &cfg)?;
+            let sys = PreparedSystem::new(raw_mol, &ebasis)?;
+            let dfbs = sys.prepare_aux(&eaux)?;
+            let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
+            let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+            let cc = run_ccsd_cs_inner(mol, prep, &dfbs, op, &rhf, &cfg)?;
             let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
-                &emol,
-                &prep,
+                mol,
+                prep,
                 &dfbs,
                 op,
                 &rhf,
@@ -502,7 +527,7 @@ pub(crate) fn run_eom_ccsd(
                 cfg.frozen_core,
                 &eom_cfg,
             )?;
-            let reference = reference_certificate(&emol, &rhf, &rhf_config, &ebasis);
+            let reference = reference_certificate(mol, &rhf, &rhf_config, &ebasis);
             Ok((rhf.energy, cc, eom, reference))
         })
         .map_err(make_err)?;

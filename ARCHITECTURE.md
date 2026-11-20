@@ -123,10 +123,14 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
   drivers share one skeleton (validate, warn, solve, gradient, wrap) with
   variant hooks; `solve_open_shell_entry` in `ferric-python/src/scf.rs` is the
   first instance.
-- **Owners establish invariants once.** A `PreparedSystem` (molecule with ECP
-  applied, prepared basis, operator, Schwarz bounds, context) is built by a
-  single constructor and only borrowed afterwards, so a solver cannot receive
-  a molecule without its ECP.
+- **Owners establish invariants once.** `ferric_scf::PreparedSystem`
+  (molecule with the basis set's ECP applied, prepared basis, Coulomb
+  Schwarz bounds, context) is built by a single constructor and only
+  borrowed afterwards. The ferric-python correlated drivers listed under
+  roadmap item 8 go through it; the SCF entry points in
+  `ferric-python/src/scf.rs` (the `TODO` on `OpenShellEntry`), the CLI and
+  the correlated kernels themselves still take a loose `&Molecule` and
+  `&PreparedBasis`, so the types do not yet enforce the invariant.
 - **Units (target):** newtypes at API boundaries only (`Bohr`/`Angstrom` on
   molecule constructors and accessors, `Hartree` on result energies), with
   kernels keeping raw `f64` and arrays. No such newtypes exist yet. Today the
@@ -186,6 +190,51 @@ Done:
    (closed, UKS and ROKS share one implementation; public functions are
    shims), and shared reference-SCF/Gamma/k-point helpers in the periodic
    bindings (`PbcArgs` carries its `PbcRole`).
+8. `ferric_scf::PreparedSystem`: `PreparedSystem::new(mol, basis)` sets the
+   molecule's ECP core counts from the basis (`Molecule::apply_ecp`, now
+   total: the basis's `n_core` on each ECP atom, 0 elsewhere, whatever the
+   molecule arrived with), prepares the basis and its Coulomb Schwarz
+   bounds; `prepare_aux` prepares a fitting basis on the same molecule;
+   `solve_rhf`/`solve_uhf`/`solve_rohf`/`solve_rhf_ladder` and
+   `solve_reference` (UHF iff multiplicity > 1, converged via
+   `ScfResult::into_converged`) run on the borrowed system. In
+   ferric-python, `prepare`/`prepare_with_aux` build it for every driver in
+   `mp2.rs`, `cc.rs`, `gw.rs`, `rpa.rs`, `tddft.rs`, `opmp3.rs`, the double
+   hybrid in `dft.rs` and `ci.rs`; `response_modes` applies the ECP to its
+   molecule without the system (it needs no bounds).
+   `crates/ferric-python/tests/test_ecp_correlated_references.py` pins each
+   family on HI/def2-SVP. ECP decisions:
+
+   | Drivers | ECP | Pinned against |
+   |---|---|---|
+   | `run_rimp2` (exact, open-shell, gradient), SCS, Laplace(-SOS), attenuated, MP3, OO-RI-MP2 | applied (fix) | `run_rhf`/`run_uhf` energy; RI-MP2 (also `frozen_core=9`) from numpy on `run_rhf` orbitals |
+   | terfc, SCS-2terfc, MP2-V, VV10 variants | applied (fix), same helpers | not run on an ECP system (tables / aug-cc-pVTZ only) |
+   | CCD, CCSD, CCSD(T), EOM-CCSD, UCCSD | applied (fix) | EOM `rhf_energy` = `run_rhf`; CCSD/UCCSD vs numpy RI-MP2 ratio |
+   | GW, U-GW, BSE-TDA, TDHF polarizability | applied (fix) | `run_rhf`/`run_dft`/`run_uhf`; occupied count 13 |
+   | PDEP-RPA, RS-MP2-RPA | applied (fix) | `run_rhf` |
+   | `run_tddft` | applied (fix) | numpy RI-CIS on `run_rhf` orbitals |
+   | double hybrid | applied (fix) | `run_dft`/`run_uks` KS energy |
+   | exact LinLCCD | applied (fix) | `run_rhf` |
+   | `tune_omega` | applied (fix) | `run_dft` (neutral) / `run_uks` (cation) at the functional's ω |
+   | `run_opmp3` | applied (fix) | `run_rhf`/`run_rohf` |
+   | `response_modes` | applied (fix: occupied count) | numpy `alpha_bare` on `run_rhf` orbitals |
+   | CAS-CI, CASSCF, NEVPT2 | already applied | `run_rhf` |
+   | local MP2, local OP-MP3, `run_drpa`, `run_drpa_scan`, local LinLCCD | refused, unchanged | `pytest.raises` |
+
+   The fixes are a behaviour change only for an ECP basis (the drivers had
+   prepared the ECP basis, which carries V_ECP and the reduced nuclear
+   charge, on the all-electron molecule: a 54-electron HI at -143.3 Ha
+   against `run_rhf`'s -297.2 Ha); non-ECP results are bitwise unchanged.
+   The RI-MP2, OO-RI-MP2 and PDEP-RPA analytic gradients on HI match
+   central differences within 1e-6 Ha/Bohr (tested; the offset is 3.1e-7,
+   as for `run_rhf`). Side effects: the CAS drivers now prepare the basis
+   (and compute its Schwarz bounds, with the GIL held) before checking the
+   active-electron count, so an input wrong in both reports the basis
+   error first; a molecule reused from an ECP run (e.g.
+   `run_aimd(...).mol()`) in an all-electron basis is all-electron again.
+   The CLI's correlated paths apply the ECP by hand on the one molecule
+   they all receive (`ferric-cli/src/lib.rs`, `opmp3.rs`, `cas.rs`); moving
+   them onto the type is a refactor follow-up.
 -  COSX for `run_uks`/`run_roks`: they now apply
    `df_k_aux_or_default`. Before, they applied the RI-K default even under
    COSX, so a COSX call with HF exchange or a global hybrid (the functionals
@@ -196,11 +245,12 @@ Done:
 
 Next, each as its own PR following the patterns above:
 
-8. Grow the existing `converged_*` reference-SCF helpers in
-   `ferric-python/src/mp2.rs` into a borrowed `PreparedSystem` (molecule,
-   prepared basis, operator, bounds, context) used by every correlated
-   driver. Whether a driver applies ECPs is a behaviour change and gets its
-   own tests.
+8b. `PreparedSystem` follow-ups: one constructor taking a config
+    (screening kind, context) so the CLI and `scf.rs`'s `OpenShellEntry`
+    can move onto it; drop `ferric_ci::driver::rhf_start` once `cas.rs` and
+    the examples use `rhf_start_prepared`; a lifetime-branded aux basis
+    (`PreparedAux<'a>`) or the aux stored in the system; kernels taking
+    `&PreparedSystem`, so the types enforce the invariant.
 9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
    declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.

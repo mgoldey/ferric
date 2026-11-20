@@ -118,6 +118,10 @@ pub use result::{DfJkRoute, ScfResult, Spin};
 /// `RhfConfig`, plus the named SCF defaults.
 pub mod options;
 
+// Documented by the module's own `//!` docs.
+pub mod prepared;
+pub use prepared::PreparedSystem;
+
 /// Estimated noise floor of the SCF energy change and the advisory `energy_conv` warning (#410).
 pub mod noise_floor;
 
