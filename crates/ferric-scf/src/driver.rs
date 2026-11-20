@@ -1123,6 +1123,44 @@ pub(crate) fn effective_level_shift(config: &RhfConfig) -> f64 {
     }
 }
 
+// The virtual-block level shift is ramped off with `e = max|DIIS error|` so the
+// converged Fock matrix is the unshifted one and the converged energy does
+// not depend on the ramp. There are two ramps, each defined once here, because
+// neither is best for both families (measured 2026-11-19, release,
+// single-thread, energies equal to 1e-10 Ha in every case; book 8.2):
+//
+// * closed shell, linear: water RHF/cc-pVDZ with shift 2.0 converges in 11
+//   iterations with it and 16 with the rational ramp; it is never slower on
+//   the shifted RHF/RKS cases measured (water SCAN 10 vs 11, CH4 r2SCAN 9 vs
+//   11, COSe RHF shift 0.5 16 vs 17).
+// * open shell, rational: the k-point ROKS PBE0 trap
+//   (`kroks_hybrid_default_level_shift_converges_the_roothaan_trap`)
+//   converges in 34 iterations with it and does NOT converge in 200 with the
+//   linear ramp (max error parked at 7e-3, where linear keeps 7% of the shift
+//   and rational 87%); two of the six Gamma ROKS PBE0 perturbed starts take
+//   314 and 229 iterations with the linear ramp against 177 and 172. On easy
+//   molecular open shells the linear ramp would save 0-7 iterations.
+
+/// `max|e|` at and above which the closed-shell ramp applies the full shift.
+const CLOSED_SHELL_RAMP_ERR: f64 = 0.1;
+/// `max|e|` at which the open-shell ramp applies half the shift.
+const OPEN_SHELL_RAMP_ERR: f64 = 1e-3;
+
+/// RHF/RKS level shift in force at DIIS error `err_max`:
+/// `shift · min(err_max / 0.1, 1)` (see the comment above for why it differs
+/// from [`open_shell_level_shift_ramp`]).
+pub fn closed_shell_level_shift_ramp(shift: f64, err_max: f64) -> f64 {
+    shift * (err_max / CLOSED_SHELL_RAMP_ERR).min(1.0)
+}
+
+/// UHF/UKS, ROHF/ROKS and periodic (Gamma and k-point) ROKS level shift in
+/// force at DIIS error `err_max`: `shift · err_max / (err_max + 1e-3)` (see
+/// the comment above for why it differs from
+/// [`closed_shell_level_shift_ramp`]).
+pub fn open_shell_level_shift_ramp(shift: f64, err_max: f64) -> f64 {
+    shift * err_max / (err_max + OPEN_SHELL_RAMP_ERR)
+}
+
 /// ΔP signals: (rms, max) of `d_new − d_old` — the primary convergence signal
 /// every variant gates on (see `rhf::scf_converged`).
 ///
@@ -1798,5 +1836,34 @@ mod fock_eigensolver_tests {
         let (f, x, nocc) = fixed_fock(&xyz, "def2-svp", cfg);
         assert_eq!(nocc, 21);
         check("benzene/def2-SVP HF", &f, &x, nocc, 19, 20);
+    }
+}
+
+#[cfg(test)]
+mod level_shift_ramp_tests {
+    use super::{closed_shell_level_shift_ramp, open_shell_level_shift_ramp};
+
+    fn close(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-15, "{a} vs {b}");
+    }
+
+    /// RHF/RKS: the full shift while `max|e| >= 0.1`, linear below.
+    #[test]
+    fn closed_shell_ramp_is_full_above_a_tenth_and_linear_below() {
+        close(closed_shell_level_shift_ramp(0.5, 1.0), 0.5);
+        close(closed_shell_level_shift_ramp(0.5, 0.1), 0.5);
+        close(closed_shell_level_shift_ramp(0.5, 1e-2), 0.05);
+        close(closed_shell_level_shift_ramp(0.5, 1e-3), 0.005);
+        assert_eq!(closed_shell_level_shift_ramp(0.5, 0.0), 0.0);
+    }
+
+    /// UHF/ROHF and the periodic ROKS loops: half the shift at `max|e| =
+    /// 1e-3`, most of it at 1e-2 (where the k-point ROKS trap needs it).
+    #[test]
+    fn open_shell_ramp_is_half_the_shift_at_1e_3() {
+        close(open_shell_level_shift_ramp(0.5, 1e-3), 0.25);
+        close(open_shell_level_shift_ramp(0.5, 1e-2), 0.5 * 1e-2 / 1.1e-2);
+        close(open_shell_level_shift_ramp(0.5, 1.0), 0.5 / 1.001);
+        assert_eq!(open_shell_level_shift_ramp(0.5, 0.0), 0.0);
     }
 }

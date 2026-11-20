@@ -161,25 +161,48 @@ otherwise.
 | `xc_is_metagga` | a meta-GGA functional (SCAN, r2SCAN, TPSS, ...) |
 | `0.5` | the automatic shift for meta-GGAs, whose $\tau$ term makes plain DIIS limit-cycle |
 
-That shift $\mu$ is then ramped by the current error, differently per solver:
+That shift $\mu$ is then ramped by the current error. There are two ramps,
+each one function in `ferric-scf/src/driver.rs`:
 
-| Solver | $\mu_{\rm eff}$ |
-|---|---|
-| RHF | $\mu\min(\max\lvert e\rvert/0.1,\ 1)$ |
-| UHF, ROHF | $\mu\max\lvert e\rvert/(\max\lvert e\rvert + 10^{-3})$ |
+| Solvers | Function | $\mu_{\rm eff}$ |
+|---|---|---|
+| RHF, RKS | `closed_shell_level_shift_ramp` | $\mu\min(\max\lvert e\rvert/0.1,\ 1)$ |
+| UHF, UKS, ROHF, ROKS, periodic Gamma and k-point ROKS | `open_shell_level_shift_ramp` | $\mu\max\lvert e\rvert/(\max\lvert e\rvert + 10^{-3})$ |
 
-Both ramps go to zero with the error, so the last iterations run unshifted
-and take full steps. They differ in shape: the RHF ramp holds the full shift
-until $\max\lvert e\rvert$ falls below 0.1 and then drops linearly, the
-open-shell ramp is already at half the shift when $\max\lvert e\rvert =
-10^{-3}$. The code records no reason for the difference, and the converged
-energy does not depend on it. In RHF the shift is added inside `diis_step` in
+<!-- excerpt: ferric-scf/src/driver.rs::open_shell_level_shift_ramp -->
+```rust
+shift * err_max / (err_max + OPEN_SHELL_RAMP_ERR)
+```
+
+Both go to zero with the error, so the last iterations run unshifted and
+take full steps, and the converged energy does not depend on either. They
+differ in the tail: the linear ramp is down to 10% of the shift at
+$\max\lvert e\rvert = 10^{-2}$, the rational one is still at 91%. Each was
+measured in the other's place, with the energies equal to $10^{-10}$ Ha in
+every case:
+
+| System | Linear | Rational |
+|---|---|---|
+| water RHF/cc-pVDZ, $\mu = 2.0$ (the example above) | 11 | 16 |
+| water RKS/SCAN, CH4 RKS/r2SCAN (automatic shift); COSe RHF, $\mu = 0.5$ | 10, 9; 16 | 11, 11; 17 |
+| 17 molecular open-shell SCFs (NH2, CH3, OH, O2; UHF, UKS, ROHF, ROKS) | 0 to 7 fewer | the reference |
+| Gamma ROKS PBE0, tri 4H triplet, six perturbed starts (`ferric-pbc/tests/pbc_rohf.rs`) | 1005 in total; 314 and 229 on two starts | 1145 in total; 177 and 172 on those |
+| k-point ROKS PBE0, the same cell (`ferric-pbc/tests/pbc_kroks.rs`) | not converged in 200, $\max\lvert e\rvert$ parked at $7\times10^{-3}$ | 34 |
+
+The closed-shell ramp is never slower on the closed shells measured. The
+open-shell family includes the ROKS cell whose minimum repels the unshifted
+Roothaan map, and there the shift has to survive into the tail: at
+$\max\lvert e\rvert = 7\times10^{-3}$ the linear ramp keeps 7% of it and the
+rational one 87%.
+
+In RHF the shift is added inside `diis_step` in
 `crates/ferric-scf/src/rhf.rs`; here it is with only a test probe removed:
 
 ```rust
 if inp.effective_level_shift > 0.0 {
     if let Some(c_p) = self.c_prev.as_ref() {                   // previous orbitals C
-        let shift_ramp = inp.effective_level_shift * (err_max / 0.1).min(1.0); // mu_eff
+        let shift_ramp =
+            crate::driver::closed_shell_level_shift_ramp(inp.effective_level_shift, err_max); // mu_eff
         if shift_ramp > 0.0 {
             let shift_term = with_blas_threads(opt_in_blas_threads(), || {
                 let c_vir = c_p.slice(ndarray::s![.., nocc..]); // C_v

@@ -250,7 +250,8 @@ pub struct KRohfConfig {
     /// Open-orbital selection rule ([`OpenOrbitalRule`]).
     pub open_rule: OpenOrbitalRule,
     /// Virtual-space level shift (Hartree), ramped as `ls·err/(err + 1e-3)`
-    /// so it vanishes at convergence (the Gamma ROKS convention). `None`
+    /// (`ferric_scf::open_shell_level_shift_ramp`, shared with Gamma ROKS and
+    /// the molecular open-shell solvers) so it vanishes at convergence. `None`
     /// (the default) resolves per run: [`ROKS_HYBRID_LEVEL_SHIFT`] for a
     /// Kohn-Sham functional with exact exchange (`a > 0`, global or
     /// range-separated), 0 for LDA/GGA and for ROHF; `Some(x)` applies `x`
@@ -1068,7 +1069,7 @@ fn run_kroks(
             feff.clone()
         };
         if level_shift > 0.0 {
-            let ls = level_shift * emax / (emax + 1e-3);
+            let ls = ferric_scf::open_shell_level_shift_ramp(level_shift, emax);
             for k in 0..nk {
                 let sds = inj.s[k].dot(&da[k]).dot(&inj.s[k]);
                 f_use[k] = &f_use[k] + &(&inj.s[k] - &sds).mapv(|z| z * ls);

@@ -3457,9 +3457,10 @@ pub struct ScfCfg {
     /// JK-fitting basis for `jk = "rijk" | "rijcosx"` (bundled name, default
     /// def2-universal-jkfit). Never the correlation method's RI aux.
     pub jk_aux: Option<String>,
-    /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
-    /// (UHF / ROHF / UKS / ROKS). The shift is rational-damped by the DIIS
-    /// error so the converged Fock is the unshifted stationary point. A
+    /// Optional virtual-virtual block level shift (Ha). The shift is ramped
+    /// by the DIIS error (`ferric_scf::closed_shell_level_shift_ramp` /
+    /// `open_shell_level_shift_ramp`) so the converged
+    /// Fock is the unshifted stationary point. A
     /// value of 0.2 is a useful default for OH-like doublets at LDA/PBE
     /// where DIIS otherwise plateaus.
     pub level_shift: Option<f64>,

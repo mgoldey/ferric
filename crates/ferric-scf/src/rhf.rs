@@ -121,9 +121,10 @@ pub struct RhfConfig {
     /// matrix in MO basis. Defaults to 0 (no shift). Used to damp oscillations
     /// in open-shell SCF (ROHF/UHF/ROKS) where DIIS plateaus near a near-
     /// degenerate transition. A shift of 0.1–0.5 Ha is typical. The shift is
-    /// ramped off with `e`, the largest element of the DIIS error, by a different
-    /// formula per solver: RHF/RKS `level_shift · min(e / 0.1, 1)`, UHF/UKS and
-    /// ROHF/ROKS `level_shift · e / (e + 1e-3)`.
+    /// ramped off with `e`, the largest element of the DIIS error: RHF/RKS
+    /// `level_shift · min(e / 0.1, 1)` (`closed_shell_level_shift_ramp`),
+    /// UHF/UKS and ROHF/ROKS `level_shift · e / (e + 1e-3)`
+    /// (`open_shell_level_shift_ramp`); `driver.rs` records why they differ.
     pub level_shift: f64,
     /// Whether a meta-GGA functional with `level_shift == 0` gets the automatic
     /// 0.5 Ha virtual-block shift (`driver::effective_level_shift`). `true` (the
@@ -4153,7 +4154,10 @@ impl RhfState {
         // F, so an accepted solution never carries the shift.
         if inp.effective_level_shift > 0.0 {
             if let Some(c_p) = self.c_prev.as_ref() {
-                let shift_ramp = inp.effective_level_shift * (err_max / 0.1).min(1.0);
+                let shift_ramp = crate::driver::closed_shell_level_shift_ramp(
+                    inp.effective_level_shift,
+                    err_max,
+                );
                 if shift_ramp > 0.0 {
                     let shift_term = with_blas_threads(opt_in_blas_threads(), || {
                         crate::blas_probe::record(&crate::blas_probe::RHF_LEVEL_SHIFT);
