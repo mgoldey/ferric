@@ -5478,12 +5478,20 @@ impl Config {
             return Ok(());
         };
         if q.polarizabilities_angstrom3.is_empty() {
-            return match q.thole_a {
-                Some(_) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
-                                polarizable site it would be silently ignored"
+            return match (q.thole_a, &q.polarization_exclusions) {
+                (Some(_), _) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
+                                     polarizable site it would be silently ignored"
                     .to_string()),
-                None => Ok(()),
+                (_, Some(_)) => Err("[qmmm] polarization_exclusions needs \
+                                     polarizabilities_angstrom3: with no polarizable site it \
+                                     would be silently ignored"
+                    .to_string()),
+                _ => Ok(()),
             };
+        }
+        if let Some(e) = &q.polarization_exclusions {
+            ferric_scf::qmmm::PolarizationExclusions::parse_config_str(e)
+                .map_err(|err| format!("[qmmm] {err}"))?;
         }
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -10236,6 +10244,32 @@ json = [1, 2]
         assert!(pol.exclusions.is_empty());
     }
 
+    /// The PQR residue field is the molecule: with the ion as the QM region
+    /// and the water's oxygen polarizable, the oxygen ignores its own two
+    /// hydrogens by default, and `"none"` turns that off.
+    #[test]
+    fn qmmm_polarization_excludes_the_pqr_residue_by_default() {
+        let base = "qm_indices = [3]\npolarizabilities_angstrom3 = [1.44, 0.0, 0.0, 0.0]";
+        let pol = |extra: &str| {
+            let q = qmmm_cfg(&format!("{base}{extra}"));
+            let sys = q.to_system(1, 1).unwrap();
+            let h: Vec<[f64; 3]> = [1, 2]
+                .iter()
+                .map(|&i| [sys.atoms[i].x, sys.atoms[i].y, sys.atoms[i].z_pos])
+                .collect();
+            (q.polarizable_embedding(&sys).unwrap().unwrap(), h)
+        };
+        let (p, h) = pol("");
+        assert_eq!(p.excluded_charges, vec![h]);
+        let (p, _) = pol("\npolarization_exclusions = \"none\"");
+        assert!(p.excluded_charges.is_empty() && p.exclusions.is_empty());
+        let q = qmmm_cfg(&format!("{base}\npolarization_exclusions = \"bonds\""));
+        let e = q
+            .polarizable_embedding(&q.to_system(1, 1).unwrap())
+            .unwrap_err();
+        assert!(e.contains("unknown value"), "{e}");
+    }
+
     #[test]
     fn qmmm_thole_a_selects_the_damping_and_zero_disables_it() {
         let with = |t: &str| {
@@ -10374,6 +10408,7 @@ json = [1, 2]
                 boundary_scheme: default_boundary_scheme(),
                 polarizabilities_angstrom3: vec![],
                 thole_a: None,
+                polarization_exclusions: None,
             };
             match cfg.to_system(0, 1) {
                 Ok(_) => panic!("{label}: an unknown element must be refused"),
@@ -10416,6 +10451,7 @@ json = [1, 2]
             boundary_scheme: default_boundary_scheme(),
             polarizabilities_angstrom3: vec![],
             thole_a: None,
+            polarization_exclusions: None,
         };
         assert!(cfg.to_system(0, 1).is_ok(), "a valid PQR must still build");
     }
@@ -13031,6 +13067,13 @@ pub struct QmmmCfg {
     /// disables damping (the bare dipole-dipole tensor), the convention of
     /// Python `run_qmmm(thole_a=0.0)`. Needs `polarizabilities_angstrom3`.
     pub thole_a: Option<f64>,
+    /// Which charges and sites a polarizable site ignores: `"molecule"`
+    /// (default) = its own PQR residue (the residue sequence number), so a
+    /// water's sites are not polarized by that water's own charges; `"none"`
+    /// = no exclusions, right only for isolated sites such as ions. Parsed by
+    /// [`ferric_scf::qmmm::PolarizationExclusions::parse_config_str`]. Needs
+    /// `polarizabilities_angstrom3`.
+    pub polarization_exclusions: Option<String>,
 }
 
 fn default_boundary_scheme() -> String {
@@ -13047,6 +13090,9 @@ fn default_boundary_scheme() -> String {
 #[derive(Debug, Clone)]
 pub struct PqrAtom {
     pub name: String,
+    /// The residue sequence field as written (`resSeq`), the molecule label
+    /// of same-molecule polarization exclusion.
+    pub res_seq: String,
     pub q: f64,
     /// Angstrom, as written in the file.
     pub x: f64,
@@ -13118,6 +13164,7 @@ pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
         };
         out.push(PqrAtom {
             name: f[2].to_string(),
+            res_seq: f[4].to_string(),
             x: num(f[5], "x")?,
             y: num(f[6], "y")?,
             z: num(f[7], "z")?,
@@ -13189,29 +13236,34 @@ impl QmmmCfg {
         &self,
         sys: &ferric_scf::qmmm::QmmmSystem,
     ) -> Result<Option<ferric_scf::polarizable::PolarizableSites>, String> {
-        use ferric_scf::polarizable::{PolarizableSites, DEFAULT_THOLE_A};
+        use ferric_scf::polarizable::DEFAULT_THOLE_A;
+        use ferric_scf::qmmm::PolarizationExclusions;
         if self.polarizabilities_angstrom3.is_empty() {
             return Ok(None);
-        }
-        let sites = sys.to_polarizable_sites();
-        if sites.is_empty() {
-            return Err(
-                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
-                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
-                 give an MM atom a polarizability."
-                    .to_string(),
-            );
         }
         let thole_a = match self.thole_a {
             None => Some(DEFAULT_THOLE_A),
             Some(a) if a > 0.0 => Some(a),
             Some(_) => None,
         };
-        Ok(Some(PolarizableSites {
-            sites,
-            thole_a,
-            ..Default::default()
-        }))
+        let scheme = PolarizationExclusions::parse_config_str(
+            self.polarization_exclusions
+                .as_deref()
+                .unwrap_or("molecule"),
+        )
+        .map_err(|e| format!("[qmmm] {e}"))?;
+        let ids = sys
+            .polarization_molecule_ids(scheme, None)
+            .map_err(|e| format!("[qmmm] {e}"))?;
+        sys.polarizable_embedding(thole_a, ids.as_deref())
+            .map_err(|e| format!("[qmmm] {e}"))?
+            .map(Some)
+            .ok_or_else(|| {
+                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
+                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
+                 give an MM atom a polarizability."
+                    .to_string()
+            })
     }
 
     /// Build the `QmmmSystem` this section describes.
@@ -13324,7 +13376,21 @@ impl QmmmCfg {
             }
         };
 
-        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?;
+        // Molecule labels from the PQR residue field, in order of first
+        // appearance (read by same-molecule polarization exclusion).
+        let mut seen: Vec<&str> = Vec::new();
+        let residue_ids: Vec<usize> = atoms_pqr
+            .iter()
+            .map(|a| match seen.iter().position(|r| *r == a.res_seq) {
+                Some(k) => k,
+                None => {
+                    seen.push(&a.res_seq);
+                    seen.len() - 1
+                }
+            })
+            .collect();
+        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?
+            .with_residue_ids(residue_ids)?;
 
         if !self.link_bonds.is_empty() {
             for b in &self.link_bonds {

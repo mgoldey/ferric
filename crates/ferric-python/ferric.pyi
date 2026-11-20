@@ -266,7 +266,8 @@ class QmmmSystem:
 
     Constructor takes Angstrom; point_charges() returns Bohr (the units run_rhf/run_optimize
     take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom
-    (+ optional residue_ids to pull in whole residues instead of individual atoms).
+    (+ optional residue_ids to pull in whole residues instead of individual atoms). With
+    qm_indices, residue_ids only labels molecules (read by run_qmmm's polarization_exclusions).
     """
 
     def __init__(
@@ -440,6 +441,7 @@ def run_qmmm(
     mm_topology: MmTopology | None = None,
     thole_a: float | None = None,
     ri_j_precision: str | None = None,
+    polarization_exclusions: str | None = None,
 ) -> QmmmResult:
     """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
 
@@ -464,6 +466,12 @@ def run_qmmm(
     on a colocated charge+alpha MM atom and a two-site mutual-induction case.
     Boundary charges (RC/RCD) combined with a polarizable site have no FD
     cross-check yet.
+
+    polarization_exclusions: "molecule" (None = default) -- a site feels neither
+    the permanent charges nor the induced dipoles of its own molecule, labelled
+    by the system's residue_ids, else by the bonds of mm_topology; with neither,
+    ValueError. "none" -- no exclusions (isolated sites such as ions only; an
+    unexcluded TIP3P oxygen is polarized by its own hydrogens).
     """
     ...
 

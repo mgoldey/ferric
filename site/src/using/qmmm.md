@@ -144,11 +144,26 @@ Thole polarizable sites, if fixed charges are not enough:
 ```python
 sys = ferric.QmmmSystem(symbols, coords, charges,
                         qm_indices=qm,
+                        residue_ids=residues,   # one molecule label per atom
                         polarizabilities_angstrom3=alphas)
 res = ferric.run_qmmm(sys, "cc-pvdz", method="rhf", thole_a=2.1304)
 res.e_pol                  # the polarization energy
 res.induced_dipoles()
 ```
+
+A site is not polarized by its own molecule: it ignores the permanent charges
+and the induced dipoles of every atom with its molecule label
+(`polarization_exclusions="molecule"`, the default, as in the PE/CPPE exclusion
+lists). A force-field water's charges already contain its own polarization;
+without the exclusion a TIP3P oxygen with α = 1.44 Å³ is polarized by its own
+hydrogens to about −0.12 Ha, with no QM region involved. The labels come from
+`residue_ids`, or, when the system has none, from the bonds of
+`run_qmmm(mm_topology=...)`; with neither, `run_qmmm` raises `ValueError`
+rather than guess molecules from distances. `polarization_exclusions="none"`
+switches the exclusion off, which is right only for sites that share a
+molecule with no other charge, such as ions. A whole residue is one molecule,
+so a protein residue's sites ignore each other but still see the neighbouring
+residues' bonded atoms.
 
 ## What is validated, and how far
 
@@ -227,7 +242,14 @@ pqr = "testdata/molecules/water_thole_sites.pqr"
 qm_indices = [0, 1, 2]
 polarizabilities_angstrom3 = [0.0, 0.0, 0.0, 0.0740923557432, 0.0740923557432, 0.163003182635]
 thole_a = 2.1304   # default; 0.0 turns the damping off
+polarization_exclusions = "molecule"   # default: a site ignores its own PQR residue
 ```
+
+The molecule of each atom is its PQR residue sequence number, so a site is not
+polarized by the charges or sites of its own residue (see the Python section
+above); `polarization_exclusions = "none"` switches that off. The printout and
+the `polarization` record give the number of excluded site pairs and
+site–charge pairs.
 
 `examples/water-qmmm-thole.toml` is this input (STO-3G water, three MM sites).
 The printed energy includes the polarization energy, which is also printed as

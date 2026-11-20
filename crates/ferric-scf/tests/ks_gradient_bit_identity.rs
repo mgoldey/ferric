@@ -158,6 +158,7 @@ fn sites() -> PolarizableSites {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     }

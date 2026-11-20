@@ -583,6 +583,7 @@ fn unsupported_combinations_are_typed_errors() {
                     }],
                     thole_a: None,
                     exclusions: vec![],
+                    excluded_charges: vec![],
                     dipole_zeta: 1e6,
                     max_sites_dense: 100,
                 })

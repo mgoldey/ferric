@@ -324,6 +324,7 @@ fn polarizable_empty_sites_is_bit_identical_to_plain_scf() {
             sites: vec![],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -367,6 +368,7 @@ fn alpha_zero_gives_zero_polarization_energy() {
             sites: vec![site],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -420,6 +422,7 @@ fn distant_single_site_matches_perturbative_limit() {
             sites: vec![site],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -566,6 +569,7 @@ fn run_pe_case(tag: &str) {
             sites,
             thole_a: r.thole_a,
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -612,6 +616,7 @@ fn run_pe_case(tag: &str) {
         sites: sites2,
         thole_a: r.thole_a,
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -682,6 +687,7 @@ fn induce_empty_sites_returns_zero_result() {
         sites: vec![],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -715,6 +721,7 @@ fn induce_rejects_more_sites_than_max_sites_dense() {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 1, // exceeded by 2 sites
     };
@@ -755,6 +762,7 @@ fn induce_rejects_non_positive_alpha() {
             }],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 8,
         };
@@ -794,6 +802,7 @@ fn two_site_setup() -> (Molecule, PolarizableSites, ExternalPotential) {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -851,6 +860,7 @@ fn two_site_setup_no_colocated_charge() -> (Molecule, PolarizableSites, External
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -1066,6 +1076,7 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
