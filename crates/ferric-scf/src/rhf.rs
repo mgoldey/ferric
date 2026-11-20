@@ -801,9 +801,9 @@ fn stability_rhf<'r>(
     Option<crate::stability::StabilityResult>,
     Option<crate::stability::StabilityResult>,
 ) {
-    if let Err(skip) =
+    if let Err(skip) = crate::stability::environment_is_analysable(config).and_then(|()| {
         crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega)
-    {
+    }) {
         eprintln!(
             "SCF stability: check requested but SKIPPED — {}. \
              ScfResult::stability and ScfResult::stability_external are both None (not \

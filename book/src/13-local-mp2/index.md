@@ -18,6 +18,7 @@ and every local run prints its truncation.
 | 13.1 | Amplitude-threshold local MP2 | `local-mp2` (gap) | edit |
 | 13.2 | The integral-direct path | none | gap |
 | 13.3 | Pair natural orbitals and DLPNO-MP2 | none | gap |
+| 13.4 | Amplitude-threshold local OP-MP3 | `local-opmp3` | gap |
 
 Sections @sec:amplitude-lmp2 and @sec:integral-direct are the production local method
 (`[local] scheme = "amplitude-threshold"`). It keeps an amplitude when the

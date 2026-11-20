@@ -1,0 +1,24 @@
+# Amplitude-threshold local SSD-OPMP3 on an RKS/PBE0 reference: the HF Fock
+# of the PBE0 density (semicanonical, non-Brillouin singles), then both
+# amplitude orders solved on ONE local-MP2 pattern in lambda-Boys occupieds
+# and VV-HV virtuals (Fock-propagated screen on), RI integrals. eps is part
+# of the model and has no default; [local] reference = true also runs the
+# canonical OP-MP3 and prints the local error of each model.
+[molecule]
+xyz = "testdata/molecules/alkane_4.xyz"
+
+[basis]
+name = "6-31g"
+
+[method]
+kind = "opmp3"
+
+[opmp3]
+reference = "pbe0"
+integrals = "ri"
+auxbasis = "cc-pvdz-ri"
+
+[local]
+scheme = "amplitude-threshold"
+eps = 1e-5
+reference = true

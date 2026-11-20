@@ -1,0 +1,51 @@
+{
+ "kind": "rust_lmp2_series",
+ "system": "alkane_12",
+ "basis": "cc-pvdz",
+ "auxbasis": "cc-pvdz-ri",
+ "frozen_core": true,
+ "status": "partial: killed by OOM (exit 137, 01:29:06) during eps=3e-6",
+ "scope": "ferric-limited --max=7G --high=6G",
+ "rows": [
+  {
+   "eps": 0.0001,
+   "dE2": 0.009008,
+   "keep": 0.0213,
+   "n_pairs_unique": 595,
+   "dom_mean": 178.6,
+   "dom_max": 241,
+   "wall_s": 134
+  },
+  {
+   "eps": 3e-05,
+   "dE2": 0.002043,
+   "keep": 0.0498,
+   "n_pairs_unique": 693,
+   "dom_mean": 221.2,
+   "dom_max": 249,
+   "wall_s": 129
+  },
+  {
+   "eps": 1e-05,
+   "dE2": 0.0005132,
+   "keep": 0.0958,
+   "n_pairs_unique": 703,
+   "dom_mean": 243.2,
+   "dom_max": 249,
+   "wall_s": 1252
+  }
+ ],
+ "fallback_plans_in_log_order": [
+  {
+   "gather_plan_gb": 10.619,
+   "resident_solve_gb": 2.262,
+   "budget_gb": 6.013
+  },
+  {
+   "gather_plan_gb": 21.021,
+   "resident_solve_gb": 3.612,
+   "budget_gb": 6.013
+  }
+ ],
+ "source": "parsed from run log d4_rust_c12_ccpvdz.log (the run died before writing JSON)"
+}

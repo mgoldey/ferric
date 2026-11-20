@@ -426,7 +426,11 @@ The denominator conversion is one match:
 - Every $k$ must hold the same number of occupied levels; the global aufbau
   of section @sec:kpoint-scf can violate this, and the run is then refused.
 - The $q = 0$ head correction is not implemented, so the energy converges
-  with the mesh at the rate of the uncorrected sum.
+  with the mesh at the rate of the uncorrected sum. The prototype's
+  correction (cubic linear head, lattice-tensor quadratic head on the direct
+  term, first-order Fock head with Bloch pairing) has the right $N_k^{-1}$
+  coefficient; a port extrapolates from $n \ge 5$ or twist-averaged meshes
+  in $n^{-5}$, because Gamma-centred meshes with $n \le 4$ alias the band.
 
 ## Sources {#mp2-drpa-sources}
 

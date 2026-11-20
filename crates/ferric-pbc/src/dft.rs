@@ -1800,17 +1800,10 @@ fn refuse_gamma_open_shell_mgga(
              meta-GGAs have an open-shell periodic energy"
         )
     } else if !derivs.is_empty() {
-        let alternative = if route == "ROKS" {
-            "the k-point ROKS on a 1x1x1 mesh (the Gamma point) has them in the library only \
-             (kuxcgrad::kpoint_roks_gradient / kuxcstress::kpoint_roks_stress), not yet in \
-             Python or the CLI"
-        } else {
-            "the k-point UKS on a 1x1x1 mesh (the Gamma point) has SCAN / r2SCAN forces and \
-             stress"
-        };
         format!(
             "{name}: the Gamma-point {route} SCAN / r2SCAN force and stress are not \
-             implemented (its energy is); {alternative}"
+             implemented (its energy is); the k-point {route} on a 1x1x1 mesh (the Gamma \
+             point) has SCAN / r2SCAN forces and stress (dense-AFT J/K)"
         )
     } else {
         return Ok(());

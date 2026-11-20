@@ -1,0 +1,46 @@
+[
+ {
+  "xyz": "alkane_8.xyz",
+  "basis": "6-31g",
+  "plateau": {
+   "eps": 1e-07,
+   "keep": 0.7957202488888889,
+   "err_masked": 1.6366424991920425e-06,
+   "norm_t_ex_dropped": 0.0007644825327871367,
+   "norm_diag_estimate_dropped": 5.888478640208528e-06,
+   "energy_on_dropped_exact_t": -4.0955616640196987e-10,
+   "max_fvv_offdiag_vv": 0.039444052058396344,
+   "max_fvv_offdiag_hv": 0.1961822038014044,
+   "max_fvv_vv_hv": 0.42224164712723883,
+   "fock_ranked": [
+    {
+     "frac_of_dropped": 0.01,
+     "keep_ranked": 0.7990209422222222,
+     "err_ranked": 1.8387058542401746e-09,
+     "keep_random": 0.8035859911111111,
+     "err_random": 1.6357530132626863e-06
+    },
+    {
+     "frac_of_dropped": 0.05,
+     "keep_ranked": 0.81127424,
+     "err_ranked": 3.3362734797037774e-10,
+     "keep_random": 0.8326934755555555,
+     "err_random": 1.6338242678770598e-06
+    },
+    {
+     "frac_of_dropped": 0.2,
+     "keep_ranked": 0.84095232,
+     "err_ranked": 8.905098880518381e-13,
+     "keep_random": 0.9137405155555556,
+     "err_random": 3.710544516088987e-08
+    }
+   ],
+   "dropped_t_norm2_share": {
+    "vv-vv": 0.0016820670348980905,
+    "vv-hv": 0.4926955665627397,
+    "hv-vv": 0.4926955665627568,
+    "hv-hv": 0.012926799839605384
+   }
+  }
+ }
+]

@@ -2673,6 +2673,18 @@ fn fit_pairs(
         Some(k) if eps > 0.0 => Some(k * eps),
         _ => None,
     };
+    if kappa_eps.is_some() && fock_screen.is_some() {
+        // The κ candidate screen bounds the BARE integrals (the Eq-8 mask);
+        // the Fock-dressed gate can keep a virtual it drops, and its Fock
+        // sums would run over the screened set only (book ch. 13,
+        // §amplitude-lmp2-fock-screen-candidates).
+        return Err(FerricError::General(
+            "lmp2_direct: virt_schwarz_kappa is a Schwarz bound on the plain Eq-8 mask and \
+             can drop virtuals the Fock screen keeps; set fock_screen = false to use it, \
+             or leave virt_schwarz_kappa unset"
+                .into(),
+        ));
+    }
     let (qvirt, own_w) = match kappa_eps {
         None => (None, None),
         Some(_) => schwarz_screen(pre, dfbs, no, scale, dcfg, path, stats)?,
@@ -2861,13 +2873,7 @@ fn ragged_from_groups(
             ))
         })?);
     }
-    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (pidx, pb) in pairs.iter().enumerate() {
-        by_i.entry(pb.i).or_default().push(pidx);
-        by_j.entry(pb.j).or_default().push(pidx);
-    }
-    Ok(Ragged { pairs, by_i, by_j })
+    Ok(Ragged::from_pairs(pairs))
 }
 
 /// Compact whitened occ-occ Gram `(ik|jl)` for the LinLCCD hh ladder —
@@ -3371,6 +3377,7 @@ pub fn amplitude_lmp2_direct(
     cfg: &AmplitudeLmp2Config,
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
+    crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_direct", &cfg.virtual_space)?;
     let (mut r, st) =
@@ -3394,6 +3401,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     dcfg: &DirectConfig,
     vvhv: &VvHv,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
+    crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
     let t0 = Instant::now();
     let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
     let t_loc_s = t0.elapsed().as_secs_f64();

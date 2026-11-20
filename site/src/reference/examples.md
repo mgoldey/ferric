@@ -108,6 +108,7 @@ See [The MP2 family](../methods/mp2.md).
 | `water-drpa-local.toml` | H2O / 6-31G | `drpa` + `[local]` | — | Amplitude-threshold dRPA, `eps = 1e-4`, `reference = true` (prints the error against the canonical plasmon dRPA). A comment shows the `eps_sweep` form. |
 | `water-mp3.toml` | H2O / cc-pVDZ | `mp3` | — | |
 | `oh-opmp3-pbe0.toml` | OH / cc-pVDZ | `opmp3` | — | SSD-OPMP3 on a ROKS/PBE0 reference at the paper's x_ss = 0.5; exact integrals. Smoke grade. |
+| `butane-local-opmp3-pbe0.toml` | butane / 6-31G | `opmp3` + `[local]` | — | Amplitude-threshold local OP-MP3 on an RKS/PBE0 reference (RI integrals, `eps = 1e-5`). Sets `reference = true`, so it also runs the canonical OP-MP3 and prints the local error. |
 | `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Proven (narrow) grade. |
 | `water-attmp2.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | ω = 0.420 Å⁻¹. |
 | `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å (the aug-cc-pVDZ table value, set explicitly). Needs the terf tables. |

@@ -376,13 +376,14 @@ fn open_shell_refusals_have_exact_messages() {
             && e.contains("the k-point ROKS SCAN / r2SCAN energy is validated on the dense-AFT"),
         "{tag}: {e}"
     );
-    let tag = "roks-opt-SCAN";
-    let e = refused(&run(&input(tag, Method::Roks, "SCAN", "optimize")), tag);
-    assert!(
-        e.contains("method.task = \"optimize\" with [cell] kmesh")
-            && e.contains("SCAN: the k-point ROKS meta-GGA force and stress"),
-        "{tag}: {e}"
-    );
+    // The ROKS SCAN force runs on the dense-AFT J/K (#498,
+    // periodic_kroks_mgga_derivs.rs); on RS-GDF the energy refusal fires
+    // first, so optimize is refused at plan time too.
+    let tag = "roks-opt-SCAN-rsgdf";
+    let mut i = input(tag, Method::Roks, "SCAN", "optimize");
+    i.jk = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"";
+    let e = refused(&run(&i), tag);
+    assert!(e.contains("dense-AFT") && e.contains("SCAN"), "{tag}: {e}");
     // ROKS wB97X has an energy here but no validated force: optimize is
     // refused by the derivative allowlist, before any integral (the ROKS and
     // UKS HSE06 / CAM-B3LYP forces run: periodic_rsh_open_mgga_derivs.rs).

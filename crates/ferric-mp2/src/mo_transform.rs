@@ -98,6 +98,47 @@ pub fn transform_3center_vv(eri3_ao: &Array3<f64>, c_vir: &Array2<f64>) -> Array
     transform_3center(eri3_ao, c_vir, c_vir)
 }
 
+/// Whitened GLOBAL occupied-occupied and (optionally) virtual-virtual RI
+/// factors, `B_oo = V^{-1/2} (P|ik)` as `(naux, no²)` (column `i·no + k`) and
+/// `B_vv = V^{-1/2} (P|ac)` as `(naux, nv²)` (column `a·nv + c`, only when
+/// `c_vir` is given), from the AO 3-index tensor of `op` and the RI metric
+/// `v2c`. The AO tensor is built once per block, each transient and never
+/// co-resident with the other (callers charge ONE `naux·nao²` transient).
+/// Unlike the rest of this module it is fallible: the metric inverse square
+/// root and the 3-index build can fail.
+pub fn whitened_oo_vv(
+    op: ferric_integrals::operator::Operator,
+    obs: &ferric_integrals::basis_bridge::PreparedBasis,
+    dfbs: &ferric_integrals::basis_bridge::PreparedBasis,
+    v2c: &Array2<f64>,
+    c_occ: &Array2<f64>,
+    c_vir: Option<&Array2<f64>>,
+) -> Result<(Array2<f64>, Option<Array2<f64>>), ferric_core::error::FerricError> {
+    use ferric_core::error::FerricError;
+    let naux = dfbs.nbasis();
+    let vis = crate::rimp2::metric_inverse_sqrt(v2c, op)?;
+    let no = c_occ.ncols();
+    let boo_t = {
+        let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+        let boo = transform_3center_oo(&eri3_ao, c_occ)
+            .into_shape_with_order((naux, no * no))
+            .map_err(|e| FerricError::General(format!("whitened_oo_vv oo reshape: {e}")))?;
+        vis.dot(&boo)
+    };
+    let bvv_t = match c_vir {
+        Some(c_vir) => {
+            let nv = c_vir.ncols();
+            let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
+            let bvv = transform_3center_vv(&eri3_ao, c_vir)
+                .into_shape_with_order((naux, nv * nv))
+                .map_err(|e| FerricError::General(format!("whitened_oo_vv vv reshape: {e}")))?;
+            Some(vis.dot(&bvv))
+        }
+        None => None,
+    };
+    Ok((boo_t, bvv_t))
+}
+
 /// Dress a 3-index MO block with the RI metric: `B^P_pq = (V^{-1/2})_{PQ} (Q|pq)`.
 ///
 /// `eri3_mo` is `(naux, d1, d2)` already MO-transformed; `v_inv_sqrt` is `(naux, naux)`.

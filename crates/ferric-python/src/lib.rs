@@ -1082,19 +1082,21 @@ fn refuse_dm0_with_guess(
     )))
 }
 
-/// `run_uhf`'s `mom_reference=`: `None` is `"previous"`. `"initial"` applies
+/// `who`'s `mom_reference=`, `None` when not passed (the solver's default,
+/// `"previous"`). `"initial"` applies
 /// MOM from the first iteration, so it is refused next to `mom_after_iter > 0`
 /// (a later start) and `stability_descent` (which leaves the start's state).
 fn parse_mom_reference(
+    who: &str,
     value: Option<&str>,
     mom_after_iter: Option<usize>,
     stability_descent: Option<bool>,
-) -> PyResult<ferric_scf::mom::MomReference> {
-    let reference = value
-        .map(ferric_scf::mom::MomReference::parse_config_str)
-        .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
-        .unwrap_or_default();
+) -> PyResult<Option<ferric_scf::mom::MomReference>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let reference = ferric_scf::mom::MomReference::parse_config_str(value)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     // The rule lives in `MomReference::check_initial`; this layer only words
     // either conflict in kwarg terms (one message naming both kwargs).
     reference
@@ -1103,12 +1105,13 @@ fn parse_mom_reference(
             stability_descent.unwrap_or(false),
         )
         .map_err(|_conflict| {
-            pyo3::exceptions::PyValueError::new_err(
-                "run_uhf: mom_reference=\"initial\" applies MOM from the first iteration and \
-                 holds the starting occupation; pass neither mom_after_iter nor stability_descent",
-            )
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{who}: mom_reference=\"initial\" applies MOM from the first iteration and \
+                     holds the starting occupation; pass neither mom_after_iter nor \
+                     stability_descent"
+            ))
         })?;
-    Ok(reference)
+    Ok(Some(reference))
 }
 
 /// The secondary-basis guess report as a dict (`basis`, `projection`,
@@ -1908,6 +1911,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_cli_main, m)?)?;
     add_build_identity(m)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
+    m.add_function(wrap_pyfunction!(_scf_refused, m)?)?;
     m.add_function(wrap_pyfunction!(run_rhf_gamma, m)?)?;
     m.add_class::<PyGammaRhfResult>()?;
     pbc::register(m)?;

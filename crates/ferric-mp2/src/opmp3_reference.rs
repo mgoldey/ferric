@@ -71,6 +71,10 @@ pub struct Opmp3Reference {
     pub e_hf: f64,
     /// The SCF's own energy (the KS energy for a DFT reference).
     pub e_scf: f64,
+    /// `[α, β]` AO HF Fock matrices `F_σ = h + J[D] − K[D_σ]` of the
+    /// reference density (what a local correlation treatment of the same
+    /// reference localizes against).
+    pub f_ao: [Array2<f64>; 2],
 }
 
 impl Opmp3Reference {
@@ -218,5 +222,6 @@ pub fn opmp3_reference(
         ],
         e_hf,
         e_scf: scf.energy,
+        f_ao: [f_a, f_b],
     })
 }

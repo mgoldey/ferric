@@ -280,8 +280,11 @@ def test_a_molecule_reused_from_an_ecp_run_is_all_electron_in_sto3g():
             hi(), bs, aux, local="amplitude-threshold", eps=1e-4
         ),
         lambda bs, aux: ferric.run_drpa_scan(hi(), bs, aux, [1e-3]),
+        lambda bs, aux: ferric.run_opmp3(
+            hi(), bs, auxbasis=aux, local="amplitude-threshold", eps=1e-4
+        ),
     ],
-    ids=["local_rimp2", "local_linlccd", "drpa_scan"],
+    ids=["local_rimp2", "local_linlccd", "drpa_scan", "local_opmp3"],
 )
 def test_local_correlation_refuses_an_ecp_basis(call):
     with pytest.raises(RuntimeError, match="ECP atoms"):

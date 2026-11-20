@@ -159,6 +159,23 @@ Done:
     `run_roks` (oracle-tested against their old `rhf_config_budgeted`
     construction), with the RIJCOSX rule as
     `ferric_scf::options::df_k_aux_or_default`.
+6b. The keyword-argument drift between the six SCF entry points filled
+    additively (appended kwargs, default `None` = the old behaviour, and in
+    `ferric.pyi`) wherever a sibling with the same solver already took the
+    knob, and all six bindings call one policy,
+    `ferric_scf::options::entry::ScfEntryPoint::options`, which also names
+    the knobs each entry point refuses because its solver cannot honour them
+    (`ScfEntryPoint::refused`: `diis`, `smearing_sigma`, `aurora` outside
+    `solve_rhf`; `diis`/`smearing_sigma`/`soscf` on `run_dft`, whose ladder
+    sets them per rung; `trah_trigger` and `stability_descent` on ROHF/ROKS;
+    `mom_reference` on RHF/ROHF/DFT/ROKS (`"initial"` is UHF/UKS only);
+    open-shell `symmetry`, which needs a result class of its own;
+    `functional`, the `grid_*` keywords and `dispersion` on the Hartree-Fock
+    entry points, and `dispersion` on UKS/ROKS). That table is exported as
+    `ferric._scf_refused()` and checked against every signature
+    (`test_scf_entry_point_surface.py`: each knob any of the six takes is
+    offered or refused, never both). The `options` oracle tests run the old
+    literals against that function.
 7. The CLI `[scf]` section lowered through `ferric_scf::options`
    (`try_scf_config` in ferric-cli, oracle-tested against the old
    `RhfConfig` literal), removing the hand-kept "CLI and Python agree"
@@ -202,7 +219,7 @@ Done:
    | `run_opmp3` | applied (fix) | `run_rhf`/`run_rohf` |
    | `response_modes` | applied (fix: occupied count) | numpy `alpha_bare` on `run_rhf` orbitals |
    | CAS-CI, CASSCF, NEVPT2 | already applied | `run_rhf` |
-   | local MP2, `run_drpa`, `run_drpa_scan`, local LinLCCD | refused, unchanged | `pytest.raises` |
+   | local MP2, local OP-MP3, `run_drpa`, `run_drpa_scan`, local LinLCCD | refused, unchanged | `pytest.raises` |
 
    The fixes are a behaviour change only for an ECP basis (the drivers had
    prepared the ECP basis, which carries V_ECP and the reduced nuclear
@@ -234,9 +251,6 @@ Next, each as its own PR following the patterns above:
     the examples use `rhf_start_prepared`; a lifetime-branded aux basis
     (`PreparedAux<'a>`) or the aux stored in the system; kernels taking
     `&PreparedSystem`, so the types enforce the invariant.
-
-6b. Fill the keyword-argument drift between the six SCF entry points
-    additively (and in `ferric.pyi`).
 9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
    declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.
@@ -266,3 +280,12 @@ Next, each as its own PR following the patterns above:
     to the lowering rather than a user option, and one
     `Option<Hook { fock, grad }>` instead of the two independent hook
     options in the open-shell entry.
+    Follow-ups from the 6b review: a `KBuilder` enum parsed at the binding,
+    which `df_k_aux_or_default` then takes; `Option<Symmetry { irrep_nelec }>`
+    instead of `symmetry` + `irrep_nelec`; one solver-capability table in
+    ferric-scf shared by `ScfEntryPoint::refused` and the CLI's
+    `validate_open_shell_scf_keys` / `validate_accelerators`; `ScfKwargs`
+    fields grouped (convergence, J/K route, guess, environment, accelerators,
+    Kohn-Sham); `ksdft_ladder`'s own copy of the KS JK-fit default and the
+    RIJCOSX rule; `run_dft`'s `symmetry=True` overload typing in
+    `ferric.pyi`.

@@ -90,6 +90,27 @@ integrals = "exact"  # exact | ri
 frozen_core = 0      # frozen occupied orbitals of each spin
 # auxbasis: not read here: only with integrals = "ri", where it is required
 
+[local]
+scheme = "none"  # none | amplitude-threshold
+# eps: amplitude threshold (required with amplitude-threshold; no default); not read here: only with scheme = "amplitude-threshold", where it is required
+# eps_sweep: several eps on one SCF (drpa); not read here: only with scheme = "amplitude-threshold"
+# reference: also run the exact method; not read here: only with scheme = "amplitude-threshold"
+# integral_direct: integral-direct local MP2; not read here: only with scheme = "amplitude-threshold"
+# aux_radius: not read here: only with integral_direct = true
+# virt_radius: not read here: only with integral_direct = true
+# ao_tail: not read here: only with integral_direct = true
+# schwarz_skip: not read here: only with integral_direct = true
+# batch_merge: not read here: only with integral_direct = true
+# gate_cal: not read here: only with integral_direct = true
+# virt_schwarz_kappa: not read here: only with integral_direct = true
+# fock_screen: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2, opmp3)
+# virtual_space: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2, opmp3)
+# virtual_tau: not read here: only with virtual_space = "local"
+# virtual_tau_loose: not read here: only with virtual_space = "local"
+# virtual_solve_radius: not read here: only with virtual_space = "local"
+# virtual_boys_tau: not read here: only with virtual_space = "local"
+# lambda_boys: not read here: only with scheme = "amplitude-threshold" (rimp2, att-rimp2, opmp3)
+
 [memory]
 # budget_gb: memory budget, GB; unset by default: FERRIC_MEM_BUDGET_GB, else 0.8 x available RAM; machine-dependent, so not written
 # three_index_budget_gb: not read here: deprecated alias of budget_gb

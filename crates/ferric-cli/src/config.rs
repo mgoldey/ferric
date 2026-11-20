@@ -1411,7 +1411,7 @@ impl<'de> Deserialize<'de> for FrozenCore {
 /// The `method.kind`s whose correlation can be run under a local
 /// approximation (`[local]`). The kind names the METHOD; `[local]` says
 /// whether and how its amplitudes are truncated.
-pub const LOCAL_KINDS: &[&str] = &["rimp2", "att-rimp2", "drpa", "linlccd"];
+pub const LOCAL_KINDS: &[&str] = &["rimp2", "att-rimp2", "drpa", "linlccd", "opmp3"];
 
 /// `[local] scheme`: the local approximation applied to the method's
 /// amplitudes.
@@ -1456,7 +1456,8 @@ impl LocalScheme {
 }
 
 /// Optional `[local]` section: the local approximation of a correlated
-/// method (`method.kind` = `rimp2`, `drpa` or `linlccd`).
+/// method (`method.kind` = `rimp2`, `att-rimp2`, `drpa`, `linlccd` or
+/// `opmp3`).
 ///
 /// Absent (or `scheme = "none"`) means the method is computed EXACTLY. With
 /// `scheme = "amplitude-threshold"` the threshold `eps` is part of the model
@@ -1499,15 +1500,16 @@ pub struct LocalCfg {
     /// gate off (every pair kept).
     pub gate_cal: Option<f64>,
     /// Integral-direct only: ε-linked Schwarz virtual-candidate screen κ.
-    /// Omitted = off.
+    /// Omitted = off. It bounds the plain Eq-8 mask only, so it needs
+    /// `fock_screen = false` (an error otherwise).
     pub virt_schwarz_kappa: Option<f64>,
-    /// `kind = "rimp2"` / `"att-rimp2"` only, in-core and integral-direct:
-    /// the Fock-propagated screen of the amplitude mask (book
+    /// `kind = "rimp2"` / `"att-rimp2"` (in-core and integral-direct) and
+    /// `"opmp3"` only: the Fock-propagated screen of the amplitude mask (book
     /// §amplitude-lmp2-fock-screen), κ =
     /// `ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT`. Default true;
     /// `false` keeps the plain Eq-8 mask.
     pub fock_screen: Option<bool>,
-    /// `kind = "rimp2"` / `"att-rimp2"` only: which VV-HV virtual-space build
+    /// `kind = "rimp2"` / `"att-rimp2"` / `"opmp3"` only: which VV-HV virtual-space build
     /// to use, `"dense"` (default, O(N³)) or `"local"` (the opt-in
     /// threshold-sparse build, `ferric_mp2::vvhv_local`).
     pub virtual_space: Option<String>,
@@ -1523,7 +1525,7 @@ pub struct LocalCfg {
     /// `virtual_space = "local"` only: Boys pair-screen threshold. Default
     /// 1e-8; 0 rotates every pair.
     pub virtual_boys_tau: Option<f64>,
-    /// `kind = "rimp2"` / `"att-rimp2"` only: λ (Bohr²/Ha²) of the λ-Boys
+    /// `kind = "rimp2"` / `"att-rimp2"` / `"opmp3"` only: λ (Bohr²/Ha²) of the λ-Boys
     /// occupied localization (finite, >= 0). Default
     /// [`ferric_mp2::boys::LAMBDA_BOYS_DEFAULT`]; 0 = plain Boys.
     pub lambda_boys: Option<f64>,
@@ -1556,6 +1558,24 @@ pub struct LocalDirectKnobs {
     pub virt_schwarz_kappa: Option<f64>,
 }
 
+/// `virt_schwarz_kappa` bounds the bare integrals (the plain Eq-8 mask) and
+/// can drop virtuals the Fock screen keeps, so the two are refused together
+/// (book §amplitude-lmp2-fock-screen-candidates).
+fn refuse_kappa_under_fock_screen(
+    fock_on: bool,
+    direct: Option<&LocalDirectKnobs>,
+) -> Result<(), String> {
+    if fock_on && direct.is_some_and(|d| d.virt_schwarz_kappa.is_some()) {
+        return Err(
+            "[local] virt_schwarz_kappa bounds the bare integrals (the plain Eq-8 \
+                    mask) and can drop virtuals the Fock screen keeps; set \
+                    fock_screen = false to use it"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// A resolved `scheme = "amplitude-threshold"` model. An exact run has none
 /// (`Config::local_model` returns `Ok(None)`).
 #[derive(Debug, Clone, PartialEq)]
@@ -1583,6 +1603,27 @@ pub struct LocalModel {
 }
 
 impl LocalModel {
+    /// The amplitude-pattern config shared by the local MP2 and local OP-MP3
+    /// runs (CLI and Python): the first ε, the frozen core, the 3-index
+    /// budget, and the maps (`fock_screen`, `lambda_boys`, `virtual_space`)
+    /// with their production defaults; every other field at the library
+    /// default.
+    pub fn amplitude_config(
+        &self,
+        frozen_core: usize,
+        eri3_budget_bytes: Option<usize>,
+    ) -> ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
+        ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
+            eps: self.eps[0],
+            frozen_core,
+            eri3_budget_bytes,
+            fock_screen: self.fock_screen,
+            virtual_space: self.virtual_space.clone(),
+            lambda_boys: self.lambda_boys,
+            ..Default::default()
+        }
+    }
+
     /// The library configs of a local RI-MP2 run (`kind = "rimp2"` /
     /// `"att-rimp2"` with `scheme = "amplitude-threshold"`, Python
     /// `run_rimp2(local=...)`): the amplitude config at the first ε, and the
@@ -1599,15 +1640,9 @@ impl LocalModel {
         Option<ferric_mp2::lmp2_direct::DirectConfig>,
     ) {
         let lcfg = ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config {
-            eps: self.eps[0],
-            frozen_core,
-            eri3_budget_bytes,
             compute_reference: self.reference,
             pair_gate_cal: self.direct.as_ref().and_then(|d| d.gate_cal),
-            fock_screen: self.fock_screen,
-            virtual_space: self.virtual_space.clone(),
-            lambda_boys: self.lambda_boys,
-            ..Default::default()
+            ..self.amplitude_config(frozen_core, eri3_budget_bytes)
         };
         let dcfg = self
             .direct
@@ -1842,6 +1877,8 @@ impl LocalCfg {
             .lambda_boys
             .unwrap_or(ferric_mp2::boys::LAMBDA_BOYS_DEFAULT);
         ferric_mp2::boys::check_lambda_boys(lambda_boys).map_err(|e| format!("[local] {e}"))?;
+        let fock_on = self.fock_screen.unwrap_or(true);
+        refuse_kappa_under_fock_screen(fock_on, direct.as_ref())?;
         Ok(Some(LocalModel {
             eps,
             is_sweep,
@@ -1849,10 +1886,7 @@ impl LocalCfg {
             direct,
             virtual_space,
             lambda_boys,
-            fock_screen: self
-                .fock_screen
-                .unwrap_or(true)
-                .then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
+            fock_screen: fock_on.then_some(ferric_mp2::lmp2_amplitude::FOCK_SCREEN_KAPPA_DEFAULT),
         }))
     }
 }
@@ -5107,6 +5141,8 @@ impl Config {
     /// validated terfc parameter box of the Schwarz cut (the angular-momentum
     /// limit needs the molecule's basis and is reported when the run starts).
     fn validate_local_direct(&self, kind: &str, model: &LocalModel) -> Result<(), String> {
+        // the local OP-MP3 shares the local MP2 maps, but has no integral-direct path
+        let maps_kind = matches!(kind, "rimp2" | "att-rimp2" | "opmp3");
         if kind != "rimp2" && kind != "att-rimp2" {
             if let Some(l) = self.local.as_ref() {
                 // (key set?, key, what it selects, what the other kinds do instead)
@@ -5118,28 +5154,33 @@ impl Config {
                         "",
                     ),
                     (
-                        l.virtual_space.is_some(),
+                        l.virtual_space.is_some() && !maps_kind,
                         "virtual_space",
                         "selects the VV-HV build of the local MP2",
                         ", which always uses the dense build",
                     ),
                     (
-                        l.fock_screen.is_some(),
+                        l.fock_screen.is_some() && !maps_kind,
                         "fock_screen",
                         "sets the Fock-propagated mask screen of the local MP2",
                         ", which runs the plain amplitude mask",
                     ),
                     (
-                        l.lambda_boys.is_some(),
+                        l.lambda_boys.is_some() && !maps_kind,
                         "lambda_boys",
                         "sets the λ-Boys occupied localization of the local MP2",
                         ", which localizes with plain Boys",
                     ),
                 ];
                 if let Some((_, key, what, instead)) = mp2_only.iter().find(|r| r.0) {
+                    let kinds = if *key == "integral_direct" {
+                        "\"rimp2\" or \"att-rimp2\""
+                    } else {
+                        "\"rimp2\", \"att-rimp2\" or \"opmp3\""
+                    };
                     return Err(format!(
-                        "[local] {key} {what} and applies to method.kind = \"rimp2\" or \
-                         \"att-rimp2\" only (got \"{kind}\"{instead})"
+                        "[local] {key} {what} and applies to method.kind = {kinds} only (got \
+                         \"{kind}\"{instead})"
                     ));
                 }
             }
@@ -6948,6 +6989,16 @@ mod compat_guard_tests {
             .unwrap();
             assert_eq!(off.fock_screen, None, "{direct:?}");
         }
+        // virt_schwarz_kappa bounds the plain mask only: refused under the
+        // Fock screen, accepted with it off
+        let base = "scheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\n\
+                    virt_schwarz_kappa = 1.0\n";
+        let e = model(base).unwrap_err();
+        assert!(e.contains("fock_screen = false"), "{e}");
+        let off = model(&format!("{base}fock_screen = false"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(off.direct.unwrap().virt_schwarz_kappa, Some(1.0));
         for bad in ["fock_screen = 1.0", "fock_screen = \"off\""] {
             let src = format!(
                 "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n[basis]\nname = \"sto-3g\"\n\
@@ -9193,12 +9244,13 @@ kind = "ccsd"
                 assert!(gate(spin, rsgdf, "HYB_GGA_XC_WB97X").is_err());
             }
         }
-        // SCAN / r2SCAN: closed shell on either J/K, UKS on dense only, no ROKS.
+        // SCAN / r2SCAN: closed shell on either J/K, UKS and ROKS on dense only.
         for f in ["SCAN", "r2SCAN"] {
             gate(DerivSpin::Restricted, true, f).unwrap();
-            gate(DerivSpin::Unrestricted, false, f).unwrap();
-            assert!(gate(DerivSpin::Unrestricted, true, f).is_err());
-            assert!(gate(DerivSpin::RestrictedOpen, false, f).is_err());
+            for spin in [DerivSpin::Unrestricted, DerivSpin::RestrictedOpen] {
+                gate(spin, false, f).unwrap();
+                assert!(gate(spin, true, f).is_err(), "{spin:?} {f} rsgdf");
+            }
         }
         // TPSS: closed shell on the dense-AFT J/K only.
         gate(DerivSpin::Restricted, false, "TPSS").unwrap();
@@ -9223,16 +9275,11 @@ kind = "ccsd"
         let rsgdf = "jk = \"rsgdf\"\nauxbasis = \"cc-pvdz-ri\"\nkmesh = [1, 1, 2]";
         assert!(ok(&opt("ksdft", "kmesh = [1, 1, 2]", HSE)).optimize);
         assert!(ok(&opt("ksdft", rsgdf, HSE)).optimize);
-        // Open-shell KS: the ROKS meta-GGA force is refused by the derivative
-        // gate (its energy runs, #498); the UKS SCAN force runs (dense J/K);
-        // the UKS and ROKS RSH forces run on either J/K (#498).
-        let e = err(&opt("rohf", "kmesh = [1, 1, 2]", SCAN));
-        assert!(
-            e.contains("method.task = \"optimize\" with [cell] kmesh: ")
-                && e.contains("SCAN: the k-point ROKS meta-GGA force and stress"),
-            "rohf: {e}"
-        );
-        assert!(ok(&opt("uhf", "kmesh = [1, 1, 2]", SCAN)).optimize);
+        // Open-shell KS: the UKS and ROKS SCAN forces run on the dense J/K
+        // (#498); the UKS and ROKS RSH forces run on either J/K (#498).
+        for kind in ["uhf", "rohf"] {
+            assert!(ok(&opt(kind, "kmesh = [1, 1, 2]", SCAN)).optimize, "{kind}");
+        }
         for kind in ["uhf", "rohf"] {
             for cell in ["kmesh = [1, 1, 2]", rsgdf] {
                 assert!(ok(&opt(kind, cell, HSE)).optimize, "{kind} {cell}");

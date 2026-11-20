@@ -52,8 +52,9 @@ repos:
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
-        # provenance.json pins upstream commit SHAs (hex, flagged as entropy).
-        exclude: '^(testdata/|crates/ferric-core/src/basis/(bundled/|provenance\.json$))|\.ipynb$'
+        # provenance.json pins upstream commit SHAs (hex, flagged as entropy);
+        # prototype result JSONs record the ferric build commit the same way.
+        exclude: '^(testdata/|scripts/prototypes/[^/]+_data/|crates/ferric-core/src/basis/(bundled/|provenance\.json$))|\.ipynb$'
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
