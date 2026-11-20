@@ -6,7 +6,7 @@
 //! atom. They match PySCF to ≤6.2e-9 Ha/Bohr
 //! (`crates/ferric-scf/tests/validation_mgga_gradients.rs`). The VV10
 //! nonlocal gradient differentiates its moving NLC grid the same way, plus the
-//! pair-distance term of its double sum ([`vv10_gradient_from_density`]).
+//! pair-distance term of its double sum ([`vv10_gradient_from_density`](crate::gradient::vv10_gradient_from_density)).
 //!
 //! Closed-shell LDA gradient per atom A:
 //!
