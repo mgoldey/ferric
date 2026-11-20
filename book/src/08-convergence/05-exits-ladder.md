@@ -109,8 +109,8 @@ full `RhfConfig`. It carries each rung's final density into the next as the
 starting guess (unless the rung sets `restart`), stops at the first rung
 that converges, and otherwise returns the lowest-energy result with
 `converged = false`. Each rung's `max_iter` is its own budget, not a share
-of a total. `solve_rohf_ladder`, the counterpart for ROHF and ROKS, has no
-caller in the CLI or Python.
+of a total. The ladder is closed-shell only: UHF, UKS, ROHF and ROKS run
+their solver once.
 
 The built-in ladder (`default_ladder_from`) escalates convergence settings
 only. It inherits the caller's $J$/$K$ route and every other field:

@@ -28,7 +28,7 @@ pub struct RungOutcome {
     pub iters: usize,
     /// The rung's exit reason.
     pub exit: ScfExit,
-    /// Always `f64::NAN`: neither ladder driver fills it in.
+    /// Always `f64::NAN`: the ladder driver does not fill it in.
     pub final_err_max: f64, // best-effort; set to f64::NAN if not surfaced
     /// The rung's final total energy (Hartree).
     pub final_energy: f64,
@@ -44,8 +44,7 @@ pub struct LadderResult {
     /// Whether some rung converged.
     pub converged: bool,
     /// Index of the converged rung. When none converged, the index of the
-    /// lowest-energy rung for [`solve_rhf_ladder`] and of the last rung for
-    /// [`solve_rohf_ladder`].
+    /// lowest-energy rung.
     pub rung_reached: usize,
     /// One entry per rung that ran, in order.
     pub rung_outcomes: Vec<RungOutcome>,
@@ -763,78 +762,6 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
             restart: false,
         },
     ]
-}
-
-/// Walk a convergence ladder using ROHF/ROKS, carrying each failed rung's density
-/// forward as the next rung's guess.
-///
-/// The open-shell counterpart of [`solve_rhf_ladder`]. ROHF/ROKS has no closed-shell
-/// fallback and is materially harder to converge — radicals and open-shell
-/// transition-metal complexes are exactly the systems that stall plain DIIS, and
-/// exactly what a robustness-oriented functional is for.
-///
-/// Returns the first converged rung, or the lowest-energy non-converged result with
-/// `converged: false`.
-pub fn solve_rohf_ladder(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
-    ladder: &[Rung],
-) -> Result<LadderResult, FerricError> {
-    let mut outcomes: Vec<RungOutcome> = Vec::new();
-    let mut best: Option<ScfResult> = None;
-    let mut carry: Option<ndarray::Array2<f64>> = None;
-    let mut guess_report: Option<GuessBasisReport> = None;
-
-    for (i, rung) in ladder.iter().enumerate() {
-        let mut cfg = rung.config.clone();
-        // Carry the previous rung's best-effort density in as this rung's guess.
-        if !rung.restart {
-            if let Some(d) = carry.as_ref() {
-                cfg.init_guess_density = Some(d.clone());
-            }
-        }
-        // See the identical block in `solve_rhf_ladder`.
-        let r = {
-            let _rung_scope = crate::runlog::RungScope::enter(i);
-            crate::rohf::solve_rohf_best_effort(ctx, mol, prep, op, bounds, &cfg)?
-        };
-        log_rung(ctx, i, &cfg, &r);
-        outcomes.push(RungOutcome {
-            iters: r.iterations,
-            exit: r.exit,
-            final_err_max: f64::NAN,
-            final_energy: r.energy,
-        });
-        note_guess_report(&mut guess_report, &r);
-        if r.converged {
-            return Ok(LadderResult {
-                result: with_guess_report(r, &guess_report),
-                converged: true,
-                rung_reached: i,
-                rung_outcomes: outcomes,
-            });
-        }
-        carry = Some(r.density_total.clone());
-        best = match best {
-            Some(b) if b.energy <= r.energy => Some(b),
-            _ => Some(r),
-        };
-    }
-
-    let result = with_guess_report(
-        best.ok_or_else(|| FerricError::General("solve_rohf_ladder: empty ladder".into()))?,
-        &guess_report,
-    );
-    let n = outcomes.len().saturating_sub(1);
-    Ok(LadderResult {
-        result,
-        converged: false,
-        rung_reached: n,
-        rung_outcomes: outcomes,
-    })
 }
 
 #[cfg(test)]
