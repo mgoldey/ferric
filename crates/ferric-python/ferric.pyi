@@ -266,7 +266,8 @@ class QmmmSystem:
 
     Constructor takes Angstrom; point_charges() returns Bohr (the units run_rhf/run_optimize
     take for point_charges=). Select the QM region with qm_indices OR qm_seeds + qm_radius_angstrom
-    (+ optional residue_ids to pull in whole residues instead of individual atoms).
+    (+ optional residue_ids to pull in whole residues instead of individual atoms). With
+    qm_indices, residue_ids only labels molecules (read by run_qmmm's polarization_exclusions).
     """
 
     def __init__(
@@ -440,6 +441,7 @@ def run_qmmm(
     mm_topology: MmTopology | None = None,
     thole_a: float | None = None,
     ri_j_precision: str | None = None,
+    polarization_exclusions: str | None = None,
 ) -> QmmmResult:
     """Embedded SCF ("rhf" default, "uhf", "rks" or "uks") energy + QM gradient + MM forces + full gradient.
 
@@ -464,6 +466,12 @@ def run_qmmm(
     on a colocated charge+alpha MM atom and a two-site mutual-induction case.
     Boundary charges (RC/RCD) combined with a polarizable site have no FD
     cross-check yet.
+
+    polarization_exclusions: "molecule" (None = default) -- a site feels neither
+    the permanent charges nor the induced dipoles of its own molecule, labelled
+    by the system's residue_ids, else by the bonds of mm_topology; with neither,
+    ValueError. "none" -- no exclusions (isolated sites such as ions only; an
+    unexcluded TIP3P oxygen is polarized by its own hydrogens).
     """
     ...
 
@@ -1062,8 +1070,8 @@ class RhfResult:
 
     @property
     def exit_reason(self) -> str:
-        """ScfExit variant name: "Converged", "Stalled", "Diverged" or "MaxIter" (the
-        iteration cap was reached). ("Plateau" is reserved: not produced by run_rhf today.)"""
+        """ScfExit variant name: "Converged", "Stalled", "Diverged", "MaxIter" (the
+        iteration cap was reached) or "NotCertified" (ROHF/ROKS only)."""
         ...
 
     @property
@@ -4682,9 +4690,9 @@ def run_uks(
     The SCF settings are run_dft's: RI-J and RI-K through def2-universal-jkfit
     unless df_j_aux / df_k_aux say "" or "none" (exact), the production
     Becke-Lebedev grid unless grid_* say otherwise, run_rhf's convergence
-    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); for a
-    VV10 functional (wB97X-V) the gradient agrees with finite differences of the
-    energy to 6e-6 Ha/Bohr (NH2/6-31G), against ~1e-7 for the others.
+    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); the
+    gradient, VV10 (wB97X-V) included, agrees with finite differences of the
+    energy to ~2e-7 Ha/Bohr (NH2/6-31G).
     dm0 is a pair (D_alpha, D_beta) with run_uhf's checks; guess is
     "minao" (default) or "hcore". run_dft raises for multiplicity > 1.
 
@@ -5294,7 +5302,10 @@ class SaddleResult:
     @property
     def symbols(self) -> list[str]: ...
     @property
-    def coords(self) -> list[tuple[float, float, float]]: ...
+    def coords(self) -> list[tuple[float, float, float]]:
+        """Final-geometry coordinates in Angstrom, matching ``symbols``. Valid
+        to inspect even when ``converged`` is false."""
+        ...
     @property
     def imaginary_mode(self) -> list[float] | None:
         """The followed mode as a flat 3N Cartesian displacement vector.

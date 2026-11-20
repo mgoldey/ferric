@@ -184,6 +184,31 @@ impl EnginePool {
     }
 }
 
+/// Run `f(engine, i)` for every `i` in `0..n`, stopping at the first error:
+/// on one engine from `make`, serially, when `parallel` is false; else in
+/// parallel with one pooled engine per rayon worker ([`EnginePool::from_fn`],
+/// never rayon's per-split `*_init`). Callers pick `parallel` from a fixed
+/// `PAR_*_THRESHOLD` work cutoff, so small jobs skip the pool and rayon.
+pub fn for_each_with_engine<E>(
+    parallel: bool,
+    n: usize,
+    mut make: impl FnMut() -> Result<Engine, FerricError>,
+    f: impl Fn(&mut Engine, usize) -> Result<(), E> + Sync,
+) -> Result<(), E>
+where
+    E: From<FerricError> + Send,
+{
+    use rayon::prelude::*;
+    if !parallel {
+        let mut eng = make()?;
+        return (0..n).try_for_each(|i| f(&mut eng, i));
+    }
+    let pool = EnginePool::from_fn(make)?;
+    (0..n)
+        .into_par_iter()
+        .try_for_each(|i| pool.with(|eng| f(eng, i)))
+}
+
 #[cfg(test)]
 mod eri_precision_tests {
     use super::{ERI_PRECISION, ERI_PRECISION_VAR};

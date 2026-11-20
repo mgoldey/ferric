@@ -1,7 +1,8 @@
 //! Integral-direct assembly for the amplitude-threshold local MP2 family —
 //! the missing piece named by the wall-clock measurement in
 //! `wiki/amplitude-threshold-lmp2.md` §20–21: the global 3-index tensor
-//! (`eri3_mo_ov_blocked`, `(naux, no·nv)`) and the N⁵ whitening GEMM behind
+//! (`eri3_mo_ov_blocked`, `(naux, no·nv)`), its N⁴ whitening `B̃ = V^{-1/2}B`,
+//! and the N⁵ all-pairs Gram product `J = B̃ᵀB̃` behind
 //! `assemble_ragged_direct_aux` are never formed here.
 //!
 //! Pipeline (paper's Alg-2 shape, per-atom batched):

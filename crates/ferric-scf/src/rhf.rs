@@ -120,7 +120,11 @@ pub struct RhfConfig {
     /// Level shift (Ha) applied to the virtual–virtual block of the Fock
     /// matrix in MO basis. Defaults to 0 (no shift). Used to damp oscillations
     /// in open-shell SCF (ROHF/UHF/ROKS) where DIIS plateaus near a near-
-    /// degenerate transition. A shift of 0.1–0.5 Ha is typical.
+    /// degenerate transition. A shift of 0.1–0.5 Ha is typical. The shift is
+    /// ramped off with `e`, the largest element of the DIIS error: RHF/RKS
+    /// `level_shift · min(e / 0.1, 1)` (`closed_shell_level_shift_ramp`),
+    /// UHF/UKS and ROHF/ROKS `level_shift · e / (e + 1e-3)`
+    /// (`open_shell_level_shift_ramp`); `driver.rs` records why they differ.
     pub level_shift: f64,
     /// Whether a meta-GGA functional with `level_shift == 0` gets the automatic
     /// 0.5 Ha virtual-block shift (`driver::effective_level_shift`). `true` (the
@@ -129,10 +133,12 @@ pub struct RhfConfig {
     /// know whether the caller wrote a `level_shift` (CLI `[scf] level_shift`,
     /// the Python `level_shift=` kwarg) set it to `false` when the caller did.
     pub meta_gga_auto_level_shift: bool,
-    /// If > 0 in ROHF/ROKS: switch from DIIS to a damped-Newton step once the
-    /// DIIS error (err_max) drops below this trigger. Setting `1e-2` is a
-    /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
-    /// disables Newton entirely (DIIS-only).
+    /// If > 0 (RHF/RKS, UHF/UKS, ROHF/ROKS): replace the DIIS step by a PCG
+    /// Newton step once the DIIS error (err_max) drops below this trigger.
+    /// RHF/RKS additionally requires iteration > 3 and a functional without
+    /// range separation (ω = 0). Setting `1e-2` is a reasonable value for
+    /// OH-doublet LDA/PBE plateaus; `[scf] soscf = true` sets 1e-3. A value
+    /// of 0 disables Newton entirely (DIIS-only).
     pub newton_trigger: f64,
 
     /// AURORA auxiliary-curvature accelerator (arXiv:2608.07354).
@@ -169,7 +175,7 @@ pub struct RhfConfig {
     /// Trust-region parameters, read only when `trah_trigger` is `Some`.
     pub trah: crate::trah::TrahConfig,
     /// If > 0 (RHF/UHF/ROHF/ROKS): activate Maximum-Overlap Method
-    /// reordering after this many DIIS iters. From iter `mom_after_iter + 1`
+    /// reordering after this many SCF iterations. From iter `mom_after_iter + 1`
     /// onward, the occupied MO set is picked by AO-overlap with the
     /// previous-iter accepted set (rather than by ε). Default 0 = disabled.
     /// MOM pins whatever basin DIIS holds at arming — it breaks occupied-set
@@ -436,7 +442,9 @@ pub struct RhfConfig {
     /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
     ///
     /// Honoured by `solve_rhf`/`solve_rks` (RHF-internal, singlet channel) and
-    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations).
+    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations). On an
+    /// RHF (not KS) reference it also runs the external RHF→UHF (triplet)
+    /// analysis into [`crate::result::ScfResult::stability_external`].
     /// `solve_rohf`/`solve_roks` SKIP it with a printed reason — the Roothaan
     /// Hessian is a third operator, and analysing a UHF or RHF one there would
     /// be a wrong-operator verdict. VV10 functionals are likewise skipped with
@@ -945,8 +953,9 @@ pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
 /// `window` entries has not dropped below 0.9x its value over the previous
 /// `window` entries (gradient stopped falling — robust to oscillation, since a
 /// wide-band limit cycle has net-zero running-min change), AND `current_err` is
-/// still above the 1e-4 plateau floor (below it, the separate plateau-acceptance
-/// path owns the regime). Returns `false` when `window == 0` (degenerate/no-op
+/// still above the 1e-4 floor (below it the commutator can park on a fitting or
+/// near-degeneracy floor while the density settles, and the density-change
+/// stopping test, `scf_converged`, owns the regime). Returns `false` when `window == 0` (degenerate/no-op
 /// config) or when there isn't yet `2*window` entries of history.
 pub(crate) fn stall_detected(errmax_history: &[f64], window: usize, current_err: f64) -> bool {
     if window == 0 {
@@ -3444,7 +3453,7 @@ impl RhfState {
 
         // Stall: running-min err_max over a window stopped falling. Robust to
         // oscillation (a wide-band limit cycle has net-zero running-min change).
-        // Only fires above the 1e-4 floor — below it the plateau path accepts.
+        // Only fires above the 1e-4 floor — below it the ΔD stopping test decides.
         if self.mon.stalled(err_max, config.stall_window) {
             if scf_trace() {
                 let w = config.stall_window.unwrap_or(0);
@@ -4145,7 +4154,10 @@ impl RhfState {
         // F, so an accepted solution never carries the shift.
         if inp.effective_level_shift > 0.0 {
             if let Some(c_p) = self.c_prev.as_ref() {
-                let shift_ramp = inp.effective_level_shift * (err_max / 0.1).min(1.0);
+                let shift_ramp = crate::driver::closed_shell_level_shift_ramp(
+                    inp.effective_level_shift,
+                    err_max,
+                );
                 if shift_ramp > 0.0 {
                     let shift_term = with_blas_threads(opt_in_blas_threads(), || {
                         crate::blas_probe::record(&crate::blas_probe::RHF_LEVEL_SHIFT);
@@ -5682,9 +5694,9 @@ mod tests {
     /// Na4 at aug-cc-pVTZ has a near-degenerate occupied manifold (four overlap
     /// eigenvalues ≈ 3e-5): bare DIIS reaches the correct ground-state energy but
     /// the orbital gradient parks on a noise floor (err_max ≈ 3e-5) it can never
-    /// drain below density_conv, so without plateau acceptance the SCF spins to
-    /// max_iter and returns Err (the "stuck job" in the GW100 aTZ sweep). This is
-    /// the regression for the plateau-acceptance fix: it must converge (flagged)
+    /// drain, so a stopping test on the commutator spins to max_iter (the "stuck
+    /// job" in the GW100 aTZ sweep). The density-change test (`scf_converged`)
+    /// accepts it once ΔD settles. This is the regression: it must converge
     /// to the CORRECT ground state −774.894064, NOT the ~−771.5/−771.7 excited
     /// states that MOM or a raised lindep threshold converge to. Slow (~5-7 min
     /// release): run with --ignored.
@@ -5709,7 +5721,7 @@ mod tests {
         let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert!(
             result.converged,
-            "Na4/aTZ did not converge (plateau acceptance failed); iters={}",
+            "Na4/aTZ did not converge on the density-change test; iters={}",
             result.iterations
         );
         assert!(
@@ -5804,6 +5816,37 @@ mod tests {
     const D_CONV: f64 = 1e-6;
 
     /// The bound is sqrt(dconv) above the ROHF F6 floor and the floor below it.
+    /// The #422 veto at function level (its end-to-end witness, a stalled
+    /// EDIIS in a point-charge field, disappeared with the corrected EDIIS
+    /// curvature in 2026-11): a `Converged` exit with the commutator at or above
+    /// the crossover is refused, recorded and the driver falls back to Pulay; a
+    /// smaller commutator, a non-converged exit and pure Pulay pass through.
+    #[test]
+    fn veto_refuses_a_converged_exit_above_the_energy_diis_crossover() {
+        use crate::diis::{DiisDriver, DiisFlavor};
+        let mut e = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut e, 0.5, 5, DiisFlavor::Ediis);
+        assert_eq!(exit, None);
+        let fb = fb.expect("the refusal is recorded");
+        assert_eq!((fb.iteration, fb.flavor, fb.bound), (5, "EDIIS", 1e-1));
+        assert_eq!(fb.err_max, 0.5);
+        assert!(!e.uses_energy_history(), "the driver fell back to Pulay");
+
+        let mut e = DiisDriver::new(DiisFlavor::Adiis, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut e, 0.05, 5, DiisFlavor::Adiis);
+        assert_eq!((exit, fb.is_none()), (Some(ScfExit::Converged), true));
+        let (exit, fb) = veto_stalled_energy_diis(None, &mut e, 0.5, 5, DiisFlavor::Adiis);
+        assert_eq!((exit, fb.is_none()), (None, true));
+        assert!(e.uses_energy_history());
+
+        let mut p = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut p, 0.5, 5, DiisFlavor::Pulay);
+        assert_eq!((exit, fb.is_none()), (Some(ScfExit::Converged), true));
+    }
+
     #[test]
     fn gradient_veto_bound_is_sqrt_dconv_floored_at_1e_minus_3() {
         assert_eq!(gradient_veto_bound(1e-4), 1e-2);
@@ -5942,7 +5985,7 @@ mod tests {
     #[test]
     fn stall_detected_false_below_plateau_floor() {
         // Flat history that would trip the running-min comparison, but
-        // current_err is below the 1e-4 floor: the plateau path (separate logic)
+        // current_err is below the 1e-4 floor: the density-change stopping test
         // owns this regime, not stall detection.
         let w = 4;
         let history = vec![5e-5; 8];

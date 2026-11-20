@@ -14,6 +14,8 @@ This chapter covers the RHF, UHF and ROHF energy functionals and how the Fock
 matrix is built: orthogonalization, starting guesses, direct and
 density-fitted Coulomb and exchange, and the hook for user-supplied Fock
 terms. Chapter @sec:convergence covers what drives the iteration to convergence.
+Section @sec:energy-functionals-iteration lists the five steps of one
+iteration and the section of either chapter that covers each.
 
 Sections:
 

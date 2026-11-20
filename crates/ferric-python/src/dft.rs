@@ -218,11 +218,11 @@ impl PyDftResult {
     fn stationarity_tol(&self) -> Option<f64> {
         scf_stationarity_tol(&self.scf_data)
     }
-    /// SCF exit reason: one of `"Converged"`, `"Plateau"`, `"Stalled"`,
-    /// `"Diverged"`, `"MaxIter"`, `"NotCertified"` (ROHF/ROKS only) — the
-    /// `ScfExit` variant name. Strictly more
-    /// informative than the `converged` bool, which collapses every failure
-    /// mode into `false` — a `Plateau` and a `Diverged` need different fixes.
+    /// SCF exit reason: one of `"Converged"`, `"Stalled"`, `"Diverged"`,
+    /// `"MaxIter"`, `"NotCertified"` (ROHF/ROKS only) — the `ScfExit` variant
+    /// name. Strictly more informative than the `converged` bool, which
+    /// collapses every failure mode into `false` — a `MaxIter` and a
+    /// `Diverged` need different fixes.
     #[getter]
     fn exit_reason(&self) -> String {
         format!("{:?}", self.scf_data.exit)

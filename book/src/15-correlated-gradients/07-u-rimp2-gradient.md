@@ -58,7 +58,7 @@ $\sum_\sigma B^\sigma\cdot x^\sigma = 2E^{(2)}$. In the closed-shell limit
 $B^\sigma = B$ and $x^\sigma = x$, and the identity becomes
 $B\cdot x = E^{(2)}$, the relation section @sec:rpa-gradient-lagrangian-z-vector-frozen uses.
 
-`u_energy_weights` builds $x^\alpha$ one occupied $i$ at a time from
+`ferric-mp2/src/u_rimp2_gradient.rs::u_energy_weights` builds $x^\alpha$ one occupied $i$ at a time from
 $t^{\alpha\alpha}_{i\cdot\cdot\cdot}$ and $t^{\alpha\beta}_{i\cdot\cdot\cdot}$, and
 $x^\beta$ one $J$ at a time from $t^{\beta\beta}_{J\cdot\cdot\cdot}$ and the
 $J$ slice of $t^{\alpha\beta}$ with its axes permuted to $[B,i,a]$.
@@ -84,7 +84,13 @@ $J$ slice of $t^{\alpha\beta}$ with its axes permuted to $[B,i,a]$.
 $$ I^\sigma_{qi} = -\sum_{Pa}x^\sigma_{P,ia}B^\sigma_{P,qa}, \qquad I^\sigma_{qa} = -\sum_{Pi}x^\sigma_{P,ia}B^\sigma_{P,qi}, \qquad X^\sigma_{ai} = \big[C_\sigma^{\mathsf T}v^\sigma[P]\,C_\sigma\big]_{ai} + I^\sigma_{ia} - I^\sigma_{ai} , \label{eq:u-rimp2-gradient-2} $$
 
 with $P^\sigma$ the symmetrized unrelaxed spin density on its occupied and
-virtual blocks and, on a frozen core, $P^\sigma_{kI} = I^\sigma_{kI}/(\varepsilon_k - \varepsilon_I)$.
+virtual blocks,
+
+$$ P^{\alpha}_{ij} = -\tfrac12\sum t^{\alpha\alpha}_{ikab}t^{\alpha\alpha}_{jkab} - \sum t^{\alpha\beta}_{iKaB}t^{\alpha\beta}_{jKaB}, \qquad P^{\alpha}_{ab} = \tfrac12\sum t^{\alpha\alpha}_{ijac}t^{\alpha\alpha}_{ijbc} + \sum t^{\alpha\beta}_{iJaC}t^{\alpha\beta}_{iJbC} , $$
+
+and $P^\beta$ likewise; the code stores this symmetric $\tfrac12(p + p^{\mathsf T})$
+form. Section @sec:u-rimp2-gradient-terfc-scs-mp2-2terfc adds spin-component
+weights to the same expressions. On a frozen core, $P^\sigma_{kI} = I^\sigma_{kI}/(\varepsilon_k - \varepsilon_I)$.
 The closed-shell builder `build_imat_ri` carries a factor $-2$ that is the
 weight of both spins; one spin's weight is half of it:
 
@@ -211,8 +217,9 @@ reproduces the closed-shell assembly to $2\times10^{-16}$.
 | analytic vs Richardson FD of ferric's own U-RI-MP2 energy, four-centre and RI-JK | OH, NH2 doublets, O2 triplet / 6-31G; OH frozen core 1 | ≤ 3.1e-9 Ha/Bohr (O2), 1.8e-9 (NH2), 8e-10 (OH); frozen core 2.5e-10 | 2.1e-7 to 2.3e-7 Ha/Bohr, derived in the test header | `crates/ferric-mp2/tests/u_rimp2_gradient_fd.rs` |
 | closed-shell limit vs the restricted analytic gradient | H2O / 6-31G, both routes, frozen core | ≤ 3.1e-15 Ha/Bohr | 1e-10 Ha/Bohr | `crates/ferric-mp2/src/u_rimp2_gradient.rs` |
 
-There is no external reference: PySCF's UMP2 gradient uses conventional
-integrals, not density fitting. Figures from `site/src/reference/validation.md`.
+There is no external analytic gradient: PySCF's UMP2 gradient is not
+density-fitted. An external finite-difference anchor exists only for the
+erfc variant, below. Figures from `site/src/reference/validation.md`.
 
 ## The attenuated (erfc) variant {#u-rimp2-gradient-attenuated-erfc-variant}
 
@@ -227,7 +234,7 @@ the energy is
 
 $$ E = E_{\mathrm{UHF}}[1/r] + s\,\big(E_{\alpha\alpha} + E_{\beta\beta} + E_{\alpha\beta}\big)[\hat w], \qquad \hat w = \frac{\operatorname{erfc}(\omega r)}{r}, $$
 
-with the spin blocks of @sec:u-rimp2-gradient-energy-weights built from
+with the spin blocks of section @sec:u-rimp2-gradient-energy-weights built from
 $B^\sigma_{P,ia} = \sum_Q[V_{\hat w}^{-1/2}]_{PQ}(Q|ia)_{\hat w}$: both the
 3-index integrals and the metric are under erfc. The Lagrangian is the
 unrestricted one with $E^{(2)} \to s\,E_c[\hat w]$:
@@ -273,6 +280,25 @@ re-solved $E_{\mathrm{UHF}} + s\,E_c[\hat w]$ for $s = 1$ and 1.2, with and
 without a frozen core. Part K checks the model's closed forms against a
 $t$-quadrature of the erfc kernel and their derivatives against differences.
 
+> **Verified equation {#eq:mp2-u-grad-att-erfc}** · the open-shell attenuated (erfc) RI-MP2 gradient
+>
+> On a one-dimensional model with real $s$-Gaussian Coulomb and erfc
+> integrals and a UHF reference ($n_\alpha = 3$, $n_\beta = 2$), the
+> analytic Lagrangian of `u_correlated_gradient_timed` with the operator
+> split of the table above equals a Richardson difference of the re-solved
+> $E_{\mathrm{UHF}} + s\,E_c[\hat w]$ for $s = 1$ and 1.2, with and without
+> a frozen core.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/u_att_rimp2_gradient_sympy.py`, part U (with K, C and Z) |
+> | Negative control | the runner's mutations (Coulomb in the correlation pieces, erfc in the two-electron derivative or in the Z-vector coupling, the β relaxed density or the β Z-vector dropped, $s$ left off the unrelaxed densities) each turn U red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/att_rimp2_gradient.rs::u_att_rimp2_gradient_analytical` |
+> | Code test | `oh_doublet_matches_fd_four_centre` in `crates/ferric-mp2/tests/u_att_rimp2_gradient_fd.rs` |
+>
+> <!-- verified: id=mp2.u.grad.att-erfc; script=scripts/u_att_rimp2_gradient_sympy.py; claim=U; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/att_rimp2_gradient.rs::u_att_rimp2_gradient_analytical; rust_test=ferric-mp2/tests/u_att_rimp2_gradient_fd.rs::oh_doublet_matches_fd_four_centre; registry=u-att-rimp2-gradient -->
+
 ROHF is refused for the reason given under Known limits. Open-shell
 `scs-mp2` (Coulomb) has no gradient: the CLI refuses it for `optimize` and
 `frequencies`.
@@ -287,7 +313,7 @@ ROHF is refused for the reason given under Known limits. Open-shell
 ## terfc and SCS-MP2(2terfc) {#u-rimp2-gradient-terfc-scs-mp2-2terfc}
 
 The open-shell terfc gradient (`att-rimp2` with `att_operator = "terfc"` at
-multiplicity > 1) is the @sec:u-rimp2-gradient-attenuated-erfc-variant Lagrangian with
+multiplicity > 1) is the Lagrangian of section @sec:u-rimp2-gradient-attenuated-erfc-variant with
 $\hat w = \tau$, the terfc kernel of section
 @sec:rimp2-gradient-attenuated-erfc-ri-mp2, and $s = 1$; the operator table
 holds row by row with terfc in place of erfc. The open-shell SCS-MP2(2terfc)
@@ -320,7 +346,7 @@ $$ P^{\alpha}_{ij} = -\tfrac12 b\sum t^{\alpha\alpha}_{ikab}t^{\alpha\alpha}_{jk
 The spin blocks carry no cross terms, so the weights split cleanly
 (`ferric-mp2/src/u_rimp2_gradient.rs::u_energy_weights_scaled`,
 `ferric-mp2/src/u_rimp2.rs::build_u_mp2_density_scaled`). At $a = b$ the code
-keeps the uniform-scale path of @sec:u-rimp2-gradient-attenuated-erfc-variant,
+keeps the uniform-scale path of section @sec:u-rimp2-gradient-attenuated-erfc-variant,
 unchanged bit for bit. For SCS-MP2(2terfc) the same-spin products carry
 $c_{\mathrm{SS}}$ and the opposite-spin products carry $c_{\mathrm{OS}}$, each
 term runs its RI response on its own cutoff, and one spin-coupled Coulomb
@@ -331,13 +357,31 @@ $E_{\alpha\beta} = E_{\mathrm{OS}}$ and
 $E_{\alpha\alpha} + E_{\beta\beta} = E_{\mathrm{SS}}$, and the reduction of
 @sec:u-rimp2-gradient-closed-shell-limit holds term by term.
 
-> **Verified equation {@eq:mp2-u-grad-assembly}b** · the open-shell SCS-MP2(2terfc) gradient
+> **Verified equation {#eq:mp2-u-grad-terfc}** · the open-shell terfc RI-MP2 gradient
 >
-> On the one-dimensional model of 15.8b with a UHF reference (three
+> On the one-dimensional model of (@eq:mp2-grad-terfc) with a UHF reference
+> (three $\alpha$, two $\beta$ electrons), the single-term Lagrangian with
+> weights $(a, b) = (1, 1)$ and the spin-coupled Coulomb Z-vector equals a
+> Richardson difference of the re-solved $E_{\mathrm{UHF}} + E_c[\tau]$, with
+> and without a frozen core.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/scs_2terfc_gradient_sympy.py`, part U (its single-term case) |
+> | Negative control | the runner's mutation that drops the $\beta$ Z-vector turns U red |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/att_rimp2_gradient.rs::u_terfc_rimp2_gradient_analytical` |
+> | Code test | `u_terfc_oh_doublet_matches_fd_four_centre` in `crates/ferric-mp2/tests/u_terfc_gradient_fd.rs` |
+>
+> <!-- verified: id=mp2.u.grad.terfc; script=scripts/scs_2terfc_gradient_sympy.py; claim=U; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/att_rimp2_gradient.rs::u_terfc_rimp2_gradient_analytical; rust_test=ferric-mp2/tests/u_terfc_gradient_fd.rs::u_terfc_oh_doublet_matches_fd_four_centre; registry=terfc-rimp2-gradient -->
+
+> **Verified equation {#eq:mp2-u-grad-scs-2terfc}** · the open-shell SCS-MP2(2terfc) gradient
+>
+> On the one-dimensional model of (@eq:mp2-grad-terfc) with a UHF reference (three
 > $\alpha$, two $\beta$ electrons), the Lagrangian with spin-resolved
 > weights and one coupled Z-vector equals a Richardson difference of the
 > re-solved unrestricted SCS-MP2(2terfc) energy. At $\alpha = \beta$ it
-> reduces to the closed-shell Lagrangian of 15.8c.
+> reduces to the closed-shell Lagrangian of (@eq:mp2-grad-scs-2terfc).
 >
 > | | |
 > |---|---|
@@ -364,7 +408,7 @@ differences of the re-solved energy to $1.4\times10^{-10}$ relative (part U).
 Check S3 of part S proves the spin-resolved weights that
 `u_energy_weights_scaled` and `build_u_mp2_density_scaled` build.
 
-## Known limits (2026-11-16)
+## Known limits (2026-11-16) {#u-rimp2-gradient-known-limits}
 
 - UHF reference only. A ROHF reference is refused (`ROHF_REFUSAL`): it is not
   stationary under independent $\alpha$/$\beta$ rotations and its MP2 runs on
@@ -375,10 +419,12 @@ Check S3 of part S proves the spin-resolved weights that
 - SCS-MP2(2terfc) is the only spin-scaled unrestricted gradient. There is no
   open-shell `scs-mp2` or OO-RI-MP2 gradient.
 
-## Sources
+## Sources {#u-rimp2-gradient-sources}
 
 | Source | Used for |
 |---|---|
 | `crates/ferric-mp2/src/u_rimp2_gradient.rs` | implementation |
 | `scripts/u_rimp2_gradient_sympy.py` | proofs |
+| `scripts/u_att_rimp2_gradient_sympy.py` | the erfc variant |
+| `scripts/scs_2terfc_gradient_sympy.py` | the terfc and SCS-MP2(2terfc) variants |
 | `site/src/reference/validation.md`, `crates/ferric-mp2/tests/u_rimp2_gradient_fd.rs` | anchors |

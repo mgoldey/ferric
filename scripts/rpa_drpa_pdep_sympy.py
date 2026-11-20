@@ -47,11 +47,23 @@ routes are transcribed and compared with it.
      alpha and beta orbitals, gaps and occupations; with identical channels it
      equals the closed-shell Pi (prefactor 4).
 
+  9  Intermediate steps the book writes out: T = Y X^-1 built from the
+     plasmon eigenvectors is symmetric, solves the Riccati equation and gives
+     the plasmon energy; det(1 + Pi(iu)) = prod_n (u^2 + Omega_n^2) /
+     (u^2 + Delta_n^2) at three u; for any orthonormal U the eigenvalues of
+     U^T eps U interlace those of eps, so a projected (truncated) summand is
+     never below the full one (the PDEP truncation error is >= 0); and
+     |ln(1 + x) - x| <= x^2/2 for x >= 0 (sympy).
+
 Mutations (each turns the named check red):
   - SCALE_CS, the closed-shell Pi prefactor, 4.0 -> 2.0      [freq-vs-definition]
   - B2 in plasmon_closed, spin-adapted B = 2K, 2.0 -> 1.0     [plasmon-vs-definition]
   - SCALE_U, the per-spin Pi prefactor, 2.0 -> 4.0            [u-freq-vs-definition]
   - riccati_closed residual without its T B ring term         [riccati-vs-definition]
+  - Cholesky factor on the wrong side, solve with L^T for L   [ri-factor-freedom]
+  - T = X^-1 Y in place of Y X^-1                             [riccati-eigenvector-form]
+  - the random projection scaled by 1.5 (not orthonormal)     [pdep-truncation-sign]
+  - the static bound x^2/2 -> x^2/3                           [static-summand-bound]
 
 Run: python3 scripts/rpa_drpa_pdep_sympy.py  (needs sympy, numpy, scipy)
 """
@@ -354,9 +366,87 @@ def open_shell_checks():
     )
 
 
+# ------------------------------------------------- 9. intermediate steps
+def intermediate_step_checks():
+    """Steps the book writes out between the conclusions checked above.
+
+    Uses its own generator so the earlier checks keep their random models.
+    """
+    r2 = np.random.default_rng(20261119)
+    no, nv, naux = 2, 3, 7
+    eo = np.sort(r2.uniform(-2.0, -0.6, no))
+    ev = np.sort(r2.uniform(0.3, 2.5, nv))
+    bt = 0.25 * r2.standard_normal((naux, no * nv))
+    d = gaps(eo, ev)
+    kk = 2.0 * bt.T @ bt  # the book's K = 2(ia|jb)
+    a, b = np.diag(d) + kk, kk
+    n = len(d)
+
+    # T = Y X^-1 from the plasmon eigenvectors (18.1, ring amplitudes).
+    w, v = np.linalg.eig(np.block([[a, b], [-b, -a]]))
+    assert np.max(np.abs(w.imag)) < 1e-12 and np.max(np.abs(v.imag)) < 1e-12
+    pos = np.argsort(w.real)[n:]
+    om = w.real[pos]
+    x, y = v.real[:n, pos], v.real[n:, pos]
+    t = y @ np.linalg.inv(x)
+    res = np.linalg.norm(b + a @ t + t @ a + t @ b @ t) / np.linalg.norm(b)
+    asym = np.max(np.abs(t - t.T))
+    e_t = 0.5 * np.trace(b @ t)
+    e_pl = 0.5 * (np.sum(om) - np.trace(a))
+    check(
+        "riccati-eigenvector-form",
+        asym < 1e-12 and res < 1e-12 and abs(e_t - e_pl) < 1e-13,
+        f"|T - T^T| {asym:.1e}, |R(T)|/|K| {res:.1e}, |1/2 tr K T - plasmon| "
+        f"{abs(e_t - e_pl):.1e}",
+    )
+
+    # det(1 + Pi(iu)) = prod_n (u^2 + Omega_n^2) / (u^2 + Delta_n^2).
+    worst = 0.0
+    for u in (0.0, 0.7, 3.0):
+        p = pi_matrix([(eo, ev, bt)], u, SCALE_CS)
+        lhs = np.linalg.slogdet(np.eye(naux) + p)[1]
+        rhs = np.sum(np.log((u * u + om**2) / (u * u + d**2)))
+        worst = max(worst, abs(lhs - rhs))
+    check("determinant-product", worst < 1e-12, f"max |ln det - ln prod| {worst:.1e}")
+
+    # PDEP truncation has a sign: for any orthonormal U the eigenvalues mu of
+    # U^T eps U interlace those of eps, 1 <= mu_i <= lam_i, and
+    # s(lam) = ln lam + 1 - lam is <= 0 and decreasing on lam >= 1.
+    ok, worst_gap = True, np.inf
+    for u in (0.0, 0.4, 2.0):
+        eps = np.eye(naux) + pi_matrix([(eo, ev, bt)], u, SCALE_CS)
+        lam = np.sort(np.linalg.eigvalsh(eps))[::-1]
+        s_full = sum(trace_log_summand_term(z) for z in lam)
+        for m in range(1, naux):
+            u_rand = np.linalg.qr(r2.standard_normal((naux, naux)))[0][:, :m]
+            mu = np.sort(np.linalg.eigvalsh(u_rand.T @ eps @ u_rand))[::-1]
+            s_proj = sum(trace_log_summand_term(z) for z in mu)
+            ok &= bool(np.all(mu >= 1 - 1e-13) and np.all(mu <= lam[:m] + 1e-13))
+            worst_gap = min(worst_gap, s_proj - s_full)
+    check(
+        "pdep-truncation-sign",
+        ok and worst_gap >= -1e-14,
+        f"interlacing {ok}; min (S_projected - S_full) {worst_gap:.1e} (must be >= 0)",
+    )
+
+    # The static-summand bound |s(1 + x)| <= x^2 / 2 for x >= 0 (18.3):
+    # f(x) = ln(1 + x) - x + x^2/2 has f(0) = 0 and f'(x) = x^2/(1 + x) >= 0.
+    xs = sp.symbols("x", nonnegative=True)
+    f = sp.log(1 + xs) - xs + xs**2 / 2
+    dfx = sp.simplify(sp.diff(f, xs) - xs**2 / (1 + xs))
+    grid = np.concatenate([np.logspace(-8, 1, 200), [0.0]])
+    num_ok = all(abs(trace_log_summand_term(1 + z)) <= z * z / 2 + 1e-300 for z in grid)
+    check(
+        "static-summand-bound",
+        f.subs(xs, 0) == 0 and dfx == 0 and num_ok,
+        "f(0) = 0, f' = x^2/(1 + x) >= 0; numeric |s| <= x^2/2 on 201 points",
+    )
+
+
 one_mode()
 closed_shell_checks()
 open_shell_checks()
+intermediate_step_checks()
 
 if FAILED:
     print(f"\n{len(FAILED)} check(s) failed: {FAILED}")

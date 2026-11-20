@@ -83,6 +83,10 @@ the aug- sets.
 | | def2-TZVPD | 1.30 | 0.439 |
 | | def2-TZVPPD | 1.35 | 0.375 |
 
+The aug-cc-pVDZ RMSD here, 0.426 kcal/mol, is the same method that
+dissertation Table 2.1 reports as 0.46 and Table 3.1 as 0.43; section
+@sec:attenuated-mp2-published-parameterizations lists the three.
+
 ## What the table says {#attenuation-basis-limit-table-says}
 
 - **$r_0$ grows toward the CBS limit.** In the fully augmented series it
@@ -121,12 +125,12 @@ These are dissertation numbers, run in Q-Chem. ferric has not re-run the
 S66 fits, and none of the figures above is a ferric anchor. The terfc
 integrals and energies ferric computes are anchored in section @sec:scs-mp2-2terfc.
 
-## Known limits (2026-11-15)
+## Known limits {#attenuation-basis-limit-limits}
 
 - No dual-basis SCF and no built-in CBS extrapolation.
 - Calendar bases are not bundled.
 
-## Sources
+## Sources {#attenuation-basis-limit-sources}
 
 | Source | Used for |
 |---|---|
@@ -134,6 +138,4 @@ integrals and energies ferric computes are anchored in section @sec:scs-mp2-2ter
 | Goldey dissertation, chapter 6 (§6.1, §6.2, Eq. 6.1, Tables 6.2–6.4) | setup, equation @eq:attenuation-basis-limit-1, the counterpoise remark, the table, the conclusions |
 | section @sec:attenuated-mp2-energy; `crates/ferric-mp2/src/terfc_r0.rs` | the per-basis default $r_0$ |
 | `crates/ferric-core/src/basis/bundled` | which bases ship |
-
-The derivation of (@eq:attenuation-basis-limit-1) from the $X^{-3}$ model and the $X = 3$, $Y = 4$
-weights were checked with sympy for this section.
+| `scripts/mp2_family_sympy.py`, part H | (@eq:attenuation-basis-limit-1) from the $X^{-3}$ model, and the $X = 3$, $Y = 4$ weights |

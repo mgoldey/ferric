@@ -27,7 +27,7 @@ nothing overflows, choose a radial quadrature window, and take derivatives.
 | Backend | `FERRIC_ECP_BACKEND` = `quadrature` (default) or `libecpint` |
 | Bases | def2 sets (`def2-ecp.json`), cc-pV$n$Z-PP for $Z \ge 37$ |
 
-### The operator
+## The operator {#ecp-operator}
 
 `crates/ferric-integrals/src/ecp.rs` evaluates the semi-local ECP operator on
 centre $C$,
@@ -48,7 +48,7 @@ There are two backends (`FERRIC_ECP_BACKEND`): `quadrature`, the default
 value is an error. Both return Cartesian blocks that
 `crates/ferric-integrals/src/ecp.rs` transforms to spherical harmonics.
 
-### Angular projection
+## Angular projection {#ecp-angular-projection}
 
 The projector needs each basis function written in angular momentum channels
 about $C$. A Gaussian on centre $A$, with $\mathbf a = \mathbf A - \mathbf C$,
@@ -83,7 +83,7 @@ angular factor is built once per shell pair, centre and channel
 left. The local (type-1) term expands the bra-ket product Gaussian the same
 way (`crates/ferric-integrals/src/ecp_quad/type1.rs`).
 
-### Radial integrals
+## Radial integrals {#ecp-radial-integrals}
 
 A type-2 radial integrand contains, for a bra exponent $\alpha$ at distance
 $a$ from $C$, a ket exponent $\beta$ at distance $b$ and an ECP exponent
@@ -106,7 +106,9 @@ Multiply $K$ by $p$ and expand:
 $pK = \alpha\beta(a-b)^2 + \alpha\zeta a^2 + \beta\zeta b^2$. Every term is a
 product of positives and squares, so $K \ge 0$ and no factor overflows at long
 range. What is left is a Gaussian envelope $e^{-p(r-r_0)^2}$ centred at $r_0$
-with width $1/\sqrt p$, times a slowly varying polynomial-like factor.
+with width $1/\sqrt p$, times a slowly varying polynomial-like factor. Width
+means $1/\sqrt p$ in the rest of this section, which is $\sqrt 2$ standard
+deviations of the envelope.
 
 Each (primitive pair, ECP term) radial integral runs on its own window:
 Gauss-Hermite away from $r = 0$, adaptive Gauss-Legendre otherwise
@@ -152,9 +154,10 @@ Three points about it:
   a maximum relative error of $5.2 \times 10^{-14}$ per window over 42.8k
   windows, with 27.7 nodes on average.
 
-### Derivatives
+## Derivatives {#ecp-derivatives}
 
-Shell derivatives use raised and lowered shells, the formula of section @sec:integrals-derivatives:
+Shell derivatives use raised and lowered shells, by
+(@eq:integrals-derivatives-gaussian):
 
 $$ \frac{\partial\chi}{\partial A_x} = 2\alpha\,\chi(i+1) - i\,\chi(i-1), $$
 
@@ -162,7 +165,8 @@ where $\chi(i\pm1)$ is the function with the $x$ exponent raised or lowered by
 one. The code builds the raised companion of a shell with coefficients
 $2\alpha c$ and the lowered one with coefficients $c$, evaluates the ordinary
 ECP block for each, and combines them. The ECP-centre derivative follows from
-translation invariance (section @sec:integrals-derivatives) as $-(\partial_A + \partial_B)$; in
+translation invariance (section @sec:integrals-derivatives-counting-blocks)
+as $-(\partial_A + \partial_B)$; in
 `ferric-integrals/src/ecp_quad/mod.rs::block_deriv_cart` that is the line
 `cen[k].1[x][i] -= da[x][i] + db[x][i]`. No separate derivative of the
 projector is needed.
@@ -171,15 +175,19 @@ projector is needed.
 
 | Step | What happens | Where |
 |---|---|---|
-| 1 | `mol.apply_ecp(bs)` records $n_{\mathrm{core}}$ per atom | `ferric-core/src/mol.rs` |
-| 2 | electron count and nuclear repulsion use $Z - n_{\mathrm{core}}$ | `Molecule::nelec`, `Molecule::nuclear_repulsion` |
+| 1 | `mol.apply_ecp(bs)` records $n^{\mathrm{ECP}}_C$ per atom | `ferric-core/src/mol.rs` |
+| 2 | electron count and nuclear repulsion use $Z - n^{\mathrm{ECP}}_C$ (@eq:molecule-1) | `Molecule::nelec`, `Molecule::nuclear_repulsion` |
 | 3 | $V$ uses the same effective charges | `ferric-integrals/src/oneelectron.rs::nuclear` |
 | 4 | $h = T + V + \hat U$ | `ferric-integrals/src/oneelectron.rs::hcore_ecp` |
 
-Calling step 2 before step 1 counts the core electrons twice; the order is
-part of the API.
+If `nelec` or `nuclear_repulsion` is read before `apply_ecp`, the core
+electrons stay in the electron count and the full $Z$ stays in
+$E_{\mathrm{nn}}$, although the potential already replaces them. $V$ is not
+affected: `PreparedBasis` reads the ECP table of the basis set itself
+(section @sec:basis-sets-basis-set-engine). The order of steps 1 and 2 is part
+of the API.
 
-### Why a quadrature backend
+## Why a quadrature backend {#ecp-quadrature-backend}
 
 The libecpint backend's projector values carry a non-smooth error of about
 $10^{-7}$ to $3.5 \times 10^{-5}$ (the doc comment of
@@ -200,6 +208,17 @@ quadrature is tested against.
 No proof script covers this section. The Bessel identity, the completed
 square with $pK \ge 0$ and the peak position `rpk` were checked numerically
 and symbolically for this section.
+
+## Known limits
+
+Checked 2026-11-19.
+
+- Shells up to $g$ ($l \le 4$,
+  `ferric-integrals/src/ecp_quad/mod.rs::MAX_SHELL_L`) on every atom of a
+  molecule that has an ECP atom: the ECP operator couples every shell, so
+  one $h$ shell anywhere is refused when the basis is prepared.
+- Spherical shells only for $l \ge 2$: a Cartesian $d$ or higher shell in a
+  molecule with an ECP atom is refused for the same reason.
 
 ## Sources
 

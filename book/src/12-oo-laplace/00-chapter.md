@@ -1,6 +1,6 @@
 # Orbital optimization and Laplace forms {#oo-laplace}
 
-<!-- status: verify; registry: oo-rimp2, u-oo-rimp2, laplace-mp2, laplace-sos-mp2 -->
+<!-- status: verify; registry: oo-rimp2, u-oo-rimp2, laplace-mp2, laplace-sos-mp2, laplace-sos-mp2-local -->
 
 Chapter @sec:mp2 computed the MP2 energy with the Hartree–Fock orbitals held
 fixed and the energy denominator $1/\Delta_{ij}^{ab}$ evaluated term by
@@ -18,15 +18,15 @@ of chapter @sec:mp2 stays the same in both.
   $(j,b)$. Writing $1/\Delta$ as a short sum of exponentials separates the
   two pairs in every term. The energy becomes a few RI-MP2-like
   contractions, one per quadrature point. Two factorizations are exact,
-  one in the MO basis and one in the AO basis. The third uses localized
-  orbitals and truncates.
+  one in the MO basis and one in the AO basis. Two more truncate by
+  distance: one in the AO basis, one in localized orbitals.
 
-| Section | Method | Registry id | Status |
-|---|---|---|---|
-| 12.1 | Closed-shell OO-RI-MP2 | `oo-rimp2` | ready |
-| 12.2 | Unrestricted OO-RI-MP2 | `u-oo-rimp2` (gap) | verify |
-| 12.3 | Laplace RI-MP2 and Laplace SOS-MP2, `mo` and `ao` | `laplace-mp2`, `laplace-sos-mp2` | ready |
-| 12.4 | Laplace SOS-MP2, `ao-sparse` and `local` | (part of `laplace-sos-mp2`, not graded) | gap |
+| Section | Method | Registry id |
+|---|---|---|
+| @sec:oo-rimp2 | Closed-shell OO-RI-MP2 | `oo-rimp2` |
+| @sec:unrestricted-oo-rimp2 | Unrestricted OO-RI-MP2 | `u-oo-rimp2` |
+| @sec:laplace-mp2 | Laplace RI-MP2 and Laplace SOS-MP2, `mo` and `ao` | `laplace-mp2`, `laplace-sos-mp2` |
+| @sec:local-laplace-sos | Laplace SOS-MP2, `ao-sparse` and `local` | `laplace-sos-mp2-local` (not graded) |
 
 **Symbols used throughout.**
 

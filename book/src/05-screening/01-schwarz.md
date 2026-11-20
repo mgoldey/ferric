@@ -70,8 +70,9 @@ form $2\theta/\sqrt\pi$ with $\theta^2 = a/2$ used below.
 
 If $\hat K(k) > 0$ for every $k > 0$, the integrand is non-negative and the
 self-interaction of a nonzero $\rho$ is positive. Bochner's theorem gives the
-converse: a kernel is positive definite exactly when $\hat K(k) > 0$ for
-$k > 0$. Section @sec:erf-terf-properties-decide-integrals-used tabulates the transforms. Coulomb, erf, erfc and terfc
+converse for $\ge$: the form is non-negative for every $\rho$ exactly when
+$\hat K(k) \ge 0$. That is all the Schwarz inequality needs, since the
+discriminant argument above uses only $(f + tg|\hat w|f + tg) \ge 0$. Section @sec:erf-terf-properties-decide-integrals-used tabulates the transforms. Coulomb, erf, erfc and terfc
 qualify. terf does not: its transform is
 $(4\pi/k^2)\cos(kr_0)\,e^{-k^2/4\omega^2}$, which is negative for
 $kr_0 \in (\pi/2, 3\pi/2)$ and periodically beyond, with its first zero at
@@ -105,13 +106,17 @@ OperatorKind::Terf => {
             .to_string(),
     ))
 }
-OperatorKind::Terfc => check_terfc_validated_range(op, prep)?,  // the validity box, 5.1.2
+OperatorKind::Terfc => check_terfc_validated_range(op, prep)?,  // the terfc validity box
 ```
+
+The terfc validity box is the measured parameter range of
+section @sec:schwarz-building-table-never-undershoots.
 
 No implementation work would make terf admissible, because the inequality
 itself fails. The full message names the alternative: RI/DF for the
-long-range piece. terf integrals do not decay with separation, so a distance
-screen would find little to discard in any case.
+long-range piece. terf integrals fall only as $1/R$, as Coulomb ones do
+(section @sec:terf-table-engine), so a distance screen would find little to
+discard in any case.
 
 > **Verified equation {#eq:screening-terf-indefinite}** · terf is not positive definite
 >
@@ -156,36 +161,37 @@ every separation. For Coulomb this costs little, since a Coulomb integral
 falls only as $1/R$. For a short-range kernel the integral falls much faster,
 and the bound does not follow it.
 
-Take a primitive $s$ pair density of exponent $P$ and charge $q$. Its
+Take a primitive $s$ pair density of exponent $p$ and charge $q$. Its
 self-interactions are closed forms (`scripts/screening_bounds_sympy.py`):
 
-$$ (\rho|1/r|\rho) = q^2\,\frac{2\theta}{\sqrt\pi}, \quad \theta^2 = \frac P2, \qquad (\rho|\operatorname{erf}|\rho) = q^2\,\frac{2\phi}{\sqrt\pi}, \quad \phi^2 = \frac{1}{2/P + 1/\omega^2} . $$
+$$ (\rho|1/r|\rho) = q^2\,\frac{2\theta}{\sqrt\pi}, \quad \theta^2 = \frac p2, \qquad (\rho|\operatorname{erf}|\rho) = q^2\,\frac{2\phi}{\sqrt\pi}, \quad \phi^2 = \frac{1}{2/p + 1/\omega^2} . $$
 
 The erfc kernel is Coulomb minus erf. Subtract and divide by the Coulomb
 value:
 
-$$ \frac{Q^2_{\mathrm{erfc}}}{Q^2_{\mathrm{Coulomb}}} = 1 - \frac{\phi}{\theta} \;\longrightarrow\; 1 \quad (P/\omega^2 \to \infty) . $$
+$$ \frac{Q^2_{\mathrm{erfc}}}{Q^2_{\mathrm{Coulomb}}} = 1 - \frac{\phi}{\theta} \;\longrightarrow\; 1 \quad (p/\omega^2 \to \infty) . $$
 
-Check both ends. A compact pair ($P/\omega^2 \to \infty$) has $\phi \to \omega$
+Check both ends. A compact pair ($p/\omega^2 \to \infty$) has $\phi \to \omega$
 while $\theta$ grows without limit, so the ratio goes to $1$: the pair is not
-attenuated at all in its own factor. A diffuse pair has $P/\omega^2 \to 0$;
-write $x = P/\omega^2$, so that $\phi/\theta = \sqrt{2/(2 + x)}$ and the ratio
+attenuated at all in its own factor. A diffuse pair has $p/\omega^2 \to 0$;
+write $x = p/\omega^2$, so that $\phi/\theta = \sqrt{2/(2 + x)}$ and the ratio
 is $x/4 + O(x^2)$, which goes to $0$. Attenuation reaches a factor only for
 pairs wider than about $1/\omega$.
 
-Now compare the true integral. Between two separated $s$ densities, the
+Now compare the true integral. Between two separated $s$ densities $\rho_1$
+and $\rho_2$ of exponents $p_1$ and $p_2$, the
 Coulomb integral is $q_1q_2\operatorname{erf}(\theta R)/R$ with
-$\theta^2 = P_1P_2/(P_1 + P_2)$, and the erf integral is
+$\theta^2 = p_1p_2/(p_1 + p_2)$, and the erf integral is
 $q_1q_2\operatorname{erf}(\phi R)/R$ with
-$\phi^2 = 1/(1/P_1 + 1/P_2 + 1/\omega^2)$. Subtract:
+$\phi^2 = 1/(1/p_1 + 1/p_2 + 1/\omega^2)$. Subtract:
 
-$$ (12|\operatorname{erfc}|12) = q_1q_2\,\frac{\operatorname{erfc}(\phi R) - \operatorname{erfc}(\theta R)}{R} . $$
+$$ (\rho_1|\operatorname{erfc}|\rho_2) = q_1q_2\,\frac{\operatorname{erfc}(\phi R) - \operatorname{erfc}(\theta R)}{R} . $$
 
 Since $\phi < \theta$, the first term dominates at large $R$, and the
 integral decays like $\operatorname{erfc}(\phi R)/R$, a Gaussian in $R$. No
 factor of the bound does. The verification script puts numbers on it: for two
-compact pairs ($P = 20$) at $R = 8/\omega$ the true erfc integral is below
-$10^{-12}$ of its Schwarz bound. The attenuation reaches the bound only
+compact pairs ($p = 20$) at $\omega = 0.7$ and $R = 8/\omega$ the true erfc
+integral is $7.15\times10^{-30}$ of its Schwarz bound. The attenuation reaches the bound only
 through the per-pair factors, so erfc and terfc screen almost the same set of
 quartets as Coulomb.
 
@@ -207,7 +213,7 @@ quartets as Coulomb.
 > <!-- verified: id=screening.schwarz-blind; script=scripts/screening_bounds_sympy.py; claim=blind; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/schwarz.rs::schwarz; rust_test=ferric-integrals/tests/terfc_schwarz_screening.rs::terfc_schwarz_never_undershoots_quartets -->
 
 The figure plots the same closed forms against distance for two unit-charge
-$s$ pairs with $P_1 = P_2 = 2$ Bohr$^{-2}$, at $\omega = 0.5$ Bohr$^{-1}$ for
+$s$ pairs with $p_1 = p_2 = 2$ Bohr$^{-2}$, at $\omega = 0.5$ Bohr$^{-1}$ for
 erfc. The erfc Schwarz bound is a flat line while the integral falls by many
 orders.
 
@@ -341,17 +347,15 @@ is invalid for terf.
 >
 > <!-- verified: id=screening.csb-pointwise; script=scripts/screening_bounds_sympy.py; claim=csb; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-integrals/src/csb.rs::csb_m_table; rust_test=ferric-scf/tests/csb_screening.rs::csb_is_a_valid_upper_bound -->
 
-The code refuses CSB for terf with the reason that the $M$ terms "come from
-the same Cauchy–Schwarz argument as Schwarz" and so need positive
-definiteness. The refusal is right, because the full minimum contains the
-$QQ$ term; the stated reason is stronger than the derivation above needs. An
-$MM$-only bound would be valid for terf.
+The code refuses CSB for terf because the minimum contains the $QQ$ term,
+which needs positive definiteness. An $MM$-only bound would be valid for
+terf.
 
 ### The code
 
-`csb_m_table` builds $M$ the way `schwarz` builds $Q$: one $(PP|QQ)$ quartet
-per unordered shell pair, at `SCHWARZ_TABLE_PRECISION`, keeping the largest
-$|(\mu\mu|\lambda\lambda)|$ over $\mu \in P$, $\lambda \in Q$, with the floor
+`csb_m_table` builds $M$ the way `schwarz` builds $Q$: one $(s_1s_1|s_2s_2)$
+quartet per unordered shell pair, at `SCHWARZ_TABLE_PRECISION`, keeping the
+largest $|(\mu\mu|\lambda\lambda)|$ over $\mu \in s_1$, $\lambda \in s_2$, with the floor
 `SCHWARZ_Q_FLOOR`. The bound itself is
 `ferric-scf/src/screening.rs::CsbBounds`'s `estimate`, unchanged apart from
 the comments:
@@ -394,10 +398,11 @@ count it twice.
 | positive-definite kernels have nonnegative diagonals; terf does not | `crates/ferric-integrals/tests/operator_positivity_gate.rs` | sign |
 | CSB valid, never looser than Schwarz, equal to it in the trivial limit, RHF energy unchanged | `crates/ferric-scf/tests/csb_screening.rs` | per test |
 
-The Cauchy–Schwarz derivation, the Fourier form of the self-interaction and
-the diffuse-pair limit $x/4$ in @sec:schwarz-bound-admitted-kernels are not claims of the verification
-script; they were checked with sympy for this section. The function-to-shell
-step is the definition of a maximum.
+The Fourier form of the self-interaction and the diffuse-pair limit $x/4$
+in section @sec:schwarz-bound-admitted-kernels are claims fourier-self and
+diffuse of `scripts/screening_bounds_sympy.py`. The Cauchy–Schwarz derivation
+is the textbook discriminant argument written out above, and the
+function-to-shell step is the definition of a maximum.
 
 ## Sources
 

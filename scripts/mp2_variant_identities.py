@@ -14,6 +14,8 @@ it. Exits nonzero on the first failure.
      1/4 sum |<ij||ab>|^2/D, and the unique-pair sum (j >= i, off-diagonal
      weight 2) equals the full (i, j) sum. Controls: E_SS without the
      exchange term; the unique-pair sum with off-diagonal weight 1.
+     1b: each pair's sum g(2g - g^T)/Delta (Delta > 0) splits as
+     sum g^2/Delta + 1/2 sum (g - g^T)^2/Delta, so every e_ij <= 0.
   2  Unrestricted components (u_rimp2.rs same_spin_block_energy :586,
      opposite_spin_block_energy :624): with independent alpha/beta orbitals
      1/4 sum_{j>=i} fac sum_ab K^2/D (K = (ia|jb) - (ib|ja)) is the
@@ -33,7 +35,9 @@ it. Exits nonzero on the first failure.
      with (ia|jb) = s + l (short + long range) and E[g] = sum g(2g - g^x)/D
      (g^x = (ib|ja)), E[s+l] = E[s] + E[l] + X with the cross term
      X = sum (4 s l - s l^x - l s^x)/D. X != 0, so E[erfc] + E[erf] is not
-     E[Coulomb]. Control: dropping X fails.
+     E[Coulomb]. Control: dropping X fails. With the symmetric bilinear form
+     B(g, h) = sum g(2h - h^x)/D (E[g] = B(g, g)), X = 2 B(s, l).
+     Control: X is not B(s, l).
   5  Z-vector matvec (zvector.rs compute_az_product :460 / :502, used at
      :159 with factor 1/2): the vo block of (4J - K - K^T)[D^z] with
      D^z = sum_ai z_ai (C_a C_i^T + C_i C_a^T) equals
@@ -51,21 +55,68 @@ it. Exits nonzero on the first failure.
      then aux), partitioned by the provenance mask and scattered back.
      Control: the [O | a] rows read as union rows are not orthogonal to OBS.
 
+  8  Density-fitting error (rimp2.rs cholesky_inverse_sqrt, the metric and
+     the three-index integrals in one operator w): in the w inner product,
+     with B = L^-1 (Q|ia), V = L L^T, the fitting error
+     (ia|jb) - sum_P B^P_ia B^P_jb equals (delta_ia|delta_jb) with the
+     residual delta_ia = rho_ia - sum_PQ chi_P V^-1_PQ (Q|ia), the residual
+     is w-orthogonal to every chi_P, and the diagonal error is >= 0. Control:
+     a metric in a second operator (mixed metric) breaks the identity.
+
+  9  Chunked dressing (rimp2.rs stream_dressed_mo_band_budgeted): with the
+     raw rows (Q|mu nu) transformed chunk by chunk to (Q|ia) and each chunk
+     added into B with beta = 1, B = M (Q|ia) for chunk widths 1, 7, 32 and
+     the full width, and an output band [p0, p1) gives rows p0..p1 of B.
+     Control: dropping one chunk.
+ 10  Auxiliary bands (mpi_rimp2.rs run_mpi_ri_mp2_inner, parallel.rs
+     aux_band): the bands of aux_band partition [0, naux); the band partials
+     G^(i,r) = B_{P in band,i}^T B_{P in band} sum to the full-width G^(i);
+     the round-robin owner energy with weight 1 over all j equals claim 1's
+     E_OS and E_SS. Control: squaring each band's partial before the sum.
+ 11  Summation-order bound (rimp2_gpu.rs, f64 device path): two f64
+     summation orders of N_aux = 912 products are each within
+     gamma_N(u64) S of the exact sum (Fractions) and within 2 gamma_N(u64) S
+     of each other, S = sum |x y|; 2 gamma_912(u64) = 2.0e-13. Control: an
+     f32 sum breaks the f64 bound.
+ 12  Mixed-precision element bound (gpu/mixed.rs gemm_f32_f64acc_dev_into):
+     f32 operands, f32 sums within panels of b = 64, f64 sum over panels,
+     stay within eps_G S of the exact sum on random-sign data, positive data
+     and a constructed panel whose small terms are each below half an f32
+     ulp of the running sum (lost in f32, err/S = 1.9e-6, half of eps_G);
+     eps_G = 3.93e-6 at N_aux = 84 and 912, the f32 panel term is 97% of
+     it, gamma_912(u32) = 5.4e-5, and sqrt(f32_max/64) = 2.3e18. The f64
+     panel sum of +2^20, 2^-9, -2^20 is exactly 2^-9 and an f32 sum is 0.
+     Control: a dropped panel breaks the bound.
+
 Mutations (each turns the script red with the named failing check):
   * claim 1, same-spin numerator (ia|jb) - (ib|ja) -> (ia|jb) + (ib|ja)
     ("FAIL E_SS spatial").
   * claim 2, same-spin kernel prefactor 0.25 -> 0.5 ("FAIL same-spin kernel").
   * claim 3, Laplace half-exponent of B(t), -0.5 t -> -1.0 t
     ("FAIL sum_PQ J_PQ(t)^2").
+  * claim 1b, the 1/2 of the same-spin square dropped
+    ("FAIL pair-energy sign split").
   * claim 4, cross-term coefficient 4 s l -> 2 s l ("FAIL E[s+l]").
   * claim 5, (4J - K - K^T) -> (4J - K) in the matvec ("FAIL (4J-K-K^T)").
   * claim 7, the OBS rows scattered without the minus sign
     ("FAIL interleaved S_O,R C == 0").
+  * claim 4, the bilinear form with h^x added ("FAIL X == 2 B(s, l)").
+  * claim 8, the residual built with the overlap metric chi^T chi in place
+    of V ("FAIL (ia|jb) - sum_P B B == (delta_ia|delta_jb)").
+
+  * claim 8, the dressing accumulates with beta = 0 instead of 1
+    ("FAIL chunked dressing").
+  * claim 9, aux_band gives every rank q rows, dropping the remainder
+    ("FAIL band partials sum to G^(i)").
+  * claim 10, u64 = 2^-53 -> 2^-70 in the bound ("FAIL two f64 orders").
+  * claim 11, the panel term gamma_b(u32) -> gamma_b(u64) in eps_G
+    ("FAIL mixed bound, sub-ulp panel").
 
 Run: python3 scripts/mp2_variant_identities.py  (needs numpy, scipy)
 """
 
 import sys
+from fractions import Fraction
 
 import numpy as np
 from scipy.linalg import expm
@@ -193,6 +244,28 @@ def claim1():
     check("unique-pair (j>=i, fac 2) E_SS == full sum", p_ss, e_ss)
     check_differs("E_SS without exchange", np.sum(giajb**2 / d), so_ss)
     check_differs("unique-pair with off-diagonal weight 1", pair_sum(1.0)[0], e_os)
+
+    # Claim 1b: the sign split of each pair energy (book 13.3, pair
+    # screening). With Delta = -d > 0 symmetric in (a, b),
+    # sum g(2g - g^T)/Delta = sum g^2/Delta + 1/2 sum (g - g^T)^2/Delta >= 0,
+    # so e_ij <= 0 for every pair (OS part plus SS part).
+    worst = 0.0
+    most_positive = -np.inf
+    for i in range(no):
+        for j in range(no):
+            gab = giajb[i, j]
+            dpos = -d[i, j]
+            lhs = np.sum(gab * (2.0 * gab - gibja[i, j]) / dpos)
+            rhs = np.sum(gab**2 / dpos) + 0.5 * np.sum((gab - gab.T) ** 2 / dpos)
+            worst = max(worst, abs(lhs - rhs) / max(1.0, abs(lhs)))
+            most_positive = max(most_positive, -lhs)
+    check("pair-energy sign split (claim 1b)", worst, 0.0)
+    ok = most_positive <= 0.0
+    print(
+        f"  {'ok  ' if ok else 'FAIL'} every pair energy e_ij <= 0 (claim 1b): max e_ij {most_positive:.1e}"
+    )
+    if not ok:
+        FAILED.append("every pair energy e_ij <= 0 (claim 1b)")
 
 
 # ---------------------------------------------------------------- claim 2
@@ -338,6 +411,13 @@ def claim4():
     check("E[s+l] == E[s] + E[l] + X", e(gs + gl), e(gs) + e(gl) + x)
     check_differs("E[s] + E[l] as E[s+l] (X = 0)", e(gs) + e(gl), e(gs + gl))
 
+    def bilinear(g, h):
+        return np.sum(g * (2.0 * h - h.transpose(0, 1, 3, 2)) / d)
+
+    check("B(s, l) == B(l, s)", bilinear(gs, gl), bilinear(gl, gs))
+    check("X == 2 B(s, l)", x, 2.0 * bilinear(gs, gl))
+    check_differs("X as B(s, l) (factor 2 dropped)", bilinear(gs, gl), x)
+
 
 # ---------------------------------------------------------------- claim 5
 def claim5():
@@ -465,8 +545,252 @@ def claim7():
     )
 
 
+# ---------------------------------------------------------------- claim 8
+def claim8():
+    print("claim 8: the density-fitting error is the residuals' self-interaction")
+    # Functions live in R^n with the positive definite operator w as the inner
+    # product, (f|g) = f^T w g. The "exact" products rho_ia are columns of rho,
+    # the auxiliary functions chi_P columns of chi (naux < n, so the fit is
+    # inexact). The three-index integrals and the metric use the same w.
+    n, naux, npair = 30, 8, 6
+    a = RNG.standard_normal((n, n))
+    w = a @ a.T + n * np.eye(n)
+    a2 = RNG.standard_normal((n, n))
+    w_other = a2 @ a2.T + n * np.eye(n)  # a second operator, for the control
+    chi = RNG.standard_normal((n, naux))
+    rho = RNG.standard_normal((n, npair))
+
+    def fitted(w_metric):
+        three = chi.T @ w @ rho  # (Q|ia)
+        v = chi.T @ w_metric @ chi  # (P|Q) in the metric operator
+        l_inv = np.linalg.inv(np.linalg.cholesky(v))  # M = L^-1, M^T M = V^-1
+        b = l_inv @ three  # B^P_ia
+        return b.T @ b, three, v  # sum_P B^P_ia B^P_jb
+
+    exact = rho.T @ w @ rho  # (ia|jb)
+    approx, three, v = fitted(w)
+    coef = np.linalg.solve(v, three)  # V^-1 (Q|ia)
+    delta = rho - chi @ coef  # residual delta_ia
+    check_arrays(
+        "(ia|jb) - sum_P B B == (delta_ia|delta_jb)",
+        exact - approx,
+        delta.T @ w @ delta,
+    )
+    check_arrays("(chi_P|delta_ia) == 0", chi.T @ w @ delta, np.zeros((naux, npair)))
+    check_arrays(
+        "diagonal error >= 0", np.minimum(np.diag(exact - approx), 0.0), np.zeros(npair)
+    )
+    mixed, _, _ = fitted(w_other)  # metric operator != integral operator
+    check_differs(
+        "mixed-metric error as the residual self-interaction",
+        np.max(np.abs(exact - mixed - delta.T @ w @ delta)) + 1.0,
+        1.0,
+    )
+
+
+# ---------------------------------------------------------------- claim 8
+def claim9():
+    print("claim 9: chunked dressing equals the full dressing")
+    nbf, no, naux = 7, 3, 40
+    nv = nbf - no
+    raw = random_b(naux, nbf)  # (Q|mu nu)
+    c = RNG.standard_normal((nbf, nbf))
+    m = np.tril(RNG.standard_normal((naux, naux)))  # M = L^-1 is lower triangular
+    mo_full = np.einsum("Qmn,mi,na->Qia", raw, c[:, :no], c[:, no:]).reshape(naux, -1)
+    b_full = m @ mo_full
+
+    def dressed(width, p0=0, p1=naux, drop=None):
+        b = np.zeros((p1 - p0, no * nv))
+        for n, q0 in enumerate(range(0, naux, width)):
+            q1 = min(q0 + width, naux)
+            if n == drop:
+                continue
+            half = np.einsum("mi,Qmn->Qin", c[:, :no], raw[q0:q1])  # C_o^T (Q|mu nu)
+            mo_blk = np.einsum("Qin,na->Qia", half, c[:, no:]).reshape(q1 - q0, -1)
+            b += m[p0:p1, q0:q1] @ mo_blk  # beta = 1
+        return b
+
+    for width in (1, 7, 32, naux):
+        check_arrays(
+            f"chunked dressing == M (Q|ia), width {width}", dressed(width), b_full
+        )
+    check_arrays(
+        "output band [9, 23) == rows 9..23 of B", dressed(7, 9, 23), b_full[9:23]
+    )
+    check_differs(
+        "one chunk dropped", np.sum(dressed(7, drop=2) ** 2), np.sum(b_full**2)
+    )
+
+
+# ---------------------------------------------------------------- claim 9
+def aux_band(naux, size, rank):
+    """parallel.rs aux_band: ranks r < s get q + 1 rows, the others q."""
+    q, s = divmod(naux, size)
+    start = rank * q + min(rank, s)
+    return start, start + (q + 1 if rank < s else q)
+
+
+def claim10():
+    print("claim 10: auxiliary-band decomposition of G^(i) and the energy")
+    no, nv, naux, nr = 4, 5, 23, 3
+    b = RNG.standard_normal((naux, no * nv))
+    eo, ev = orbital_energies(no, nv)
+    d = denom(eo, ev)
+    bands = [aux_band(naux, nr, r) for r in range(nr)]
+    covered = sorted(p for p0, p1 in bands for p in range(p0, p1))
+    check("bands partition [0, naux)", float(covered == list(range(naux))), 1.0)
+
+    def g_part(i, p0, p1):  # G^(i,r), full width over j
+        return b[p0:p1, i * nv : (i + 1) * nv].T @ b[p0:p1]
+
+    e_os = e_ss = e_sq = 0.0
+    for i in range(no):
+        g_i = sum(g_part(i, p0, p1) for p0, p1 in bands)
+        check_arrays(
+            f"band partials sum to G^(i), i = {i}",
+            g_i,
+            b[:, i * nv : (i + 1) * nv].T @ b,
+        )
+        for j in range(no):
+            g_ab = g_i[:, j * nv : (j + 1) * nv]  # (ia|jb)
+            e_os += np.sum(g_ab**2 / d[i, j])
+            e_ss += np.sum(g_ab * (g_ab - g_ab.T) / d[i, j])
+            for p0, p1 in bands:  # control: square each band's partial
+                e_sq += np.sum(
+                    g_part(i, p0, p1)[:, j * nv : (j + 1) * nv] ** 2 / d[i, j]
+                )
+    g = np.einsum("Pia,Pjb->ijab", b.reshape(naux, no, nv), b.reshape(naux, no, nv))
+    check("owner energy E_OS == serial E_OS", e_os, np.sum(g**2 / d))
+    check(
+        "owner energy E_SS == serial E_SS",
+        e_ss,
+        np.sum(g * (g - g.transpose(0, 1, 3, 2)) / d),
+    )
+    check_differs("band partials squared before the sum", e_sq, e_os)
+
+
+# ---------------------------------------------------------------- claims 10, 11
+U64, U32 = 2.0**-53, 2.0**-24
+
+
+def gamma(n, u):
+    return n * u / (1.0 - n * u)
+
+
+def exact_dot(x, y):
+    return float(sum(Fraction(a) * Fraction(c) for a, c in zip(x, y)))
+
+
+def bound_check(name, err, bound):
+    ok = err <= bound
+    print(f"  {'ok  ' if ok else 'FAIL'} {name}: max err/bound {err / bound:.2e}")
+    if not ok:
+        FAILED.append(name)
+
+
+def claim11():
+    print("claim 11: summation-order bound of the f64 device GEMM")
+    naux = 912
+    gam = gamma(naux, U64)
+    check("2 gamma_912(u64) == 2.0e-13", round(2 * gam / 1e-13, 1), 2.0)
+    worst_side = worst_pair = worst_f32 = 0.0
+    for _ in range(8):
+        x, y = RNG.standard_normal(naux), RNG.standard_normal(naux)
+        s_ab = float(np.sum(np.abs(x * y)))
+        ref = exact_dot(x, y)
+        fwd = 0.0
+        for a, c in zip(x, y):  # one order: sequential
+            fwd += a * c
+        rev = float(np.sum((x * y)[::-1]))  # another: numpy's pairwise sum, reversed
+        f32 = float(
+            np.cumsum(x.astype(np.float32) * y.astype(np.float32), dtype=np.float32)[-1]
+        )
+        worst_side = max(worst_side, abs(fwd - ref) / s_ab, abs(rev - ref) / s_ab)
+        worst_pair = max(worst_pair, abs(fwd - rev) / s_ab)
+        worst_f32 = max(worst_f32, abs(f32 - fwd) / s_ab)
+    bound_check("each f64 order within gamma_N(u64) S", worst_side, gam)
+    bound_check("two f64 orders within 2 gamma_N(u64) S", worst_pair, 2 * gam)
+    check_differs(
+        "an f32 sum inside the f64 bound", max(worst_f32, 2 * gam), 2 * gam, 1.0
+    )
+
+
+def eps_g(b, naux):
+    npan = -(-naux // b)
+    return (
+        (1 + U32) ** 2 * (1 + gamma(b, U32)) * (1 + gamma(npan, U64))
+        - 1
+        + gamma(naux, U64)
+    )
+
+
+def mixed_dot(x, y, b, drop=None):
+    """f32 operands, f32 sum inside each panel of b rows, f64 sum over panels."""
+    xf, yf = x.astype(np.float32), y.astype(np.float32)
+    total = 0.0
+    for n, p0 in enumerate(range(0, len(x), b)):
+        if n == drop:
+            continue
+        total += float(
+            np.cumsum(xf[p0 : p0 + b] * yf[p0 : p0 + b], dtype=np.float32)[-1]
+        )
+    return total
+
+
+def claim12():
+    print("claim 12: mixed-precision element bound")
+    b, naux = 64, 912
+    eps = eps_g(b, naux)
+    check("eps_G(64, 912) == 3.93e-6", round(eps / 1e-6, 2), 3.93)
+    check("eps_G(64, 84) == 3.93e-6", round(eps_g(b, 84) / 1e-6, 2), 3.93)
+    check("gamma_64(u32) / eps_G == 0.97", round(gamma(b, U32) / eps, 2), 0.97)
+    check("gamma_912(u32) == 5.4e-5", round(gamma(naux, U32) / 1e-5, 1), 5.4)
+    check(
+        "sqrt(f32_max / 64) == 2.3e18",
+        round(np.sqrt(np.finfo(np.float32).max / 64) / 1e18, 1),
+        2.3,
+    )
+    sets = []
+    for _ in range(6):
+        x, y = RNG.standard_normal(naux), RNG.standard_normal(naux)
+        sets += [(x, y), (np.abs(x), np.abs(y))]
+    worst = worst_drop = 0.0
+    for x, y in sets:
+        s_ab = float(np.sum(np.abs(x * y)))
+        ref = exact_dot(x, y)
+        worst = max(worst, abs(mixed_dot(x, y, b) - ref) / s_ab)
+        worst_drop = max(worst_drop, abs(mixed_dot(x, y, b, drop=3) - ref) / s_ab)
+    bound_check("mixed bound, random data", worst, eps)
+    # Each panel: 1, then 63 products of 2^-25, a quarter of an f32 ulp of 1.
+    x = np.tile(np.r_[1.0, np.full(b - 1, 2.0**-12)], naux // b)
+    y = np.tile(np.r_[1.0, np.full(b - 1, 2.0**-13)], naux // b)
+    err = abs(mixed_dot(x, y, b) - exact_dot(x, y)) / float(np.sum(x * y))
+    check("sub-ulp panel err/S == 1.9e-6", round(err / 1e-6, 1), 1.9)
+    bound_check("mixed bound, sub-ulp panel", err, eps)
+    check_differs("a dropped panel inside the bound", max(worst_drop, eps), eps, 1.0)
+    p = [2.0**20, 2.0**-9, -(2.0**20)]
+    check("f64 sum over panels +2^20, 2^-9, -2^20 == 2^-9", sum(p) / 2.0**-9, 1.0)
+    f32 = np.float32(0.0)
+    for v in p:
+        f32 = np.float32(f32 + np.float32(v))
+    check("f32 sum over the same panels == 0", float(f32), 0.0)
+
+
 def main():
-    for claim in (claim1, claim2, claim3, claim4, claim5, claim6, claim7):
+    for claim in (
+        claim1,
+        claim2,
+        claim3,
+        claim4,
+        claim5,
+        claim6,
+        claim7,
+        claim8,
+        claim9,
+        claim10,
+        claim11,
+        claim12,
+    ):
         claim()
     if FAILED:
         print(f"FAILED: {FAILED}")

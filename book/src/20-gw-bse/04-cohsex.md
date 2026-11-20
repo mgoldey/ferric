@@ -27,12 +27,12 @@ cost of treating the screening as instantaneous.
 
 **Do the integral.** Put a frequency-independent $W_{pq}$ into the integral
 of section @sec:correlation-self-energy. $W$ comes out of the integral, and the kernel integral is the
-one evaluated there, $\int_0^\infty a/(a^2+u^2)\,du = \tfrac\pi2\,\mathrm{sgn}(a)$:
+one evaluated there, $\int_0^\infty \zeta_q/(\zeta_q^2+u^2)\,du = \tfrac\pi2\,\mathrm{sgn}(\zeta_q)$:
 
-$$ -\frac1\pi\int_0^\infty W\,\frac{a}{a^2+u^2}\,du = -\tfrac12\, W\,\mathrm{sgn}(a), \qquad a = z - \epsilon_q . $$
+$$ -\frac1\pi\int_0^\infty W\,\frac{\zeta_q}{\zeta_q^2+u^2}\,du = -\tfrac12\, W\,\mathrm{sgn}(\zeta_q), \qquad \zeta_q = z - \epsilon_q . $$
 
 **Sort by occupation.** Take $z$ in the gap. Every occupied $i$ has
-$a > 0$ and every virtual $a$ has $a < 0$, so
+$\zeta_i > 0$ and every virtual $a$ has $\zeta_a < 0$, so
 
 $$ \Sigma^c_p = -\tfrac12\sum_i W_{pi} + \tfrac12\sum_a W_{pa} . $$
 
@@ -93,13 +93,23 @@ half the interaction of a charge with the polarization it induces at its own
 position. $W_d$ is negative, so the Coulomb hole lowers the energy of both
 occupied and virtual states.
 
+The two pieces have fixed signs. $\lambda_\xi(0) \ge 1$, so every
+$w_\xi \le 0$. Then $\Delta\Sigma^{\rm SEX}_p \ge 0$ for every state $p$:
+screening removes part of the exchange stabilization, and this raises the
+state. $\Sigma^{\rm COH}_p \le 0$ lowers it. The result object reports only
+their sum, as `GwResult.sigma_c`.
+
 **The quasiparticle energy.** The self-energy does not depend on energy, so
 there is no equation to solve:
 
-$$ \epsilon^{\rm QP}_p = \epsilon_p + \Delta\Sigma^{\rm SEX}_p + \Sigma^{\rm COH}_p \;[+\;\Sigma^x_p - v^{xc}_p \text{ at a KS reference}], \qquad Z = 1 . $$
+$$ \epsilon^{\rm QP}_p = \epsilon_p + \delta_p + \Delta\Sigma^{\rm SEX}_p + \Sigma^{\rm COH}_p, \qquad Z = 1 , $$
 
-`ferric-gw/src/cohsex.rs::run_cohsex` assembles it, adding the KS shift as a
-plain additive term, and `GwResult.z_factor` is all ones.
+with the static shift $\delta_p$ of section
+@sec:ri-factors-and-exchange-ks-reference-changes: zero on a Hartree–Fock
+reference, $\Sigma^x_p - v^{xc}_p$ on a Kohn–Sham one, including the exact
+exchange of a hybrid. `ferric-gw/src/cohsex.rs::run_cohsex` assembles it,
+adding the shift as a plain additive term, and `GwResult.z_factor` is all
+ones.
 
 COHSEX next to G0W0 for water / cc-pVDZ at HF, from the `589b50832` build,
 for the six states around the gap. The $Z$ column is 1 for every state.
@@ -187,8 +197,17 @@ pair is written once, so the parallel loop is bit-identical to the serial one.
 The static $W$ of this section is also the kernel of the Bethe–Salpeter
 equation in section @sec:bse-tda and of the polarizability in section @sec:rpax-static-polarizability.
 
-`sc-COHSEX`, the self-consistent variant, is not implemented: `GwMethod::ScCohsex`
-returns an error from both `run_gw` and the open-shell driver.
+| Option | Effect on COHSEX |
+|---|---|
+| `[gw] method = "cohsex"` | selects this section's static self-energy |
+| `trunc_thresh` | drops PDEP modes with $\lambda_\xi(0)$ within the threshold of 1; it acts through $w_\xi$ and $B^\xi$ only, since $\Sigma^x$ uses the full $B$ |
+| `n_quad`, `quadrature`, `u0` | no effect: COHSEX reads only the static modes $\lambda_\xi(0)$, $\hat U_\xi$; the frequency stack `run_gw` builds is unused (water / cc-pVDZ, `n_quad` 20 and 100: identical $\epsilon^{\rm QP}$ on the `3f612e0b3` build) |
+| `qp_mos`, `frozen_core` | as for G0W0 (sections @sec:continuation-and-qp-equation-options-limits and @sec:ri-factors-and-exchange) |
+
+**Known limits (2026-11-19).** Static screening: no frequency dependence,
+no satellites, $Z = 1$. `sc-COHSEX`, the self-consistent variant, is not
+implemented: `GwMethod::ScCohsex` returns an error from both `run_gw` and the
+open-shell driver.
 
 ## Numerical anchors {#cohsex-numerical-anchors}
 
@@ -205,3 +224,4 @@ From `site/src/reference/validation.md` (the COHSEX row):
 |---|---|
 | `scripts/gw_self_energy_sympy.py`, claim 3 | the proof |
 | Hedin, *Phys. Rev.* **139**, A796 (1965) | GW and COHSEX |
+| Hybertsen and Louie, *Phys. Rev. B* **34**, 5390 (1986) | the static COHSEX limit in the quasiparticle setting |

@@ -12,25 +12,36 @@ CAS-CI in the current orbitals (sections @sec:determinants–@sec:rdms), then an
 $C \leftarrow C\exp(K)$ from the gradient at those fixed RDMs.
 
 Water in a CAS(4,4) in 6-31G shows the size of the effect, from the
-`589b50832` build. The CAS-CI on RHF orbitals is 1.1 mHa below RHF; letting
-the orbitals relax lowers the energy by another 52 mHa:
+`3f612e0b3` build. The CAS-CI on RHF orbitals is 1.1 mHa below RHF; letting
+the orbitals relax lowers the energy by another 52 mHa. The natural
+occupations (`canonicalize=True` returns natural active orbitals) show what
+changed: on RHF orbitals the active space is almost a closed shell, while
+the optimized orbitals put twenty times more weight into the two weakly
+occupied ones:
 
 ```python
+import numpy as np
+
 import ferric
 
 mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
 bs = ferric.BasisSet.bundled("6-31g")
 ci = ferric.run_casci(mol, bs, n_active=4, n_elec_active=(2, 2))
-sc = ferric.run_casscf(mol, bs, n_active=4, n_elec_active=(2, 2))
+sc = ferric.run_casscf(mol, bs, n_active=4, n_elec_active=(2, 2), canonicalize=True)
 print(f"E_RHF    = {ci.rhf_energy:.10f}")
 print(f"E_CASCI  = {ci.e_total:.10f}  ({ci.n_determinants} determinants)")
 print(f"E_CASSCF = {sc.e_total:.10f}  iterations={sc.iterations}  |g|={sc.grad_norm:.2e}  converged={sc.converged}")
+occ_ci = np.sort(np.linalg.eigvalsh(ci.dm1))[::-1]
+print("occupations CAS-CI  :", " ".join(f"{x:.4f}" for x in occ_ci))
+print("occupations CASSCF  :", " ".join(f"{x:.4f}" for x in np.diag(sc.dm1)))
 ```
 
 ```text
 E_RHF    = -75.9838311136
 E_CASCI  = -75.9849549438  (36 determinants)
 E_CASSCF = -76.0369690965  iterations=22  |g|=2.15e-08  converged=True
+occupations CAS-CI  : 1.9997 1.9986 0.0011 0.0006
+occupations CASSCF  : 1.9782 1.9752 0.0236 0.0230
 ```
 
 The orbital gradient is a generalized Fock matrix built from $\gamma$,
@@ -44,7 +55,9 @@ that runs after convergence.
 |---|---|---|
 | $F^I$, $F^A$ | inactive and active Fock matrices | `active_fock` |
 | $F_{pq}$ | generalized Fock matrix | `CasScfProblem::generalized_fock` |
-| $\kappa_{pq}$, $K$ | rotation parameters, $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$ | `rotate`, `expm_antisymmetric` |
+| $\kappa_{pq}$, $K$ | rotation parameters, $K_{pq} = \kappa_{pq} = -K_{qp}$ for $p > q$; $K[D]$ with a density argument is the exchange matrix | `rotate`, `expm_antisymmetric` |
+| $\mathcal H$, $\mathcal H_f$ | orbital Hessian at fixed RDMs, and its frame-derivative part | `hessian_vector`, `hessian_vector_frame` |
+| $\mathcal H_{oo}$, $\mathcal H_{oc}$, $\mathcal H_{co}$, $\mathcal H_{cc}$, $\mathcal H_\text{rel}$ | blocks of the orbital-CI Hessian and the CI-relaxed orbital Hessian | `ci_relaxed_hessian_vector` |
 | $g$ | $\partial E/\partial\kappa = 2(F_{pq} - F_{qp})$ over core-active, core-virtual and active-virtual pairs | `CasScfPoint` |
 
 | Entry point | Location |
@@ -58,9 +71,7 @@ that runs after convergence.
 The orbitals are $C = [C_c\,|\,C_a\,|\,C_v]$: $n_c$ doubly occupied core
 orbitals $i,j$, $n_a$ active $t,u,v,w$, virtual $a$, and $p,q,r,s$ over
 all MOs. The orbitals are real, there is a single root, and the RDMs are
-the spin-summed ones of section @sec:rdms. The reference implementation is
-`scripts/prototypes/casscf_proto.py` with
-`scripts/prototypes/casscf_derivation.md`.
+the spin-summed ones of section @sec:rdms.
 
 ### The energy at fixed orbitals
 
@@ -79,7 +90,9 @@ $E_\text{core}$ is the closed-shell Hartree–Fock energy expression of
 chapter @sec:hartree-fock applied to the core alone. The CAS-CI runs on
 $h_\text{eff} = C_a^\mathsf{T}F^IC_a$, $(tu|vw)$ and $E_\text{core}$
 (`run_cas_ci_on_integrals`), the folding of section @sec:determinants-hamiltonian. With no
-core, $F^I = h$ and $E_\text{core} = E_\text{nuc}$. In
+core, $F^I = h$ and $E_\text{core} = E_\text{nuc}$. The one-electron
+operator $h$ includes $V_\text{ECP}$ when the basis carries one (section
+@sec:ecp). In
 `ferric-ci/src/casscf.rs::inactive`, with the $n_c = 0$ branch and the
 factored $J/K$ call elided:
 
@@ -92,50 +105,6 @@ let e_core = self.e_nuc + 0.5 * (&dc * &(&self.h_ao + &fi)).sum();  // E_nuc + �
 
 The element-wise product summed is the trace because both factors are
 symmetric.
-
-### Where the integrals come from
-
-`CasScfConfig::integrals` (`casscf_ints.rs`) selects the route.
-
-- **Auto** (the default) takes the dense route when its $n_\text{bas}^4$
-  block and transients fit in half of the memory budget, and the direct
-  route otherwise.
-- **Direct** builds $J$ and $K$ with ferric-scf's direct builder
-  (`build_jk_with_pool`, Schwarz and density screened), and $(pu|vw)$ for
-  all $p$ by a direct half transform. Per canonical bra shell pair, every
-  ket shell pair with $Q_\text{bra}Q_\text{ket} \ge$ `thresh` is contracted
-  with $C_a$ on both ket indices,
-  $X_{\mu\nu,vw} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)C_{\lambda v}C_{\sigma w}$,
-  and then $(pu|vw) = \sum_{\mu\nu}C_{\mu p}C_{\nu u}X_{\mu\nu,vw}$ by
-  GEMMs. Peak memory is $X$, $n_\text{bas}^2n_a^2$ doubles.
-- **Dense** holds the $n_\text{bas}^4$ AO block, contracts $J$ and $K$
-  from it and transforms it by four quarter transforms
-  (`integrals::transform_eri_mixed`). It is the test oracle:
-  in `tests/casscf_direct.rs`, at `thresh = 0` the routes agree to
-  $10^{-12}$ in $F$, $(pu|vw)$, $E$ and $g$.
-- **RI** (`integrals = "ri"`, a bundled `auxbasis`, `src/ri.rs`) is a
-  different Hamiltonian, the density-fitted one:
-  $(\mu\nu|\lambda\sigma) \approx \sum_P B^P_{\mu\nu}B^P_{\lambda\sigma}$
-  with $B^P_{\mu\nu} = \sum_Q M_{PQ}(Q|\mu\nu)$, $M = L^{-1}$ and $L$ the
-  Cholesky factor of the Coulomb metric $V_{PQ} = (P|Q)$, so
-  $M^\mathsf{T}M = V^{-1}$ (the construction of section @sec:closed-shell-ri-mp2-density-fitting-making-affordable). It holds
-  $B$, $N_\text{aux}n_\text{bas}^2$ doubles, and nothing of size
-  $n_\text{bas}^4$.
-
-On the RI route a density given in factored form $D = XWX^\mathsf{T}$ (the
-core density $2C_cC_c^\mathsf{T}$ and the active density
-$C_a\gamma C_a^\mathsf{T}$) gives $J = B^\mathsf{T}(B\,\mathrm{vec}D)$ and
-$K = \sum_P (B_PX)W(B_PX)^\mathsf{T}$ as one GEMM over $(P, j)$. A general
-$D$ (the AH Hessian's trial densities) is summed over aux blocks,
-$K = \sum_P B_PDB_P$. The MO blocks are half transforms
-$(P|pq) = C_l^\mathsf{T}B_PC_r$ followed by one GEMM over $P$:
-$(pu|vw) = (P|pu)^\mathsf{T}(P|vw)$, and the AH occupied kernel's
-$(pq|vw)$ and $(pu|qv)$ the same way, so the AH optimizer runs unchanged.
-SC-NEVPT2 on an RI CASSCF reference takes its MO blocks and $J/K$ from the
-same $B$. The RI route is never chosen by `auto`. It is anchored against the
-dense route fed the reconstructed block $B^\mathsf{T}B$
-(`tests/casscf_ri.rs`), which must agree to rounding: only the order of the
-sums differs.
 
 ### The orbital gradient
 
@@ -252,8 +221,10 @@ The box is at fixed RDMs, which is what the formula claims: at a converged
 CI root the RDM response does not enter the gradient, because the CI energy
 is stationary in $c$. The Rust test checks the analytic gradient against a
 finite difference of the CI-relaxed energy per rotation class. The
-augmented-Hessian products and the step control are not covered by a proof
-script; their anchors are the PySCF comparisons below.
+augmented-Hessian products are covered by the checks `ah-frame-derivative`
+and `ah-hessian` of the same script, equation (@eq:ci-casscf-ah-hessian); the
+step control has no proof script, and its anchors are the PySCF comparisons
+below.
 
 ### The BFGS step
 
@@ -269,9 +240,10 @@ $F^T = F^I + F^A$:
 | $(a,t)$ | $2\gamma_{tt}F^T_{aa} - 2F_{tt}$ |
 | $(t,i)$ | $4(F^T_{tt} - F^T_{ii}) + 2\gamma_{tt}F^T_{ii} - 2F_{tt}$ |
 
-Its median relative error against the finite-difference diagonal is 24-28 %
-(prototype measurement), so it serves as a preconditioner and not as a
-Hessian. The update is skipped when $s^\mathsf{T}y \le 10^{-14}$. The
+Its median relative error against the finite-difference diagonal is 28 %
+(H2O CAS(4,4)) and 24 % (N2 CAS(6,6)) at the 6-31G minima
+(`scripts/prototypes/casscf_proto.py`, `hdiag_relerr_median`), so it serves
+as a preconditioner and not as a Hessian. The update is skipped when $s^\mathsf{T}y \le 10^{-14}$. The
 inverse resets to the diagonal when the energy rises by more than
 $10^{-10}$ Ha. $\max_k|s_k|$ is capped at 0.2.
 
@@ -289,7 +261,7 @@ warning.
 ### The augmented-Hessian step
 
 `optimizer = "ah"` (`src/casscf_newton.rs`, the default) uses the exact
-orbital Hessian at fixed RDMs, applied as a product. Chapter @sec:second-order describes
+orbital Hessian at fixed RDMs, applied as a product. Section @sec:second-order describes
 the augmented-Hessian and trust-region machinery for SCF; here are the
 CASSCF ingredients.
 
@@ -308,7 +280,7 @@ $$
 and $d(pu|vw) = \sum_r X_{rp}(ru|vw) + X_{ru}(pr|vw) + X_{rv}(pu|rw) +
 X_{rw}(pu|rv)$. The first two terms of $dF$ rotate the matrix with the
 frame; the $J/K$ term is the response of the field to the changed density.
-$H_fx = \operatorname{pack}2(dF - dF^\mathsf{T})$ is the derivative of the
+$\mathcal H_fx = \operatorname{pack}2(dF - dF^\mathsf{T})$ is the derivative of the
 fixed-RDM gradient along $x$ in the rotated frame.
 
 **The $\Gamma$ contraction.** The $(pr|vw)$ and $(pu|rw)$ terms are
@@ -326,8 +298,31 @@ $e^{\varepsilon X}e^{\delta A} = \exp(\varepsilon X + \delta A +
 \tfrac12\varepsilon\delta[X, A] + \dots)$. The frame derivative therefore
 differs from the Hessian of $E(C\exp K)$ at $K = 0$ by a commutator with
 the gradient. The symmetric Hessian is
-$Hx = H_fx - \tfrac12\operatorname{pack}[G, X]$ with
-$G = 2(F - F^\mathsf{T})$.
+$\mathcal Hx = \mathcal H_fx - \tfrac12\operatorname{pack}[G, X]$ with
+$G = 2(F - F^\mathsf{T})$. The commutator term is antisymmetric
+($v\cdot\operatorname{pack}[G, V] = 0$ for every $v$), so it leaves every
+directional curvature $x\cdot\mathcal Hx$ unchanged and removes the
+asymmetry of $\mathcal H_f$.
+
+> **Verified equation {#eq:ci-casscf-ah-hessian}** · the fixed-RDM orbital Hessian
+>
+> On the six-orbital model of the gradient box, the frame derivatives
+> $dF^I$, $dF^A$ and $d(pu|vw)$ above give $\mathcal H_fx$ equal to the
+> central difference of $\operatorname{pack}2(F - F^\mathsf{T})$ at
+> $C\exp(\varepsilon X)$, and
+> $\mathcal Hx = \mathcal H_fx - \tfrac12\operatorname{pack}[G, X]$ is
+> symmetric and equals the mixed second difference of the fixed-RDM energy
+> $E(C\exp K)$ for both $y\cdot\mathcal Hx$ and $x\cdot\mathcal Hy$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/ci_rdm_casscf_gradient_sympy.py`, checks `ah-frame-derivative`, `ah-hessian` |
+> | Negative control | the runner's mutations: the commutator term dropped; the $J/K$ response of $dF^A$ dropped |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-ci/src/casscf_newton.rs::{hessian_vector,hessian_vector_frame,frame_derivative_parts}` |
+> | Code test | `hessian_vector_matches_fd_of_the_gradient_h2o_cas44_631g` in `crates/ferric-ci/tests/casscf_newton.rs` |
+>
+> <!-- verified: id=ci.casscf.ah-hessian; script=scripts/ci_rdm_casscf_gradient_sympy.py; claim=ah-hessian; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/casscf_newton.rs::{hessian_vector,hessian_vector_frame,frame_derivative_parts}; rust_test=ferric-ci/tests/casscf_newton.rs::hessian_vector_matches_fd_of_the_gradient_h2o_cas44_631g; registry=casscf -->
 
 **The occupied kernel.** Both density responses have the form
 $dD = C(Y + Y^\mathsf{T})C^\mathsf{T}$ with $Y$ nonzero only in occupied
@@ -352,10 +347,10 @@ $J/K$ pass over $dD^c$ and $dD^a$ per product (`HessianProducts::AoJk`), is
 kept as its oracle.
 
 **The step.** The step is the lowest eigenpair of
-$\begin{pmatrix}0 & g^\mathsf{T}\\ g & H\end{pmatrix}$, found by Davidson
+$\begin{pmatrix}0 & g^\mathsf{T}\\ g & \mathcal H\end{pmatrix}$, found by Davidson
 with the preconditioner $\max(|H_\text{diag}|, \texttt{hdiag\_floor}) -
 \lambda$ and at most 40 products. Then $s = v/v_0$, stopped at
-$\lVert(H - \lambda)s + g\rVert \le \eta\lVert g\rVert$ with
+$\lVert(\mathcal H - \lambda)s + g\rVert \le \eta\lVert g\rVert$ with
 $\eta = \min(0.1, \lVert g\rVert)$ by default (`CasScfConfig::ah_forcing`;
 `AhForcing::Constant` holds $\eta$ fixed). The step is then scaled to a
 trust radius (2-norm; start 0.4, at most 1.0) and to `max_step`
@@ -364,27 +359,27 @@ trust radius (2-norm; start 0.4, at most 1.0) and to `max_step`
 **Step control.** A step that raises $E$ by more than $10^{-10}$ Ha is
 halved and evaluated again, a CI solve each time. The radius halves below an
 actual/predicted ratio of 0.25 and doubles above 0.75 for a step at the
-boundary. The predicted change is $g\cdot s + \tfrac12 s\cdot Hs/\beta$,
+boundary. The predicted change is $g\cdot s + \tfrac12 s\cdot\mathcal Hs/\beta$,
 with $\beta$ from the next paragraph.
 
 **Curvature stretch.** The Hessian lacks the CI response, which lowers the
 curvature (section @sec:casscf-second-order-check shows why it can only lower it). Near
-convergence the plain AH step undershoots by a factor of about 1.6, which
-makes convergence linear, and on N2 CAS(10,10) it stalls by orders of
-magnitude along one direction. Each accepted step therefore measures the
+convergence the plain AH step therefore undershoots, which makes
+convergence linear, and on N2 CAS(10,10) it stalls by orders of magnitude
+along one direction. Each accepted step therefore measures the
 ratio of the model to the actual curvature along itself,
 
 $$
-\beta = \frac{s\cdot Hs}{2(\Delta E - g\cdot s)}
+\beta = \frac{s\cdot\mathcal Hs}{2(\Delta E - g\cdot s)}
 $$
 
 (100 when the actual curvature is not positive), and the next AH step is
 multiplied by $\beta$ clamped to $[1, 100]$ before the trust and
-`max_step` scaling (`curvature_stretch`). The prototype's `scale` variant
-used the energy ratio clamped to $[1, 2]$ instead; in Rust that rule
-stalled N2 CAS(10,10). Multi-secant SR1 corrections of $H$ from earlier
-steps were tried and were unstable for a memory of three or more steps
-(water 62 iterations with 16 rejected steps).
+`max_step` scaling (`curvature_stretch`). A stretch by the energy ratio
+clamped to $[1, 2]$ does not converge N2 CAS(10,10), so the code uses the
+curvature ratio. Multi-secant SR1 corrections of $\mathcal H$ from earlier
+steps are unstable for a memory of three or more steps (water: 62
+iterations with 16 rejected steps), so there are none.
 
 ### Open-shell active spaces
 
@@ -414,8 +409,11 @@ error of the second solve. `mo_energy` is the diagonal of $F^T$ in $C'$.
 Lowest root, no state averaging. The direct route recomputes every shell
 quartet each macro iteration, in three passes: $J/K[D^c]$, $(pu|vw)$ and
 $J/K[D^a]$. The start is a restricted RHF, so the electron count must be
-even. There is no orbital-CI coupling: both optimizers are two-step, and
-the augmented-Hessian step uses the orbital Hessian at fixed RDMs.
+even. The active orbitals are the `n_active` RHF orbitals after the first
+`n_core`: the window is contiguous in the RHF orbital order, with no
+orbital selection or reordering. There is no orbital-CI coupling: both
+optimizers are two-step, and the augmented-Hessian step uses the orbital
+Hessian at fixed RDMs.
 
 ## The macro iteration {#casscf-macro-iteration}
 
@@ -429,14 +427,58 @@ the augmented-Hessian step uses the orbital Hessian at fixed RDMs.
 | 6 | $C \leftarrow C\exp(K(s))$ | `rotate`, `expm_antisymmetric` |
 | 7 | after convergence, optional canonicalization and second-order check | `canonicalize`, `stability` |
 
+### Where the integrals come from
+
+`CasScfConfig::integrals` (`casscf_ints.rs`) selects the route.
+
+- **Auto** (the default) takes the dense route when its $n_\text{bas}^4$
+  block and transients fit in half of the memory budget, and the direct
+  route otherwise.
+- **Direct** builds $J$ and $K$ with ferric-scf's direct builder
+  (`build_jk_with_pool`, Schwarz and density screened), and $(pu|vw)$ for
+  all $p$ by a direct half transform. Per canonical bra shell pair, every
+  ket shell pair with $Q_\text{bra}Q_\text{ket} \ge$ `thresh` is contracted
+  with $C_a$ on both ket indices,
+  $X_{\mu\nu,vw} = \sum_{\lambda\sigma}(\mu\nu|\lambda\sigma)C_{\lambda v}C_{\sigma w}$,
+  and then $(pu|vw) = \sum_{\mu\nu}C_{\mu p}C_{\nu u}X_{\mu\nu,vw}$ by
+  GEMMs. Peak memory is $X$, $n_\text{bas}^2n_a^2$ doubles.
+- **Dense** holds the $n_\text{bas}^4$ AO block, contracts $J$ and $K$
+  from it and transforms it by four quarter transforms
+  (`integrals::transform_eri_mixed`). It is the test oracle:
+  in `tests/casscf_direct.rs`, at `thresh = 0` the routes agree to
+  $10^{-12}$ in $F$, $(pu|vw)$, $E$ and $g$.
+- **RI** (`integrals = "ri"`, a bundled `auxbasis`, `src/ri.rs`) is a
+  different Hamiltonian, the density-fitted one:
+  $(\mu\nu|\lambda\sigma) \approx \sum_P B^P_{\mu\nu}B^P_{\lambda\sigma}$
+  with $B^P_{\mu\nu} = \sum_Q M_{PQ}(Q|\mu\nu)$, $M = L^{-1}$ and $L$ the
+  Cholesky factor of the Coulomb metric $V_{PQ} = (P|Q)$, so
+  $M^\mathsf{T}M = V^{-1}$ (the construction of section @sec:closed-shell-ri-mp2-density-fitting-making-affordable). It holds
+  $B$, $N_\text{aux}n_\text{bas}^2$ doubles, and nothing of size
+  $n_\text{bas}^4$.
+
+On the RI route a density given in factored form $D = XWX^\mathsf{T}$ (the
+core density $2C_cC_c^\mathsf{T}$ and the active density
+$C_a\gamma C_a^\mathsf{T}$) gives $J = B^\mathsf{T}(B\,\mathrm{vec}D)$ and
+$K = \sum_P (B_PX)W(B_PX)^\mathsf{T}$ as one GEMM over $(P, j)$. A general
+$D$ (the AH Hessian's trial densities) is summed over aux blocks,
+$K = \sum_P B_PDB_P$. The MO blocks are half transforms
+$(P|pq) = C_l^\mathsf{T}B_PC_r$ followed by one GEMM over $P$:
+$(pu|vw) = (P|pu)^\mathsf{T}(P|vw)$, and the AH occupied kernel's
+$(pq|vw)$ and $(pu|qv)$ the same way, so the AH optimizer runs unchanged.
+SC-NEVPT2 on an RI CASSCF reference takes its MO blocks and $J/K$ from the
+same $B$. The RI route is never chosen by `auto`. It is anchored against the
+dense route fed the reconstructed block $B^\mathsf{T}B$
+(`tests/casscf_ri.rs`), which must agree to rounding: only the order of the
+sums differs.
+
 ## The second-order check {#casscf-second-order-check}
 
 Both optimizers stop at a point where the gradient vanishes. That can be a
 minimum or a saddle. The sign of the lowest eigenvalue of the orbital
 Hessian decides, but it has to be the Hessian of the energy with the CI
 vector relaxed at every orbital set, because that is the function CASSCF
-minimizes. `src/casscf_stability.rs` (`[cas] stability`, 2026-11-14)
-computes it after convergence; chapter @sec:stability does the same for SCF.
+minimizes. `src/casscf_stability.rs` (`[cas] stability`) computes it after
+convergence; section @sec:stability does the same for SCF.
 
 **The coupled Hessian.** Write the CI vector as
 $c(z) = (c+z)/\lVert c+z\rVert$ with $z\perp c$, about the CI root $c$
@@ -444,9 +486,9 @@ $c(z) = (c+z)/\lVert c+z\rVert$ with $z\perp c$, about the CI root $c$
 the blocks
 
 $$
-H_{oo}x = \text{the fixed-RDM orbital Hessian (AH step, above)},\qquad
-H_{co}x = 2P\,dH(x)\,c,\qquad H_{cc} = 2P(H-\theta)P,\qquad
-H_{oc}z = g(\gamma_T, \Gamma_T),
+\mathcal H_{oo}x = \text{the fixed-RDM orbital Hessian (AH step, above)},\qquad
+\mathcal H_{co}x = 2P\,dH(x)\,c,\qquad \mathcal H_{cc} = 2P(H-\theta)P,\qquad
+\mathcal H_{oc}z = g(\gamma_T, \Gamma_T),
 $$
 
 with $P = 1 - cc^\mathsf{T}$ and $dH(x)$ the frame derivative of the
@@ -460,28 +502,57 @@ $F_{pi} = 2F^A[\gamma_T]_{pi}$,
 $F_{pt} = \sum_u F^I_{pu}\gamma_{T,ut} + \sum_{uvw}(pu|vw)\Gamma_{T,tuvw}$,
 $g = 2(F - F^\mathsf{T})$. The gradient is $\langle c|dH(x)|c\rangle$, so
 $x\cdot g(\gamma_T,\Gamma_T) = 2\langle z|dH(x)|c\rangle$ and
-$H_{oc} = H_{co}^\mathsf{T}$.
+$\mathcal H_{oc} = \mathcal H_{co}^\mathsf{T}$.
+
+The CI blocks follow from expanding
+$E(z) = \langle c+z|H|c+z\rangle/\langle c+z|c+z\rangle$ to second order
+in $z \perp c$: the numerator is $\theta + 2z^\mathsf{T}Hc + z^\mathsf{T}Hz$
+with $z^\mathsf{T}Hc = \theta z^\mathsf{T}c = 0$, the denominator
+$1 + z^\mathsf{T}z$, so $E = \theta + z^\mathsf{T}(H - \theta)z + O(z^3)$
+and $\mathcal H_{cc} = 2P(H-\theta)P$. Differentiating
+$\langle c(z)|H(\kappa)|c(z)\rangle$ once in $z$ and once along $x$ gives
+$2z^\mathsf{T}dH(x)\,c$, the coupling $\mathcal H_{co}x = 2P\,dH(x)\,c$.
 
 **Relaxing the CI vector.** Minimize the quadratic model
-$\tfrac12 x^\mathsf{T}H_{oo}x + z^\mathsf{T}H_{co}x + \tfrac12 z^\mathsf{T}H_{cc}z$
+$\tfrac12 x^\mathsf{T}\mathcal H_{oo}x + z^\mathsf{T}\mathcal H_{co}x + \tfrac12 z^\mathsf{T}\mathcal H_{cc}z$
 over $z$ for fixed $x$. The stationarity condition is
-$H_{cc}z = -H_{co}x$, which after dividing by 2 reads
+$\mathcal H_{cc}z = -\mathcal H_{co}x$, which after dividing by 2 reads
 $(H-\theta)\,z = -P\,dH(x)\,c$ with $z\perp c$. Substitute $z(x)$ back. The
 energy with the CI vector relaxed at every orbital set,
 $E_\text{rel}(\kappa) = \min_z E(\kappa, z)$, has the Schur complement as
 its Hessian:
 
 $$
-H_\text{rel}\,x = H_{oo}x + H_{oc}\,z(x),\qquad (H-\theta)\,z = -P\,dH(x)\,c,\quad z\perp c .
+\mathcal H_\text{rel}\,x = \mathcal H_{oo}x + \mathcal H_{oc}\,z(x),\qquad (H-\theta)\,z = -P\,dH(x)\,c,\quad z\perp c .
 $$
 
-Since $H_{oc}z(x) = -H_{oc}H_{cc}^{-1}H_{co}x$ and $H_{cc}$ is positive
+Since $\mathcal H_{oc}z(x) = -\mathcal H_{oc}\mathcal H_{cc}^{-1}\mathcal H_{co}x$ and $\mathcal H_{cc}$ is positive
 semidefinite on the complement of $c$ (because $\theta$ is the lowest
 root), the correction is negative semidefinite. The relaxed Hessian is
-therefore never stiffer than $H_{oo}$. This is why the CI response matters
+therefore never stiffer than $\mathcal H_{oo}$. This is why the CI response matters
 for the sign: without it the check reads the fixed-RDM Hessian, which is
 stiffer, and can call a saddle a minimum. It is also the curvature the AH
 step misses (section @sec:casscf-energy-gradient-step).
+
+> **Verified equation {#eq:ci-casscf-relaxed-hessian}** · the CI-relaxed orbital Hessian
+>
+> On the six-orbital model of the gradient box, at the lowest CAS-CI root
+> $c$ of the $(2,2)$ sector, $\mathcal H_\text{rel}x = \mathcal Hx + \mathcal H_{oc}z(x)$ with
+> $(H-\theta)z = -P\,dH(x)\,c$, $z\perp c$, and
+> $\mathcal H_{oc}z = g(\gamma_T,\Gamma_T)$ equals the second difference of
+> $E_\text{rel}(\kappa)$, the lowest CAS-CI energy re-solved in the orbitals
+> $C\exp(\varepsilon X)$, along random directions; and
+> $x\cdot\mathcal H_{oc}z(x) \le 0$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/ci_rdm_casscf_gradient_sympy.py`, check `relaxed-hessian` |
+> | Negative control | the runner's mutation: the CI response $\mathcal H_{oc}z(x)$ dropped |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-ci/src/casscf_stability.rs::{ci_relaxed_hessian_vector,ci_relaxed_hessian_vector_with}` |
+> | Code test | `h2o_cas44_products_match_finite_differences` in `crates/ferric-ci/tests/casscf_stability.rs` |
+>
+> <!-- verified: id=ci.casscf.relaxed-hessian; script=scripts/ci_rdm_casscf_gradient_sympy.py; claim=relaxed-hessian; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-ci/src/casscf_stability.rs::{ci_relaxed_hessian_vector,ci_relaxed_hessian_vector_with}; rust_test=ferric-ci/tests/casscf_stability.rs::h2o_cas44_products_match_finite_differences; registry=casscf -->
 
 **The solve.** Each product is one CI linear solve: conjugate gradients on
 the complement of $c$, preconditioner $P(\operatorname{diag}H - \theta)^{-1}P$,
@@ -525,6 +596,10 @@ default.
 | `integral_thresh`; `casscf_integral_thresh` | | $10^{-12}$ | Schwarz threshold of `direct` |
 | `stability`; `casscf_stability` | `off`, `check`, `follow` | `off` | second-order check |
 | `canonicalize` | bool | false | canonical core and virtual, natural active orbitals |
+| `auxbasis`; `casscf_auxbasis` | bundled auxiliary basis | none | required by `integrals = "ri"` |
+| `[memory] budget_gb`; `memory_budget_gb` | GB | auto | memory plan of the integrals and the CI |
+| `hdiag_floor` (Rust only) | | 0.05 | floor of the approximate diagonal Hessian (BFGS start, AH preconditioner) |
+| `ah_forcing` (Rust only) | `AhForcing::{Quadratic, Constant}` | `Quadratic`, $\eta = \min(0.1, \lVert g\rVert)$ | AH Davidson stopping |
 | `[cas.ci] conv_thresh`; `ci_conv_thresh` | residual | $10^{-10}$ | CI root acceptance |
 | `[cas.ci] max_subspace`, `max_iter` | integer | 50, 200 | CI Davidson |
 
@@ -533,7 +608,7 @@ default.
 | Quantity | Systems | Error | Test |
 |---|---|---|---|
 | $E$ vs PySCF `mcscf.CASSCF` on ferric's AO integrals | H2O CAS(4,4) / 6-31G | $\le 1.5\times10^{-11}$ Ha | `crates/ferric-ci/tests/casscf_vs_pyscf.rs` |
-| the same | N2 CAS(6,6) at 1.0977 and 1.6 Å, O2 CAS(8,6) $(5,3)$ / 6-31G | $\le 5.8\times10^{-13}$ Ha | `crates/ferric-ci/tests/casscf_vs_pyscf.rs` |
+| the same | N2 CAS(6,6) at 1.0977 and 1.6 Å, O2 CAS(8,6) $(5,3)$ / 6-31G | $\le 6.3\times10^{-13}$ Ha | `crates/ferric-ci/tests/casscf_vs_pyscf.rs` |
 | full space: $E$ vs `run_cas_ci` | H2O ($M_s$ = 0, 1), N2, O2 ($M_s$ = 1) / STO-3G | $\le 10^{-13}$ Ha | `crates/ferric-ci/tests/casscf.rs` |
 | full space: $2(F - F^\mathsf{T})$ | same | $\le 7.7\times10^{-11}$ | `crates/ferric-ci/tests/casscf.rs` |
 | analytic vs finite-difference gradient | | $\le 4.6\times10^{-10}$ | `crates/ferric-ci/tests/casscf.rs` |
@@ -543,21 +618,29 @@ default.
 When every orbital is active there is no core, no virtual space and no
 nonredundant rotation, so CASSCF is full CI. The two full-space rows check
 that limit: the energy equals `run_cas_ci`, and $2(F - F^\mathsf{T})$ is
-zero to the CI residual, as the redundant-block identity of @sec:casscf-energy-gradient-step
+zero to the CI residual, as the redundant-block identity of section @sec:casscf-energy-gradient-step
 requires.
 
 ## What is proven and what is not {#casscf-proven}
 
-The anchors table above summarizes the records below. They are grouped by
-what they test: the method on the dense route, the integral routes, the
-optimizers, the stationary points they reach, and the second-order check.
+The verified boxes cover the gradient
+(@eq:ci-casscf-gradient), the fixed-RDM Hessian of the AH step
+(@eq:ci-casscf-ah-hessian) and the CI-relaxed Hessian of the second-order
+check (@eq:ci-casscf-relaxed-hessian). No proof covers the step control
+(trust radius, curvature stretch) or the convergence of the optimizers;
+the anchors below and the PySCF comparisons do. The anchors table above
+summarizes the records below: the method on the dense route, the results
+of the measurement record, and the second-order check.
 
 ### Anchors on the dense route {#casscf-proven-dense-anchors}
 
-`crates/ferric-ci/tests/casscf.rs` (measured 2026-11-11) uses
-`testdata/molecules/water.xyz` and `n2.xyz`, 6-31G, a ferric exact-J/K RHF
-start, and a Davidson threshold of $10^{-10}$ ($10^{-11}$ for the
-finite-difference anchor).
+`crates/ferric-ci/tests/casscf.rs` uses `testdata/molecules/water.xyz` and
+`n2.xyz`, 6-31G, a ferric exact-J/K RHF start, and a Davidson threshold of
+$10^{-10}$ ($10^{-11}$ for the finite-difference anchor). Anchors 1 and 2
+were measured on the `0ec644103` build; anchors 3 and 4 below were rerun
+through `run_casscf` with the default AH optimizer on the `3f612e0b3` build,
+the analytic $\lambda_\text{min}$ of `casscf_stability = "check"` in the
+bar.
 
 **Anchor 1: active space = full space.** In STO-3G, CASSCF with every
 orbital active is compared with `run_cas_ci` over the full window in the
@@ -609,13 +692,13 @@ $E - E_\text{min} \approx \lVert g\rVert^2/(2\lambda)$.
 
 | Quantity | H2O CAS(4,4)/6-31G | N2 CAS(6,6)/6-31G |
 |---|---:|---:|
-| $E$ (Ha) | -76.0369690965018 | -109.0155467897005 |
+| $E$ (Ha) | -76.0369690965019 | -109.0155467897004 |
 | $E$ prototype (Ha) | -76.0369690965018 | -109.0155467897007 |
-| $\Delta E$ (Ha) | -4.3e-14 | 2.3e-13 |
+| $\Delta E$ (Ha) | -9.9e-14 | 3.0e-13 |
 | bar (Ha) | 1.1e-12 | 3.9e-12 |
-| $\lVert g\rVert$ / prototype | 4.2e-8 / 9.5e-8 | 3.4e-8 / 3.4e-8 |
+| $\lVert g\rVert$ / prototype | 2.1e-8 / 9.5e-8 | 5.1e-10 / 3.4e-8 |
 | $\lambda_\text{min}$ (Ha) / prototype note | 0.0195 / 0.0195 | 0.0402 / 0.0402 |
-| macro iterations / prototype | 60 / 62 | 21 / 21 |
+| macro iterations (AH) / prototype (BFGS) | 22 / 62 | 11 / 21 |
 
 The prototype's energies match `pyscf.mcscf.CASSCF` on ferric's AO
 integrals to $1.4\times10^{-12}$ Ha (H2O) and $1.8\times10^{-13}$ Ha (N2).
@@ -635,10 +718,10 @@ first order in the orbital error, which PySCF's gradient sets.
 
 | System | $E$ (Ha) | $\Delta E$ vs PySCF (Ha) | bar (Ha) | $\lVert g\rVert$ / $2\lVert g_\text{PySCF}\rVert$ | $\lambda_\text{min}$ | iterations | natural occupations | max $\Delta$ occupation / core / virtual $\varepsilon$ |
 |---|---:|---:|---:|---:|---:|---:|---|---:|
-| H2O CAS(4,4) | -76.0369690965018 | -1.5e-11 | 1.0e-10 | 4.2e-8 / 2.0e-6 | 0.0195 | 60 | 1.978, 1.975, 0.024, 0.023 | 2.2e-7 / 1.6e-5 / 1.6e-6 |
-| N2 CAS(6,6), 1.0977 Å | -109.0155467897006 | -9.9e-14 | 5.2e-12 | 3.4e-8 / 1.5e-7 | 0.0402 | 21 | 1.981, 1.935 (2), 0.065 (2), 0.019 | 8.9e-8 / 8.7e-7 / 1.9e-7 |
-| N2 CAS(6,6), 1.6 Å | -108.8482292478625 | -5.8e-13 | 5.1e-12 | 7.8e-8 / 2.5e-7 | 0.1485 | 12 | 1.897, 1.723 (2), 0.277 (2), 0.102 | 7.0e-7 / 2.1e-7 / 6.1e-8 |
-| O2 CAS(8,6), (5, 3) | -149.6367298537082 | -2.6e-13 | 4.0e-12 | 5.9e-8 / 1.3e-7 | 0.0958 | 14 | 1.960 (2), 1.955, 1.039 (2), 0.046 | 5.5e-8 / 1.9e-7 / 9.3e-8 |
+| H2O CAS(4,4) | -76.0369690965019 | -1.5e-11 | 1.0e-10 | 2.1e-8 / 2.0e-6 | 0.0195 | 22 | 1.978, 1.975, 0.024, 0.023 | 2.2e-7 / 1.7e-5 / 1.6e-6 |
+| N2 CAS(6,6), 1.0977 Å | -109.0155467897004 | 5.7e-14 | 5.1e-12 | 5.1e-10 / 1.5e-7 | 0.0402 | 11 | 1.981, 1.935 (2), 0.065 (2), 0.019 | 8.9e-8 / 8.5e-7 / 1.8e-7 |
+| N2 CAS(6,6), 1.6 Å | -108.8482292478626 | -6.3e-13 | 5.1e-12 | 3.0e-8 / 2.5e-7 | 0.1485 | 7 | 1.897, 1.723 (2), 0.277 (2), 0.102 | 7.0e-7 / 2.3e-7 / 6.0e-8 |
+| O2 CAS(8,6), (5, 3) | -149.6367298537082 | -2.0e-13 | 4.0e-12 | 3.5e-9 / 1.3e-7 | 0.0958 | 8 | 1.960 (2), 1.955, 1.039 (2), 0.046 | 5.6e-8 / 1.9e-7 / 8.8e-8 |
 
 All four reach the same minimum as PySCF. The test also asserts that the
 point is a minimum: the lowest eigenvalue of the central-difference
@@ -697,6 +780,137 @@ others at the unmutated error.
 The spin-sector mutation is caught only where the lowest state of the
 requested sector is not the lowest state of the neighbouring sector. The
 H2O (6, 4) full-space case is that check.
+
+### Routes, optimizers and stationary points
+
+The measurements behind the integral routes, the optimizers and the
+stationary points are in section @sec:casscf-measurements. Their results:
+
+- The direct and RI routes agree with the dense route to rounding in $F$,
+  $(pu|vw)$, $E$ and $g$ (section @sec:casscf-proven-routes); the RI route
+  agrees with PySCF `density_fit()` CASSCF to $1.2\times10^{-12}$ Ha, and
+  its error against exact integrals is of the size of the RI-JK RHF error
+  with the same auxiliary basis.
+- The AH step needs 1.2 to 1.7 times PySCF's macro-iteration count and
+  1.4 to 4.9 times fewer than BFGS (section @sec:casscf-proven-optimizers).
+- On N2 CAS(10,10)/cc-pVDZ the point that BFGS, AH and PySCF reach from the
+  RHF start is a second-order saddle (lowest CI-relaxed eigenvalue
+  $-0.00999$ Ha). Its active space holds one component of a $\pi_u$ pair.
+  The minimum below it, 5.29 mHa lower, has a $\sigma_g$ and a $\sigma_u$
+  orbital instead, and `stability = "follow"` reaches it in two steps
+  (section @sec:casscf-proven-stationary).
+- On benzene CAS(6,6)/cc-pVDZ ferric and PySCF reach two different local
+  minima 5.876 mHa apart, both with two $\sigma$ and four $\pi$ active
+  orbitals. A $\pi$-only CAS(6,6) cannot be requested, because the active
+  window is contiguous in the RHF orbital order.
+
+### The second-order check {#casscf-proven-second-order}
+
+Measured 2026-11-14 in `crates/ferric-ci/tests/casscf_stability.rs`,
+`crates/ferric-ci/tests/casscf_vs_pyscf.rs` and
+`crates/ferric-ci/tests/casscf_stability_saddle.rs` (release,
+`OPENBLAS_NUM_THREADS=1`).
+
+**Products.** $\mathcal H_\text{rel}x$ is compared with the central difference $D$
+of the CI-relaxed analytic gradient along a random unit vector
+($h = 10^{-3}$, $D(h/2)$), with bar
+$\tfrac23|D(h) - D(h/2)| + 2\delta g/h + \lVert g\rVert$, on 6-31G:
+
+| System | max $\lvert \mathcal H_\text{rel}x - D\rvert$ | bar | max $\lvert \mathcal H_{oc}z\rvert$ | asymmetry $\lvert y\cdot\mathcal H_\text{rel}x - x\cdot\mathcal H_\text{rel}y\rvert$ |
+|---|---:|---:|---:|---:|
+| H2O CAS(4,4) | 1.6e-6 | 4.9e-6 | 0.217 | 8.3e-14 |
+| H2O CAS(4,4), RI (def2-universal-jkfit) | 1.6e-6 | 4.9e-6 | 0.217 | 8.6e-14 |
+| N2 CAS(6,6) | 1.7e-6 | 5.0e-6 | 0.132 | 2.5e-13 |
+| O2 CAS(8,6) $(5,3)$ | 4.0e-6 | 9.5e-6 | 0.072 | 4.9e-13 |
+
+The product error is the $O(h^2)$ truncation of $D(h/2)$, one third of
+$|D(h) - D(h/2)|$ in every row; the CI part it resolves is $10^4$ to $10^5$
+times larger. The trivial limit is one determinant (H2O CAS(2,1) above 4
+core orbitals): the CI complement is empty and $\mathcal H_\text{rel}x = \mathcal H_{oo}x$
+exactly. Its check is `MARGINAL`, $\lambda = -2.4\times10^{-15}$, because
+the doubly occupied active orbital makes the core-active rotations
+redundant.
+
+**The lowest eigenvalue at the four PySCF anchors**, against the
+finite-difference CI-relaxed Hessian of `casscf_vs_pyscf.rs` (all pairs,
+$h = 10^{-4}$):
+
+| System, 6-31G | analytic $\lambda_\text{min}$ | FD $\lambda_\text{min}$ | difference | bar | products | Davidson iterations |
+|---|---:|---:|---:|---:|---:|---:|
+| H2O CAS(4,4) | 0.01945655 | 0.01945655 | 2.1e-10 | 4.4e-4 | 64 | 11 |
+| N2 CAS(6,6), 1.0977 Å | 0.04020959 | 0.04020959 | 3.4e-10 | 8.4e-4 | 70 | 12 |
+| N2 CAS(6,6), 1.6 Å | 0.14848830 | 0.14848829 | 1.0e-9 | 8.4e-4 | 75 | 13 |
+| O2 CAS(8,6) $(5,3)$ | 0.09583425 | 0.09583427 | 1.7e-8 | 8.4e-4 | 74 | 17 |
+
+All four are minima (`STABLE`). The bar here is the error bound of the full
+finite-difference Hessian (truncation plus $n_\text{pair}\,\delta g/h$,
+$4\times10^{-4}$ to $8\times10^{-4}$), set by that construction and loose
+for this purpose; the product tests, at bars near $5\times10^{-6}$, are
+what resolve the CI response.
+
+**cc-pVDZ**, with the eigenpair checked by the central difference along
+$v$ (bar in `casscf_stability_saddle.rs`):
+
+| Point | $E$ (Ha) | $\lambda_\text{min}$, CI-relaxed | FD Rayleigh along $v$ | max $\lvert Dv - \lambda v\rvert$ (bar) | $\lambda_\text{min}$, fixed RDMs | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| N2 CAS(10,10), RHF start | -109.1294674756 | -9.994836e-3 | -9.99482e-3 | 1.6e-7 (1.9e-6) | +1.3506e-2 | `UNSTABLE` |
+| N2 CAS(10,10), `follow` (2 steps) | -109.1347620089 | +1.086752e-2 | +1.086752e-2 | 1.2e-8 (1.8e-6) | +3.0470e-2 | `STABLE` |
+| benzene CAS(6,6), dense endpoint | -230.7814586093 | +1.072679e-3 | +1.07269e-3 | 1.1e-8 (2.2e-6) | +2.340e-3 | `STABLE` |
+
+The N2 eigenvalues agree with the full finite-difference Hessian of the
+stationary-point table ($-0.00999$ at the saddle, $0.01087$ at the
+minimum). `follow` takes two steps and reaches $-109.1347620089$ Ha,
+$2.9\times10^{-11}$ Ha from the BFGS reference minimum (bar
+$(\lVert g\rVert^2 + \lVert g_\text{ref}\rVert^2)/(2\lambda) + 8\varepsilon|E|\sqrt{N_\text{det}}
+= 4.9\times10^{-11}$) and 5.2945 mHa below the saddle.
+
+The benzene dense endpoint, 5.876 mHa above PySCF's point, is a
+positive-definite local minimum of the CI-relaxed Hessian,
+$\lambda_\text{min} = 1.07\times10^{-3}$ Ha. `follow` takes no step there.
+The 0.3645 of the Lanczos table is an eigenvalue of the scaled
+$D^{-1/2}HD^{-1/2}$, which has the inertia of $H$; both say minimum.
+Reaching PySCF's minimum needs a different start, not a second-order
+check.
+
+The CI response decides the sign. The fixed-RDM Hessian $\mathcal H_{oo}$ is
+positive at the N2 saddle ($+0.0135$), so a check without the CI response
+would call the saddle a minimum. It is stiffer everywhere
+($\mathcal H_\text{rel} \le \mathcal H_{oo}$): 0.0305 against 0.0109 at the N2 minimum,
+0.00234 against 0.00107 for benzene.
+
+**Cost** (CLI `FERRIC_TIMING=1` phase totals, release,
+`OPENBLAS_NUM_THREADS=1` with the default rayon pool, 3 runs each under
+`box-lease`, load average 7 to 14 on the 6-core box from other sessions;
+mean ± sd):
+
+| System, cc-pVDZ | determinants | products | check (s) | rest of the CASSCF (s) | check / rest |
+|---|---:|---:|---:|---:|---:|
+| benzene CAS(6,6) | 400 | 178 | 8.58 ± 0.15 | 19.03 ± 0.18 | 0.45 ± 0.01 |
+| N2 CAS(10,10) | 63,504 | 97 | 35.19 ± 0.59 | 11.12 ± 0.51 | 3.17 ± 0.10 |
+
+On benzene the CASSCF is dominated by its orbital-Hessian integrals; on N2
+by the CI, and each product of the check is a CI linear solve costing about
+as much as one CI root solve of a macro iteration (0.36 s against 0.43 s).
+Because the check costs about as much as the CASSCF or more,
+`[cas] stability` defaults to `"off"`.
+
+**Mutations** (2026-11-14, one at a time, each failing on an assertion,
+then restored):
+
+| Mutation | Fails | Detail |
+|---|---|---|
+| drop the CI response ($\mathcal H_\text{rel} \to \mathcal H_{oo}$) | all four product tests; `casscf_vs_pyscf` N2 1.6 Å and O2; the N2 CAS(10,10) saddle test | product error 0.07 to 0.22 against bars near 5e-6. Against the finite-difference $\lambda_\text{min}$: O2 0.1105 vs 0.0958 and N2 1.6 Å 0.1584 vs 0.1485 miss the bar; N2 1.0977 Å (0.04063 vs 0.04021, diff 4.2e-4 under the bar 8.4e-4) and H2O (lowest mode not CI-coupled) pass it. N2 CAS(10,10) changes sign: $+0.0135$, `STABLE`, so the saddle goes undetected |
+| add $F^I$ to the RDM-linear gradient ($\gamma_T \to \gamma_T + 1$) | the single-determinant anchor, the product tests, check-vs-follow | the anchor sees it at 6e-17 only (the added term is gradient-sized at a converged single determinant); the products miss by 0.9 to 1.5 |
+| drop the certificate cap on `UNSTABLE` | `certificate::tests::a_saddle_is_capped_and_leaves_the_anchor_scope` | grade Proven instead of not graded |
+
+## Measurement record {#casscf-measurements}
+
+This section records the measurements behind the method above: the
+direct and RI integral routes against the dense one, timings, the
+optimizer comparisons, and the two stationary points examined. Each
+record names its build or date, its harness and the box load, because the
+timings depend on all three. The results that matter for using CASSCF are
+summarized in section @sec:casscf-proven.
 
 ### The direct and RI routes {#casscf-proven-routes}
 
@@ -824,8 +1038,8 @@ $-230.8442716629$ Ha, $\lVert g\rVert = 2.3\times10^{-8}$: wall 147 s, CPU
 
 **The dense route** (2026-11-13). Benzene CAS(6,6)/cc-pVDZ,
 `testdata/molecules/benzene.xyz`, 114 basis functions, 18 core orbitals,
-ferric RHF start, default settings (`integrals = "auto"` resolves to dense
-at `budget_gb = 10`). CLI wall times, paired and interleaved
+ferric RHF start, `optimizer = "bfgs"` and `integrals = "auto"` (which
+resolves to dense at `budget_gb = 10`). CLI wall times, paired and interleaved
 (A B B A A B), 12 rayon threads, box load average 2.5 to 10.4:
 
 | Build | Wall (s), 3 runs | mean ± sd (s) | macro iterations | wall per iteration (s) | peak RSS |
@@ -889,20 +1103,19 @@ orbitals rotated by a random $\kappa$ (scale 0.05), random unit $x$.
 
 | Check | Measured | Bar |
 |---|---|---|
-| $H_fx$ vs the central difference of the fixed-RDM gradient at $h/2 = 5\times10^{-4}$ (water, N2, O2) | worst error 0.50 of the bar | $2\lvert\Delta\rvert/3$ plus rounding |
-| $H_fx$ vs the Richardson extrapolate | $1.5\times10^{-11}$, $1.2\times10^{-10}$, $2.3\times10^{-11}$ | |
-| symmetry $\lvert y^\mathsf{T}Hx - x^\mathsf{T}Hy\rvert$ | $7\times10^{-16}$ to $4\times10^{-15}$ | $3$–$6\times10^{-11}$ |
+| $\mathcal H_fx$ vs the central difference of the fixed-RDM gradient at $h/2 = 5\times10^{-4}$ (water, N2, O2) | worst error 0.50 of the bar | $2\lvert\Delta\rvert/3$ plus rounding |
+| $\mathcal H_fx$ vs the Richardson extrapolate | $1.5\times10^{-11}$, $1.2\times10^{-10}$, $2.3\times10^{-11}$ | |
+| symmetry $\lvert y^\mathsf{T}\mathcal Hx - x^\mathsf{T}\mathcal Hy\rvert$ | $7\times10^{-16}$ to $4\times10^{-15}$ | $3$–$6\times10^{-11}$ |
 | the frame derivative alone, asymmetry | 0.06–0.79 | |
 | AH vs BFGS minimum, $\lvert\Delta E\rvert$ | water $1.4\times10^{-13}$, O2 $1.4\times10^{-13}$ | $1.1\times10^{-12}$, $2.9\times10^{-12}$ |
 | direct vs dense $Hx$ (O2, N2 at `thresh` $10^{-12}$) | $8.4\times10^{-14}$, $2.6\times10^{-13}$ | a priori $2.8\times10^{-6}$ to $2.2\times10^{-3}$ |
 
 The FD error is 0.50 of the bar because it is $|\Delta|/3$, the leading
-truncation term, against a bar of $2|\Delta|/3$: $H_fx$ matches the
-Richardson extrapolate. With the default switched to AH every existing
-CASSCF test passes (`casscf.rs`, `casscf_vs_pyscf.rs`,
-`casscf_canonical.rs`, `casscf_direct.rs`, `cas_ecp.rs`): water, N2, O2 and
-stretched N2 against PySCF within $1.5\times10^{-11}$, $4\times10^{-14}$,
-$3\times10^{-13}$ and $5\times10^{-13}$ Ha in 22, 11, 8 and 7 iterations.
+truncation term, against a bar of $2|\Delta|/3$: $\mathcal H_fx$ matches the
+Richardson extrapolate. With the AH default every CASSCF test passes
+(`casscf.rs`, `casscf_vs_pyscf.rs`, `casscf_canonical.rs`,
+`casscf_direct.rs`, `cas_ecp.rs`); the PySCF comparisons are the anchor 4
+table of section @sec:casscf-proven-dense-anchors.
 
 Mutations, each failing on an assertion: the active-active coupling term of
 $W$ with its sign flipped (`&b - &a`) fails all three FD anchors and both
@@ -915,7 +1128,7 @@ bar); the CLI `optimizer` key ignored fails `cli_keys_reach_the_config`.
 
 **AH timing** (2026-11-13, AO $J/K$ products, build c74da329d). CLI wall
 times, RHF included, paired and interleaved: base build 1db597bf6, build
-c74da329d with `optimizer = "bfgs"` (then the default) and with `"ah"`, in
+c74da329d with `optimizer = "bfgs"` and with `"ah"`, in
 the order base, bfgs, ah, ah, bfgs, base, base, bfgs, ah; 12 rayon
 threads, default `[memory]`, dense route. The box was shared with other
 jobs; the load average of each set is given.
@@ -1016,7 +1229,7 @@ repetition the kernel AH run was faster than the base BFGS run (30.8/38.8,
 kernel changes nothing measurable. O2 base AH and kernel AH are inside the
 noise; both beat BFGS in fewer iterations. BFGS in this build reproduces
 the base BFGS run (energy, $\lVert g\rVert$, iterations) on all five
-systems. With AH the default these pass: ferric-ci `--lib`, `casscf`,
+systems. With the AH default these pass: ferric-ci `--lib`, `casscf`,
 `casscf_vs_pyscf`, `casscf_canonical`, `casscf_direct`, `casscf_newton`,
 `cas_ecp`, `nevpt2`; ferric-cli `cas_kinds`; and the Python
 `test_casscf.py`, `test_cas_cli.py`, `test_nevpt2.py`, `test_casci.py`
@@ -1089,105 +1302,6 @@ CAS(6,6). A $\pi$ CAS(6,6) needs an active window placed on the six $\pi$
 orbitals, which neither `[cas]` nor `run_casscf` offers: the active
 orbitals are the `n_active` orbitals after the first `n_core` in the RHF
 order.
-
-### The second-order check {#casscf-proven-second-order}
-
-Measured 2026-11-14 in `crates/ferric-ci/tests/casscf_stability.rs`,
-`crates/ferric-ci/tests/casscf_vs_pyscf.rs` and
-`crates/ferric-ci/tests/casscf_stability_saddle.rs` (release,
-`OPENBLAS_NUM_THREADS=1`).
-
-**Products.** $H_\text{rel}x$ is compared with the central difference $D$
-of the CI-relaxed analytic gradient along a random unit vector
-($h = 10^{-3}$, $D(h/2)$), with bar
-$\tfrac23|D(h) - D(h/2)| + 2\delta g/h + \lVert g\rVert$, on 6-31G:
-
-| System | max $\lvert H_\text{rel}x - D\rvert$ | bar | max $\lvert H_{oc}z\rvert$ | asymmetry $\lvert y\cdot Hx - x\cdot Hy\rvert$ |
-|---|---:|---:|---:|---:|
-| H2O CAS(4,4) | 1.6e-6 | 4.9e-6 | 0.217 | 8.3e-14 |
-| H2O CAS(4,4), RI (def2-universal-jkfit) | 1.6e-6 | 4.9e-6 | 0.217 | 8.6e-14 |
-| N2 CAS(6,6) | 1.7e-6 | 5.0e-6 | 0.132 | 2.5e-13 |
-| O2 CAS(8,6) $(5,3)$ | 4.0e-6 | 9.5e-6 | 0.072 | 4.9e-13 |
-
-The product error is the $O(h^2)$ truncation of $D(h/2)$, one third of
-$|D(h) - D(h/2)|$ in every row; the CI part it resolves is $10^4$ to $10^5$
-times larger. The trivial limit is one determinant (H2O CAS(2,1) above 4
-core orbitals): the CI complement is empty and $H_\text{rel}x = H_{oo}x$
-exactly. Its check is `MARGINAL`, $\lambda = -2.4\times10^{-15}$, because
-the doubly occupied active orbital makes the core-active rotations
-redundant.
-
-**The lowest eigenvalue at the four PySCF anchors**, against the
-finite-difference CI-relaxed Hessian of `casscf_vs_pyscf.rs` (all pairs,
-$h = 10^{-4}$):
-
-| System, 6-31G | analytic $\lambda_\text{min}$ | FD $\lambda_\text{min}$ | difference | bar | products | Davidson iterations |
-|---|---:|---:|---:|---:|---:|---:|
-| H2O CAS(4,4) | 0.01945655 | 0.01945655 | 2.1e-10 | 4.4e-4 | 64 | 11 |
-| N2 CAS(6,6), 1.0977 Å | 0.04020959 | 0.04020959 | 3.4e-10 | 8.4e-4 | 70 | 12 |
-| N2 CAS(6,6), 1.6 Å | 0.14848830 | 0.14848829 | 1.0e-9 | 8.4e-4 | 75 | 13 |
-| O2 CAS(8,6) $(5,3)$ | 0.09583425 | 0.09583427 | 1.7e-8 | 8.4e-4 | 74 | 17 |
-
-All four are minima (`STABLE`). The bar here is the error bound of the full
-finite-difference Hessian (truncation plus $n_\text{pair}\,\delta g/h$,
-$4\times10^{-4}$ to $8\times10^{-4}$), set by that construction and loose
-for this purpose; the product tests, at bars near $5\times10^{-6}$, are
-what resolve the CI response.
-
-**cc-pVDZ**, with the eigenpair checked by the central difference along
-$v$ (bar in `casscf_stability_saddle.rs`):
-
-| Point | $E$ (Ha) | $\lambda_\text{min}$, CI-relaxed | FD Rayleigh along $v$ | max $\lvert Dv - \lambda v\rvert$ (bar) | $\lambda_\text{min}$, fixed RDMs | verdict |
-|---|---:|---:|---:|---:|---:|---|
-| N2 CAS(10,10), RHF start | -109.1294674756 | -9.994836e-3 | -9.99482e-3 | 1.6e-7 (1.9e-6) | +1.3506e-2 | `UNSTABLE` |
-| N2 CAS(10,10), `follow` (2 steps) | -109.1347620089 | +1.086752e-2 | +1.086752e-2 | 1.2e-8 (1.8e-6) | +3.0470e-2 | `STABLE` |
-| benzene CAS(6,6), dense endpoint | -230.7814586093 | +1.072679e-3 | +1.07269e-3 | 1.1e-8 (2.2e-6) | +2.340e-3 | `STABLE` |
-
-The N2 eigenvalues agree with the full finite-difference Hessian of the
-stationary-point table ($-0.00999$ at the saddle, $0.01087$ at the
-minimum). `follow` takes two steps and reaches $-109.1347620089$ Ha,
-$2.9\times10^{-11}$ Ha from the BFGS reference minimum (bar
-$(\lVert g\rVert^2 + \lVert g_\text{ref}\rVert^2)/(2\lambda) + 8\varepsilon|E|\sqrt{N_\text{det}}
-= 4.9\times10^{-11}$) and 5.2945 mHa below the saddle.
-
-The benzene dense endpoint, 5.876 mHa above PySCF's point, is a
-positive-definite local minimum of the CI-relaxed Hessian,
-$\lambda_\text{min} = 1.07\times10^{-3}$ Ha. `follow` takes no step there.
-The 0.3645 of the Lanczos table is an eigenvalue of the scaled
-$D^{-1/2}HD^{-1/2}$, which has the inertia of $H$; both say minimum.
-Reaching PySCF's minimum needs a different start, not a second-order
-check.
-
-The CI response decides the sign. The fixed-RDM Hessian $H_{oo}$ is
-positive at the N2 saddle ($+0.0135$), so a check without the CI response
-would call the saddle a minimum. It is stiffer everywhere
-($H_\text{rel} \le H_{oo}$): 0.0305 against 0.0109 at the N2 minimum,
-0.00234 against 0.00107 for benzene.
-
-**Cost** (CLI `FERRIC_TIMING=1` phase totals, release,
-`OPENBLAS_NUM_THREADS=1` with the default rayon pool, 3 runs each under
-`box-lease`, load average 7 to 14 on the 6-core box from other sessions;
-mean ± sd):
-
-| System, cc-pVDZ | determinants | products | check (s) | rest of the CASSCF (s) | check / rest |
-|---|---:|---:|---:|---:|---:|
-| benzene CAS(6,6) | 400 | 178 | 8.58 ± 0.15 | 19.03 ± 0.18 | 0.45 ± 0.01 |
-| N2 CAS(10,10) | 63,504 | 97 | 35.19 ± 0.59 | 11.12 ± 0.51 | 3.17 ± 0.10 |
-
-On benzene the CASSCF is dominated by its orbital-Hessian integrals; on N2
-by the CI, and each product of the check is a CI linear solve costing about
-as much as one CI root solve of a macro iteration (0.36 s against 0.43 s).
-Because the check costs about as much as the CASSCF or more,
-`[cas] stability` defaults to `"off"`.
-
-**Mutations** (2026-11-14, one at a time, each failing on an assertion,
-then restored):
-
-| Mutation | Fails | Detail |
-|---|---|---|
-| drop the CI response ($H_\text{rel} \to H_{oo}$) | all four product tests; `casscf_vs_pyscf` N2 1.6 Å and O2; the N2 CAS(10,10) saddle test | product error 0.07 to 0.22 against bars near 5e-6. Against the finite-difference $\lambda_\text{min}$: O2 0.1105 vs 0.0958 and N2 1.6 Å 0.1584 vs 0.1485 miss the bar; N2 1.0977 Å (0.04063 vs 0.04021, diff 4.2e-4 under the bar 8.4e-4) and H2O (lowest mode not CI-coupled) pass it. N2 CAS(10,10) changes sign: $+0.0135$, `STABLE`, so the saddle goes undetected |
-| add $F^I$ to the RDM-linear gradient ($\gamma_T \to \gamma_T + 1$) | the single-determinant anchor, the product tests, check-vs-follow | the anchor sees it at 6e-17 only (the added term is gradient-sized at a converged single determinant); the products miss by 0.9 to 1.5 |
-| drop the certificate cap on `UNSTABLE` | `certificate::tests::a_saddle_is_capped_and_leaves_the_anchor_scope` | grade Proven instead of not graded |
 
 ## Sources {#casscf-sources}
 

@@ -918,6 +918,114 @@ impl QmmmSystem {
             .collect()
     }
 
+    /// Label every atom with a molecule (residue) id, one entry per atom of
+    /// the full structure, without changing the QM/MM partition. This is
+    /// how a system built with [`QmSelection::Indices`] or
+    /// [`QmSelection::WithinRadius`] gets the molecule labels that
+    /// [`QmmmSystem::polarizable_embedding`]'s same-molecule exclusion and
+    /// [`MoveMm::Residues`] read. A wrong length is an error.
+    pub fn with_residue_ids(mut self, residue_ids: Vec<usize>) -> Result<Self, FerricError> {
+        if residue_ids.len() != self.atoms.len() {
+            return Err(FerricError::General(format!(
+                "QmmmSystem::with_residue_ids: {} entries, expected {} (one per atom)",
+                residue_ids.len(),
+                self.atoms.len()
+            )));
+        }
+        self.residue_ids = Some(residue_ids);
+        Ok(self)
+    }
+
+    /// The molecule ids a [`PolarizationExclusions`] scheme asks for: `None`
+    /// for [`PolarizationExclusions::None`]; for
+    /// [`PolarizationExclusions::Molecule`], [`QmmmSystem::residue_ids`] when
+    /// set, else the connected components of `bonds` (full-structure
+    /// indices, e.g. an MM topology's bond list), else an error. Molecules
+    /// are never guessed from distances.
+    pub fn polarization_molecule_ids(
+        &self,
+        scheme: PolarizationExclusions,
+        bonds: Option<&[(usize, usize)]>,
+    ) -> Result<Option<Vec<usize>>, FerricError> {
+        match scheme {
+            PolarizationExclusions::None => Ok(None),
+            PolarizationExclusions::Molecule => match (&self.residue_ids, bonds) {
+                (Some(ids), _) => Ok(Some(ids.clone())),
+                (None, Some(b)) => molecule_ids_from_bonds(self.atoms.len(), b).map(Some),
+                (None, None) => Err(FerricError::General(
+                    "polarizable embedding excludes each site's own molecule by default, and \
+                     this system has no molecule information: give residue ids (Python \
+                     QmmmSystem(residue_ids=...), one per atom) or an MM topology with bonds, \
+                     or opt out with polarization_exclusions = \"none\" (only right for \
+                     isolated sites such as ions)"
+                        .to_string(),
+                )),
+            },
+        }
+    }
+
+    /// The Thole polarizable embedding of this system, or `None` when no MM
+    /// atom is polarizable. `thole_a` is stored as given (`None` = undamped).
+    ///
+    /// `molecule_ids` (one per full-structure atom, e.g.
+    /// [`QmmmSystem::residue_ids`] or [`molecule_ids_from_bonds`]) turns on
+    /// same-molecule exclusion: a site feels neither the permanent charges
+    /// nor the induced dipoles of atoms with its own id (module doc of
+    /// [`crate::polarizable`], Exclusions). An RC/RCD midpoint charge
+    /// belongs to the molecules of both its hosts. `None` excludes nothing,
+    /// which is right only for sites that share no molecule with any charge
+    /// (isolated ions).
+    pub fn polarizable_embedding(
+        &self,
+        thole_a: Option<f64>,
+        molecule_ids: Option<&[usize]>,
+    ) -> Result<Option<crate::polarizable::PolarizableSites>, FerricError> {
+        let site_atoms = self.polarizable_site_full_indices();
+        if site_atoms.is_empty() {
+            return Ok(None);
+        }
+        let mut pol = crate::polarizable::PolarizableSites {
+            sites: self.to_polarizable_sites(),
+            thole_a,
+            ..Default::default()
+        };
+        if let Some(ids) = molecule_ids {
+            if ids.len() != self.atoms.len() {
+                return Err(FerricError::General(format!(
+                    "polarizable_embedding: {} molecule ids, expected {} (one per atom)",
+                    ids.len(),
+                    self.atoms.len()
+                )));
+            }
+            for (a, &ia) in site_atoms.iter().enumerate() {
+                for (b, &ib) in site_atoms.iter().enumerate().skip(a + 1) {
+                    if ids[ia] == ids[ib] {
+                        pol.exclusions.push((a, b));
+                    }
+                }
+            }
+            let pos = |i: usize| [self.atoms[i].x, self.atoms[i].y, self.atoms[i].z_pos];
+            pol.excluded_charges = site_atoms
+                .iter()
+                .map(|&s| {
+                    let own = ids[s];
+                    let atom_charges = self
+                        .mm_indices
+                        .iter()
+                        .filter(|&&i| i != s && self.effective_charges[i] != 0.0 && ids[i] == own)
+                        .map(|&i| pos(i));
+                    let midpoints = self
+                        .boundary_charges
+                        .iter()
+                        .filter(|b| b.q != 0.0 && (ids[b.hosts.0] == own || ids[b.hosts.1] == own))
+                        .map(|b| b.position);
+                    atom_charges.chain(midpoints).collect()
+                })
+                .collect();
+        }
+        Ok(Some(pol))
+    }
+
     /// Number of real QM atoms, excluding link hydrogens. Link atoms occupy
     /// `qm_atom_count() .. qm_atom_count() + link_atoms.len()` in the molecule
     /// returned by [`QmmmSystem::to_qm_molecule`].
@@ -1032,6 +1140,78 @@ impl QmmmSystem {
         }
         Some(best)
     }
+}
+
+/// Which permanent charges and induced dipoles a polarizable site ignores
+/// (see [`crate::polarizable`]'s module doc, Exclusions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PolarizationExclusions {
+    /// A site ignores the charges and sites of its own molecule (residue
+    /// ids, else bonded components). The default.
+    #[default]
+    Molecule,
+    /// No exclusions: every site sees every other charge and site.
+    None,
+}
+
+impl PolarizationExclusions {
+    /// Strict parse of `"molecule"` / `"none"`; anything else is an error.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "molecule" => Ok(Self::Molecule),
+            "none" => Ok(Self::None),
+            other => Err(FerricError::General(format!(
+                "polarization_exclusions: unknown value {other:?}; expected \"molecule\" or \"none\""
+            ))),
+        }
+    }
+
+    /// The config-string spelling (inverse of `parse_config_str`).
+    pub fn config_str(self) -> &'static str {
+        match self {
+            Self::Molecule => "molecule",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Molecule ids from a bond list: atoms joined by any path of bonds share
+/// an id (connected components, numbered in order of their lowest atom).
+/// Every atom of `0..n_atoms` gets an id; an unbonded atom is its own
+/// molecule. An out-of-range bond index is an error.
+pub fn molecule_ids_from_bonds(
+    n_atoms: usize,
+    bonds: &[(usize, usize)],
+) -> Result<Vec<usize>, FerricError> {
+    let mut parent: Vec<usize> = (0..n_atoms).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for &(i, j) in bonds {
+        if i >= n_atoms || j >= n_atoms {
+            return Err(FerricError::General(format!(
+                "molecule_ids_from_bonds: bond ({i}, {j}) out of range for {n_atoms} atoms"
+            )));
+        }
+        let (ri, rj) = (root(&mut parent, i), root(&mut parent, j));
+        parent[ri.max(rj)] = ri.min(rj);
+    }
+    let mut label = vec![usize::MAX; n_atoms];
+    let mut next = 0;
+    (0..n_atoms)
+        .map(|i| {
+            let r = root(&mut parent, i);
+            if label[r] == usize::MAX {
+                label[r] = next;
+                next += 1;
+            }
+            Ok(label[r])
+        })
+        .collect()
 }
 
 /// Electric field **E**(r) at arbitrary points from a QM density plus its

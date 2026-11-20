@@ -36,7 +36,7 @@ Entry point `ferric-toy/src/lib.rs::pair_energy`, also
 
 <!-- excerpt: ferric-toy/src/lib.rs::pair_energy -->
 ```rust
-let e = a * b;
+let e = a * b; // the product
 ```
 
 $$ E = a b . \\label{eq:toy-energy} $$
@@ -239,6 +239,22 @@ MUTATIONS = {
         '<!-- include: crates/ferric-gone/notes.md#"1. Toy theory" -->',
     ),
     "excerpt differs": (SEC, "let e = a * b;", "let e = a + b;"),
+    "excerpt differs inside a commented line": (
+        SEC,
+        "let e = a * b; // the product",
+        "let e = a - b; // the product",
+    ),
+    "line-number pin": (
+        SEC,
+        "`scripts/toy_sympy.py`.",
+        "`scripts/toy_sympy.py` (`crates/ferric-toy/src/lib.rs:2`).",
+    ),
+    "bare line-number pin": (SEC, "Inline math", "See lib.rs:2-3. Inline math"),
+    "chapter noun on a section": (
+        SEC,
+        "chapter @sec:toy-chapter",
+        "chapter @sec:toy",
+    ),
     "path does not exist": (SEC, "`scripts/toy_sympy.py`", "`scripts/nope_sympy.py`"),
     "link to local-only source": (
         SEC,
@@ -507,6 +523,102 @@ def test_item_body_skips_semicolons_inside_brackets():
     assert bb.item_body("fn g();\nfn h() {}", 0) == "fn g();"
 
 
+TWO_PIECE = """pub fn kernel(a: f64) -> f64 {
+    let x = a * 2.0; // double it
+    let url = "http://x";
+    let y = x + 1.0;
+    let z = y * y;
+    z
+}
+"""
+
+
+def _excerpt(tree, body, ref="ferric-toy/src/lib.rs::kernel", lang="rust"):
+    p = tree / "crates/ferric-toy/src/lib.rs"
+    p.write_text(p.read_text() + TWO_PIECE)
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        f"<!-- excerpt: {ref} -->\n```{lang}\n{body}\n```\n\nInline math",
+    )
+    return check(tree).errors
+
+
+def test_excerpt_with_reader_comments_and_a_gap_passes(tree):
+    body = (
+        "// the doubled input\nlet x = a * 2.0;   // x = 2a\n"
+        "// ... the URL line\nlet z = y * y;   // z = y^2"
+    )
+    assert _excerpt(tree, body) == []
+
+
+def test_excerpt_pieces_out_of_order_fail(tree):
+    body = "let z = y * y;\n// ...\nlet x = a * 2.0;"
+    assert any("excerpt does not occur" in e for e in _excerpt(tree, body))
+
+
+def test_excerpt_gap_must_be_marked(tree):
+    # Two non-adjacent lines with no "// ..." between them are one piece.
+    body = "let x = a * 2.0;\nlet y = x + 1.0;"
+    assert any("excerpt does not occur" in e for e in _excerpt(tree, body))
+
+
+def test_excerpt_string_contents_are_compared(tree):
+    body = 'let url = "http://y";'
+    assert any("excerpt does not occur" in e for e in _excerpt(tree, body))
+
+
+def test_python_excerpt_is_checked(tree):
+    script = tree / "scripts/toy_sympy.py"
+    script.write_text(
+        script.read_text()
+        + "\n\ndef part_a():\n    q = 1  # quarter\n    s = '#x'\n    return q\n\n\ndef part_b():\n    return 2\n"
+    )
+    ok = "    q = 1  # the prefactor\n    # ...\n    return q"
+    assert _excerpt(tree, ok, "scripts/toy_sympy.py::part_a", "python") == []
+    sub(tree, SEC, "return q\n```", "return 2\n```")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)
+
+
+def test_braced_excerpt_quotes_several_items_in_order(tree):
+    both = "pub fn pair_energy(a: f64, b: f64) -> f64 {\n// ...\nfn other_fn() {}"
+    ref = "ferric-toy/src/lib.rs::{pair_energy, other_fn}"
+    assert _excerpt(tree, both, ref) == []
+    sub(tree, SEC, "{pair_energy, other_fn} -->", "{other_fn, pair_energy} -->")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)
+
+
+def test_excerpt_inside_a_list_item_is_checked(tree):
+    item = "- A point.\n\n  <!-- excerpt: ferric-toy/src/lib.rs::kernel -->\n  ```rust\n  let z = y * y;\n  ```"
+    assert _excerpt(tree, "let x = a * 2.0;") == []
+    sub(tree, SEC, "Inline math", item + "\n\nInline math")
+    assert check(tree).errors == []
+    sub(tree, SEC, "  let z = y * y;", "  let z = y + y;")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)
+
+
+def test_excerpt_marker_without_a_block_is_an_error(tree):
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        "<!-- excerpt: ferric-toy/src/lib.rs::other_fn -->\n\nInline math",
+    )
+    assert any("not directly followed" in e for e in check(tree).errors)
+
+
+def test_local_document_cited_by_line_is_not_a_pin(tree):
+    sub(tree, SEC, "Inline math", "As `dissertation.txt:2867` says. Inline math")
+    assert check(tree).errors == []
+
+
+def test_comments_are_stripped_but_literals_kept():
+    rs = "let a = \"x//y\"; // c\nlet c = '/'; fn f<'a>() /* b */ {}"
+    assert bb.strip_comments(rs) == "let a = \"x//y\"; \nlet c = '/'; fn f<'a>()   {}"
+    assert bb.strip_comments('x = "#a"  # c\ny = 1', py=True) == 'x = "#a"  \ny = 1'
+
+
 # ---------------------------------------------------------------- appendices
 APP = {n: f"book/src/{f}" for n, f in bb.GENERATED.items()}
 
@@ -566,8 +678,23 @@ def test_appendix_a_lists_boxes_scripts_registry_and_todos(tree):
     assert "| toy | 1.1 |" in text and "| toy2 | - |" in text
     assert "| holey | no proof |" in text
     a4 = text.split("{#appendix-a-unverified}")[1]
-    assert "| `toy.b` | 1.1 | add a claim |" in a4 and "toy.a" not in a4
+    assert "| `toy.b` | 1.1 |" in a4 and "toy.a" not in a4
+    assert "add a claim" not in a4  # the to-do stays in the box, not the appendix
     assert "1 verified equations and 1 unverified" in text
+
+
+def test_appendix_a_sections_skip_a_gap_page(tree):
+    write(
+        tree,
+        {
+            "book/src/11-x/index.md": "# X {#x}\n",
+            "book/src/11-x/01-y.md": "# Y {#y}\n\n<!-- status: gap; registry: toy -->\n",
+        },
+    )
+    resummarize(tree)
+    assert check(tree).errors == []
+    text = (tree / APP["A"]).read_text()
+    assert "| toy | 1.1 |" in text  # 2.1, the stub, is not offered as the derivation
 
 
 def test_appendix_b_lists_each_function_once_with_its_sections(tree):
@@ -585,11 +712,18 @@ def test_appendix_b_lists_each_function_once_with_its_sections(tree):
     resummarize(tree)
     assert check(tree).errors == []
     text = (tree / APP["B"]).read_text()
-    assert "## B.ferric-toy" in text
-    assert "| `ferric-toy/src/lib.rs::pair_energy` | 1.1, 2.1 |" in text
+    assert "## ferric-toy {#appendix-b-ferric-toy}" in text
+    assert (
+        "| `ferric-toy/src/lib.rs::pair_energy` | function | "
+        "[1.1](10-mp2/01-toy.md), [2.1](11-x/01-y.md) |" in text
+    )
     assert text.count("`ferric-toy/src/lib.rs::pair_energy`") == 1
-    assert "| `ferric-toy/src/lib.rs::other_fn` | 1.1 |" in text
-    assert "ferric-toy/src/lib.rs::toy_test` | 1.1 |" in text  # a rust_test field
+    assert (
+        "| `ferric-toy/src/lib.rs::other_fn` | function | [1.1](10-mp2/01-toy.md) |"
+        in text
+    )
+    # a rust_test field, and its kind from the #[test] attribute
+    assert "ferric-toy/src/lib.rs::toy_test` | test | [1.1](10-mp2/01-toy.md) |" in text
     # the generated appendices do not index themselves
     assert "App. " not in text
 
@@ -604,12 +738,36 @@ def test_appendix_c_is_generated_from_the_validation_page(tree):
     assert check(tree).errors == []
     text = (tree / APP["C"]).read_text()
     assert "| Proven | Agrees with an independent reference. |" in text
-    assert "| `toyscf` | SCF | `run_toy` | Proven |" in text
-    assert "| `toymp2` | MP2 | `run_toy2` | Smoke |" in text
+    # no registry route: the family name; no certificate rows: tasks not graded
+    assert "| `toyscf` | SCF | `run_toy` | Proven | not graded | not graded |" in text
+    assert "| `toymp2` | MP2 | `run_toy2` | Smoke | not graded | not graded |" in text
     assert "2 kinds: 1 Proven, 1 Smoke." in text
     sub(tree, "site/src/reference/validation.md", "| Smoke |", "| Spike |")
     assert check(tree).errors == []
     assert "2 kinds: 1 Proven, 1 Spike." in (tree / APP["C"]).read_text()
+
+
+TOY_CERTIFICATE = """
+pub const TASK_KIND_ROWS: &[(&str, &str)] = &[
+    ("optimize", "toyscf"),
+    ("frequencies", "toyscf"),
+    ("optimize", "toymp2"),
+];
+
+pub const TASK_KIND_GRADE_CAPS: &[(&str, &str, Grade)] = &[
+    ("frequencies", "toyscf", Grade::ProvenNarrow),
+];
+"""
+
+
+def test_appendix_c_grades_tasks_from_the_certificate(tree):
+    write(tree, {"crates/ferric-core/src/certificate.rs": TOY_CERTIFICATE})
+    assert check(tree).errors == []
+    text = (tree / APP["C"]).read_text()
+    # a ceiling lowers the task below the kind; a task never rises above it
+    assert "| `run_toy` | Proven | Proven | Proven (narrow) |" in text
+    assert "| `run_toy2` | Smoke | Smoke | not graded |" in text
+    assert bb.task_grade("Proven (narrow)", "Proven") == "Proven (narrow)"
 
 
 def test_appendix_c_goes_stale_when_a_grade_changes(tree):
@@ -628,7 +786,8 @@ def test_handwritten_appendix_is_checked_indexed_and_listed_last(tree):
     resummarize(tree)
     assert check(tree).errors == []
     assert (
-        "| `ferric-toy/src/lib.rs::other_fn` | 1.1, App. D |"
+        "| `ferric-toy/src/lib.rs::other_fn` | function | "
+        "[1.1](10-mp2/01-toy.md), [App. D](appendix-d-toy.md) |"
         in (tree / APP["B"]).read_text()
     )
     lines = (tree / "book/src/SUMMARY.md").read_text().splitlines()
@@ -937,3 +1096,34 @@ def test_dangling_link_into_the_book_is_an_error(tree, link):
     write(tree, {"crates/ferric-toy/src/doc.rs": f"//! See `{link}`.\n"})
     errs = check(tree).errors
     assert any("ferric-toy/src/doc.rs:1" in e for e in errs)
+
+
+TWO_IMPLS = """pub struct A;
+pub struct B<'a>(&'a f64);
+impl A {
+    fn run(&self) -> f64 {
+        1.0
+    }
+}
+impl<'a> B<'a> {
+    fn run(&self) -> f64 {
+        *self.0 + 2.0
+    }
+}
+"""
+
+
+def test_excerpt_owner_selects_the_impl_method(tree):
+    """`Type::method` resolves inside `impl Type`, not to the first `fn method`."""
+    p = tree / "crates/ferric-toy/src/lib.rs"
+    p.write_text(p.read_text() + TWO_IMPLS)
+    ref = "ferric-toy/src/lib.rs::B::run"
+    sub(
+        tree,
+        SEC,
+        "Inline math",
+        f"<!-- excerpt: {ref} -->\n```rust\n*self.0 + 2.0\n```\n\nInline math",
+    )
+    assert check(tree).errors == []
+    sub(tree, SEC, "*self.0 + 2.0", "1.0")
+    assert any("excerpt does not occur" in e for e in check(tree).errors)

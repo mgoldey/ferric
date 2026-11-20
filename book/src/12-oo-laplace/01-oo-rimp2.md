@@ -2,7 +2,7 @@
 
 <!-- status: ready; registry: oo-rimp2 -->
 
-*Notation follows `book/notation.md`. Line numbers are left out because they
+*Notation follows chapter @sec:notation. Line numbers are left out because they
 drift; each code reference names a function.*
 
 Hartree–Fock orbitals minimize the energy of one determinant, in which each
@@ -13,13 +13,9 @@ Orbital-optimized MP2 treats the orbitals as variational parameters of the
 Hartree–Fock plus second-order energy and rotates them until the total is
 stationary. At a stationary point the nuclear gradient needs no orbital
 response (the Z-vector solve of section @sec:lagrangian-zvector), so it takes the form of a
-variational SCF gradient. The relaxation also lowers the energy: for H2O and
-NH3 in cc-pVDZ, plain RI-MP2 lies $9.2\times10^{-4}$ Ha and
-$8.7\times10^{-4}$ Ha above the OO-RI-MP2 minimum (section @sec:oo-rimp2-anchors).
-
-The bundled water geometry, from the `589b50832` build, gives a gap of
-$8.989\times10^{-4}$ Ha. The $9.2\times10^{-4}$ Ha above is the validation
-test's off-$C_{2v}$ H2O, a different geometry.
+variational SCF gradient. The relaxation also lowers the energy: for the
+bundled water in cc-pVDZ, plain RI-MP2 lies $8.989\times10^{-4}$ Ha above
+the OO-RI-MP2 minimum (the `589b50832` build).
 
 ```python
 import ferric
@@ -186,10 +182,25 @@ becomes $c$; a virtual index equal to $c$ becomes $-k$:
 
 $$ \frac{\partial (ia|jb)}{\partial\kappa_{ck}} = \delta_{ik}(ca|jb) + \delta_{jk}(ia|cb) - \delta_{ac}(ik|jb) - \delta_{bc}(ia|jk) . $$
 
-Contracted with the amplitude combination $\tilde T = 2t - t^{\mathrm{swap}}$
-of (@eq:closed-shell-ri-mp2-3), these four terms give the integral response $G_V + G_O$: the
-two occupied terms contract the amplitudes with $B^P_{ca}$, and the two
-virtual terms with the $(ik|jb)$ block.
+Contract with the amplitude combination
+$\tilde T_{ij}^{ab} = 2t_{ij}^{ab} - t_{ij}^{ba}$ of (@eq:closed-shell-ri-mp2-3). At fixed
+amplitudes the integral part of the Hylleraas functional is
+$2\sum_{ijab}\tilde T_{ij}^{ab}(ia|jb)$, so its derivative is $2\sum\tilde T\,\partial(ia|jb)/\partial\kappa_{ck}$.
+The four terms fold in pairs. The $\delta_{jk}$ term equals the
+$\delta_{ik}$ term: rename $i \to j$, swap $a \leftrightarrow b$, and use
+$t_{jk}^{ba} = t_{kj}^{ab}$, so $\tilde T_{jk}^{ba} = \tilde T_{kj}^{ab}$. The
+$\delta_{bc}$ term equals the $\delta_{ac}$ term in the same way, with
+$i \leftrightarrow j$ and $a \leftrightarrow b$ exchanged. With the factor 2
+of (@eq:oo-cs-gradient) taken out, the integral response is
+
+$$ (G_V)_{ck} = 2\sum_{jab}\tilde T_{kj}^{ab}\,(ca|jb), \qquad (G_O)_{ck} = -2\sum_{ijb}\tilde T_{ij}^{cb}\,(ik|jb) . $$
+
+$G_V$ contracts the amplitudes with the virtual–virtual factor $B^P_{ca}$,
+$G_O$ with the $(ik|jb)$ block. A finite difference of
+$2\sum\tilde T(ia|jb)$ under $C \to Ce^{\kappa}$ on a random model
+reproduces $2(G_V + G_O)$, and so does the code's scalar reference loop
+`orbital_gradient_scalar_reference`, which writes the two folds out as four
+terms.
 
 **3. The denominators.** The orbital energies are diagonal elements of $F$,
 and $F$ changes with $C$. The derivative of $E^{(2)}$ with respect to the
@@ -207,8 +218,12 @@ $$ g_{ck} = 4F_{ck} + 2\big(G_V + G_O\big)_{ck} + 4\big[C^{\mathsf T}\,\mathcal 
 
 The code computes this in the semicanonical frame and rotates it back to
 the frame of $C$, $g = U_v\,g_{\mathrm{sc}}\,U_o^{\mathsf T}$. The invariance
-of @sec:oo-rimp2-functional is what makes the back-rotation valid:
-$E(CU(\kappa)) = E(\tilde CU(U^{\mathsf T}\kappa U))$. The solver keeps its own
+of @sec:oo-rimp2-functional is what makes the back-rotation valid. Write the block rotation
+as $\mathcal U = \operatorname{diag}(1, U_o, U_v)$, with the 1 on the frozen
+core, so that $\tilde C = C\,\mathcal U$. Then
+$U(\mathcal U^{\mathsf T}\kappa\,\mathcal U) = \mathcal U^{\mathsf T}U(\kappa)\,\mathcal U$, and
+$E(C\,U(\kappa)) = E(\tilde C\,U(\mathcal U^{\mathsf T}\kappa\,\mathcal U))$, because $E$ is
+invariant to right multiplication by $\mathcal U$. The solver keeps its own
 frame because the semicanonical frame jumps between iterations (eigenvector
 signs and order are arbitrary), and DIIS needs one continuous frame.
 
@@ -219,6 +234,9 @@ The pieces in the code:
   with the GEMM kernels in `ferric-mp2/src/orbital_gradient_gemm.rs`.
 - The last two terms are the denominator response, built from
   $W = P + P^{\mathsf T}$ in `ferric-mp2/src/oo_rimp2.rs::fock_response_gradient`.
+  $P$ of (@eq:oo-rimp2-4) is already symmetric (relabel $a \leftrightarrow b$), so
+  $W = 2P$, the spin-summed unrelaxed density. Section
+  @sec:unrestricted-oo-rimp2 uses the per-spin $W^\sigma = W/2$.
 
 The two blocks of $P$ are
 
@@ -353,8 +371,12 @@ Three points about it:
 ## Reproducibility and memory {#oo-rimp2-reproducibility-memory}
 
 - The gradient GEMMs run in fixed blocks with one-thread BLAS per block, so
-  the result does not depend on the thread count. The test
-  `test_oo_gradient_bit_identical_across_thread_counts` checks this.
+  for the same orbitals the gradient does not depend on the thread count.
+  The test `test_oo_gradient_bit_identical_across_thread_counts` checks this
+  at fixed reference orbitals. The energy itself inherits the dependence of
+  the metric factor and the SCF on the serial BLAS count, which defaults to
+  the pool size (section @sec:determinism-and-memory-blas-thread-counts); with `[parallel] blas_threads = 1`
+  that dependence is gone.
 - Every gradient evaluation builds the full MO three-index tensor
   $B^P_{pq}$, of $N_{\mathrm{aux}}n_{\mathrm{mo}}^2$ doubles, and the dense
   amplitudes, of $n_o^2n_v^2$ doubles.
@@ -383,7 +405,9 @@ Three points about it:
 - A relativistic reference is refused, because the loop rebuilds the
   nonrelativistic core Hamiltonian.
 - The analytic nuclear gradient (Python `with_gradient=True`,
-  `task = "optimize"`) requires `frozen_core = 0`. It is valid only at a
+  `task = "optimize"`) requires `frozen_core = 0`. Python
+  `run_frequencies(method="oo-rimp2")` takes central differences of that
+  gradient, closed shell only; the validation page does not grade it. It is valid only at a
   converged point; an unconverged loop raises an error. Both rules follow
   from @sec:oo-rimp2-functional: the gradient assumes zero orbital response, which holds only
   where every rotation the energy depends on is stationary.
@@ -393,7 +417,7 @@ Three points about it:
 | Check | Reference | Agreement | Test |
 |---|---|---|---|
 | OO-RI-MP2 total energy, H2O and NH3 / cc-pVDZ | independent numpy OO-RI-MP2 | $7.5\times10^{-13}$ Ha measured, bar $10^{-11}$ | `oo_rimp2_h2o_ccpvdz_energy_and_gradient_vs_orca`, `oo_rimp2_nh3_ccpvdz_energy_and_gradient_vs_orca` in `crates/ferric-mp2/tests/validation_oo_rimp2.rs` |
-| Same minimum | ORCA 6.1.1 | ORCA stops $3.7\times10^{-8}$ to $7.0\times10^{-8}$ Ha above it | same tests |
+| Same minimum | ORCA 6.1.1 | ORCA stops $6.6\times10^{-8}$ (H2O) and $7.0\times10^{-8}$ Ha (NH3) above it | same tests |
 | Analytic nuclear gradient | finite difference of ferric's own energy | $8.0\times10^{-9}$ Ha/Bohr measured, bar $10^{-7}$ | `oo_rimp2_h2o_ccpvdz_gradient_self_fd`, `oo_rimp2_nh3_ccpvdz_gradient_self_fd` |
 | Converged point is stationary | $g = 0$ | asserted | `test_oo_rimp2_converged_gradient_vanishes_h2o_ccpvdz` and its siblings in `crates/ferric-mp2/src/oo_rimp2.rs` |
 

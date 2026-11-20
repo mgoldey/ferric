@@ -18,17 +18,19 @@ Claims
      OCCUPIED triple (the module-doc equations of ccsd_t_closed_shell.rs: raw
      block w0, W summed over the 6 pair permutations, V with the singles, Wt
      with PySCF's r3 pattern on the virtual axes) is the same for all 6
-     orderings of (i,j,k).
+     orderings of (i,j,k), and f(i,i,i) = 0 to rounding.
   3  sum_{i<=j<=k} m f / 3  ==  sum_{i,j,k} f / 3   (the occupied banding and
      divisor of dlpno_ccsd_t.rs screened_triple_energy).
   4  sum_{i,j,k} f / 3 equals the dense spin-orbital (T) of ccsd_t.rs (module
      doc formula, E = 1/36 sum (W+V) W / D) on the spin-orbital expansion of
      the same t1/t2/integrals. This pins the divisor 3 against an independent
-     construction.
+     construction. The spin-orbital code's own banding, i<j<k over spin
+     orbitals with divisor 6, equals the same 1/36 sum.
   4b The production kernel's banding: virtual triples a<=b<=c with weight
      m(a,b,c), the Wt pattern and the singles on the OCCUPIED axes of W at
      fixed (a,b,c), divisor 3 (ccsd_t_closed_shell.rs triple_energy,
-     pair_job_energy, triple_multiplicity), equals the dense spin-orbital (T).
+     pair_job_energy, triple_multiplicity), equals the dense spin-orbital (T),
+     and g(a,a,a) = 0 to rounding.
   5  Negative controls for 3/4: the spin-orbital banding transplanted
      (i<j<k, weight 6), the divisor 6, unit weights, and dropping the
      W(bca)+W(cab) terms of Wt must each FAIL.
@@ -53,6 +55,7 @@ scripts/cc_uccsd_spin_blocks_sympy.py. The unrestricted spin-orbital LinLCCD
 (linlccd_u.rs) is not checked here.
 
 Mutations (each turns the script red):
+  - the spin-orbital band divisor 6 replaced by 36 (marker "[FAIL] claim 4");
   - 2 W instead of 4 W in the transcribed occupied-axis Wt of claim 4b
     (marker "[FAIL] claim 4b");
   - (jc|kb) instead of (jb|kc) in the first singles term of claim 4b's V
@@ -190,6 +193,12 @@ check(
     dev2 < 1e-13 * scale,
     f"(max spread {dev2:.2e})",
 )
+f_iii = max(abs(f[(i, i, i)]) for i in range(no))
+check(
+    "claim 2: f_iii == 0 (three electrons cannot leave one orbital)",
+    f_iii < 1e-13 * scale,
+    f"(max |f_iii| {f_iii:.2e} against max |f| {scale:.2e})",
+)
 
 # ---------------------------------------------------------------- claim 3
 unrestricted = sum(f.values())
@@ -287,6 +296,26 @@ check(
     abs(e_cs - e_so) < 1e-12 * abs(e_so),
     f"({e_cs:.15e} vs {e_so:.15e})",
 )
+# The spin-orbital code (ccsd_t.rs) bands the occupied triples i < j < k and
+# divides by 6: the summand is symmetric under occupied permutations and zero
+# at a repeated spin-orbital index (W is antisymmetric), so the band carries
+# 1/6 of the unrestricted sum and 1/36 * 6 = 1/6.
+SO_DIVISOR = 6.0
+term_so = (W + Vd) * W / D
+e_so_band = (
+    sum(
+        term_so[i, j, k].sum()
+        for i in range(no2)
+        for j in range(i + 1, no2)
+        for k in range(j + 1, no2)
+    )
+    / SO_DIVISOR
+)
+check(
+    "claim 4: spin-orbital i<j<k band / 6 == the 1/36 unrestricted sum",
+    abs(e_so_band - e_so) < 1e-12 * abs(e_so),
+    f"({e_so_band:.15e} vs {e_so:.15e})",
+)
 
 # ---------------------------------------------------------------- claim 5
 distinct_x6 = sum(
@@ -357,6 +386,12 @@ check(
     "claim 4b: virtual-banded kernel (triple_energy) == spin-orbital (T)",
     abs(e_virt_band - e_so) < 1e-12 * abs(e_so),
     f"({e_virt_band:.15e} vs {e_so:.15e})",
+)
+g_aaa = max(abs(g_abc[a, a, a]) for a in range(nv))
+check(
+    "claim 4b: g(a,a,a) == 0",
+    g_aaa < 1e-13 * np.abs(g_abc).max(),
+    f"(max |g(a,a,a)| {g_aaa:.2e} against max |g| {np.abs(g_abc).max():.2e})",
 )
 
 # ---------------------------------------------------------------- claim 6

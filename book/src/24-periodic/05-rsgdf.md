@@ -22,20 +22,20 @@ reproducibility, options, anchors and sources.
 | $J2$, $J3$ | metric and three-index integrals in the $\mathbf G = 0$-dropped kernel | `j2`, `j3` |
 | $q_P$ | charge $\int\chi_P$ | `q` |
 | $\eta$ | the fit's Ewald split | `RsGdfConfig::omega`, `gdf_omega` |
-| $B_{k,\mu\nu}$ | fitted factor over the kept metric eigenvectors | `RsGdf::b` |
+| $B_{\kappa,\mu\nu}$ | fitted factor; $\kappa$ runs over the kept metric eigenvectors | `RsGdf::b` |
 
 | Entry point | Location |
 |---|---|
 | Rust, Gamma | `ferric-pbc/src/rsgdf.rs::{subtract_g0,fit_with_metric,j_builder,k_builder}` |
-| Rust, $k$-points | `crates/ferric-pbc/src/rsgdf/kpoint.rs` (`KRsGdf`) |
-| Split chooser | `crates/ferric-pbc/src/rsgdf/auto_omega.rs`; Python `auto_gdf_omega` |
+| Rust, $k$-points | `ferric-pbc/src/rsgdf/kpoint.rs::KRsGdf` |
+| Split chooser | `ferric-pbc/src/rsgdf/auto_omega.rs::half_sphere_g_count`; Python `auto_gdf_omega` |
 | CLI | `[cell] jk = "rsgdf"` with `auxbasis` |
 | Python | `jk="rsgdf", auxbasis=...` on every periodic entry point |
 
 ## The fitted integrals {#rsgdf-fitted-integrals}
 
 **What is fitted.** The goal is
-$I_{\mu\nu,\lambda\sigma} \approx \sum_kB_{k,\mu\nu}B_{k,\lambda\sigma}$, in
+$I_{\mu\nu,\lambda\sigma} \approx \sum_\kappa B_{\kappa,\mu\nu}B_{\kappa,\lambda\sigma}$, in
 the PySCF RSGDF conventions (`crates/ferric-pbc/src/rsgdf.rs`). Every fitted
 quantity uses the energy's kernel, $v(\mathbf G) = 4\pi/G^2$ with
 $\mathbf G = 0$ dropped. With $X_P$ the transform of $\chi_P$ and $P_{\mu\nu}$
@@ -115,7 +115,7 @@ interaction has moved to reciprocal space. The per-triplet screen of
 > <!-- verified: id=pbc.rsgdf.split; script=scripts/pbc_rsgdf_sympy.py; claim=split-j3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/rsgdf.rs::subtract_g0; rust_test=ferric-pbc/tests/pbc_rsgdf.rs::fitted_eri_is_omega_independent; registry=pbc-hf -->
 
 **The fit.** Diagonalize the metric, $J2 = UsU^{\mathsf T}$. Drop the
-eigenvalues $s_k \le$ `lindep` (default $10^{-10}$, PySCF
+eigenvalues $s_\kappa \le$ `lindep` (default $10^{-10}$, PySCF
 `LINEAR_DEP_THR`) and count them; never invert them
 (`fit_with_metric`):
 
@@ -166,25 +166,25 @@ tensor of section @sec:exchange-divergence in that limit.
 > <!-- verified: id=pbc.rsgdf.fit; script=scripts/pbc_rsgdf_sympy.py; claim=fit-trivial; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/rsgdf.rs::fit_with_metric; rust_test=ferric-pbc/tests/pbc_rsgdf.rs::rsgdf_matches_dense_aft_in_the_trivial_limit; registry=pbc-hf -->
 
 **J and K from one factor.** Insert the fitted ERI into $J$ and $K$ and
-group the sums. With $B_k$ the $(n_\text{ao}, n_\text{ao})$ slice of row $k$:
+group the sums. With $B_\kappa$ the $(n_\text{ao}, n_\text{ao})$ slice of row $\kappa$:
 
 $$
-J_{\mu\nu} = \sum_k B_{k,\mu\nu}\sum_{\lambda\sigma}B_{k,\lambda\sigma}D_{\lambda\sigma},\qquad
-K = \sum_k B_k\,D\,B_k^{\mathsf T} + v_M\,SDS ,
+J_{\mu\nu} = \sum_\kappa B_{\kappa,\mu\nu}\sum_{\lambda\sigma}B_{\kappa,\lambda\sigma}D_{\lambda\sigma},\qquad
+K = \sum_\kappa B_\kappa\,D\,B_\kappa^{\mathsf T} + v_M\,SDS ,
 $$
 
 with the Madelung term of section @sec:exchange-divergence for `exxdiv = ewald`. $J$ is two
-matrix–vector products, $B^{\mathsf T}(Bd)$. $K$ is a sum over $k$ of
+matrix–vector products, $B^{\mathsf T}(Bd)$. $K$ is a sum over $\kappa$ of
 $n_\text{ao}$-square matrix products. One $B$ serves both builders (`RsGdfJ`,
 `RsGdfK`), so the fitted ERI stays a single positive semidefinite
 $B^{\mathsf T}B$. The exchange sum runs over 24 fixed auxiliary groups
-(`EXCHANGE_AUX_GROUPS`), so every bit of $K$ depends on $n_\text{aux}$ alone,
+(`EXCHANGE_AUX_GROUPS`), so every bit of $K$ depends on $N_\text{aux}$ alone,
 not on the thread count.
 
 > **Verified equation {#eq:pbc-rsgdf-jk}** · J and K from one factor
 >
-> $J = B^{\mathsf T}(Bd)$ and $K = \sum_kB_kDB_k^{\mathsf T}$ are the
-> Coulomb and exchange contractions of the fitted ERI $\sum_kB_kB_k^{\mathsf T}$.
+> $J = B^{\mathsf T}(Bd)$ and $K = \sum_\kappa B_\kappa DB_\kappa^{\mathsf T}$ are the
+> Coulomb and exchange contractions of the fitted ERI $\sum_\kappa B_\kappa B_\kappa^{\mathsf T}$.
 >
 > | | |
 > |---|---|
@@ -196,18 +196,118 @@ not on the thread count.
 >
 > <!-- verified: id=pbc.rsgdf.jk; script=scripts/pbc_rsgdf_sympy.py; claim=fit-jk; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/rsgdf.rs::{j_builder,k_builder}; rust_test=ferric-pbc/tests/pbc_rsgdf.rs::rhf_energy_is_rsgdf_omega_independent_and_the_build_follows_omega; registry=pbc-hf -->
 
-**At a $k$-point mesh.** `rsgdf/kpoint.rs` fits each momentum-transfer class
-$q = k' - k$ separately. The Bloch pair density $P^{k'}_{\mu\nu}(\mathbf K)$ at
-$\mathbf K = \mathbf G + q$ (section @sec:kpoint-scf) is fitted in the $q$-Bloch
-auxiliary set $X^q_P = \sum_{\mathbf T}e^{iq\cdot\mathbf T}\chi_P(\mathbf r - \mathbf T)$,
-with a Hermitian metric $J2(q) = UsU^{\mathsf H}$ cut per $q$. The
-real-space erfc integrals do not depend on $q$ or $k$: the Gamma walk is
+**At a $k$-point mesh.** `ferric-pbc/src/rsgdf/kpoint.rs::KRsGdf` fits each
+momentum-transfer class $q = k' - k$ separately. The Bloch pair density
+$P^{k'}_{\mu\nu}(\mathbf K)$ at $\mathbf K = \mathbf G + q$ (section
+@sec:kpoint-scf) is fitted in the $q$-Bloch auxiliary set
+$X^q_P = \sum_{\mathbf T}e^{iq\cdot\mathbf T}\chi_P(\mathbf r - \mathbf T)$.
+The fit tensors are the Gamma ones with the sum moved to the shifted lattice:
+
+$$
+J2_{PQ}(q) = \frac1\Omega\sum_{\substack{\mathbf K = \mathbf G + q\\ \mathbf K\neq0}}v(\mathbf K)\,X_P^*(\mathbf K)X_Q(\mathbf K),\qquad
+J3_{\mu\nu,P}(k', q) = \frac1\Omega\sum_{\substack{\mathbf K = \mathbf G + q\\ \mathbf K\neq0}}v(\mathbf K)\,P^{k'*}_{\mu\nu}(\mathbf K)X_P(\mathbf K),
+\label{eq:pbc-krsgdf-fit}
+$$
+
+with $X_P$ the transform of one auxiliary function, as at Gamma. Three
+consequences follow from the shifted sum.
+
+- **Only $q = 0$ subtracts $c_0$.** The excluded $\mathbf K = 0$ lies on the
+  shifted lattice only when $q = 0$; the real-space erfc sums of every other
+  $q$ have no $\mathbf G = 0$ average to remove.
+- **Time reversal.** For real functions $X_P(-\mathbf K) = X_P(\mathbf K)^*$,
+  and $\mathbf K\to-\mathbf K$ maps $\mathbf G + q$ onto $\mathbf G - q$, so
+  $J2(-q) = J2(q)^*$; only one of each $(q, -q)$ is built.
+- **The mesh fit is the supercell fit.** Write the supercell's Gamma $J2$ and
+  $J3$ in the Bloch basis: phases $e^{-iq_1\cdot\mathbf T_1}e^{iq_2\cdot\mathbf T_2}$
+  on the auxiliary images, $e^{ik\cdot\mathbf L_1}e^{-ik'\cdot\mathbf L_2}$ on
+  the orbital images. The sum over each image index is $N\delta$ of a lattice
+  condition (the mesh identity of section @sec:kpoint-scf), so the transformed
+  $J2$ is $N\,J2(q)$ on the diagonal $q_1 = q_2 = q$ and zero elsewhere, and
+  the transformed $J3$ is $N\,J3(k', q)$ when $q = k' - k$ and zero otherwise.
+  A unitary change of basis that block-diagonalizes both tensors commutes
+  with the fit: the supercell metric's spectrum is the union of the per-$q$
+  spectra, one `lindep` cut means the same thing in both, and
+  $J3\,J2^+J3^{\mathsf H}$ is assembled block by block.
+
+The real-space erfc integrals do not depend on $q$ or $k$: the Gamma walk is
 computed once, binned by $(\mathbf L \bmod N, \mathbf T \bmod N)$, and each
-$(q, k')$ is a phase contraction of the bins. Only $q = 0$ contains
-$\mathbf K = 0$, so only $q = 0$ subtracts $c_0$. Time reversal gives
-$J2(-q) = J2(q)^*$, and only one of each $(q, -q)$ is built. The mesh fit is
-the Gamma fit of the $\operatorname{diag}(N)$ supercell, block-diagonal in
-$q$; `crates/ferric-pbc/tests/pbc_krsgdf.rs` tests it.
+$(q, k')$ is a phase contraction of the bins. The per-$q$ metric is Hermitian,
+$J2(q) = UsU^{\mathsf H}$, cut as at Gamma.
+
+> **Verified equation {#eq:pbc-krsgdf-block-diagonal}** · the $k$-point fit is the supercell fit
+>
+> On a one-dimensional three-point mesh with s orbitals and charged s
+> auxiliary functions, the Bloch-transformed supercell $J2$ and $J3$ equal
+> $N\,J2(q)$ and $N\,J3(k', q)$ of (@eq:pbc-krsgdf-fit) on the
+> $q = k' - k$ blocks and vanish off them, to $10^{-13}$;
+> $J2(-q) = J2(q)^*$; the supercell metric spectrum is the union of the
+> per-$q$ spectra.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/pbc_kpoint_corr_sympy.py`, claim `krsgdf-block-diagonal` |
+> | Negative control | the runner's mutations: the conjugate dropped from the pair transform in $J3$, or from the auxiliary transform in $J2$ |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-pbc/src/rsgdf/kpoint.rs::KRsGdf` |
+>
+> <!-- verified: id=pbc.rsgdf.kpoint; script=scripts/pbc_kpoint_corr_sympy.py; claim=krsgdf-block-diagonal; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/rsgdf/kpoint.rs::KRsGdf; registry=pbc-hf -->
+
+The Rust tests in `crates/ferric-pbc/tests/pbc_krsgdf.rs` compare the mesh
+build with the supercell's Gamma build.
+
+**The automatic split.** Every $\eta$ gives the same fit up to the screening
+precision (verified equation @eq:pbc-rsgdf-split), so `gdf_omega = "auto"` is
+a cost decision and cannot change the energy beyond that precision. The
+real-space triplet count falls with $\eta$ and is counted by the build's own
+walk. The reciprocal side is the number of half-sphere $\mathbf G$ vectors
+inside $G_\text{cut} = 2\eta\sqrt{\ln(1/p)}$, with $p$ the precision: half
+the ball of that radius times the reciprocal-lattice density
+$\Omega/(2\pi)^3$,
+
+$$ N_{\mathbf G}(\eta) = \tfrac12\cdot\tfrac43\pi G_\text{cut}^3\cdot\frac{\Omega}{(2\pi)^3} = \frac{\Omega\,\big(2\eta\sqrt{\ln(1/p)}\big)^3}{12\pi^2} , $$
+
+which grows as $\eta^3$. The chooser minimizes the predicted sum of the two
+costs over a fixed candidate set and leaves the default only for a predicted
+saving of at least 10% (`AUTO_OMEGA_SWITCH_MARGIN`). Its trivial limit is the
+default: when no candidate beats the margin, the build is the default one bit
+for bit (`explicit_default_omega_is_the_default_build_bit_for_bit` in
+`crates/ferric-pbc/tests/pbc_auto_omega.rs`). The cost constants are
+calibrated for the Gamma energy build only; the $k$-point and derivative
+builds refuse `"auto"`.
+
+> **Verified equation {#eq:pbc-rsgdf-auto-gcount}** · the half-sphere $\mathbf G$ count
+>
+> Half the ball of radius $2\eta\sqrt{\ln(1/p)}$ times $\Omega/(2\pi)^3$ is
+> $\Omega(2\eta\sqrt{\ln(1/p)})^3/(12\pi^2)$, and it agrees with a direct
+> count on a triclinic lattice to 0.4% at $\eta = 1, 1.4, 2$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/pbc_rsgdf_sympy.py`, claim `auto-omega-gcount` |
+> | Negative control | the runner's mutation: the full ball counted in place of the half sphere |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-pbc/src/rsgdf/auto_omega.rs::half_sphere_g_count` |
+> | Code test | `g_count_formula_tracks_the_build` in `crates/ferric-pbc/tests/pbc_auto_omega.rs` |
+>
+> <!-- verified: id=pbc.rsgdf.auto-gcount; script=scripts/pbc_rsgdf_sympy.py; claim=auto-omega-gcount; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/rsgdf/auto_omega.rs::half_sphere_g_count; rust_test=ferric-pbc/tests/pbc_auto_omega.rs::g_count_formula_tracks_the_build; registry=pbc-hf -->
+
+**The range split and the column rotation.** Two options change which
+integrals the fit computes but are designed to leave $J2$ and $J3$ unchanged.
+`range_split` splits every shell by primitive exponent into a compact and a
+smooth piece, $\chi = \chi^c + \chi^s$ (orbital primitive smooth iff
+$a \le \lambda\eta^2/2$, auxiliary iff $\alpha \le \lambda\eta^2$), keeps the
+compact-auxiliary blocks of non-smooth pairs in real space, and moves the rest
+to $\mathbf G$ space with the full kernel. For $\lambda \le 1$ every moved
+product has $1/p + 1/\alpha \ge 1/\eta^2$, so its transform decays at least as
+fast as $e^{-G^2/4\eta^2}$ and needs no $\mathbf G$ beyond the existing
+sphere. The $\mathbf G = 0$ subtraction then takes the kept charges,
+$J3 \mathrel{-}= c_0(S - S_{ss})q_c^{\mathsf T}$ and
+$J2 \mathrel{-}= c_0q_cq_c^{\mathsf T}$
+(`crates/ferric-pbc/src/rsgdf/split.rs`, module documentation).
+`sr_column_rotation` evaluates the real-space walk on column-rotated general
+contractions and transforms back with the inverse rotation. Neither has a
+proof script; both are listed as a registry gap.
 
 ## The algorithm {#rsgdf-algorithm}
 
@@ -276,7 +376,7 @@ The fit is this part of `ferric-pbc/src/rsgdf.rs::fit_with_metric`:
 | Code | Equation |
 |---|---|
 | `evals`, `evecs` | $s$, $U$ of $J2 = UsU^{\mathsf T}$ |
-| `keep` | the eigenvalues $s_k >$ `lindep` |
+| `keep` | the eigenvalues $s_\kappa >$ `lindep` |
 | `w` | $W = U_\text{kept}s_\text{kept}^{-1/2}$ |
 | `bt` | $J3\,W$; its transpose is $B$ |
 
@@ -288,7 +388,9 @@ the $\mathbf G = 0$-dropped kernel, and the build stops with that message.
 - The SR three-index walk evaluates each unordered shell pair once and copies
   the block into both orderings, so $J3_\text{SR}$ is exactly symmetric and
   every element is owned by one task: the build is bitwise identical at any
-  thread count. The symmetry is a lattice translation,
+  thread count (`rsgdf_rhf_energy_is_bitwise_across_threads` and
+  `krsgdf_exchange_is_bitwise_across_threads_and_within_rounding_of_serial` in
+  `crates/ferric-pbc/tests/pbc_parallel_bitwise.rs`). The symmetry is a lattice translation,
   $(\nu_0\mu_{\mathbf L}|P_{\mathbf T}) = (\mu_0\nu_{-\mathbf L}|P_{\mathbf T-\mathbf L})$.
 - Exchange is summed over 24 fixed auxiliary groups (`EXCHANGE_AUX_GROUPS`),
   so $K$ depends on $N_\text{aux}$ only.

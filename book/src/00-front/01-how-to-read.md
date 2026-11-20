@@ -1,6 +1,6 @@
 # How to read this book {#how-to-read}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 This book explains how each equation in ferric becomes code. Pick any
 equation and the book takes you to the function that contracts it, then to
@@ -126,15 +126,19 @@ name, for example `ferric-mp2/src/rimp2.rs::pair_energy`. The item is
 declared in that file, and the book checker fails if it is not. A braced
 list after the `::` cites several items in one file.
 
-The book never cites a line number, because line numbers move with every
-edit. The HTML build resolves each name to a line at the build commit and
+The book never cites a line number of repository code, because line numbers
+move with every edit; the checker rejects a `path:line` reference.
+Local documents outside the repository, such as the dissertation text, are
+the exception. The HTML build resolves each name to a line at the build commit and
 links to it. A bare function name in the text, without the path, is not
 checked, so the first mention of an item in a section uses the full form.
 
-A fenced Rust block marked as an excerpt occurs in the cited item, with
-whitespace ignored. A change to that kernel fails the build until the
-excerpt and the text around it are reread. An excerpt may be trimmed; the
-text says what was removed, and `// ...` marks each gap.
+A fenced Rust or Python block marked as an excerpt occurs in the cited item,
+with whitespace and comments ignored, so the comments that map code to
+symbols are the book's own. A change to that kernel fails the build until
+the excerpt and the text around it are reread. An excerpt may be trimmed;
+the text says what was removed, and a `// ...` (or `# ...`) line marks each
+gap. The pieces between gaps must occur in the item in the order shown.
 
 ## Status of a section
 

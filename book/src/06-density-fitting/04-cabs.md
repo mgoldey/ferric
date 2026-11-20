@@ -27,7 +27,7 @@ read the code that does both.
 | Rust | `ferric-mp2/src/f12.rs::{build_cabs,Cabs}` |
 | Cross overlaps | `ferric-integrals/src/cabs.rs::cross_overlap` |
 
-### The construction
+## The construction {#cabs-construction}
 
 Start from the union basis, RIBS = OBS $\cup$ aux. Write $O$ for the
 orbital-basis functions and $a$ for the auxiliary functions, and split the
@@ -75,7 +75,11 @@ to the orbital basis nor orthonormal.
 $S_{aa} = S_{Oa} = S_{OO}$, $Q = S_{OO} - S_{OO}S_{OO}^{-1}S_{OO} = 0$, every
 eigenvalue is dropped, and CABS is empty. In general the number of kept
 functions is the dimension of the complement, about $n_{\mathrm{aux}}$ when
-the auxiliary set adds directions the orbital basis lacks.
+the auxiliary set adds directions the orbital basis lacks. For water with
+cc-pVDZ (24 functions) and cc-pVDZ-RI (84 functions), all 84 are kept: the
+smallest eigenvalue of $Q$ is $1.4\times10^{-6}$ (PySCF overlaps, checked for
+this section; `cabs_dimension_is_complement` asserts only that at least 24
+of the 108 union directions are dropped).
 
 > **Verified equation {#eq:df-cabs-schur}** · CABS from the Schur complement
 >
@@ -87,6 +91,7 @@ the auxiliary set adds directions the orbital basis lacks.
 > | | |
 > |---|---|
 > | Proof | `scripts/mp2_variant_identities.py`, claim 7 |
+> | Negative control | the orbital rows scattered without the minus sign must fail (recorded mutation) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/f12.rs::build_cabs` |
 > | Code test | `ferric-mp2/src/f12.rs::cabs_is_orthonormal_and_complementary` |
@@ -108,7 +113,7 @@ overlap blocks are taken in that partition.
 | 1 | RIBS = OBS $\cup$ aux | atom-major: per atom, the orbital shells then the auxiliary shells, so the two sets interleave |
 | 2 | $S$ over the union, then split by provenance mask | the blocks $S_{OO}$, $S_{Oa}$, $S_{aa}$ are taken in $[O\,\vert\,a]$ order |
 | 3 | $Q$, its eigenvectors, keep $w_k > 10^{-8}$ | `CABS_NULL_THRESH`; drops the orbital-spanned directions and union dependencies |
-| 4 | scatter $[-S_{OO}^{-1}S_{Oa}c_2;\ c_2]$ back to the interleaved order | coefficients over the union functions |
+| 4 | scatter $w_k^{-1/2}[-S_{OO}^{-1}S_{Oa}v_k;\ v_k]$ back to the interleaved order | coefficients over the union functions |
 
 Here are steps 3 and 4, from the inverse of $S_{OO}$ to the scatter, with
 the source comments and blank lines removed and line comments added:
@@ -160,7 +165,7 @@ Points about it:
 | What | Test | Bar |
 |---|---|---|
 | CABS orthonormal and orthogonal to the orbital basis | `ferric-mp2/src/f12.rs::cabs_is_orthonormal_and_complementary` | rounding |
-| CABS dimension equals the complement's | `ferric-mp2/src/f12.rs::cabs_dimension_is_complement` | exact |
+| CABS is the complement: at least $n_{\mathrm{OBS}}$ union directions dropped | `ferric-mp2/src/f12.rs::cabs_dimension_is_complement` | exact count bound |
 | the orbital basis as its own auxiliary set gives an empty CABS | `ferric-mp2/src/f12.rs::cabs_self_complement_is_empty` | exact |
 
 ## Sources

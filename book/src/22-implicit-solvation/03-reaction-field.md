@@ -32,13 +32,14 @@ probe conventions (@sec:reaction-field-probe-conventions) and the per-iteration 
 ## The potential, the operator and the energy {#reaction-field-potential-operator-energy}
 
 The potential at tessera $k$ has a nuclear and an electronic part. The
-nuclei are point charges $Z_A$. The electrons are a charge density
+nuclei are point charges $Z^{\rm eff}_A$, the valence charge on an ECP atom
+(`Atom::effective_z`); ghost atoms are skipped. The electrons are a charge density
 $-\rho(\mathbf r)$ with $\rho = \sum_{\mu\nu}P_{\mu\nu}\chi_\mu\chi_\nu$, so
 their potential at $\mathbf r_k$ is
 $-\int\rho(\mathbf r)/|\mathbf r-\mathbf r_k|\,d\mathbf r$. Expand $\rho$ in
 the basis:
 
-$$ v_k = \sum_A \frac{Z_A}{|\mathbf r_k-\mathbf R_A|} + \sum_{\mu\nu} P_{\mu\nu} B^k_{\mu\nu}, \qquad
+$$ v_k = \sum_A \frac{Z^{\rm eff}_A}{|\mathbf r_k-\mathbf R_A|} + \sum_{\mu\nu} P_{\mu\nu} B^k_{\mu\nu}, \qquad
    B^k_{\mu\nu} = \left\langle \mu \middle| -\frac{1}{|\mathbf r-\mathbf r_k|} \middle| \nu \right\rangle . $$
 
 $B^k$ is libint's nuclear-attraction integral for a $+1$ charge at
@@ -85,7 +86,7 @@ symmetrizes the charges to keep it.
 > | | |
 > |---|---|
 > | Proof | `scripts/pcm_ief_sympy.py`, claim 6 (symbolic density, exact rationals) |
-> | Negative control | $q_{\mathrm{raw}} = Qv$ is not the gradient when $Q$ is not symmetric |
+> | Negative control | $q_{\mathrm{raw}} = Qv$ is not the gradient when $Q$ is not symmetric; the runner builds the Fock term from $Qv$ (claim 6 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pcm/src/potential.rs::build_reaction_field_operator`, `ferric-pcm/src/lib.rs::pcm_step` |
 > | Code test | `scf_water_sto3g_on_pyscf_cavity` in `crates/ferric-scf/tests/validation_pcm.rs` |
@@ -139,6 +140,7 @@ Ok(e_elec_no_xc + e_xc + e_hook + e_cosmo + e_pcm + e_pol + env.vnn)
 |---|---|
 | $\tfrac12\operatorname{Tr}[P(h+F)]$, before any solvent or XC term is in $F$ | `e_elec_no_xc` |
 | $E_{xc}$ | `e_xc` |
+| the energy of a user `fock_hook` (0 without one) | `e_hook` |
 | $E_{\mathrm{pcm}}$ | `e_pcm` |
 | $E_{\mathrm{cosmo}}$, $E_{\mathrm{pol}}$ | `e_cosmo`, `e_pol` (sections @sec:conductor-limit-and-cosmo and @sec:polarizable-embedding) |
 | $V_{nn}$ plus any external-charge nuclear energy | `env.vnn` |
@@ -153,6 +155,12 @@ $E_{\mathrm{pcm}}$, because $V^{\mathrm{pcm}}$ is a derivative of the energy
 and not an energy density. The standalone term is PySCF's `e_solvent`
 convention (`solve_rhf` in `ferric-scf/src/rhf.rs`).
 
+The split is not visible from Python: the result of `run_rhf(solvent=)` holds
+the total energy, with $E_{\mathrm{pcm}}$ inside it, and exposes neither
+$E_{\mathrm{pcm}}$ nor $V^{\mathrm{pcm}}$. Only the difference against a vacuum
+run, the electrostatic solvation energy, is available there
+(section @sec:ief-operators prints it against $\varepsilon$).
+
 The charge solve itself is direct. The self-consistency between $q$ and $P$
 is carried by the outer SCF and DIIS loop.
 
@@ -160,8 +168,8 @@ is carried by the outer SCF and DIIS loop.
 
 | `ProbeKind` | $v_k$ electronic kernel | $V^{\mathrm{pcm}}$ kernel | Integrals |
 |---|---|---|---|
-| `Point` (default) | $\langle\mu\vert 1/\vert\mathbf r-\mathbf r_k\vert\vert\nu\rangle$ | the same, weighted by $q_k$ | the batched McMurchie–Davidson kernel of `ferric-integrals/src/md3c1e.rs`, or libint nuclear attraction for a basis the kernel refuses |
-| `GaussianSmeared` | $\langle\mu\vert \operatorname{erf}(\xi_kr)/r\vert\nu\rangle$ | the same, weighted by $q_k$ | the three-index Coulomb integral against a normalized s Gaussian, `ferric-integrals/src/site_basis.rs::SiteBasis` |
+| `Point` (default) | $\langle\mu\vert {-1}/\vert\mathbf r-\mathbf r_k\vert\vert\nu\rangle$ | the same, weighted by $q_k$ | the batched McMurchie–Davidson kernel of `ferric-integrals/src/md3c1e.rs`, or libint nuclear attraction for a basis the kernel refuses |
+| `GaussianSmeared` | $\langle\mu\vert {-\operatorname{erf}(\xi_kr)}/r\vert\nu\rangle$ | the same, weighted by $q_k$ | the three-index Coulomb integral against a normalized s Gaussian, `ferric-integrals/src/site_basis.rs::SiteBasis` |
 
 `Point` treats each tessera charge as a point in the potential and as a
 Gaussian in $S$ and $D$. `GaussianSmeared`
@@ -176,7 +184,7 @@ reason.
 
 | Step | Quantity | Cost | Function |
 |---|---|---|---|
-| 1 | $v^{\mathrm{nuc}}_k = \sum_B Z_B/\lvert\mathbf r_k-\mathbf R_B\rvert$ | $N N_{\mathrm{at}}$ | `ferric-pcm/src/potential.rs::nuclear_potential_at` |
+| 1 | $v^{\mathrm{nuc}}_k = \sum_B Z^{\rm eff}_B/\lvert\mathbf r_k-\mathbf R_B\rvert$, ghosts skipped | $N N_{\mathrm{at}}$ | `ferric-pcm/src/potential.rs::nuclear_potential_at` |
 | 2 | $v_k = v^{\mathrm{nuc}}_k + \sum_{\mu\nu}P_{\mu\nu}B^k_{\mu\nu}$, batched over tesserae, parallel over batches | $N\,N^2_{\mathrm{bf}}$ | `solute_potential_at_tesserae` |
 | 3 | $q$, $E_{\mathrm{pcm}}$ (section @sec:ief-operators) | $N^3$ | `solve_pcm_charges` |
 | 4 | $V^{\mathrm{pcm}} = \sum_kq_kB^k$, parallel over shell pairs | $N\,N^2_{\mathrm{bf}}$ | `build_reaction_field_operator` |

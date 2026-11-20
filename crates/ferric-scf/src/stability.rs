@@ -172,8 +172,9 @@ impl StabilityKind {
 pub struct StabilityResult {
     /// Which rotation space this verdict covers.
     pub kind: StabilityKind,
-    /// Lowest eigenvalue of the electronic orbital Hessian, in Hartree per
-    /// (radian²) of orbital rotation. Negative ⇒ a downhill rotation exists.
+    /// Lowest eigenvalue of the code's Newton operator (Hartree): a quarter of
+    /// the curvature per radian² of orbital rotation for RHF, half for UHF.
+    /// Negative ⇒ a downhill rotation exists.
     pub lowest_eigenvalue: f64,
     /// **NOT-PROVEN-UNSTABLE**, i.e. `lowest_eigenvalue > -noise_floor`.
     ///
@@ -1078,9 +1079,11 @@ pub enum StabilitySkip {
     /// at MO coefficients that are not a UHF stationary point — a wrong-operator
     /// verdict that would look authoritative. Skipped deliberately.
     Rohf,
-    /// The functional carries VV10 nonlocal correlation, whose linear response
-    /// exists NOWHERE in this workspace: `ferric_dft::fxc` has no VV10 term, so
-    /// `rohf::FxcKernelStore` silently omits it.
+    /// The functional carries VV10 nonlocal correlation. Its linear response
+    /// exists (`ferric_dft::vv10::Vv10Response`, used by the Python block
+    /// CPKS through `XcFunctional.response`) but is not wired into the
+    /// stability Hessian: `ferric_dft::fxc` has no VV10 term, so
+    /// `rohf::FxcKernelStore` would silently omit it.
     /// `zvector_ks` and `ferric_dft::lr_kernel::resolve_singlet_response_xc`
     /// refuse VV10 functionals for the same reason.
     ///

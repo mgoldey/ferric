@@ -107,8 +107,9 @@ impl PyQmmmSystem {
     /// `residue_ids` (one entry per atom, `PocketCharges.residue_ids` shape)
     /// alongside `qm_seeds`/`qm_radius_angstrom` to pull in whole residues
     /// instead — a residue joins if ANY of its atoms is within radius.
-    /// `residue_ids` together with `qm_indices` is an error (an explicit
-    /// index list has no notion of "whole residue" to complete).
+    /// With `qm_indices`, `residue_ids` only labels molecules (nothing to
+    /// complete); `run_qmmm`'s polarizable embedding reads the labels to
+    /// keep each site from being polarized by its own molecule.
     /// `widths_angstrom`, when given, must have one entry per atom (0.0 =
     /// point charge, matching [`ferric_scf::qmmm::QmmmAtom`]'s default).
     /// Ignored for atoms that end up in the QM region, exactly like `charges`.
@@ -196,8 +197,12 @@ impl PyQmmmSystem {
                 .with_alpha(alpha_bohr3)
             })
             .collect();
+        let mut labels = None;
         let selection = match (qm_indices, qm_seeds, qm_radius_angstrom, residue_ids) {
-            (Some(idx), None, None, None) => QmSelection::Indices(idx),
+            (Some(idx), None, None, rid) => {
+                labels = rid;
+                QmSelection::Indices(idx)
+            }
             (None, Some(seeds), Some(r), None) => QmSelection::WithinRadius {
                 seeds,
                 radius: r * ANGSTROM_TO_BOHR,
@@ -216,7 +221,11 @@ impl PyQmmmSystem {
                 ))
             }
         };
-        let inner = QmmmSystem::new(&atoms, selection, charge, multiplicity).map_err(make_err)?;
+        let mut inner =
+            QmmmSystem::new(&atoms, selection, charge, multiplicity).map_err(make_err)?;
+        if let Some(ids) = labels {
+            inner = inner.with_residue_ids(ids).map_err(make_err)?;
+        }
         if let Some(&bad) = inner.qm_indices.iter().find(|&&i| atoms[i].z == 0) {
             // Say WHY it is there and what to do. A bare-charge site (symbol
             // "X", z = 0) is how a pocket point charge enters the structure --
@@ -521,7 +530,13 @@ impl PyQmmmResult {
 /// `polarizabilities_angstrom3=` (any nonzero entry among the MM atoms),
 /// `thole_a` sets the Thole damping parameter (`None`/omitted = the
 /// standard default `2.1304`; pass `0.0` to disable damping entirely — the
-/// bare point-dipole tensor). `QmmmResult.e_pol`/`.induced_dipoles()`
+/// bare point-dipole tensor). `polarization_exclusions` is `"molecule"`
+/// (default): a site feels neither the charges nor the induced dipoles of
+/// its own molecule, taken from the system's `residue_ids` or else from the
+/// bonds of `mm_topology`; with neither, `ValueError`. `"none"` turns
+/// exclusions off (isolated sites such as ions only: an unexcluded TIP3P
+/// oxygen is polarized by its own hydrogens, about -0.12 Ha at 1.44 A^3).
+/// `QmmmResult.e_pol`/`.induced_dipoles()`
 /// report the polarisation energy and converged dipoles. The QM gradient
 /// correctly includes the polarizable Fock-term contribution for ALL FOUR
 /// methods (`"rhf"`/`"uhf"`/`"rks"`/`"uks"`, via `rhf_gradient_with_polarizable`/
@@ -548,7 +563,7 @@ impl PyQmmmResult {
 /// follows the same convention `full_gradient` already uses for
 /// `mm_forces`, but is unverified in combination.
 #[pyfunction]
-#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None, ri_j_precision=None))]
+#[pyo3(signature = (system, basis_name, method=None, xc=None, max_iter=None, energy_conv=None, density_conv=None, level_shift=None, mom_after_iter=None, guess=None, mm_topology=None, thole_a=None, ri_j_precision=None, polarization_exclusions=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_qmmm(
     system: &PyQmmmSystem,
@@ -564,6 +579,7 @@ pub(crate) fn run_qmmm(
     mm_topology: Option<&PyMmTopology>,
     thole_a: Option<f64>,
     ri_j_precision: Option<&str>,
+    polarization_exclusions: Option<&str>,
 ) -> PyResult<PyQmmmResult> {
     use ferric_scf::gradient::{
         rhf_gradient, rhf_gradient_with_polarizable, uhf_gradient, uhf_gradient_with_polarizable,
@@ -572,8 +588,10 @@ pub(crate) fn run_qmmm(
         ks_gradient_closed_with_polarizable_on_grids, ks_gradient_uks_with_exchange_on_grids,
         ks_gradient_uks_with_polarizable_on_grids,
     };
-    use ferric_scf::polarizable::{induce, PolarizableSites, DEFAULT_THOLE_A};
-    use ferric_scf::qmmm::{full_gradient_with_mm, mm_forces, qmmm_mm_terms};
+    use ferric_scf::polarizable::{induce, DEFAULT_THOLE_A};
+    use ferric_scf::qmmm::{
+        full_gradient_with_mm, mm_forces, qmmm_mm_terms, PolarizationExclusions,
+    };
 
     let method = method.unwrap_or("rhf");
     let is_ks = matches!(method, "rks" | "uks");
@@ -595,21 +613,24 @@ pub(crate) fn run_qmmm(
     let prep = PreparedBasis::new(&mol, &bs).map_err(make_err)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let pol_sites = sys.to_polarizable_sites();
-    let polarizable = if pol_sites.is_empty() {
+    let polarizable = if sys.to_polarizable_sites().is_empty() {
         None
     } else {
-        Some(PolarizableSites {
-            sites: pol_sites,
-            thole_a: match thole_a {
-                None => Some(DEFAULT_THOLE_A),
-                Some(a) if a > 0.0 => Some(a),
-                Some(_) => None,
-            },
-            exclusions: Vec::new(),
-            dipole_zeta: 1e4,
-            max_sites_dense: 4000,
-        })
+        let scheme =
+            PolarizationExclusions::parse_config_str(polarization_exclusions.unwrap_or("molecule"))
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let bonds: Option<Vec<(usize, usize)>> =
+            mm_topology.map(|t| t.inner.bonds.iter().map(|b| (b.i, b.j)).collect());
+        let ids = sys
+            .polarization_molecule_ids(scheme, bonds.as_deref())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let thole_a = match thole_a {
+            None => Some(DEFAULT_THOLE_A),
+            Some(a) if a > 0.0 => Some(a),
+            Some(_) => None,
+        };
+        sys.polarizable_embedding(thole_a, ids.as_deref())
+            .map_err(make_err)?
     };
     let mut config = RhfConfig {
         max_iter: max_iter.unwrap_or_else(default_scf_max_iter),

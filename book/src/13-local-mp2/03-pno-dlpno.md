@@ -15,17 +15,18 @@ two places. Pairs whose estimated correlation energy is small are dropped.
 Within each retained pair, the virtual space is compressed to its PNOs.
 ferric's version is a library path. It is separate from the
 amplitude-threshold method of sections @sec:amplitude-lmp2 and @sec:integral-direct, with a different
-truncation, and the two are not compared like for like.
+truncation, and the two are not compared like for like. Why read it? It is
+the reference behind the DLPNO-MP2 and localized pair-screen rows of the
+validation page, and the research-only DLPNO-RPA route
+(`crates/ferric-rpa/src/dlpno_rpa.rs`, built with the `research` feature)
+builds on its PNOs.
 
 The section covers the pair screen (@sec:pno-dlpno-pair-screening), the PNOs (@sec:pno-dlpno-pair-natural-orbitals), the energy
 in the PNO basis (@sec:pno-dlpno-energy-pno-basis), the two entry points (@sec:pno-dlpno-algorithm-entry-points), and then the
 exactness contracts and the measured numbers.
 
-The derivation below is read from
-`crates/ferric-mp2/src/dlpno_mp2.rs`, `local_pno.rs`,
-`pair_energy_screen.rs` and `dlpno_localized.rs`. The pair-energy sum, the
-PNO energy and the pair density are machine-checked below. The
-PNO-truncation error itself has no bound.
+The pair-energy sum, the PNO energy and the pair density are
+machine-checked below. The PNO-truncation error itself has no bound.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -46,8 +47,8 @@ PNO-truncation error itself has no bound.
 | CLI, Python | none: library only |
 
 MP2 is the natural place to build this stack. The first-order amplitudes
-$T^{ij}_{ab} = G^{ij}_{ab}/(\epsilon_i+\epsilon_j-\epsilon_a-\epsilon_b)$ are
-exactly what PNOs are built from, so the pair density needs no earlier
+$T^{ij}_{ab} = -G^{ij}_{ab}/\Delta^{ab}_{ij}$ are exactly what PNOs are built
+from, so the pair density needs no earlier
 correlated calculation.
 
 ## Pair screening {#pno-dlpno-pair-screening}
@@ -81,7 +82,10 @@ a protein. In canonical orbitals $e_{ij}$ is the pair's exact contribution
 to (@eq:dlpno-pair-weight), so dropping pairs raises the energy by exactly the sum of their
 $\lvert e_{ij}\rvert$. That is at most the number of dropped pairs times
 the threshold. A distance cutoff in Bohr (`pair_cutoff`) is the
-alternative; when both are set, the energy criterion wins.
+alternative; when both are set, the energy criterion wins. `DlpnoConfig`
+has one more field, `coupling_cutoff`, a pair-pair distance cutoff that MP2
+does not read: MP2 has no pair-pair coupling term, and the field is
+carried so that one configuration drives the whole DLPNO stack.
 
 > **Verified equation @eq:dlpno-pair-weight** · the unique-pair sum and its weight
 >
@@ -99,8 +103,9 @@ alternative; when both are set, the energy criterion wins.
 >
 > <!-- verified: id=dlpno.pair-weight; script=scripts/mp2_variant_identities.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/dlpno_mp2.rs::{pair_energy_in_pno_basis,estimate_pair_energies_from_b_ov}; rust_test=ferric-mp2/src/dlpno_mp2.rs::off_diagonal_pairs_carry_the_mirror_weight_of_two -->
 
-The proof covers the sum rule. The sign of each $e_{ij}$ is the two-line
-argument above, which the script does not check.
+The proof covers the sum rule. The sign split of each $e_{ij}$ is claim 1b
+of the same script, with a mutation that drops the $\tfrac12$ of the
+same-spin term.
 
 The weight is applied inside the one energy kernel, so no caller can get it
 wrong independently. A wrong weight doubles or halves the off-diagonal
@@ -111,8 +116,8 @@ pair's $(ia\vert jb)$ block, so it costs $O(n_o^2n_v^2N_{\mathrm{aux}})$,
 the same as canonical RI-MP2. Screening reduces what is solved afterwards,
 not what the screen costs. With canonical occupieds the estimated energies
 of distant pairs are not small, because canonical orbitals spread over the
-whole molecule. On the alkane series the screen
-retains essentially every pair. The localized path of section @sec:pno-dlpno-algorithm-entry-points exists
+whole molecule. On the alkane series the screen retains every valence
+pair; with all electrons it drops only core pairs. The localized path of section @sec:pno-dlpno-algorithm-entry-points exists
 for that reason.
 
 ## Pair natural orbitals {#pno-dlpno-pair-natural-orbitals}
@@ -167,11 +172,11 @@ a square orthogonal matrix, and nothing is lost.
 >
 > <!-- verified: id=dlpno.pair-density; script=scripts/local_mp2_fit_pno_sympy.py; claim=L4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/local_pno.rs::pno_for_pair; rust_test=ferric-mp2/src/local_pno.rs::pno_zero_threshold_keeps_everything -->
 
-The script proves symmetry, semidefiniteness and the trace. The
-discarded-weight identity and the Ky Fan step are not in it; they were
-checked numerically on random amplitude matrices for this section.
+The script proves symmetry, semidefiniteness and the trace, and claim L5
+proves the discarded-weight identity. The Ky Fan step is a textbook
+theorem and is not in the script.
 
-**The code.** This is the core of `ferric-mp2/src/local_pno.rs::pno_for_pair`,
+**The code.** The core of `ferric-mp2/src/local_pno.rs::pno_for_pair`,
 with the shape check, the eigen-solver error mapping and the assembly of
 the result removed:
 
@@ -287,10 +292,13 @@ for a in 0..npno {
 As in the RI-MP2 pair kernel of section @sec:closed-shell-ri-mp2, `d` is $-\tilde\Delta$ and
 the sums carry no leading minus; the two signs cancel.
 
-This is the energy of the truncated problem evaluated with the
+The result is the energy of the truncated problem evaluated with the
 PNO-projected integrals. It is not a Hylleraas functional. There is no
 iteration and no amplitude solve inside a pair, because the canonical
-occupied Fock matrix is diagonal.
+occupied Fock matrix is diagonal. It follows that, unlike section
+@sec:amplitude-lmp2, nothing proves the PNO-truncated energy lies above
+the canonical one. The "never above 100%" of the anchor table below is a
+measurement.
 
 ## The algorithm and its two entry points {#pno-dlpno-algorithm-entry-points}
 
@@ -351,7 +359,9 @@ result. The estimate is not a bound, so it can over-correct.
 - The default `DlpnoConfig` has pair-energy screening on at
   `DEFAULT_T_CUT_PAIRS` ($10^{-5}$ Ha), and PNO truncation and the distance
   cutoff off. The pair screen is a measured small effect at that
-  threshold, and virtual truncation has a measured dead zone and cliff.
+  threshold. Virtual truncation is not: recovery is 99.92% or better at
+  $t_{\mathrm{cut,PNO}} = 10^{-8}$ and falls to 93.4 to 97.2% at
+  $10^{-6}$ (the PNO row of the table below).
 
 ## Numerical anchors {#pno-dlpno-numerical-anchors}
 
@@ -385,5 +395,5 @@ unmeasured. The module documentation of `dlpno_mp2.rs` states the same.
 | Source | Used for |
 |---|---|
 | `crates/ferric-mp2/src/dlpno_mp2.rs`, `local_pno.rs`, `pair_energy_screen.rs`, `dlpno_localized.rs` module documentation and kernels | every definition, the exactness contracts and the scope |
-| `scripts/mp2_variant_identities.py`, claim 1; `scripts/local_mp2_fit_pno_sympy.py`, claims L3 and L4 | verified equations @eq:dlpno-pair-weight to @eq:dlpno-pno-energy |
+| `scripts/mp2_variant_identities.py`, claims 1 and 1b; `scripts/local_mp2_fit_pno_sympy.py`, claims L3, L4 and L5 | verified equations @eq:dlpno-pair-weight to @eq:dlpno-pno-energy, the sign of $e_{ij}$ and the discarded weight |
 | `site/src/reference/validation.md` | the anchor rows and the known limits |

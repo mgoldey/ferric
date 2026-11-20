@@ -6,16 +6,12 @@
 //! without counterpoise correction. It is the single source read by the CLI
 //! (`[mp2] att_r0`) and the Python `run_terfc_rimp2` / `run_rimp2(att_r0=)`.
 //!
-//! Source: M. Goldey and M. Head-Gordon, "Convergence of attenuated MP2 to the
-//! complete basis set limit: improving MP2 for long-range interactions without
-//! basis set incompleteness", J. Phys. Chem. B 2014 (the chapter-6 article of
-//! M. Goldey's dissertation, UC Berkeley), Table 6.2 (Dunning sets) and
-//! Table 6.4 (Pople and Karlsruhe sets) of the dissertation. The calendar
-//! sets (jun-/jul-/may-/apr-) of Table 6.2 are not bundled and so have no row.
-//!
-//! The cited article is M. Goldey and M. Head-Gordon, Chem. Phys. Lett. 608,
-//! 249 (2014), "Convergence of attenuated second order Moller-Plesset
-//! perturbation theory towards the complete basis set limit".
+//! Source: M. Goldey and M. Head-Gordon, Chem. Phys. Lett. 608, 249 (2014),
+//! "Convergence of attenuated second order Moller-Plesset perturbation theory
+//! towards the complete basis set limit" (the chapter-6 article of M. Goldey's
+//! dissertation, UC Berkeley), Table 6.2 (Dunning sets) and Table 6.4 (Pople
+//! and Karlsruhe sets) of the dissertation. The calendar sets
+//! (jun-/jul-/may-/apr-) of Table 6.2 are not bundled and so have no row.
 //!
 //! SCS-MP2(2terfc) has its own one-row table ([`SCS_2TERFC_TABLE`]): the
 //! four-parameter model of dissertation chapter 5 (Eq. 5.6; J. Phys. Chem. B
@@ -36,8 +32,8 @@ pub struct TerfcR0Row {
     pub source: &'static str,
 }
 
-const T62: &str = "Goldey & Head-Gordon, J. Phys. Chem. B 2014; dissertation Table 6.2";
-const T64: &str = "Goldey & Head-Gordon, J. Phys. Chem. B 2014; dissertation Table 6.4";
+const T62: &str = "Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014); dissertation Table 6.2";
+const T64: &str = "Goldey & Head-Gordon, Chem. Phys. Lett. 608, 249 (2014); dissertation Table 6.4";
 
 /// The S66-trained optimal `r0` (Å, no counterpoise) per basis set.
 pub const TERFC_R0_TABLE: &[TerfcR0Row] = &[

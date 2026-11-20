@@ -358,7 +358,17 @@ fn dot(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 // simplex, differing only in how g (linear) and H (quadratic) are assembled:
 //
 //   EDIIS:  g_i = E_i
-//           H_ij = − Tr[(D_i − D_j)·(F_i − F_j)]        (symmetric, H_ii = 0)
+//           H_ij = −½ Tr[(D_i − D_j)·(F_i − F_j)]       (symmetric, H_ii = 0)
+//
+//           so f(c) = Σ c_i E_i − ¼ Σ_ij c_i c_j Tr[ΔD_ij ΔF_ij], which for
+//           Hartree–Fock (exactly quadratic in D) IS E(Σ c_i D_i). The ¼ is
+//           for ferric's TOTAL density with F = ∂E/∂D. Kudin–Scuseria–Cancès
+//           (and PySCF) write −½ (PySCF −1) for a Fock matrix that is half
+//           the energy gradient of their density variable; used with a total
+//           D that doubles (quadruples) the curvature term. For KS the
+//           Coulomb and exact-exchange part is exact and Tr[ΔD ΔV_xc] is a
+//           secant estimate of E_xc's curvature along each chord, so the ¼
+//           is the consistent second-order model there too.
 //
 //   ADIIS:  reference = the newest pair (D_n, F_n).  With ΔD_i = D_i − D_n,
 //           ΔF_j = F_j − F_n:
@@ -416,6 +426,20 @@ impl DiisFlavor {
     }
 }
 
+/// The energy-DIIS model `f(c) = gᵀc + ½ cᵀ H c` (`h` row-major `m×m`,
+/// `m = c.len()`). One definition for the minimizer and the model anchors.
+fn simplex_objective(g: &[f64], h: &[f64], c: &[f64]) -> f64 {
+    let m = c.len();
+    let mut fval = 0.0;
+    for i in 0..m {
+        fval += g[i] * c[i];
+        for j in 0..m {
+            fval += 0.5 * h[i * m + j] * c[i] * c[j];
+        }
+    }
+    fval
+}
+
 /// Minimize `f(c) = g·c + ½ cᵀ H c` over the probability simplex
 /// (`c_i ≥ 0`, `Σ c_i = 1`) via the `c_i = t_i²/Σt_k²` reparametrization plus
 /// backtracking gradient descent in `t`. `h` is row-major `m×m` (need not be
@@ -436,14 +460,7 @@ fn minimize_on_simplex(g: &[f64], h: &[f64], m: usize) -> Vec<f64> {
     let eval = |t: &[f64]| -> (f64, Vec<f64>, Vec<f64>) {
         let s: f64 = t.iter().map(|x| x * x).sum::<f64>().max(1e-300);
         let c: Vec<f64> = t.iter().map(|x| x * x / s).collect();
-        // f value
-        let mut fval = 0.0;
-        for i in 0..m {
-            fval += g[i] * c[i];
-            for j in 0..m {
-                fval += 0.5 * h[i * m + j] * c[i] * c[j];
-            }
-        }
+        let fval = simplex_objective(g, h, &c);
         // df/dc
         let mut dfdc = vec![0.0f64; m];
         for k in 0..m {
@@ -572,16 +589,34 @@ impl EnergyDiis {
         (out, c)
     }
 
-    /// Assemble the ADIIS/EDIIS `(g, H)` objective over the live history slots
-    /// and minimize it on the simplex. Public-in-crate for direct unit testing.
+    /// Minimize the ADIIS/EDIIS objective over the live history slots on the
+    /// simplex.
     fn coefficients(&self, live: &[usize]) -> Vec<f64> {
+        let (g, h) = self.objective(live);
+        minimize_on_simplex(&g, &h, live.len())
+    }
+
+    /// The model `f(c) = gᵀc + ½ cᵀ H c` over the live history at the convex
+    /// coefficients `c` (oldest → newest), for the interpolant anchors.
+    #[cfg(test)]
+    fn model_energy(&self, c: &[f64]) -> f64 {
+        let live = self.fock_hist.logical_order();
+        assert_eq!(c.len(), live.len());
+        let (g, h) = self.objective(&live);
+        simplex_objective(&g, &h, c)
+    }
+
+    /// Assemble the ADIIS/EDIIS linear term `g` and row-major quadratic `H`
+    /// over the live history slots.
+    fn objective(&self, live: &[usize]) -> (Vec<f64>, Vec<f64>) {
         let m = live.len();
         let mut g = vec![0.0f64; m];
         let mut h = vec![0.0f64; m * m];
 
         match self.flavor {
             DiisFlavor::Ediis => {
-                // g_i = E_i ;  H_ij = −Tr[(D_i−D_j)(F_i−F_j)]
+                // g_i = E_i ;  H_ij = −½Tr[(D_i−D_j)(F_i−F_j)]: the exact
+                // HF interpolant for the total density (module comment).
                 for (i, &si) in live.iter().enumerate() {
                     g[i] = *self.energy_hist.get(si);
                 }
@@ -594,7 +629,7 @@ impl EnergyDiis {
                         // Tr[(D_i−D_j)(F_i−F_j)] = <D_i−D_j, F_i−F_j> (both symmetric).
                         let dd = di - dj;
                         let df = fi - fj;
-                        h[i * m + j] = -dot(&dd, &df);
+                        h[i * m + j] = -0.5 * dot(&dd, &df);
                     }
                 }
             }
@@ -615,8 +650,7 @@ impl EnergyDiis {
             }
             DiisFlavor::Pulay => unreachable!("EnergyDiis never holds Pulay"),
         }
-
-        minimize_on_simplex(&g, &h, m)
+        (g, h)
     }
 }
 
@@ -1481,6 +1515,147 @@ mod tests {
             c[1] > c[0],
             "lower-energy point should carry more weight: {c:?}"
         );
+    }
+
+    /// A Hartree–Fock history for the interpolant anchors: water/6-31G, the
+    /// converged total density plus seeded symmetric perturbations (the
+    /// identity holds for ANY symmetric D, idempotent or not, because the HF
+    /// energy is exactly quadratic in D). Returns `(D_i, F_i, E_i)` with
+    /// `F = h + J - ½K` and `E = ½<D, h + F> + E_nn`, the convention of the RHF
+    /// loop, and a closure-free energy evaluator for an arbitrary `D`.
+    struct HfHistory {
+        h: Array2<f64>,
+        e_nn: f64,
+        prep: ferric_integrals::basis_bridge::PreparedBasis,
+        bounds: crate::screening::SchwarzBounds,
+        points: Vec<(Array2<f64>, Array2<f64>, f64)>,
+    }
+
+    impl HfHistory {
+        fn fock_and_energy(&self, d: &Array2<f64>) -> (Array2<f64>, f64) {
+            let ctx = ferric_core::parallel::ParallelContext::default();
+            let n = d.nrows();
+            let (mut j, mut k) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+            crate::rhf::build_jk(&ctx, &self.prep, &self.bounds, 1e-14, d, &mut j, &mut k).unwrap();
+            let f = &self.h + &j - &(0.5 * &k);
+            let e = 0.5 * dot(d, &(&self.h + &f)) + self.e_nn;
+            (f, e)
+        }
+
+        fn water(npts: usize) -> Self {
+            use ferric_integrals::operator::Operator;
+            let mol =
+                ferric_core::mol::Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+            let bs = ferric_core::basis::bundled("6-31g").unwrap();
+            let prep = ferric_integrals::basis_bridge::PreparedBasis::new(&mol, &bs).unwrap();
+            let op = Operator::coulomb();
+            let bounds = crate::screening::SchwarzBounds::compute(op, &prep).unwrap();
+            let ctx = ferric_core::parallel::ParallelContext::default();
+            let r = crate::rhf::solve_rhf(
+                &ctx,
+                &mol,
+                &prep,
+                op,
+                &bounds,
+                &crate::rhf::RhfConfig::default(),
+            )
+            .unwrap();
+            let d0 = r.density_r().clone();
+            let mut hist = HfHistory {
+                h: ferric_integrals::oneelectron::hcore(&prep),
+                e_nn: mol.nuclear_repulsion(),
+                prep,
+                bounds,
+                points: Vec::new(),
+            };
+            let n = d0.nrows();
+            let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+            for _ in 0..npts {
+                let x = synthetic_matrix(&mut seed, n);
+                let d = &d0 + &(0.05 * (&x + &x.t()));
+                let (f, e) = hist.fock_and_energy(&d);
+                hist.points.push((d, f, e));
+            }
+            hist
+        }
+    }
+
+    /// Seeded interior points of the `m`-simplex (plus the barycentre).
+    fn convex_points(m: usize) -> Vec<Vec<f64>> {
+        let mut seed = 0x0123_4567_89ab_cdefu64;
+        let mut out = vec![vec![1.0 / m as f64; m]];
+        for _ in 0..5 {
+            let w: Vec<f64> = (0..m).map(|_| synthetic(&mut seed).abs() + 0.05).collect();
+            let s: f64 = w.iter().sum();
+            out.push(w.iter().map(|x| x / s).collect());
+        }
+        out
+    }
+
+    /// EDIIS interpolant anchor. For Hartree–Fock the energy is exactly
+    /// quadratic in the density, so the EDIIS model at any convex `c` must
+    /// equal the HF energy of `Σ c_i D_i` to round-off. With ferric's total
+    /// (occupation-2) density and `F = ∂E/∂D` that requires
+    /// `H_ij = -½<D_i - D_j, F_i - F_j>` (model `-¼ Σ c_i c_j <ΔD, ΔF>`);
+    /// the former `H_ij = -<ΔD, ΔF>` (Kudin–Scuseria–Cancès's `-½` model,
+    /// written for a Fock matrix that is half the gradient of their density)
+    /// doubled the curvature and missed by the whole quadratic term.
+    /// The quadratic term is checked to be far above the tolerance, so a wrong
+    /// factor cannot pass. Derivation: book §8.1, scripts/ediis_interpolant_sympy.py.
+    #[test]
+    fn ediis_model_equals_hf_energy_of_the_interpolated_density() {
+        let hist = HfHistory::water(4);
+        let mut ed = EnergyDiis::new(DiisFlavor::Ediis, 8);
+        for (d, f, e) in &hist.points {
+            ed.step(f, d, *e);
+        }
+        for c in convex_points(hist.points.len()) {
+            let mut dc = Array2::<f64>::zeros(hist.points[0].0.dim());
+            let mut lin = 0.0;
+            for (ci, (d, _, e)) in c.iter().zip(&hist.points) {
+                dc.scaled_add(*ci, d);
+                lin += ci * e;
+            }
+            let (_, e_exact) = hist.fock_and_energy(&dc);
+            let model = ed.model_energy(&c);
+            assert!(
+                (e_exact - lin).abs() > 1e-3,
+                "quadratic term too small to discriminate the factor: {}",
+                e_exact - lin
+            );
+            assert!(
+                (model - e_exact).abs() < 1e-9,
+                "EDIIS model {model:.12} != E(sum c D) {e_exact:.12} (diff {:.3e}, \
+                 quadratic part {:.3e}) at c={c:?}",
+                model - e_exact,
+                e_exact - lin
+            );
+        }
+    }
+
+    /// ADIIS carries a uniform factor 2: `E_n + ½ f_ADIIS(c)` is the exact HF
+    /// energy of `Σ c_i D_i` (second-order Taylor about the newest point, exact
+    /// for a quadratic functional). The factor does not move the minimizer.
+    #[test]
+    fn adiis_model_is_twice_the_hf_energy_change_from_the_newest_point() {
+        let hist = HfHistory::water(4);
+        let mut ad = EnergyDiis::new(DiisFlavor::Adiis, 8);
+        for (d, f, e) in &hist.points {
+            ad.step(f, d, *e);
+        }
+        let e_n = hist.points.last().unwrap().2;
+        for c in convex_points(hist.points.len()) {
+            let mut dc = Array2::<f64>::zeros(hist.points[0].0.dim());
+            for (ci, (d, _, _)) in c.iter().zip(&hist.points) {
+                dc.scaled_add(*ci, d);
+            }
+            let (_, e_exact) = hist.fock_and_energy(&dc);
+            let model = e_n + 0.5 * ad.model_energy(&c);
+            assert!(
+                (model - e_exact).abs() < 1e-9,
+                "ADIIS E_n + model/2 = {model:.12} != E(sum c D) {e_exact:.12} at c={c:?}"
+            );
+        }
     }
 
     /// ADIIS coefficients over a synthetic history must also form a valid convex

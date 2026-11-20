@@ -9,8 +9,9 @@ dipole $\langle 0|\mathbf r|n\rangle$, the dipole matrix element between the
 ground and the excited state. A root whose transition density
 $\phi_i\phi_a$ has no dipole moment is dark however low it lies. Response
 theory gives the transition dipole as a contraction of the root's
-amplitudes with the occupied–virtual dipole integrals. ferric uses PySCF's
-convention, so the numbers compare directly.
+amplitudes with the occupied–virtual dipole integrals. ferric uses the
+length gauge with the dipole origin at the coordinate origin, as PySCF does,
+so the numbers compare directly. There is no velocity or mixed gauge.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -64,10 +65,21 @@ because the $Z_n$ form an orthonormal basis. Substitute into the sum of
 equation @eq:td-osc-sum-rule:
 
 $$ \sum_n f_n = \tfrac23\sum_x\sum_n\Omega_n\cdot2\big(\mathbf r_x\cdot(X+Y)_n\big)^2
-= \tfrac43\sum_x\mathbf r_x^{\mathsf T}(\mathbf A-\mathbf B)\,\mathbf r_x . $$
+= \tfrac43\sum_x\mathbf r_x^{\mathsf T}(\mathbf A-\mathbf B)\,\mathbf r_x . \label{eq:td-osc-sum} $$
 
 This holds only when both the $\sqrt2$ and the $\Omega_n^{-1/2}$ are right,
 which makes it a test of both factors.
+
+What does the right side mean? For a pure functional the exchange is
+absent and the Coulomb and kernel terms cancel in $\mathbf A-\mathbf B$, so
+$\mathbf A-\mathbf B = \Delta$ is diagonal and
+$\sum_n f_n = \tfrac43\sum_{ia}\Delta_i^a|\langle i|\mathbf r|a\rangle|^2$,
+the sum for independent electrons. Over a complete virtual space that sum
+is the number of electrons, the Thomas–Reiche–Kuhn sum rule; in a finite
+basis it is smaller. The interaction redistributes oscillator strength
+among the roots but, for a pure functional, does not change the total.
+TDA replaces $\mathbf A-\mathbf B$ by $\mathbf A$ in this argument and
+loses the identity.
 
 `ferric-tddft/src/tddft.rs::oscillator_strengths` forms
 $\langle i|\mathbf r|a\rangle = C_{\rm occ}^{\mathsf T}\boldsymbol\mu^{\rm AO}C_{\rm vir}$
@@ -126,9 +138,9 @@ block and the formula has no $\sqrt2$ (section @sec:unrestricted).
 > | Negative control | the runner drops the $\sqrt2$ from the transcribed `oscillator_strengths` (B2 fails) and scales $X+Y$ by $1/\Omega$ (B4 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-tddft/src/tddft.rs::oscillator_strengths` |
-> | Code test | `crates/ferric-tddft/tests/validation_tddft.rs` (oscillator strengths against PySCF) |
+> | Code test | `compare` in `crates/ferric-tddft/tests/validation_tddft.rs` (oscillator strengths of isolated states against PySCF) |
 >
-> <!-- verified: id=td.osc.sum-rule; script=scripts/tddft_response_sympy.py; claim=sumrule; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::oscillator_strengths; registry=tddft -->
+> <!-- verified: id=td.osc.sum-rule; script=scripts/tddft_response_sympy.py; claim=sumrule; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::oscillator_strengths; rust_test=ferric-tddft/tests/validation_tddft.rs::compare; registry=tddft -->
 
 ## Sources {#oscillator-strengths-sources}
 

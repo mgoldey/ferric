@@ -196,7 +196,8 @@
 //! none, for ALL `r0` and `w`, including the decoupled `(r0, omega)` family.
 //!
 //! **`Terf` is NOT positive-definite, and is therefore OUT OF SCOPE for CSB
-//! and for plain Schwarz alike.** Since `terf = Coulomb - terfc`:
+//! and for plain Schwarz alike** (CSB through its Schwarz term `Q*Q`; the
+//! `M*M` terms alone need only a pointwise non-negative kernel). Since `terf = Coulomb - terfc`:
 //!
 //! ```text
 //!   F_terf(k) = 1/(2 pi^2 k^2) - F_terfc(k)
@@ -409,9 +410,10 @@ pub fn csb_m_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Fe
         // in schwarz.rs.
         OperatorKind::Terf => {
             return Err(FerricError::Libint(
-                "CSB screening is INVALID for the Terf operator, not merely unimplemented: CSB's \
-                 M terms come from the same Cauchy-Schwarz argument as Schwarz, and terf's \
-                 kernel is not positive-definite. See schwarz() for the measured evidence."
+                "CSB screening is INVALID for the Terf operator, not merely unimplemented: the \
+                 CSB minimum contains the Schwarz term Q*Q, which needs a positive-definite \
+                 kernel, and terf's kernel is not positive-definite (the M*M terms alone need \
+                 only terf(r) >= 0). See schwarz() for the measured evidence."
                     .to_string(),
             ))
         }

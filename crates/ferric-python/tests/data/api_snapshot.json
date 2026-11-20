@@ -8822,6 +8822,11 @@
     "default": "None",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "ri_j_precision"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "polarization_exclusions"
    }
   ],
   "run_rhf": [

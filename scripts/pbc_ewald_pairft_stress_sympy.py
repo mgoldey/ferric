@@ -10,8 +10,12 @@ Each claim is checked; the script exits nonzero on any mismatch.
       Ewald sum on a CHARGED triclinic toy cell is omega-independent to 1e-12;
       textbook anchors: simple-cubic v_M*a = 2.83729747948062, rock-salt
       Madelung 1.74756459463318; negative control: dropping the background
-      term makes the charged-cell sum omega-dependent.
-      Rust: crates/ferric-pbc/src/ewald.rs ewald_point_charges, madelung_constant.
+      term makes the charged-cell sum omega-dependent. The nuclear gradient
+      (claim ewald-gradient): the SR radial derivative and the LR row
+      -(4 pi/Omega) Z_i sum_G (e^{-G^2/4w^2}/G^2) G Im[S(G) e^{iG.R_i}] against a
+      central difference of the same energy, and their sum over charges is 0.
+      Rust: crates/ferric-pbc/src/ewald.rs ewald_point_charges, madelung_constant,
+      ewald_nuclear_gradient_parts.
   S2  Pair FT: Gaussian product theorem (exact exponent identity), the 1-D
       Gaussian FT, (-iG)^t per Hermite order, and the McMurchie-Davidson
       E-coefficient expansion for (l_a, l_b) = (1,0), (1,1), (2,0) vs mpmath
@@ -22,7 +26,10 @@ Each claim is checked; the script exits nonzero on any mismatch.
       constant c0 = pi/(w^2 Omega)), and the omega-cancellation of V_SR + V_LR + V_G0.
       Rust: crates/ferric-pbc/src/hcore.rs periodic_hcore_impl (v_g0), reciprocal_nuclear.
   S4  exxdiv: the Madelung shift K += v_M S D S of a closed-shell idempotent
-      D gives Delta E = -N v_M / 2 and Fock term -1/2 v_M S D S.
+      D gives Delta E = -N v_M / 2 and Fock term -1/2 v_M S D S. Range-separated
+      exchange (claim rsh-madelung): the reciprocal erf constant v_M^LR(w) of
+      rsh.rs::madelung_lr plus the real-space erfc constant
+      pi/(w^2 Omega) - sum_{L!=0} erfc(wL)/L is v_M, on a triclinic cell.
       Rust: crates/ferric-pbc/src/dense_aft.rs DenseAftK::build.
   S5  Strain: dOmega/deps_ab = Omega delta_ab, d(G^2)/deps_ab = -2 G_a G_b at fixed
       Miller index, d|d|/deps_ab = d_a d_b/|d|, the LR kernel derivative
@@ -41,7 +48,15 @@ Mutations (each turns the script red):
   - drop the 1/G^2 part of the transcribed LR kernel derivative
     k' = -k (1/4w^2 + 1/G^2) (marker "[FAIL] S5 Ewald strain");
   - drop the 2 in the transcribed background term -pi Q^2/(2 Omega w^2)
-    (marker "[FAIL] S1 charged triclinic toy").
+    (marker "[FAIL] S1 charged triclinic toy");
+  - v_M = -E in place of -2E (marker "[FAIL] S1 simple-cubic");
+  - -1/2 in place of -1/4 in the energy shift (marker "[FAIL] S4 Delta E");
+  - drop the background pi/(w^2 Omega) from the real-space erfc constant
+    (marker "[FAIL] S4 v_M^LR");
+  - flip the sign of the transcribed LR gradient row (marker
+    "[FAIL] S1 Ewald gradient");
+  - flip the sign of the pair-FT phase e^{-iGP} in the closed form (marker
+    "[FAIL] S2 MD expansion").
 
 Run: python3 scripts/pbc_ewald_pairft_stress_sympy.py   (about a minute)
 """
@@ -191,6 +206,48 @@ def ewald(lat, q, pos, omega, sets, background=True, strain=False):
     return e, out
 
 
+def ewald_gradient(lat, q, pos, omega, sets):
+    """Analytic dE/dR_m: the SR radial derivative f'(d) times the unit vector,
+    and the LR row -(4 pi/Omega) Z_m sum_G (e^{-G^2/4w^2}/G^2) G Im[S e^{iG.R_m}]."""
+    ls, gs = sets
+    b = recip(lat)
+    vol = det3(lat)
+    tws = 2.0 * omega / math.sqrt(math.pi)
+    grad = [[0.0] * 3 for _ in q]
+    for m, (qm, rm) in enumerate(zip(q, pos)):
+        for n in ls:
+            L = comb(n, lat)
+            for j, (qj, rj) in enumerate(zip(q, pos)):
+                if n == (0, 0, 0) and j == m:
+                    continue
+                d = [rm[c] - rj[c] - L[c] for c in range(3)]
+                r = math.sqrt(sum(x * x for x in d))
+                fp = -(
+                    math.erfc(omega * r) / r**2
+                    + tws * math.exp(-((omega * r) ** 2)) / r
+                )
+                for c in range(3):
+                    grad[m][c] += qm * qj * fp * d[c] / r
+    for n in gs:
+        g = comb(n, b)
+        g2 = sum(x * x for x in g)
+        k = math.exp(-g2 / (4 * omega**2)) / g2
+        sg = sum(
+            qq
+            * complex(
+                math.cos(-sum(g[c] * r[c] for c in range(3))),
+                math.sin(-sum(g[c] * r[c] for c in range(3))),
+            )
+            for qq, r in zip(q, pos)
+        )
+        for m, (qm, rm) in enumerate(zip(q, pos)):
+            ph = sum(g[c] * rm[c] for c in range(3))
+            im = (sg * complex(math.cos(ph), math.sin(ph))).imag
+            for c in range(3):
+                grad[m][c] += -4.0 * math.pi / vol * qm * k * g[c] * im
+    return grad
+
+
 def strained(lat, pos, eps):
     m = [[(1.0 if i == j else 0.0) + eps[i][j] for j in range(3)] for i in range(3)]
 
@@ -266,6 +323,27 @@ def s1():
         abs(esb[0] - esb[1]) > 1e-3,
         f"spread={abs(esb[0] - esb[1]):.2e}",
     )
+    # Ewald nuclear gradient (claim ewald-gradient): the analytic SR + LR rows
+    # against a central difference of the transcribed energy on the same
+    # charged triclinic cell, and the zero-sum limit sum_i dE/dR_i = 0.
+    om = 1.1
+    gr = ewald_gradient(lat, q, pos, om, sets)
+    h, worst = 1e-5, 0.0
+    for m in range(len(q)):
+        for c in range(3):
+            pp = [list(r) for r in pos]
+            pm = [list(r) for r in pos]
+            pp[m][c] += h
+            pm[m][c] -= h
+            fd = (ewald(lat, q, pp, om, sets) - ewald(lat, q, pm, om, sets)) / (2 * h)
+            worst = max(worst, abs(fd - gr[m][c]))
+    tot = max(abs(sum(gr[m][c] for m in range(len(q)))) for c in range(3))
+    check(
+        "S1 Ewald gradient SR + LR rows vs central FD (claim ewald-gradient)",
+        worst < 1e-7,
+        f"max |analytic - FD| {worst:.1e} Ha/Bohr",
+    )
+    check("S1 Ewald gradient sums to zero over the charges", tot < 1e-10, f"{tot:.1e}")
     # Simple cubic Madelung (one unit charge, background): v_M a = 2.837297479480620.
     a = 3.0
     sc = [[a, 0, 0], [0, a, 0], [0, 0, a]]
@@ -451,6 +529,53 @@ def s4():
     check(
         "S4 dE/dD = -1/2 v_M S D S",
         (grad + vm / 2 * S * d * S).applyfunc(sp.expand) == sp.zeros(3),
+    )
+    s4_rsh_madelung()
+
+
+def madelung_lr(lat, w, gs):
+    """Reciprocal-space constant of the erf(w r)/r kernel, as rsh.rs::madelung_lr:
+    2w/sqrt(pi) - (4 pi/Omega) sum_{G != 0} e^{-G^2/4w^2}/G^2."""
+    b = recip(lat)
+    acc = []
+    for n in gs:
+        g = comb(n, b)
+        g2 = sum(x * x for x in g)
+        acc.append(math.exp(-g2 / (4 * w * w)) / g2)
+    return 2 * w / math.sqrt(math.pi) - 4 * math.pi / det3(lat) * math.fsum(acc)
+
+
+def madelung_sr_real(lat, w, ls):
+    """Real-space constant of the erfc(w r)/r kernel, an independent route:
+    pi/(w^2 Omega) - sum_{L != 0} erfc(w L)/L (images plus the background)."""
+    acc = []
+    for n in ls:
+        if n == (0, 0, 0):
+            continue
+        L = comb(n, lat)
+        r = math.sqrt(sum(x * x for x in L))
+        acc.append(math.erfc(w * r) / r)
+    return math.pi / (w * w * det3(lat)) - math.fsum(acc)
+
+
+def s4_rsh_madelung():
+    """Range-separated exchange kernel (4 pi/G^2)[c_sr + (c_lr - c_sr) e^{-G^2/4w^2}]:
+    the missing G = 0 piece is linear in the kernel, so the constant is
+    c_sr v_M + (c_lr - c_sr) v_M^LR(w). Check (claim rsh-madelung) that the
+    reciprocal v_M^LR(w) of rsh.rs equals v_M minus the real-space erfc constant
+    at three w on a triclinic cell."""
+    lat = [[4.1, 0.0, 0.0], [0.7, 4.4, 0.0], [-0.4, 0.5, 4.8]]
+    worst = 0.0
+    for w in (0.3, 0.8, 1.5):
+        sets = index_sets(lat, w, w)
+        vm = -2.0 * ewald(lat, [1.0], [[0.0, 0.0, 0.0]], 1.0, index_sets(lat, 1.0, 1.0))
+        lr = madelung_lr(lat, w, sets[1])
+        sr = madelung_sr_real(lat, w, sets[0])
+        worst = max(worst, abs(lr + sr - vm))
+    check(
+        "S4 v_M^LR(w) + v_M^SR(w) = v_M, reciprocal vs real space (claim rsh-madelung)",
+        worst < 1e-11,
+        f"max err {worst:.1e}",
     )
 
 

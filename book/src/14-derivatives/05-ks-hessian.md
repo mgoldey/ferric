@@ -11,18 +11,9 @@ therefore needs $f_{xc}$ twice: once at fixed orbitals, once in the
 coupled-perturbed equations. On the production grid a third change appears,
 because the grid points and their weights move with the nuclei.
 
-The plan: the density derivatives and the fixed-grid terms (@sec:ks-hessian-xc-terms), the
-moving grid and the open shell, then the algorithm (@sec:ks-hessian-algorithm), the refusals
-(@sec:ks-hessian-reproducibility-refusals), the options (@sec:ks-hessian-options-change-equation) and the anchors (@sec:ks-hessian-numerical-anchors).
-
-Everything else is the Hartree–Fock Hessian of section @sec:hf-hessian, with the
-exact-exchange terms scaled by the hybrid fraction. The XC energy adds three
-pieces: a skeleton at fixed density, a first-order XC Fock matrix, and the
-kernel $f_{xc}$ in the CPHF operator. One more choice decides what those
-pieces are: which energy is differentiated. On a grid fixed in space the
-points and weights do not move. On the production grid each point rides its
-home atom and the Becke weights move with the nuclei, which adds weight
-derivatives to every XC term.
+Everything else is the Hartree–Fock Hessian of section @sec:hf-hessian, with
+the exact-exchange terms scaled by the hybrid fraction. The plan: the
+fixed-grid XC terms, the moving grid, the open shell, then the code.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -32,6 +23,21 @@ derivatives to every XC term.
 | $V[F,\mathbf G]$ | the XC matrix built from per-point weights | `kernel_part` |
 | $W'$, $W''$ | nuclear derivatives of the Becke weight at a fixed point | `ferric-dft/src/becke_hessian.rs::HomeWeightDerivs` |
 | $T$, $G_h$ | translation map and the point-fixed second derivative of home atom $h$'s batches | `translation_fill` |
+| $A^\alpha_{\mu\nu}$ | AO-derivative row term of the first-order XC matrix | `add_ao_derivative_fock` |
+
+On this page $W_g$ is the grid weight (the $w_g$ of section @sec:xc-gradient),
+not the energy-weighted density of sections @sec:hf-gradient and
+@sec:hf-hessian, and $F$, $\mathbf G$ are per-point weights, not the Fock
+matrix and the two-electron response. The verified boxes below are written in
+these names. The same objects appear in section @sec:xc-gradient as
+
+| here | section @sec:xc-gradient |
+|---|---|
+| $P_\mu = (D\chi)_\mu$, $Q_{\mu\gamma} = (D\partial_\gamma\chi)_\mu$ | $m_\mu$, $(D\partial_b\chi)_\mu$ |
+| integrand $f$, derivatives $f_\rho$, $f_\sigma$ | $e = \rho\epsilon$, $v_\rho$, $v_\sigma$ |
+| $W_g$ | $w_g$ |
+| $\mathbf G = 2Wf_\sigma\mathbf g$, component $G_\gamma$ | $c_b = 2wv_\sigma\partial_b\rho$ |
+| $x = (B,\alpha)$, direction $\gamma$, home atom $h$ | $R_{C,\alpha}$, direction $b$, home atom $A$ |
 
 | Entry point | Location |
 |---|---|
@@ -145,8 +151,8 @@ and the AOs of atom $B$ in the matrix element itself. The first gives the
 kernel matrix $V[\delta F[x],\delta G[x]]$. The second gives a row term for
 every $\mu \in B$ and, by symmetry, a column term for every $\nu \in B$:
 
-$$ \frac{\partial V_{\mu\nu}}{\partial x}\Big|_D = V_{\mu\nu}[\delta F[x],\delta G[x]] - \big(T^{\alpha}_{\mu\nu}[\mu\in B] + T^{\alpha}_{\nu\mu}[\nu\in B]\big),\qquad
-T^\alpha_{\mu\nu} = \sum_g F\,\partial_\alpha\chi_\mu\chi_\nu + G_\gamma\big(\partial_\gamma\partial_\alpha\chi_\mu\chi_\nu + \partial_\alpha\chi_\mu\partial_\gamma\chi_\nu\big) . $$
+$$ \frac{\partial V_{\mu\nu}}{\partial x}\Big|_D = V_{\mu\nu}[\delta F[x],\delta G[x]] - \big(A^{\alpha}_{\mu\nu}[\mu\in B] + A^{\alpha}_{\nu\mu}[\nu\in B]\big),\qquad
+A^\alpha_{\mu\nu} = \sum_g F\,\partial_\alpha\chi_\mu\chi_\nu + G_\gamma\big(\partial_\gamma\partial_\alpha\chi_\mu\chi_\nu + \partial_\alpha\chi_\mu\partial_\gamma\chi_\nu\big) . $$
 
 The minus sign is the same $\partial\chi/\partial R = -\partial\chi$ as above.
 
@@ -274,12 +280,15 @@ $w^h = P_h/T$.
 
 The collinear three-nucleus geometry of claim W2 proves the assembly, which is
 dimension-free. The three-dimensional pair derivatives are claim W1. The pair
-size adjustment $a_{AB}$ is held constant, as in the code.
+size adjustment $a_{AB}$ depends on the two elements only, so it has no
+nuclear derivative.
 
 **The exactness anchor** is a single atom. Every point rides the only atom,
 there is no $B \ne h$, and $E_g$ depends on no difference of positions. The
 weight is identically 1, and the moving-grid XC skeleton and first-order
-Fock matrix are exactly zero, where the fixed-grid ones are not. That anchor
+Fock matrix are exactly zero, where the fixed-grid ones are not
+(`single_atom_moving_xc_pieces_are_exactly_zero` in
+`crates/ferric-scf/tests/ks_moving_grid_hessian.rs`). That anchor
 cannot see the weight terms, because a single atom has none. The
 frozen-density finite differences of the validation page carry the weight
 derivatives.
@@ -418,14 +427,17 @@ and misses the polarized response.
 >
 > <!-- verified: id=ks.hess.polarized; script=scripts/uks_xc_hessian_sympy.py; claim=5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/ks_fixed_grid/polarized.rs::{PolarizedKs,PolarizedXcResponse}; rust_test=ferric-scf/tests/uks_xc_pieces.rs::polarized_kernel_matches_density_differences_for_unequal_spin_changes; registry=ks-hessian -->
 
-ROKS is not implemented: its response is Roothaan-coupled.
+ROKS is not implemented. Its response is the Roothaan-coupled system of the
+ROHF Hessian (section @sec:hf-hessian), which exists; what is missing is the
+spin-polarized XC kernel inside that coupled system.
 `HessianMethod::Analytic` and `AnalyticMovingGrid` refuse it before the SCF,
 and ROKS frequencies are central differences of the analytic gradient.
 
 ### ECPs
 
 $V_{\rm ECP}$ is part of $h$ and does not enter $E_{xc}$. It therefore adds
-the same two terms to the RKS and UKS Hessians as to the RHF and UHF ones:
+the same two terms to the RKS and UKS Hessians as to the RHF and UHF ones
+(section @sec:hf-hessian-one-electron-operators):
 the skeleton $\sum_{\mu\nu} D_{\mu\nu}\,\partial^2 V^{\rm ECP}_{\mu\nu}/\partial x\partial y$,
 built in `ferric-scf/src/hessian_ecp.rs` as a stencil of the first-derivative
 blocks with $D$ the total density, and $\partial V^{\rm ECP}/\partial x$ in
@@ -460,7 +472,7 @@ those of section @sec:hf-hessian. The XC pieces are added at three places.
 Step 4 is where the moving grid costs more. The $W''$ of one point is a
 $3N\times3N$ matrix, so the code contracts it with $f$ at that point and adds
 it to a running sum per batch, instead of storing it per point. The Becke
-weight second derivative costs $O(n^3)$ per point for $n$ atoms, and the
+weight second derivative costs $O(N^3)$ per point for $N$ atoms, and the
 translation fill is a dense $(3N)^3$ product per batch, so the cost ratio
 against the fixed grid grows with $N$. The validation page records 1.07 to
 1.10 on three atoms and no measurement above that.
@@ -534,15 +546,22 @@ max |diff| cm-1: 0.1991081593241688
 fd gradient evaluations: 18  fd asymmetry: 2.319192026284389e-05
 ```
 
-The 0.2 cm⁻¹ here is the finite-difference error of the default `"fd"`
-settings; its asymmetry of $2\times10^{-5}$ Ha/Bohr² measures the same
-noise. The Richardson stencil with a tight SCF in the table above closes
+The 0.2 cm⁻¹ here is the error of the default `"fd"` settings. Its
+truncation part at the default step of $5\times10^{-3}$ Bohr is about
+0.1 cm⁻¹ (the step row of section @sec:frequencies-numerical-anchors, for
+HF); the asymmetry of $2\times10^{-5}$ Ha/Bohr², which truncation cannot
+produce, shows that SCF noise is of the same size. The Richardson stencil with a tight SCF in the table above closes
 the gap to $5\times10^{-7}$ cm⁻¹.
 
 On PySCF's analytic cc-pVDZ Hessian: about 9.2e-7 of it is not the
-derivative of PySCF's own gradient, and that accounts for all of the 9.3e-7
-by which the fixed-grid Hessian differs from it. The cause on the PySCF side
-is not isolated, so the fixed-grid agreement is stated at the FD level.
+derivative of PySCF's own gradient (PySCF's analytic Hessian against its own
+central differences at $h = 2.5\times10^{-4}$ and $1.25\times10^{-4}$ stops
+falling there), and that accounts for all of the 9.3e-7 by which the
+fixed-grid Hessian differs from it
+(`crates/ferric-scf/tests/validation_ks_fixed_grid_hessian.rs`, references from
+`scripts/validation/gen_ks_fixed_grid_hessian.py`; the fixed-grid row of the
+validation page). The cause on the PySCF side is not isolated, so the
+fixed-grid agreement is stated at the FD level.
 
 ## Sources
 

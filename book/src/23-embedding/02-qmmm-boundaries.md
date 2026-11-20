@@ -17,7 +17,7 @@ gradient of the embedded SCF back onto the atoms of the full structure. In
 order: the partition (@sec:qmmm-boundaries-partition), the cut bond (@sec:qmmm-boundaries-cutting-covalent-bond), energies and forces
 (@sec:qmmm-boundaries-energies-forces), the full gradient (@sec:qmmm-boundaries-gradient-over-full-structure), the force-field terms (@sec:qmmm-boundaries-additive-mm-terms), and
 optimization (@sec:qmmm-boundaries-geometry-optimization), then the algorithm, options, anchors and sources. The
-proofs are in `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q4.
+proofs are in `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q5.
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -433,6 +433,49 @@ atoms but keeps the full bond graph for the exclusions. An MM–MM pair that is
 1–2, 1–3 or 1–4 through a path crossing the QM region is still bonded in the
 topology, and is excluded or scaled the same way.
 
+The rule follows from a count. Every interaction of the full force field
+should appear exactly once in the QM/MM energy, either in the embedded
+wavefunction or in the force-field terms added to it. Sort the interactions by
+which region their atoms are in, write down what the embedded SCF already
+contains, and the force field must supply the rest:
+
+| Interaction | In the embedded SCF | Force field adds | Total |
+|---|---|---|---|
+| bonded term, all atoms QM | yes, in the electronic energy | nothing | 1 |
+| bonded term with at least one MM atom (straddling or all MM) | no | the full term | 1 |
+| QM–QM pair, Coulomb and LJ | yes | nothing | 1 |
+| QM–MM pair, Coulomb | yes, the point-charge embedding | nothing | 1 |
+| QM–MM pair, LJ | no; the wavefunction has no Pauli repulsion or dispersion toward a point charge | $c^{\mathrm{LJ}}_{ij}$ LJ, with $c^{\mathrm{LJ}}_{ij}$ from the full bond graph | $c^{\mathrm{LJ}}_{ij}$ |
+| MM–MM pair, Coulomb and LJ | no | $c_{ij}$ times the term, from the full bond graph | $c_{ij}$ |
+
+For a pair the force field supplies, the right weight is the one the full
+force field would give it: 0, the 1–4 factor ($\tfrac12$ for LJ, $1/1.2$
+for Coulomb) or 1, from the shortest bond path (section @sec:molecular-mechanics-nonbonded-terms-exclusions-1). Two consequences
+follow. The exclusions must come from the bond graph that includes the cut
+bond, since without it a QM–MM pair one bond across the cut looks like an
+ordinary pair and gets full LJ weight. And the bond graph must keep the QM
+atoms even though their charges and LJ parameters are zeroed in the MM–MM
+pass, since an MM–MM pair can be 1–3 or 1–4 through a QM atom.
+
+> **Verified equation {#eq:qmmm-additive-count}** · the additive MM terms count each interaction once
+>
+> On ethanol cut at C–C (CH$_3$ MM, CH$_2$OH QM), the rules above give each of
+> the 33 bonded terms (17 straddle the cut) a total weight of 1 between the
+> wavefunction and the force field, give every pair component the
+> wavefunction holds zero force-field weight, and give every other pair
+> component the full force field's weight from an independent
+> Floyd–Warshall shortest-path computation (72 pair components).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/qmmm_boundary_sympy.py`, claim Q5 |
+> | Negative control | exclusions built without the cut bond give 17 QM–MM LJ pairs the wrong weight; the runner adds a QM–MM Coulomb term, which double-counts the embedding |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/qmmm.rs::qmmm_mm_terms` |
+> | Code test | `capped_ethane_surviving_bonded_term_counts_match_hand_derivation` in `crates/ferric-scf/tests/qmmm_mm.rs` |
+>
+> <!-- verified: id=qmmm.additive.count; script=scripts/qmmm_boundary_sympy.py; claim=Q5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/qmmm.rs::qmmm_mm_terms; rust_test=ferric-scf/tests/qmmm_mm.rs::capped_ethane_surviving_bonded_term_counts_match_hand_derivation; registry=qmmm -->
+
 ## Geometry optimization {#qmmm-boundaries-geometry-optimization}
 
 `optimize_qmmm` runs the BFGS driver
@@ -514,15 +557,13 @@ charge-bookkeeping assertions and scheme-swap controls.
 | Source | What it gives |
 |---|---|
 | `site/src/using/qmmm.md` | the user-facing description and the CLI section |
-| `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q4 | the proof |
+| `scripts/qmmm_boundary_sympy.py`, claims Q1 to Q5 | the proof |
 | `crates/ferric-scf/src/qmmm.rs` | the module |
 | `crates/ferric-scf/tests/qmmm.rs`, `crates/ferric-scf/tests/qmmm_mm.rs` | partition, boundary, gradient tests |
 | `crates/ferric-scf/tests/validation_optimize_qmmm.rs` | the optimization anchors |
 
 **Known limits (2026-11-15).**
 
-- The additive rule of section @sec:qmmm-boundaries-additive-mm-terms (which MM terms are kept across the
-  cut) is described from `qmmm_mm_terms` and has no derivation.
 - Link atoms are an approximation with known artifacts. Cut only nonpolar
   single bonds (C–C, never a C=O, an amide C–N, or anything conjugated or
   charged), and keep the cut two or three bonds from anything chemically

@@ -563,8 +563,9 @@ static MO_STREAM_TRACE: ferric_core::config::ConfigVar<bool> = ferric_core::conf
 /// memory budget.
 ///
 /// The transient this bounds is `chunk · width · 8` bytes (`width = nleft ·
-/// nright`), plus the same again for the raw AO slab the transform reads. A
-/// budget share of 1/8 is taken so this transient never crowds out the
+/// nright`). Each row is charged twice: the second row is an allowance, not
+/// the size of the raw AO slab, which is `nao²` wide per row and belongs to
+/// the source's block (sized by the source tier). A budget share of 1/8 is taken so this transient never crowds out the
 /// `b_flat` output it is filling, which is `naux · width · 8` and typically
 /// far larger.
 ///
@@ -602,8 +603,8 @@ pub fn mo_stream_chunk_for_test(width: usize, budget_bytes: usize) -> usize {
 }
 
 pub(crate) fn mo_stream_chunk_for(width: usize, budget_bytes: usize) -> usize {
-    // Two same-shaped transients are live per chunk: the MO block being filled
-    // and the raw AO slab feeding it.
+    // Two rows of `width` per chunk row: the MO block being filled, and an
+    // allowance. The raw AO slab belongs to the source's block, not to this share.
     let per_row_bytes = width.max(1).saturating_mul(8).saturating_mul(2);
     let share = budget_bytes / 8;
     let raw = (share / per_row_bytes.max(1)).max(MO_STREAM_CHUNK_MIN);

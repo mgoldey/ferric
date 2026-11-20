@@ -38,6 +38,7 @@ Mutations (each turns the script red; exact one-occurrence substitutions):
   Lowdin built with S in place of S^1/2                     (A1 fails)
   CHELPG border right-hand side 0 in place of Q              (A3 fails)
   RESP diagonal a/(2 sqrt(q^2+b^2)) in place of a/sqrt(..)   (A4 fails)
+  grid counts not rescaled to N (scale 1)                    (A2 fails)
 Exits nonzero on any failed check; prints "FAIL <label>".
 """
 

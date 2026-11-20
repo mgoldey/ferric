@@ -16,11 +16,16 @@ over space, evaluated on a grid.
 - @sec:hybrids adds exact exchange, globally or split by electron–electron distance,
   and tunes the split parameter $\omega$.
 - @sec:vv10 adds VV10 nonlocal correlation, a double integral over the density.
-- @sec:fxc differentiates the potential once more: the response kernels the
-  orbital Hessian, the Z-vector and TDDFT use.
 - @sec:cdft constrains the charge on a fragment with a Lagrange multiplier and
   computes the electron-transfer coupling between two constrained states.
+- @sec:fxc differentiates the potential once more: the response kernels the
+  orbital Hessian, the Z-vector and TDDFT use.
 
-The XC nuclear gradient is section @sec:xc-gradient, the KS Z-vector section @sec:ks-zvector and
-TDDFT chapter @sec:tddft. Each section derives its equations in full, and
+Some Kohn–Sham topics live elsewhere. The XC nuclear gradient is section
+@sec:xc-gradient, the KS Z-vector section @sec:ks-zvector and TDDFT chapter
+@sec:tddft. The ROKS orbital update (one set of orbitals, the Roothaan
+effective operator) is section @sec:energy-functionals; this chapter
+supplies its $F_\alpha$ and $F_\beta$. Double hybrids, which add an MP2
+term to a KS energy, are section @sec:double-hybrids. Empirical dispersion
+corrections (D3(BJ), MBD) are chapter @sec:dispersion. Each section derives its equations in full, and
 the verified-equation boxes tie them to the sympy proofs and the code.

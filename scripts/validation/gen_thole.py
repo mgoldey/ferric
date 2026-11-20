@@ -67,11 +67,17 @@ CASES
   h2o_w4_excl   QM water + 4 TIP3P MM waters (O -0.834, H +0.417; alpha
                 O 0.837, H 0.496 A^3), intramolecular site pairs excluded
                 (the polarizable-force-field convention), a = 2.1304. RHF.
-  h2o_w4_noexcl same geometry, no exclusions (the run_qmmm Python default,
-                lib.rs:1244): intramolecular sites polarize each other and
+  h2o_w4_noexcl same geometry, no exclusions (run_qmmm's default until
+                2026-11-19; now polarization_exclusions="none"): intramolecular sites polarize each other and
                 the Thole damping is live. alpha x ALPHA_SCALE_NOEXCL (0.3):
                 at full alpha the damped B is indefinite (see the constant).
                 RHF.
+  h2o_w4_o_molexcl  same waters, only the oxygens polarizable (alpha 0.837
+                A^3, hydrogens charges only), same-molecule exclusion: an
+                oxygen ignores its own hydrogens' charges (the run_qmmm/CLI
+                default since 2026-11-19, `polarization_exclusions =
+                "molecule"`). Control `no_molecule_exclusion` is the old
+                behaviour. RHF.
   nh2_w3_uhf    NH2 radical (2B1) + 3 MM waters, intramolecular exclusions.
                 UHF. (OH was tried first and rejected: its pi-hole rotation is
                 so soft that DIIS stalls at |g| ~1e-7 and two starts end
@@ -199,17 +205,21 @@ def waters_around_nh2():
     ]
 
 
-def mm_from_waters(waters, polarizable=True, alpha_scale=1.0):
-    """[{symbol, q, xyz_bohr, alpha_angstrom3, alpha_bohr3}] and intramolecular
-    site-index exclusion pairs (all MM atoms are sites when polarizable)."""
+def mm_from_waters(waters, polarizable=True, alpha_scale=1.0, oxygen_only=False):
+    """[{symbol, q, xyz_bohr, alpha_angstrom3, alpha_bohr3, molecule}] and
+    intramolecular site-index exclusion pairs (all MM atoms are sites when
+    polarizable, unless `oxygen_only`, when the hydrogens carry no alpha)."""
     atoms, excl = [], []
-    for w in waters:
+    for m, w in enumerate(waters):
         base = len(atoms)
         for k, p in enumerate(w):
             s = "O" if k == 0 else "H"
             a3 = ALPHA_A3[s] * alpha_scale if polarizable else 0.0
+            if oxygen_only and s == "H":
+                a3 = 0.0
             atoms.append(
                 {
+                    "molecule": m,
                     "symbol": s,
                     "q": Q_TIP3P[s],
                     "xyz_bohr": [float(c) * A2B for c in p],
@@ -258,7 +268,15 @@ def thole_tensor_phys(ri, rj, ai, aj, a, sign=1.0):
 class Model:
     """Sites, permanent charges, exclusions and the induction solve."""
 
-    def __init__(self, mm, exclusions, thole_a=THOLE_A, t_sign=1.0, mutual=True):
+    def __init__(
+        self,
+        mm,
+        exclusions,
+        thole_a=THOLE_A,
+        t_sign=1.0,
+        mutual=True,
+        molecule_exclusion=False,
+    ):
         self.mm = mm
         self.site_atom = [k for k, a in enumerate(mm) if a["alpha_bohr3"] > 0.0]
         self.pos = np.array([mm[k]["xyz_bohr"] for k in self.site_atom]).reshape(-1, 3)
@@ -267,8 +285,18 @@ class Model:
         self.qpos = np.array([a["xyz_bohr"] for a in mm])
         self.excl = {tuple(sorted(p)) for p in exclusions}
         self.thole_a, self.t_sign, self.mutual = thole_a, t_sign, mutual
+        # Same-molecule exclusion: site i ignores every charge (site or not)
+        # and every site whose MM atom has its molecule label.
+        self.mol = [a.get("molecule") for a in mm] if molecule_exclusion else None
+
+    def same_molecule_atoms(self, i, c):
+        if self.mol is None:
+            return False
+        return self.mol[self.site_atom[i]] == self.mol[c]
 
     def excluded(self, i, j):
+        if self.same_molecule_atoms(i, self.site_atom[j]):
+            return True
         return tuple(sorted((i, j))) in self.excl
 
     def e_perm(self):
@@ -280,6 +308,8 @@ class Model:
             for c, (qc, rc) in enumerate(zip(self.q, self.qpos)):
                 j = site_of_atom.get(c)
                 if j is not None and (j == i or self.excluded(i, j)):
+                    continue
+                if self.same_molecule_atoms(i, c):
                     continue
                 d = ri - rc
                 out[i] += qc * d / np.linalg.norm(d) ** 3
@@ -620,11 +650,15 @@ def control(mol, mm, uhf, dm0, ref_e, ref_mu, **model_kw):
     }
 
 
-def full_case(case, xyzname, mm, excl, uhf, spin, mm_fd=True):
+def full_case(case, xyzname, mm, excl, uhf, spin, mm_fd=True, molecule_exclusion=False):
     symbols, coords = common.read_xyz(common.MOL_DIR / xyzname)
     check_min_distance(coords, mm)
     mol = build_mol(symbols, coords, spin)
-    model_kw = {"exclusions": excl, "thole_a": THOLE_A}
+    model_kw = {
+        "exclusions": excl,
+        "thole_a": THOLE_A,
+        "molecule_exclusion": molecule_exclusion,
+    }
     b_min = float(np.linalg.eigvalsh(Model(mm, **model_kw).bmat()).min())
     if b_min <= 0.0:
         raise RuntimeError(
@@ -664,7 +698,7 @@ def full_case(case, xyzname, mm, excl, uhf, spin, mm_fd=True):
         THOLE_A,
         "uhf" if uhf else "rhf",
         spin,
-        {"self_checks": checks},
+        {"self_checks": checks, "molecule_exclusion": molecule_exclusion},
     )
     out = {
         **head,
@@ -719,14 +753,16 @@ def full_case(case, xyzname, mm, excl, uhf, spin, mm_fd=True):
             "energy": e_plain,
             "abs_diff_energy_vs_reference": abs(e_plain - e),
         },
-        "no_damping": control(mol, mm, uhf, dm, e, mu, exclusions=excl, thole_a=None),
-        "no_mutual": control(
-            mol, mm, uhf, dm, e, mu, exclusions=excl, thole_a=THOLE_A, mutual=False
-        ),
-        "negated_tensor": control(
-            mol, mm, uhf, dm, e, mu, exclusions=excl, thole_a=THOLE_A, t_sign=-1.0
-        ),
+        "no_damping": control(mol, mm, uhf, dm, e, mu, **{**model_kw, "thole_a": None}),
+        "no_mutual": control(mol, mm, uhf, dm, e, mu, **model_kw, mutual=False),
+        "negated_tensor": control(mol, mm, uhf, dm, e, mu, **model_kw, t_sign=-1.0),
     }
+    if molecule_exclusion:
+        # The pre-fix CLI/Python behaviour: each oxygen polarized by its own
+        # hydrogens.
+        ctrl["no_molecule_exclusion"] = control(
+            mol, mm, uhf, dm, e, mu, **{**model_kw, "molecule_exclusion": False}
+        )
     out["controls"] = ctrl
     path = common.write_reference(ROW, case, BASIS, out)
     summary = " ".join(
@@ -756,6 +792,19 @@ def case_h2o_w4_excl():
 def case_h2o_w4_noexcl():
     mm, _ = mm_from_waters(waters_around_h2o(), alpha_scale=ALPHA_SCALE_NOEXCL)
     return full_case("h2o_w4_noexcl", "h2o.xyz", mm, [], uhf=False, spin=0)
+
+
+def case_h2o_w4_o_molexcl():
+    mm, _ = mm_from_waters(waters_around_h2o(), oxygen_only=True)
+    return full_case(
+        "h2o_w4_o_molexcl",
+        "h2o.xyz",
+        mm,
+        [],
+        uhf=False,
+        spin=0,
+        molecule_exclusion=True,
+    )
 
 
 def case_nh2_w3_uhf():
@@ -841,6 +890,7 @@ def case_far_site():
 CASES = {
     "h2o_w4_excl": case_h2o_w4_excl,
     "h2o_w4_noexcl": case_h2o_w4_noexcl,
+    "h2o_w4_o_molexcl": case_h2o_w4_o_molexcl,
     "nh2_w3_uhf": case_nh2_w3_uhf,
     "far_site": case_far_site,
 }

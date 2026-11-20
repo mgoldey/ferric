@@ -40,6 +40,24 @@ exits 1 if any check failed.
      quadrature, equal brute-force spin-orbital MP2 (E_OS + E_SS) and E_OS;
      SOS-MP2 is c_OS E_OS.
 
+  G  kappa-regularized MP2 (rimp2.rs pair_energy, kappa arm, factor
+     (1 - e^{kappa denom})^2 with denom = -Delta). Symbolic: kappa -> inf
+     gives 1; kappa -> 0 gives kappa^2 Delta^2 to leading order; the bound
+     factor / Delta <= kappa^2 Delta from h(x) = x - 1 + e^{-x}, h(0) = 0,
+     h' >= 0; the factor table at kappa = 1.45 / Eh. Numerical, independent
+     route: the code's spatial kernel (j >= i, weight 2 off the diagonal,
+     the same factor on E_OS and E_SS) equals the brute-force spin-orbital
+     1/4 sum |<IJ||AB>|^2 (1 - e^{-kappa Delta})^2 / (-Delta), component by
+     component.
+  H  Two-point extrapolation (book attenuation-basis-limit; ferric has no
+     built-in extrapolation): (E_X X^3 - E_Y Y^3)/(X^3 - Y^3) returns E_inf
+     exactly under E_X = E_inf + A X^-3, and its X = 3, Y = 4 weights are
+     -27/37 and 64/37.
+  C  (also) numerical: the same-spin window E_SS[g1 + d] - E_SS[g1] is
+     E_SS[d] + 2 B_SS(g1, d) on a random model, and differs from E_SS[d].
+  E  (also) d(r0) = 0.727, d(2 r0) = 0.974, d(3 r0) = 0.9995 at the linked
+     width.
+
 Mutations (each turns the script red; the runner applies them one at a time
 as exact substitutions of the lines tagged with these comments):
   * closed-shell kernel: g(2g - g^x)/D -> g(2g + g^x)/D breaks A ("FAIL A").
@@ -47,6 +65,11 @@ as exact substitutions of the lines tagged with these comments):
   * scs.rs same-spin window E_SS[r2] - E_SS[r1] reversed breaks C ("FAIL C").
   * Laplace half-exponent of B(t), 1/2 -> 1, breaks F ("FAIL F").
   * Operator::terfc linked width 1/(r0 sqrt 2) -> 1/(2 r0) breaks D ("FAIL D").
+  * MP2-V damping 1 - terfc^2 -> 1 - terfc breaks E ("FAIL E").
+  * kappa factor exponent sign e^{kappa denom} -> e^{-kappa denom} breaks G
+    ("FAIL G").
+  * window cross term 2 B_SS -> B_SS breaks C ("FAIL C").
+  * extrapolation model X^-3 -> X^-2 breaks H ("FAIL H").
 
 Run: python3 scripts/mp2_family_sympy.py  (needs sympy, numpy, scipy, mpmath)
 """
@@ -238,16 +261,60 @@ def part_c():
         (c_os * e_os_c + c_ss * e_ss_c).subs({c_os: 1, c_ss: 1}) - e_os_c - e_ss_c,
     )
 
+    # The same-spin window is a difference of energies, not the energy of the
+    # difference kernel: with g2 = g1 + d (d the integrals of
+    # terfc(r2) - terfc(r1)), E_SS[g1 + d] - E_SS[g1] = E_SS[d] + 2 B_SS(g1, d),
+    # B_SS(g, h) = -sum g (h - h^x) / Delta. Random model, Delta > 0.
+    rng = np.random.default_rng(20261119)
+    no, nv, naux = 3, 4, 7
+    eo = np.sort(rng.uniform(-2.0, -0.4, no))
+    ev = np.sort(rng.uniform(0.2, 3.0, nv))
+    delta = (
+        ev[None, None, :, None]
+        + ev[None, None, None, :]
+        - eo[:, None, None, None]
+        - eo[None, :, None, None]
+    )
+    b1 = rng.standard_normal((naux, no, nv))
+    bd = 0.4 * rng.standard_normal((naux, no, nv))
+    g1 = np.einsum("Pia,Pjb->ijab", b1, b1)
+    gd = np.einsum("Pia,Pjb->ijab", bd, bd)
+
+    def b_ss(g, h):
+        return -np.sum(g * (h - h.transpose(0, 1, 3, 2)) / delta)
+
+    window = b_ss(g1 + gd, g1 + gd) - b_ss(g1, g1)
+    cross = 2.0 * b_ss(g1, gd)  # the g1-d cross term of the window
+    check_close("C", "window == E_SS[d] + 2 B_SS(g1, d)", window, b_ss(gd, gd) + cross)
+    report(
+        "C",
+        "window != E_SS[d] (the cross term is not zero)",
+        abs(window - b_ss(gd, gd)) > 1e-6 * abs(window),
+    )
+
 
 # ---------------------------------------------------------------- E
+def mp2v_damping(tc):
+    return 1 - tc * tc  # vv10.rs factor_from_r2
+
+
 def part_e():
     print("E: MP2-V damping 1 - terfc^2 and the r_one skip")
     r = sp.Symbol("r", positive=True)
     r0 = sp.Symbol("r0", positive=True)
     tc = 1 - terf_expr(r, r0, 1 / (r0 * sp.sqrt(2)))
-    damp = 1 - tc**2
+    damp = mp2v_damping(tc)
     check_zero("E", "damping(0) == 0", damp.subs(r, 0))
     report("E", "damping -> 1 at large R", sp.limit(damp, r, sp.oo) == 1)
+    # The values the book quotes: d(r0), d(2 r0), d(3 r0) with the linked width.
+    for mult, want in ((1, 0.727), (2, 0.974), (3, 0.9995)):
+        got = float(damp.subs(r, mult * r0))
+        report(
+            "E",
+            f"d({mult} r0) rounds to {want}",
+            round(got, len(str(want)) - 2) == want,
+            f"got {got:.6f}",
+        )
     mpmath.mp.dps = 30
     damp_one_sigmas = 5.0  # vv10.rs DAMP_ONE_SIGMAS
     for r0v in (0.5, 1.0 * 1.8897261246, 2.5):
@@ -348,6 +415,124 @@ def part_f():
     check_close("F", "SOS-MP2 = c_OS E_OS", c_os * e_os_ao, c_os * so_os, 1e-9)
 
 
+# ---------------------------------------------------------------- G
+def kappa_factor(k, denom):
+    """The factor of rimp2.rs pair_energy's kappa arm; denom = -Delta."""
+    d1 = 1 - sp.exp(k * denom)  # 1 - e^{-kappa Delta}
+    return d1 * d1
+
+
+def part_g():
+    print("G: kappa-regularized MP2 (rimp2.rs pair_energy, kappa arm)")
+    k, dl, x = sp.symbols("kappa Delta x", positive=True)
+    f = kappa_factor(k, -dl)
+    report("G", "kappa -> inf: factor -> 1", sp.limit(f, k, sp.oo) == 1)
+    lead = sp.series(f, k, 0, 3).removeO()
+    check_zero(
+        "G", "kappa -> 0: factor == kappa^2 Delta^2 + O(kappa^3)", lead - k**2 * dl**2
+    )
+    # Bound: 1 - e^{-x} <= x for x >= 0, because h(x) = x - 1 + e^{-x} has
+    # h(0) = 0 and h'(x) = 1 - e^{-x} >= 0. Squared and divided by Delta it
+    # gives factor/Delta <= kappa^2 Delta.
+    h = x - (1 - sp.exp(-x))
+    check_zero("G", "h(0) == 0", h.subs(x, 0))
+    check_zero("G", "h'(x) == 1 - e^{-x}", sp.diff(h, x) - (1 - sp.exp(-x)))
+    xs = np.geomspace(1e-6, 50.0, 400)
+    ratio = (-np.expm1(-xs)) ** 2 / xs**2  # factor / (kappa Delta)^2
+    report(
+        "G", "factor <= (kappa Delta)^2 on x in [1e-6, 50]", bool(np.all(ratio <= 1.0))
+    )
+    # The factor table of the book at kappa = 1.45 / Eh.
+    table = {0.1: 0.018, 0.5: 0.266, 1.0: 0.586, 2.0: 0.893, 5.0: 0.9986}
+    for dv, want in table.items():
+        got = float(f.subs({k: 1.45, dl: dv}))
+        report(
+            "G",
+            f"factor(1.45, {dv}) rounds to {want}",
+            round(got, len(str(want)) - 2) == want,
+            f"got {got:.6f}",
+        )
+    # Independent route: the spin-orbital kappa-MP2 energy
+    # 1/4 sum |<IJ||AB>|^2 (1 - e^{-kappa Delta})^2 / (-Delta), brute force over
+    # spin orbitals, against the code's spatial kernel with its j >= i
+    # weighting and the factor written as the code writes it (denom = -Delta).
+    rng = np.random.default_rng(20261119)
+    no, nv, naux = 3, 4, 7
+    eo = np.sort(rng.uniform(-1.0, -0.3, no))
+    ev = np.sort(rng.uniform(0.05, 1.5, nv))
+    b = rng.standard_normal((naux, no, nv))
+    g = np.einsum("Pia,Pjb->iajb", b, b)
+    kap = 1.45
+    fac_num = sp.lambdify((k, x), kappa_factor(k, x), "numpy")
+    code_os = code_ss = 0.0
+    for i in range(no):
+        for j in range(i, no):
+            w = 1.0 if i == j else 2.0
+            for a in range(nv):
+                for bb in range(nv):
+                    denom = eo[i] + eo[j] - ev[a] - ev[bb]
+                    damp = fac_num(kap, denom)
+                    code_os += w * damp * g[i, a, j, bb] ** 2 / denom
+                    code_ss += (
+                        w
+                        * damp
+                        * g[i, a, j, bb]
+                        * (g[i, a, j, bb] - g[i, bb, j, a])
+                        / denom
+                    )
+    so_os = so_ss = 0.0
+    for (i, si), (j, sj) in itertools.product(
+        itertools.product(range(no), (0, 1)), repeat=2
+    ):
+        for (a, sa), (bb, sb) in itertools.product(
+            itertools.product(range(nv), (0, 1)), repeat=2
+        ):
+            direct = g[i, a, j, bb] if (si == sa and sj == sb) else 0.0
+            exch = g[i, bb, j, a] if (si == sb and sj == sa) else 0.0
+            dlt = ev[a] + ev[bb] - eo[i] - eo[j]
+            term = -0.25 * (direct - exch) ** 2 * (1.0 - np.exp(-kap * dlt)) ** 2 / dlt
+            if si == sj:
+                so_ss += term
+            else:
+                so_os += term
+    check_close(
+        "G", "code kappa E_OS == spin-orbital opposite-spin sum", code_os, so_os
+    )
+    check_close("G", "code kappa E_SS == spin-orbital same-spin sum", code_ss, so_ss)
+    plain = sum(
+        (1.0 if i == j else 2.0)
+        * g[i, a, j, bb]
+        * (2 * g[i, a, j, bb] - g[i, bb, j, a])
+        / (eo[i] + eo[j] - ev[a] - ev[bb])
+        for i in range(no)
+        for j in range(i, no)
+        for a in range(nv)
+        for bb in range(nv)
+    )
+    report(
+        "G",
+        "kappa = 1.45 differs from MP2 on this small-gap model",
+        abs(code_os + code_ss - plain) > 1e-3 * abs(plain),
+    )
+
+
+# ---------------------------------------------------------------- H
+CBS_POWER = 3  # the X^-3 model of the two-point extrapolation
+
+
+def part_h():
+    print("H: two-point X^-3 extrapolation (book attenuation-basis-limit)")
+    ex, ey, einf, a, xx, yy = sp.symbols("E_X E_Y E_inf A X Y")
+    model = {ex: einf + a * xx**-CBS_POWER, ey: einf + a * yy**-CBS_POWER}
+    formula = (ex * xx**3 - ey * yy**3) / (xx**3 - yy**3)  # book formula
+    check_zero("H", "E_XY == E_inf under the X^-3 model", formula.subs(model) - einf)
+    check_zero("H", "E_X == E_Y returns that value", formula.subs(ey, ex) - ex)
+    w_x = sp.diff(formula, ex).subs({xx: 3, yy: 4})
+    w_y = sp.diff(formula, ey).subs({xx: 3, yy: 4})
+    check_zero("H", "X=3, Y=4 weight on E_X == -27/37", w_x + sp.Rational(27, 37))
+    check_zero("H", "X=3, Y=4 weight on E_Y == 64/37", w_y - sp.Rational(64, 37))
+
+
 def main():
     part_a()
     part_b()
@@ -355,6 +540,8 @@ def main():
     part_c()
     part_e()
     part_f()
+    part_g()
+    part_h()
     if FAILED:
         print(f"FAILED ({len(FAILED)}): {FAILED}")
         sys.exit(1)

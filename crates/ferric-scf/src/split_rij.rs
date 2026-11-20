@@ -14,8 +14,10 @@
 //! 6.1 manual (§2.8.2) is: same Coulomb energy as standard RI-J, largest gains
 //! for bases with many high-l functions (about 2x over standard RI-J), slightly
 //! more memory, SCF and gradients only. The construction below is the
-//! McMurchie-Davidson reading of the idea, and is exact (no new approximation
-//! on top of RI-J): the three-centre integral is never completed. It is split
+//! McMurchie-Davidson reading of the idea. It adds two controlled approximations
+//! on top of RI-J, both described below: the far-field Boys asymptote
+//! ([`FAR_EPS`], relative error <= 1e-14 per term) and the (orbital pair, aux
+//! shell) Schwarz screen at `thresh`. The three-centre integral is never completed. It is split
 //! at the Hermite level, and the density or the fit coefficients are contracted
 //! in between.
 //!

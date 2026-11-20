@@ -870,8 +870,10 @@ fn atomic_hcore_density(
 /// atomic densities written directly in the molecule's own basis (no minimal
 /// reference basis is overlapped with it).
 ///
-/// Off-diagonal atom-atom blocks stay zero (standard SAD/MINAO structure); the
-/// block diagonal is trace-exact (`tr(D·S) == nelec`). If a per-element build
+/// Off-diagonal atom-atom blocks stay zero (standard SAD/MINAO structure). The
+/// blocks are NEUTRAL atoms, so the block diagonal is trace-exact
+/// (`tr(D·S) == nelec`) for a neutral molecule only; for an ion the count is off
+/// by the charge until the first Fock build and aufbau step. If a per-element build
 /// fails, that atom's block is left zero and the molecular SCF fills it in from
 /// the other (seeded) atoms — still far better than a bare molecular-hcore guess.
 pub fn minao_projection_guess(

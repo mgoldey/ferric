@@ -62,6 +62,7 @@ one-occurrence substitutions):
   uhf_hvp: Coulomb on the total dD -> on dD_s only       (H4 fails)
   triplet_hvp: drop the exchange term                    (S1 fails)
   rohf_hvp: Fock commutator 1/2 (X_s f - f X_s) -> 1     (H5 fails)
+  ah_step: predicted change + mu |k|^2 -> - mu |k|^2      (T1 fails)
 Exits nonzero if any check fails; prints "FAIL [<claim>] ...".
 """
 

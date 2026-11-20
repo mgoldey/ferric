@@ -49,9 +49,16 @@ The hh truncation is the absence of the pp term: `Hh` never forms the VVVV
 block (`needs_vvvv`, `linlccd.rs`).
 
 **Why the hh ladder stays finite.** Move the hole–hole term to the left,
-next to the Fock part. It then acts as an amplitude-independent operator on
-the occupied pair, $f_{ik}\delta_{jl} + \delta_{ik}f_{jl} + \tfrac12 v_{ij}^{kl}$,
-which shifts the effective pair energies. The paper's eq. 15 writes the
+next to the Fock part. With $\Delta_{ij}^{ab} = \varepsilon_a + \varepsilon_b - \varepsilon_i - \varepsilon_j$
+the equation reads
+
+$$ (\varepsilon_a + \varepsilon_b)\,t_{ij}^{ab} - \Big[(\varepsilon_i + \varepsilon_j)\,t_{ij}^{ab} - \tfrac12\sum_{kl}\langle kl\|ij\rangle\,t_{kl}^{ab}\Big] = -\langle ij\|ab\rangle , \label{eq:linlccd-hh-dressed} $$
+
+so the hole–hole term acts as an amplitude-independent operator on the
+occupied pair, $f_{ik}\delta_{jl} + \delta_{ik}f_{jl} - \tfrac12\langle kl\|ij\rangle$.
+Its diagonal is lowered by $\langle ij\|ij\rangle = J_{ij} - K_{ij} > 0$, so its
+eigenvalues $\tilde\eta_{ij}$ lie below $\varepsilon_i + \varepsilon_j$
+because two holes repel. The paper's eq. 15 writes the
 result as $(\varepsilon_a + \varepsilon_b - \tilde\eta_{ij})\,\tilde t_{ij}^{ab} = -\tilde v_{ij}^{ab}$:
 the hh ladder widens the effective gap. ferric solves the equations
 self-consistently, as the paper's implementation does, and does not
@@ -97,10 +104,11 @@ LinLCCD full         -0.151102449778
 **Spin-orbital solver** (`linlccd.rs`, restricted orbitals; `linlccd_u.rs`,
 unrestricted). With canonical orbitals the Fock part is $\Delta t$, so the
 solver is the CCD loop with terms removed: Jacobi iteration with DIIS on
-$t \leftarrow -R/\Delta$, starting from the MP2 guess
-$t = -\langle ij\|ab\rangle/\Delta$, where
+$t \leftarrow -r/\Delta$, starting from the MP2 guess
+$t = -\langle ij\|ab\rangle/\Delta$, where $r$ is the non-Fock part of the
+residual, as in section @sec:ccd-ccsd-spin-orbital:
 
-$$R_{ij}^{ab} = \langle ij\|ab\rangle + \tfrac12\sum_{kl}\langle kl\|ij\rangle t_{kl}^{ab}
+$$r_{ij}^{ab} = \langle ij\|ab\rangle + \tfrac12\sum_{kl}\langle kl\|ij\rangle t_{kl}^{ab}
 + \tfrac12\sum_{cd} t_{ij}^{cd}\langle ab\|cd\rangle\ (\text{Full only}),$$
 
 $$E_c = \tfrac14\sum_{ijab}\langle ij\|ab\rangle\, t_{ij}^{ab}.$$
@@ -188,7 +196,7 @@ equations is section @sec:wb97x-l-v.
 | 2 | antisymmetrized OOVV and OOOO blocks; VVVV only for `Full` | $N_{\rm aux}n_o^4$ | `needs_vvvv` |
 | 3 | MP2 guess $t = -\langle ij\|ab\rangle/\Delta$ | | |
 | 4 | residual: driver, hh ladder, and for `Full` the pp ladder | $n_o^4n_v^2$ (hh), $n_o^2n_v^4$ (pp) | `linlccd` (`einsum!` on the stored blocks) |
-| 5 | $t \leftarrow -R/\Delta$ with DIIS until the energy changes by less than `energy_conv` | | |
+| 5 | $t \leftarrow -r/\Delta$ with DIIS until the energy changes by less than `energy_conv` | | |
 | 6 | $E_c = \tfrac14\sum\langle ij\|ab\rangle t$ | | |
 
 Unlike `ccd`, whose stopping threshold is fixed, `linlccd` reads
@@ -222,6 +230,7 @@ Unlike `ccd`, whose stopping threshold is fixed, `linlccd` reads
 | `scripts/cc_triples_weights_and_linlccd_spin_adaptation_sympy.py` | claim 6 |
 
 **Known limits (2026-11-15).** The CLI and Python run closed shell only; the
-open-shell solver `u_linlccd` is library-only. No other code implements
-LinLCCD(hh), so the anchors are against an independent numpy solve rather
-than another program.
+open-shell solver `u_linlccd` is library-only. No program we can run
+implements LinLCCD(hh), so the energy anchors are an independent numpy
+solve; the only cross-program number is the Be₂ bond energy of section
+@sec:wb97x-l-v.

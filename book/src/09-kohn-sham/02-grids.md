@@ -121,10 +121,8 @@ Two points about it:
 
 **The angular rule.** On each radial shell, `ferric-quadrature/src/lebedev.rs::lebedev`
 supplies a Lebedev–Laikov rule, with the weights normalized to
-$\sum_j w^\Omega_j = 1$. The rules live in `ferric_quadrature::lebedev`, which
-the PCM cavity spheres (section @sec:cavity-and-bem) also use; `ferric_dft::lebedev`
-(`crates/ferric-dft/src/lebedev.rs`) re-exports it, so code that names
-the `ferric_dft` path gets the same tables. The $4\pi$ of the sphere already sits in the radial
+$\sum_j w^\Omega_j = 1$. The PCM cavity spheres (section @sec:cavity-and-bem)
+use the same rules. The $4\pi$ of the sphere already sits in the radial
 weight. A point's weight is therefore
 $w_g = w^{\rm rad}_k\,w^\Omega_j\,w^A(\mathbf r_g)$, and
 $\sum_g w_gf(\mathbf r_g) \approx \int f\,d\mathbf r$.
@@ -152,7 +150,8 @@ table[region]
 
 The table of orders per region (`ferric-dft/src/prune.rs::region_orders`)
 starts from NWChem's request $[\ell_1, \ell_3, \ell_{p-1}, \ell_p, \ell_{p-1}]$
-on the ladder $\ell = (38, 50, 74, 86, 110, 146, \dots)$, with $\ell_p$ the
+on the ladder $\ell_0, \ell_1, \ell_2, \dots = 38, 50, 74, 86, 110, 146, \dots$
+(indices from zero, so the request starts $[50, 86, \dots]$), with $\ell_p$ the
 requested order. ferric then puts the innermost region on order 26 and
 snaps the other four up onto its own rule set
 $\{6, 14, 26, 50, 110, 194, 302, 434, 590, \dots\}$, never past $\ell_p$.
@@ -164,8 +163,15 @@ The default scheme, `NwchemRadial`, also shortens the radial grid of the
 light elements. `ferric-dft/src/prune.rs::radial_shells` gives
 $\lfloor(n_r m + 37)/75\rfloor$ shells, with $m = 50$ for H and He and
 $m = 66$ for Li to Ne (so 50 and 66 at $n_r = 75$), and the full $n_r$
-beyond Ne. The `Sgx` and ORCA `DefGrid` schemes use their own tables
-(`sgx_region_orders`, `defgrid_region_orders`).
+beyond Ne. With both reductions, water's default grid at $75\times110$
+has 14,060 points against 24,750 flat (weight cut off), 43% fewer.
+
+Two more schemes use their own region tables. `Sgx`
+(`sgx_region_orders`) is the grid of seminumerical exchange (COSX, section
+@sec:link-cosx-cfmm-link-cosx), ORCA's `GridX` orders as PySCF transcribes
+them; it is refused for the XC grid. `DefGrid` (`defgrid_region_orders`)
+reproduces ORCA's `DEFGRID1` to `DEFGRID3`, for comparing energies with
+ORCA, and fixes its own radial and angular sizes.
 
 **The weight cut.** A point whose final weight $\lvert w_g\rvert$ is below
 `weight_cut` is dropped. The KS default is $10^{-14}$ (`DEFAULT_WEIGHT_CUT`,
@@ -200,7 +206,7 @@ The region tables and point counts are tested in `prune::tests`, the $\xi$
 table against PySCF in `radial::tests`, and the finer meta-GGA response grid
 in `grid::tests::response_default_grid_is_finer_for_meta_gga_only`.
 
-![The default grid of water's atoms: the radius of each Treutler–Ahlrichs shell and its Lebedev order after pruning, for O (66 shells) and H (50 shells), with the region boundaries in units of the Bragg–Slater radius. Water's pruned grid has 14,060 points against 24,750 flat (weight cut off), 43% fewer; the script checks its transcription of the grid against `ferric.dft_grid_point_count`. Script: `book/src/figures/09-kohn-sham/atomic_grid.py`.](../figures/09-kohn-sham/atomic_grid.svg)
+![The default grid of water's atoms: the radius of each Treutler–Ahlrichs shell and its Lebedev order after pruning, for O (66 shells) and H (50 shells), with the region boundaries in units of the Bragg–Slater radius. The script checks its transcription of the grid against `ferric.dft_grid_point_count`. Script: `book/src/figures/09-kohn-sham/atomic_grid.py`.](../figures/09-kohn-sham/atomic_grid.svg)
 
 ## The Becke partition {#grids-becke-partition}
 
@@ -221,8 +227,16 @@ $\mathbf r$ closer to $A$ than to $B$?".
    By the triangle inequality $\mu_{AB} \in [-1, 1]$: $-1$ at nucleus $A$,
    $+1$ at nucleus $B$, 0 on the bisecting plane.
 2. **Size adjustment.** Unequal atoms should not split at the midpoint. With
-   $\chi = R^{\rm BS}_A/R^{\rm BS}_B$ and $u = (\chi - 1)/(\chi + 1)$,
+   $\chi_{AB} = R^{\rm BS}_A/R^{\rm BS}_B$ and $u = (\chi_{AB} - 1)/(\chi_{AB} + 1)$,
    $$ a_{AB} = \operatorname{clip}_{[-1/2,\,1/2]}\frac{u}{u^2-1}, \qquad \nu_{AB} = \mu_{AB} + a_{AB}(1 - \mu_{AB}^2) . $$
+   The radii $R^{\rm BS}$ are PySCF's (`pyscf.data.radii.BRAGG`) for every
+   element except He, Ne and Ar, where ferric keeps its own 0.30, 0.45 and
+   0.71 Å against PySCF's 1.40, 1.50 and 1.80 Å. The cDFT populations of
+   section @sec:cdft are defined on this partition, so the radii are part of
+   that method's definition. A KS energy of a molecule with He, Ne or Ar
+   is therefore integrated on a different partition from PySCF's. Both
+   converge to the same energy as the grid grows; at a fixed grid they agree
+   only to the grid error, which has not been measured for these atoms.
    The added term vanishes at $\mu = \pm1$, so the nuclei stay at
    $\nu = \pm1$. Its derivative is $\partial\nu/\partial\mu = 1 - 2a_{AB}\mu$,
    which the clip keeps non-negative on $\lvert\mu\rvert \le 1$: $\nu$ stays
@@ -258,7 +272,7 @@ p_cell[a] *= s_ab;
 
 | Symbol | Code |
 |---|---|
-| $\mu_{AB}$, $\chi$, $u$, $a_{AB}$, $\nu_{AB}$ | `mu`, `chi`, `u`, `a_corr`, `nu` |
+| $\mu_{AB}$, $\chi_{AB}$, $u$, $a_{AB}$, $\nu_{AB}$ | `mu`, `chi`, `u`, `a_corr`, `nu` |
 | $f^{(3)}(\nu)$ | `becke_smoothing(nu, 3)` |
 | $s_{AB}$, $P_A$ | `s_ab`, `p_cell[a]` |
 
@@ -278,7 +292,7 @@ Then through $\nu$ and the three iterations of $f$:
 
 $$ \frac{\partial\nu}{\partial\mu} = 1 - 2a_{AB}\mu, \qquad \frac{df^{(3)}}{d\nu} = f_2'f_1'f_0', \qquad f_k' = \tfrac32(1 - f_k^2), $$
 
-where $f_k$ is the $k$-th iterate. Last, the quotient rule on $w^A = P_A/T$:
+where $f_0 = \nu$ and $f_{k+1} = f(f_k)$ are the iterates. Last, the quotient rule on $w^A = P_A/T$:
 
 $$ \frac{\partial w^A}{\partial R_C} = \frac{1}{T}\frac{\partial P_A}{\partial R_C} - \frac{P_A}{T^2}\sum_D\frac{\partial P_D}{\partial R_C} . $$
 
@@ -292,7 +306,7 @@ $$ \sum_C \frac{\partial w^A}{\partial \mathbf{R}_C}\Big|_{\mathbf{r}} + \nabla_
 PySCF's "weight1" derivative, in which each grid point rides along with its
 home atom $A$:
 
-$$ \frac{\partial w_g}{\partial \mathbf{R}_b} = w_rw_l\Bigl[\frac{\partial w^{A}}{\partial\mathbf{R}_b} + \delta_{b,A}\nabla_{\mathbf{r}}w^{A}\Bigr], \qquad \sum_b \frac{\partial w_g}{\partial\mathbf{R}_b} = 0 . $$
+$$ \frac{\partial w_g}{\partial \mathbf{R}_b} = w^{\rm rad}_kw^\Omega_j\Bigl[\frac{\partial w^{A}}{\partial\mathbf{R}_b} + \delta_{b,A}\nabla_{\mathbf{r}}w^{A}\Bigr], \qquad \sum_b \frac{\partial w_g}{\partial\mathbf{R}_b} = 0 . $$
 
 The sum rule follows from the invariance above: summing the bracket over
 $b$ gives $\sum_b\partial w^A/\partial\mathbf R_b + \nabla_{\mathbf r}w^A = 0$.
@@ -316,7 +330,8 @@ $b$ gives $\sum_b\partial w^A/\partial\mathbf R_b + \nabla_{\mathbf r}w^A = 0$.
 > <!-- verified: id=ks.grid.becke; script=scripts/dft_becke_weight_grad_sympy.py; claim=assembly; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/becke.rs::becke_weights_and_grad; rust_test=ferric-dft/src/becke.rs::becke_weights_grad_finite_difference_ch; registry=ks-grid -->
 
 The script checks each derivative symbolically and the assembled gradient
-of the three-atom cluster against sympy to $10^{-61}$. The Rust tests are
+of the three-atom cluster against sympy (bar $10^{-40}$, measured
+$10^{-61}$). The Rust tests are
 `becke::tests::becke_weights_grad_finite_difference_ch` (finite differences,
 $<10^{-7}$), `becke::tests::becke_weights_grad_sums_to_zero_h2` and
 `becke::tests::partition_weight_derivative_matches_fd` (the neighbour-list
@@ -343,17 +358,15 @@ negative, so a product that reached $+0.0$ cannot turn into $-0.0$.
 
 **Reproducibility.** The weight cut is part of the grid: gradients and
 Hessians differentiate the energy on exactly the points the SCF used. The
-Bragg–Slater radii of He, Ne and Ar are ferric's own (0.30, 0.45, 0.71 Å),
-not PySCF's, because the cDFT populations of section @sec:cdft are defined on them.
-A KS energy with those atoms therefore agrees with PySCF only to the grid
-error.
+He, Ne and Ar radii of the Becke step make a KS energy with those atoms
+differ from PySCF's by the grid error.
 
 ## Options {#grids-options}
 
 | Option | Values | Default |
 |---|---|---|
 | `grid_radial`, `grid_angular` | any $n_r$; a supported Lebedev order | 75, 110 |
-| `grid_prune` | `nwchem-radial`, `nwchem`, `sgx`, `defgrid1`–`defgrid3`, `none` | `nwchem-radial` |
+| `grid_prune` | `nwchem-radial`, `nwchem`, `defgrid1`–`defgrid3`, `none` (`sgx` is refused: it is the COSX grid's scheme) | `nwchem-radial` |
 | `grid_weight_cut` | a non-negative number; 0 keeps every point | $10^{-14}$ |
 | TDDFT with a meta-GGA | `response_default_grid` raises the grid to $150\times434$ unless set | |
 

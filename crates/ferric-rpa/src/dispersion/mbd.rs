@@ -214,7 +214,7 @@ pub fn mbd_dynamic_polarizability(
 /// E = ½ Σ_p √λ_p − (3/2) Σ_A ω_A, where λ_p are eigenvalues of the 3N×3N
 /// matrix H_{Ai,Bj} = ω_A² δ_{AB} δ_{ij} + ω_A ω_B √(α_A α_B) · T^{GG}_{Ai,Bj},
 /// with the UNSCREENED inputs α/ω, Gaussian widths from the static α, no
-/// Fermi damping, no β, no R_vdW, and this module's Abramowitz–Stegun erf.
+/// Fermi damping, no β, no R_vdW, and `ferric_core::special::erf`.
 /// Without the range separation the full-range dipole coupling is far too
 /// strong: on molecules it is 39–226× larger than MBD@rsSCS (water: about
 /// −34 vs −0.15 kcal/mol). The dispersion energy is

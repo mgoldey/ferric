@@ -6,4 +6,5 @@ The derivations, proofs and measurements for `ferric-md` are in the ferric book 
 
 | Section | Label | Page | Proof scripts | Verified boxes |
 |---|---|---|---|---|
+| Harmonic frequencies | `frequencies` | [`book/src/14-derivatives/06-frequencies.md`](../../book/src/14-derivatives/06-frequencies.md) | — | — |
 | Integrators and thermostats: velocity Verlet, Berendsen, Langevin BAOAB | `molecular-dynamics` | [`book/src/28-molecular-dynamics/01-integrators-and-thermostats.md`](../../book/src/28-molecular-dynamics/01-integrators-and-thermostats.md) | `scripts/md_integrators_sympy.py` | `md.baoab.harmonic-config`, `md.baoab.ou-variance`, `md.berendsen.rate`, `md.verlet.shadow-energy`, `md.verlet.symplectic`, `md.verlet.time-reversal` |

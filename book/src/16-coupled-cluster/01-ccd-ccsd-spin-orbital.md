@@ -74,7 +74,9 @@ $\hat T$ commute with each other, so each commutator must contract a
 $\hat T$ with an index of $\hat H$, and a two-electron $\hat H$ has four.
 On the ten-spin-orbital model of the proof script below, with random
 $t_1$ and $t_2$, the largest matrix element of the fourfold commutator is
-0.10 and that of the fivefold one is below $4\times10^{-18}$. Projected onto doubles, the CCD residual is
+0.26 and that of the fivefold one is $8.7\times10^{-18}$ (check
+`bch-termination` of `scripts/cc_ccsd_eom_brute_force_sympy.py`, which
+asserts both). Projected onto doubles, the CCD residual is
 therefore at most quadratic in $t_2$, and the CCSD residual at most quartic
 in $t_1$.
 
@@ -306,8 +308,9 @@ H2  (T)      = 2.81e-20
 The proof builds $\hat H$, $\hat T$ and $e^{-\hat T}\hat He^{\hat T}$ as
 Jordan–Wigner matrices on the model and compares $r + \Delta t$ and $E_c$
 with the projections. It checks the equations the code evaluates; it does
-not check that a converged solution exists. The termination of the BCH
-series and the two-electron limit are not claims of the script.
+not check that a converged solution exists. It checks the termination
+of the BCH series (`bch-termination`); the two-electron limit is not a
+claim of the script.
 
 ## The algorithm {#ccd-ccsd-spin-orbital-algorithm}
 

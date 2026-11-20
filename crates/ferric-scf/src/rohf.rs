@@ -1879,10 +1879,9 @@ impl RohfState {
         let mut f_new = self.diis.step(&m.f_eff, &m.err);
         phases.stop(extrapolate_t);
         if inp.effective_level_shift > 0.0 && iter > 1 {
-            const SHIFT_DAMP_ERR: f64 = 1e-3;
-            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-            let shift_eff = inp.effective_level_shift * damp;
-            if shift_eff > 1e-10 {
+            let shift_eff =
+                crate::driver::open_shell_level_shift_ramp(inp.effective_level_shift, err_max);
+            if shift_eff > 0.0 {
                 let c = &self.c;
                 let shift_term: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || {
                     crate::blas_probe::record(&crate::blas_probe::ROHF_LEVEL_SHIFT);

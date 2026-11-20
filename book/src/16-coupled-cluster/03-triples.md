@@ -136,9 +136,12 @@ and the energy is the unrestricted sum
 $$E_{(T)} = \frac13 \sum_{ijk}\sum_{abc} f_{ijk}^{abc},\qquad
 f_{ijk}^{abc} = -\frac{\tilde W_{ijk}^{abc}\,V_{ijk}^{abc}}{\Delta_{ijk}^{abc}} .$$
 
-The divisor is 3, not $1/36$ or $1/6$: the spin summation behind the
+The divisor is 3, not 36 or 6: the spin summation behind the
 $4,1,1,-2,-2,-2$ coefficients has already absorbed most of the
-spin-orbital antisymmetrizer's redundancy. This sum equals the spin-orbital
+spin-orbital antisymmetrizer's redundancy. The coefficients are taken from
+Rendell, Lee and Komornicki (CPL 178, 462 (1991)) in the index form of
+PySCF's `r3`; they are not derived here, and claim 4 of the box below
+verifies them numerically against the spin-orbital $(T)$. This sum equals the spin-orbital
 $(T)$ of section @sec:triples-spin-orbital-t on the spin-orbital expansion of the same amplitudes
 and integrals (claim 4 of the box below).
 
@@ -199,9 +202,9 @@ out of, one spatial orbital, and the spin-adapted weights encode that. The
 weight 1 therefore multiplies zero. The code evaluates the term anyway, so
 the band reproduces the unrestricted sum term for term, which is what the box
 below checks. A single occupied orbital ($n_o = 1$, two electrons) has only the
-triple $i=j=k$, so this form also gives zero (T) there. (Both zeros were
-checked on the random model of the proof script: $|f_{iii}|$ and
-$|g(a,a,a)|$ below $3\times10^{-17}$, against $|f_{001}| = 0.022$.)
+triple $i=j=k$, so this form also gives zero (T) there. The proof script
+asserts both zeros on its random model: $f_{iii} = 0$ in claim 2 and
+$g(a,a,a) = 0$ in claim 4b, each to $10^{-13}$ of the largest term.
 
 The excerpt below is the weight:
 
@@ -350,10 +353,11 @@ dense spin-orbital $(T)$ (claim 4); together these cover the DLPNO-(T) form.
 Claim 4b ports the dense kernel and claim 5 shows that the spin-orbital
 banding, divisor 6, unit weights and a $\tilde W$ without the cyclic terms
 all fail. In Rust, the `ccsd_t_closed_shell` tests compare with the
-spin-orbital `ccsd_t` given the same amplitudes and with PySCF. The
-spin-orbital divisor 6 has no sympy claim of its own; its evidence is the
-streaming-versus-dense regression `streaming_matches_dense_h2o_ccpvdz` and
-the PySCF comparisons below.
+spin-orbital `ccsd_t` given the same amplitudes and with PySCF. Claim 4
+also checks the spin-orbital banding: $i<j<k$ over spin orbitals with
+divisor 6 equals the $\tfrac1{36}$ unrestricted sum (the runner's mutation
+to 36 turns it red). The streaming-versus-dense regression
+`streaming_matches_dense_h2o_ccpvdz` ties the Rust loop to that form.
 
 ## The algorithms {#triples-algorithms}
 

@@ -28,8 +28,8 @@
 //!   two-centre weight is the derivative of `M` contracted with
 //!   `Y = Σ_s α_s Σ_ij L^s_ij L^s_ijᵀ`.
 //!
-//! These are the standard DF-SCF gradient expressions (Weigend, Häser, Patzelt
-//! & Ahlrichs, Chem. Phys. Lett. 294, 143 (1998) for RI-J; Weigend, Kattannek
+//! These are the standard DF-SCF gradient expressions (Eichkorn, Treutler, Öhm,
+//! Häser & Ahlrichs, Chem. Phys. Lett. 240, 283 (1995) for RI-J; Weigend, Kattannek
 //! & Ahlrichs, J. Chem. Phys. 130, 164106 (2009) for RI-K), the orbital
 //! response being carried as usual by the energy-weighted density in the
 //! one-electron Pulay term. A numpy prototype of exactly these contractions

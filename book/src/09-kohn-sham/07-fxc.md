@@ -1,6 +1,6 @@
 # $f_{xc}$ response kernels {#fxc}
 
-<!-- status: ready; registry: ks-hessian, tddft -->
+<!-- status: ready; registry: ks-hessian, tddft, ks-zvector -->
 
 Perturb the density a little, by an electric field, by an orbital rotation
 or by an excitation, and the exchange-correlation potential changes with
@@ -237,6 +237,15 @@ so its $f_{\alpha\beta} = 0$ and the singlet and triplet exchange kernels are
 equal. For an LDA, the difference $2f_{\alpha\beta}$ between the two kernels
 comes from correlation alone.
 
+The triplet kernel has a meaning of its own. Write the spin densities as
+$\rho_\alpha = (\rho + m)/2$, $\rho_\beta = (\rho - m)/2$ with the spin
+density $m$. For a spin-unpolarized reference, $f_{\alpha\alpha} = f_{\beta\beta}$,
+and the chain rule gives $\partial^2e/\partial m^2 = \tfrac14(f_{\alpha\alpha} - 2f_{\alpha\beta} + f_{\beta\beta}) = \tfrac12(f_{\alpha\alpha} - f_{\alpha\beta})$.
+The triplet block is therefore the response to a spin-density
+perturbation, and a negative triplet eigenvalue (a triplet instability)
+means the closed-shell reference lowers its energy by breaking spin
+symmetry.
+
 <!-- excerpt: ferric-dft/src/lr_kernel.rs::fxc_ov_block -->
 ```rust
 let (dv_a, _dv_b) = match spin {
@@ -286,17 +295,21 @@ Two points about the function:
 | LDA | `LdaFxcKernel` | all | |
 | GGA, global hybrid, RSH | `GgaFxcKernel` (exact exchange through $c_{\rm sr}, c_{\rm lr}$ in the caller) | all | |
 | $\tau$-only meta-GGA | `MggaFxcKernel` | RKS/UKS Newton, RKS/UKS stability, RKS/UKS/ROKS Z-vector, TDA and Casida | ROKS Newton and augmented Hessian, TRAH, the analytic nuclear Hessian |
-| VV10 | none | | every response method refuses a VV10 functional |
+| VV10 | `ferric-dft/src/vv10.rs::Vv10Response` (the tangent of $V_{nl}$) | Python `XcFunctional.response` (block CPKS; the ωB97X-V polarizability of section @sec:vv10-numerical-anchors) | stability, Newton, Z-vector and TDDFT |
 
 `ferric-scf/src/rohf.rs::FxcKernelStore` dispatches LDA, GGA or meta-GGA for
-the orbital-Hessian users: RKS and UKS Newton steps, RKS/UKS internal
-stability, and the RKS/UKS/ROKS Z-vector (`zvector_ks`).
+the orbital-Hessian users: RKS and UKS Newton steps, ROKS Newton steps (LDA
+and GGA), RKS/UKS internal stability, and the RKS/UKS/ROKS Z-vector
+(`zvector_ks`).
 `ferric-dft/src/lr_kernel.rs::SingletKernel` does the same for the singlet
 $(ia|f_{\alpha\alpha}+f_{\alpha\beta}|jb)$ block of TDA and Casida TDDFT
 (`ferric_tddft::run_tddft`, `ferric_gw::tddft::run_tda_dft`).
 
 The meta-GGA refusals have two reasons. ROKS Newton, the augmented Hessian
-and TRAH keep DIIS, because no reference anchors them. The analytic nuclear
+and TRAH keep DIIS, because no reference anchors them. The ROKS Newton step
+on the $\tau$ kernel did not converge on NH2/6-31G with r2SCAN in 200
+iterations, where DIIS takes 10; it has not been measured again since the
+kernel fix recorded in the documentation of `ferric-scf/src/rohf.rs::RohfState::update`. The analytic nuclear
 Hessian is refused because the $\tau$-dependent nuclear derivatives of
 $V_{xc}$ are not implemented.
 

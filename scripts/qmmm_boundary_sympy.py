@@ -29,10 +29,22 @@ Checks (each label carries "(claim X)"):
   Q4  Translational invariance: the full gradient rows sum to zero (the
       model energy depends on relative positions only), for every scheme.
 
+  Q5  The additive MM terms (qmmm_mm_terms) count each interaction once. On
+      ethanol cut at the C-C bond (CH3 MM, CH2OH QM), every bond, angle and
+      torsion is counted once by the wavefunction (all-QM) or the force field
+      (touches an MM atom), every QM-QM pair and every QM-MM Coulomb pair once
+      by the wavefunction, and every pair the force field counts (MM-MM
+      Coulomb and LJ, QM-MM LJ) carries the full force field's weight (0 for
+      1-2 and 1-3, scale_14 for 1-4, 1 beyond), the classes taken from an
+      independent Floyd-Warshall bond distance against the transcribed BFS.
+      Negative control: exclusions built without the cut bond give QM-MM
+      Lennard-Jones pairs near the cut the wrong weight.
+
 Mutations (each turns the script red; exact one-occurrence substitutions):
   link row onto the frontier atom with g instead of (1 - g)  (Q3 fails)
   midpoint force split 1.0 onto M1 instead of 0.5            (Q3 fails)
   RCD midpoint charge q0 instead of 2 q0                     (Q2 fails)
+  a QM-MM Coulomb term added to the force field              (Q5 fails)
 Exits nonzero on any failed check; prints "FAIL <label>".
 """
 
@@ -331,10 +343,148 @@ def claim_q3_q4():
     )
 
 
+# --- Q5 ------------------------------------------------------------------------
+
+
+def bfs_classes(n, bonds):
+    """MmTopology::new: BFS to depth 3; depth 1-2 excluded, depth 3 a 1-4 pair."""
+    adj = {a: [] for a in range(n)}
+    for a, b in bonds:
+        adj[a].append(b)
+        adj[b].append(a)
+    excl, p14 = set(), set()
+    for start in range(n):
+        depth, frontier = {start: 0}, [start]
+        for d in (1, 2, 3):
+            nxt = []
+            for node in frontier:
+                for nb in adj[node]:
+                    if nb not in depth:
+                        depth[nb] = d
+                        nxt.append(nb)
+            frontier = nxt
+        for other, d in depth.items():
+            pair = (min(start, other), max(start, other))
+            if d in (1, 2):
+                excl.add(pair)
+            elif d == 3:
+                p14.add(pair)
+    return excl, p14
+
+
+def additive_mm(n, bonds, terms, qm, s14):
+    """qmmm_mm_terms bookkeeping: the weight the force field gives each term."""
+    excl, p14 = bfs_classes(n, bonds)  # the full bond list, cut bond included
+    w = {}
+    for t in terms:  # bonded: kept iff it touches an MM atom
+        w[t] = 1.0 if any(a not in qm for a in t) else 0.0
+    for i in range(n):
+        for j in range(i + 1, n):
+            ff = 0.0 if (i, j) in excl else (s14 if (i, j) in p14 else 1.0)
+            if i in qm and j in qm:
+                w[(i, j, "coul")] = w[(i, j, "lj")] = 0.0
+            elif i in qm or j in qm:
+                qm_mm_coul = 0.0  # the embedding holds it
+                w[(i, j, "coul")] = qm_mm_coul
+                w[(i, j, "lj")] = ff
+            else:
+                w[(i, j, "coul")] = w[(i, j, "lj")] = ff
+    return w
+
+
+def wavefunction_counts(n, terms, qm):
+    """What the embedded SCF already contains: every all-QM term, QM-QM
+    Coulomb and exchange-repulsion/dispersion, and QM-MM Coulomb (the
+    point-charge embedding)."""
+    w = {t: 1.0 if all(a in qm for a in t) else 0.0 for t in terms}
+    for i in range(n):
+        for j in range(i + 1, n):
+            both, one = i in qm and j in qm, (i in qm) != (j in qm)
+            w[(i, j, "coul")] = 1.0 if (both or one) else 0.0
+            w[(i, j, "lj")] = 1.0 if both else 0.0
+    return w
+
+
+def graph_distance(n, bonds):
+    """Floyd-Warshall shortest bond path: an independent route to 1-2/1-3/1-4."""
+    big = 10**6
+    dist = np.full((n, n), big)
+    np.fill_diagonal(dist, 0)
+    for a, b in bonds:
+        dist[a, b] = dist[b, a] = 1
+    for k in range(n):
+        dist = np.minimum(dist, dist[:, [k]] + dist[[k], :])
+    return dist
+
+
+def claim_q5():
+    # Ethanol cut at C-C: CH3 (0-3) is MM, CH2OH (4-8) is QM.
+    n = 9
+    bonds = [(0, 1), (0, 2), (0, 3), (0, 4), (4, 5), (4, 6), (4, 7), (7, 8)]
+    qm = {4, 5, 6, 7, 8}
+    s14 = 0.5
+    adj = {a: set() for a in range(n)}
+    for a, b in bonds:
+        adj[a].add(b)
+        adj[b].add(a)
+    angles = {
+        (a, b, c) if a < c else (c, b, a)
+        for b in range(n)
+        for a in adj[b]
+        for c in adj[b]
+        if a != c
+    }
+    torsions = {
+        (a, b, c, d) if a < d else (d, c, b, a)
+        for b, c in bonds + [(y, x) for x, y in bonds]
+        for a in adj[b] - {c}
+        for d in adj[c] - {b, a}
+    }
+    terms = [tuple(sorted(b)) for b in bonds] + sorted(angles) + sorted(torsions)
+    dist = graph_distance(n, bonds)
+
+    def full_ff(i, j):
+        d = dist[i, j]
+        return 0.0 if d <= 2 else (s14 if d == 3 else 1.0)
+
+    ff = additive_mm(n, bonds, terms, qm, s14)
+    wf = wavefunction_counts(n, terms, qm)
+    bad = []
+    for key in ff:
+        if len(key) == 3 and isinstance(key[2], str):
+            # A pair the wavefunction holds must get no force-field weight;
+            # any other pair gets exactly the full force field's weight.
+            ok = ff[key] == 0.0 if wf[key] else ff[key] == full_ff(key[0], key[1])
+            if not ok:
+                bad.append(key)
+        elif wf[key] + ff[key] != 1.0:
+            bad.append(key)
+    cross = [k for k in ff if len(k) == 3 and isinstance(k[2], str)]
+    straddle = [
+        t for t in terms if any(a in qm for a in t) and any(a not in qm for a in t)
+    ]
+    # Negative control: exclusions from the bond list without the cut bond
+    # give the QM-MM Lennard-Jones pairs near the cut the wrong weight.
+    ff_cut = additive_mm(n, [b for b in bonds if b != (0, 4)], terms, qm, s14)
+    wrong = [
+        k
+        for k in cross
+        if k[2] == "lj" and ff_cut[k] != full_ff(k[0], k[1]) and not wf[k]
+    ]
+    check(
+        "Q5 additive MM terms: each term and pair once, FF pairs at full-FF weight (claim Q5)",
+        not bad and len(wrong) > 0,
+        f"{len(terms)} bonded ({len(straddle)} straddle the cut), {len(cross)} pair "
+        f"components, double/missed {bad[:4]}; control: {len(wrong)} LJ pairs wrong "
+        "without the cut bond",
+    )
+
+
 def main():
     claim_q1()
     claim_q2()
     claim_q3_q4()
+    claim_q5()
     if failures:
         print(f"{len(failures)} check(s) failed")
         sys.exit(1)

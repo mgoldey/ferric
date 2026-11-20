@@ -1,6 +1,6 @@
 # Hamiltonian, spin orbitals and normal ordering {#hamiltonian}
 
-<!-- status: edit; registry: -->
+<!-- status: edit; registry: none -->
 
 Electrons are identical fermions. A many-electron wavefunction has to change
 sign when you swap any two of them, and a Slater determinant is the simplest
@@ -50,10 +50,14 @@ orbital is written $p_\sigma$.
 
 The nuclei are fixed (the Born–Oppenheimer approximation). The electrons
 move in the field of point charges $Z_A$ at positions $\mathbf R_A$, in
-atomic units. The dissertation writes the electronic Hamiltonian as the sum
-of three terms (chapter 1, Eqs. 1.3–1.5): the kinetic energy of the
-electrons, their attraction to the nuclei, and their repulsion from each
-other. The nuclear repulsion
+atomic units. The electronic Hamiltonian is the sum of three terms: the
+kinetic energy of the electrons, their attraction to the nuclei, and their
+repulsion from each other. With $e, e'$ labelling electrons,
+
+$$ \hat H_{\mathrm{el}} = -\frac12\sum_e \nabla_e^2 - \sum_{e,A}\frac{Z_A}{|\mathbf r_e - \mathbf R_A|} + \sum_{e<e'}\frac{1}{|\mathbf r_e - \mathbf r_{e'}|} . $$
+
+The dissertation gives the same three terms (chapter 1, Eqs. 1.3–1.5). The
+nuclear repulsion
 $E_{\mathrm{nn}} = \sum_{A<B} Z_A Z_B / |\mathbf R_A - \mathbf R_B|$ does not
 depend on the electrons, so it is a constant added at the end.
 
@@ -252,11 +256,11 @@ $\langle ii\|ii\rangle$ cancels the Coulomb half exactly.
 > | | |
 > |---|---|
 > | Proof | `scripts/oomp2_mp3_identities_sympy.py`, the check labelled "claim B1" ($E_{\mathrm{HF}}$ from Wick's theorem) |
-> | Negative control | none for this check; the script's mutations act on the MP3 ring coefficient and the rotation sign |
-> | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py` |
-> | Code | `ferric-mp2/src/spinorbital.rs::asym_same` builds the $\langle pq\Vert rs\rangle$ the sum reads |
+> | Negative control | the $\tfrac12$ replaced by 1 (mutation `ehf_half`) must fail the check |
+> | Runner | `crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py`, which applies the mutation |
+> | Code | `ferric-ci/src/hamiltonian.rs::diagonal_element` evaluates it for every determinant (below) |
 >
-> <!-- verified: id=so.ref-energy; script=scripts/oomp2_mp3_identities_sympy.py; claim=B1; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-mp2/src/spinorbital.rs::asym_same -->
+> <!-- verified: id=so.ref-energy; script=scripts/oomp2_mp3_identities_sympy.py; claim=B1; runner=crates/ferric-python/tests/test_oomp2_mp3_identities_sympy.py; code=ferric-ci/src/hamiltonian.rs::diagonal_element -->
 
 The CAS-CI code evaluates (@eq:so-ref-energy) for every determinant it handles, as the
 diagonal of its Hamiltonian. In `ferric-ci/src/hamiltonian.rs::diagonal_element`
@@ -265,6 +269,7 @@ so the spin deltas of (@eq:hamiltonian-3) are resolved by which loop a pair sits
 With the $\beta$ one-electron loop and the $\beta\beta$ pair loop removed
 (they repeat the $\alpha$ ones):
 
+<!-- excerpt: ferric-ci/src/hamiltonian.rs::diagonal_element -->
 ```rust
 for &p in a_occ {
     e += h1(ints, p, p);                   // sum_i h_ii (alpha; beta likewise)
@@ -298,7 +303,7 @@ Two points connect it to (@eq:so-ref-energy):
 `e_core`, which holds $E_{\mathrm{nn}}$ and the frozen inactive core, is
 added by the caller.
 
-### Normal ordering and the split of $\hat H$
+### Normal ordering and Wick's theorem {#hamiltonian-wick-theorem}
 
 Normal ordering $\{\cdots\}$ is relative to $|0\rangle$. Inside the braces,
 an operator that would give zero on $|0\rangle$ goes to the right: the
@@ -308,10 +313,32 @@ act on $|0\rangle$ without killing it go to the left. Each swap costs a
 sign. The point of the definition is that the expectation value of any
 normal-ordered string in $|0\rangle$ is zero.
 
-Wick's theorem (section @sec:wick) relates a plain string to normal-ordered
-ones. A plain string is its normal-ordered form plus every way of
-contracting pairs of its operators, where a contraction of $a^\dagger_p$
-with $a_q$ is $n_p\delta_{pq}$. For one creator and one annihilator,
+A contraction of two operators is their expectation value in $|0\rangle$,
+taken in the order they stand. In terms of the occupations $n_p$,
+
+$$ \langle 0|a^\dagger_p a_q|0\rangle = n_p\,\delta_{pq}, \qquad \langle 0|a_p a^\dagger_q|0\rangle = (1 - n_p)\,\delta_{pq}, \label{eq:hamiltonian-contractions} $$
+
+and two creators or two annihilators contract to zero. The first is an
+occupied pair ($\langle a^\dagger_i a_j\rangle = \delta_{ij}$), the second a
+virtual one ($\langle a_a a^\dagger_b\rangle = \delta_{ab}$).
+
+Wick's theorem says that a product of operators equals its normal-ordered
+form plus the sum, over every way of choosing pairs to contract, of the
+contractions times the normal-ordered product of the operators left over.
+The sign of a term with one contraction is $(-1)^k$, where $k$ is the number
+of operators standing between the contracted pair. With several
+contractions, the sign is $(-1)$ to the number of crossings when each pair
+is joined by a line drawn above the string.
+
+Two corollaries do most of the work in section @sec:wick. The expectation
+value of a product in $|0\rangle$ keeps only the terms in which every
+operator is contracted. And in a product of normal-ordered strings,
+$\{\cdots\}\{\cdots\}$, no contraction joins two operators of the same
+string; only pairs across strings count.
+
+### The split of $\hat H$ {#hamiltonian-split}
+
+For one creator and one annihilator,
 
 $$ a^\dagger_p a_q = \{a^\dagger_p a_q\} + n_p\,\delta_{pq} . $$
 
@@ -320,7 +347,9 @@ full ones:
 
 $$ a^\dagger_p a^\dagger_q a_s a_r = \{a^\dagger_p a^\dagger_q a_s a_r\} + n_p\delta_{pr}\{a^\dagger_q a_s\} - n_p\delta_{ps}\{a^\dagger_q a_r\} - n_q\delta_{qr}\{a^\dagger_p a_s\} + n_q\delta_{qs}\{a^\dagger_p a_r\} + n_p n_q\big(\delta_{pr}\delta_{qs} - \delta_{ps}\delta_{qr}\big) . $$
 
-Each minus sign counts one operator crossing. Substitute both expansions
+The $(p,r)$ contraction has $a^\dagger_q$ and $a_s$ between the pair, so
+$k = 2$ and the term is positive; the $(p,s)$ contraction has $k = 1$ and is
+negative. Substitute both expansions
 into (@eq:so-operator-forms):
 
 - The full contractions are the expectation values above, and give the
@@ -424,6 +453,7 @@ cancels (section @sec:determinants-convention).
 | sections @sec:determinants-convention and @sec:rdms-1-2-rdm | form (@eq:hamiltonian-1) and its density matrices |
 | `crates/ferric-mp2/src/spinorbital.rs` | the construction (@eq:hamiltonian-3) |
 | `scripts/oomp2_mp3_identities_sympy.py` | verified equation @eq:so-ref-energy |
+| `scripts/casci_slater_condon_phases_sympy.py` | verified equations @eq:so-operator-forms and @eq:so-normal-order-split |
 
 Changes from the sources: spin orbitals are labeled by lowercase letters with
 the helper functions $[p]$ and $\sigma(p)$, and the Hamiltonian is written

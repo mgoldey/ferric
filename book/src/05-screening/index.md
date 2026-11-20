@@ -18,6 +18,6 @@ short-range kernel.
 
 | Section | Bound | Valid for |
 |---|---|---|
-| 5.1 | Schwarz $Q_{\mu\nu}Q_{\lambda\sigma}$; CSB | positive-definite kernels; CSB's $MM$ terms for pointwise-positive kernels |
-| 5.2 | QQR, Schwarz times a distance envelope | Coulomb and the kernels Schwarz admits; proven for primitive $s$ pairs |
-| 5.3 | pair lists for LinK | whatever bound they are built from |
+| @sec:schwarz | Schwarz $Q_{\mu\nu}Q_{\lambda\sigma}$; CSB | positive-definite kernels; CSB's $MM$ terms for pointwise-positive kernels |
+| @sec:qqr | QQR, Schwarz times a distance envelope | Coulomb and the kernels Schwarz admits; proven for primitive $s$ pairs |
+| @sec:pair-lists | pair lists for LinK | whatever bound they are built from |

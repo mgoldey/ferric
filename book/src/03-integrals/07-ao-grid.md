@@ -11,9 +11,11 @@ the same reason. A GGA needs the gradient of each basis function as well, and
 meta-GGA gradients and analytic Hessians need second derivatives.
 
 One module evaluates values, gradients and Hessians, and the DFT crate
-re-exports it. The plan: factor a basis function into an angular and a radial
-part, differentiate the product by the chain rule, read the radial loop, and
-count the memory.
+re-exports it. This section needs only the basis functions and their
+normalization from section @sec:one-electron; nothing from sections
+@sec:two-electron to @sec:pvp-x2c is used. The plan: factor a basis function
+into an angular and a radial part, differentiate the product by the chain
+rule, read the radial loop, and count the memory.
 
 | Entry point | Location |
 |---|---|
@@ -21,24 +23,26 @@ count the memory.
 | Third derivatives | `ferric-integrals/src/ao_grid_third.rs::eval_basis_third_on_points` |
 | Re-export | `ferric_dft::ao_grid` |
 
-### The factorization
+## The factorization {#ao-grid-factorization}
 
-With coordinates relative to the shell centre, a contracted function
-factors into an angular polynomial and a radial function of $r^2$,
+With coordinates relative to the shell centre, a contracted function of
+(@eq:basis-sets-1) factors into an angular polynomial and a radial function
+of $r^2$,
 
-$$ \chi(\mathbf r) = A(x, y, z)\, \mathcal R(r^2), \qquad \mathcal R(r^2) = \sum_k d_k N(\alpha_k, l)\, e^{-\alpha_k r^2}, $$
+$$ \chi(\mathbf r) = A(x, y, z)\, \mathcal R(r^2), \qquad \mathcal R(r^2) = \sum_k c_k N(\alpha_k, l)\, e^{-\alpha_k r^2}, $$
 
-with $A$ a Cartesian monomial or a solid harmonic. All components of a shell
-share $\mathcal R$ (section @sec:one-electron fixed one normalization per shell), so the
-radial sum is done once per shell and point, and only the cheap polynomial
-$A$ changes from component to component.
+with $A$ a Cartesian monomial or a solid harmonic and $N(\alpha, l)$ the
+factor of section @sec:one-electron-basis-functions-integrals. All components
+of a shell share $\mathcal R$, because $N(\alpha, l)$ is one factor per
+shell, so the radial sum is done once per shell and point, and only the cheap
+polynomial $A$ changes from component to component.
 
 The derivatives of $\mathcal R$ with respect to its argument $s = r^2$ are
 sums over the same primitives:
 
-$$ \mathcal R' = \frac{d\mathcal R}{d(r^2)} = -\sum_k d_k N \alpha_k e^{-\alpha_k r^2}, \qquad \mathcal R'' = \sum_k d_k N \alpha_k^2 e^{-\alpha_k r^2} . $$
+$$ \mathcal R' = \frac{d\mathcal R}{d(r^2)} = -\sum_k c_k N \alpha_k e^{-\alpha_k r^2}, \qquad \mathcal R'' = \sum_k c_k N \alpha_k^2 e^{-\alpha_k r^2} . $$
 
-### The chain rule
+## The chain rule {#ao-grid-chain-rule}
 
 Differentiate $\chi = A\,\mathcal R(r^2)$ with respect to $x_a$. The product
 rule gives one term from each factor, and $\partial_a(r^2) = 2x_a$:
@@ -54,11 +58,11 @@ $\mathcal R'$. Collect the $\mathcal R'$ terms:
 $$ \partial_a\partial_b \chi = (\partial_a\partial_b A)\,\mathcal R + 2\big[x_a\, \partial_b A + x_b\, \partial_a A + \delta_{ab} A\big]\mathcal R' + 4 x_a x_b\, A\, \mathcal R'' . $$
 
 Check it on an $s$ function ($A = 1$) at its centre: every term with an $x$
-vanishes, and $\partial_a\partial_b\chi = 2\delta_{ab}\mathcal R'(0) = -2\delta_{ab}\sum_k d_kN\alpha_k$.
+vanishes, and $\partial_a\partial_b\chi = 2\delta_{ab}\mathcal R'(0) = -2\delta_{ab}\sum_k c_kN\alpha_k$.
 That is the curvature at the top of a sum of Gaussians: negative, and the same
 in every direction.
 
-### The radial loop
+## The radial loop {#ao-grid-radial-loop}
 
 `radial_and_d_d2` accumulates all three radial factors in one pass over the
 primitives, so each exponential is evaluated once. This is its loop, with
@@ -118,6 +122,14 @@ works in batches.
 
 No proof script covers this section. The chain-rule Hessian above was checked
 symbolically for an arbitrary polynomial $A$ and radial function $\mathcal R$.
+
+## Known limits
+
+Checked 2026-11-19.
+
+- Shells up to $g$ ($l \le 4$): the evaluators return `UnsupportedL` above.
+- The Hessian evaluation holds all nine components, not the six unique ones
+  (section @sec:ao-grid-memory).
 
 ## Sources
 

@@ -27,8 +27,12 @@ Claims (each prints "(claim X)" and exits nonzero on a mismatch):
                 densities, B^T B = I (zero fitting error).
   fit-jk        J = B^T (B d) and K = sum_k B_k D B_k^T are the Coulomb and
                 exchange contractions of the fitted ERI sum_k B_k B_k^T.
+  auto-omega-gcount   the gdf_omega = "auto" cost model's half-sphere count
+                N_G(w) = Omega (2 w sqrt(ln 1/p))^3/(12 pi^2): symbolic
+                derivation and a direct count on the model lattice (5%).
 
-Rust: crates/ferric-pbc/src/rsgdf.rs subtract_g0 (c0 q q^T, c0 S q),
+Rust: crates/ferric-pbc/src/rsgdf/auto_omega.rs (half_sphere_g_count),
+crates/ferric-pbc/src/rsgdf.rs subtract_g0 (c0 q q^T, c0 S q),
 fit_with_metric (B = (J3 W)^T, W = U s^{-1/2}), RsGdfJ/RsGdfK
 (J = B^T (B d), K = sum_k B_k D B_k^T + v_M S D S).
 
@@ -36,7 +40,9 @@ Mutations (each turns the script red):
   - drop the three-index G = 0 subtraction c0 S q_P (the code's
     G0Handling::MetricOnlyMutant) (marker "[FAIL] (claim split-j3)");
   - scale the kept eigenvectors by 1/s instead of 1/sqrt(s)
-    (marker "[FAIL] (claim fit-trivial)").
+    (marker "[FAIL] (claim fit-trivial)");
+  - the full ball instead of the half sphere in the direct G count
+    (marker "[FAIL] (claim auto-omega-gcount)").
 
 Run: python3 scripts/pbc_rsgdf_sympy.py   (a few seconds)
 """
@@ -319,8 +325,47 @@ def claim_fit(j2, j3, fts, xs, pairs):
     )
 
 
+# ---------------------------------------------------------------------------
+# gdf_omega = "auto": the long-range G count
+# ---------------------------------------------------------------------------
+
+
+def claim_auto_omega_gcount():
+    """The chooser's closed form for the half-sphere G count,
+    N_G(w) = Omega (2 w sqrt(ln 1/p))^3 / (12 pi^2): sympy derives it as half the
+    ball of radius gcut = 2 w sqrt(ln 1/p) times the reciprocal-lattice density
+    Omega/(2 pi)^3, and a direct count on the triclinic model lattice (every G
+    whose first nonzero component is positive, as hcore.rs half_gvectors)
+    agrees within 5% at three w, the bar of the Rust test."""
+    om, w, lnp = sp.symbols("Omega omega L", positive=True)
+    gc = 2 * w * sp.sqrt(lnp)
+    half_ball = (
+        sp.Rational(1, 2) * sp.Rational(4, 3) * sp.pi * gc**3 * om / (2 * sp.pi) ** 3
+    )
+    sym_ok = sp.simplify(half_ball - om * gc**3 / (12 * sp.pi**2)) == 0
+    r = np.arange(-30, 31)
+    n = np.array(np.meshgrid(r, r, r, indexing="ij")).reshape(3, -1).T
+    g = n @ RECIP
+    g2 = np.einsum("ij,ij->i", g, g)
+    first = np.where(g[:, 0] != 0, g[:, 0], np.where(g[:, 1] != 0, g[:, 1], g[:, 2]))
+    worst = 0.0
+    lnp_v = math.log(1e13)
+    for wv in (1.0, 1.4, 2.0):
+        gcut = 2 * wv * math.sqrt(lnp_v)
+        count = int(np.sum((g2 <= gcut * gcut) & (first > 0)))
+        est = VOL * gcut**3 / (12 * math.pi**2)
+        worst = max(worst, abs(est / count - 1))
+    check(
+        "auto-omega-gcount",
+        sym_ok and worst < 0.05,
+        f"half-ball volume x density = Omega gcut^3/(12 pi^2): {sym_ok}; "
+        f"max |N_G formula / count - 1| = {worst:.3f} at w = 1, 1.4, 2",
+    )
+
+
 def main():
     claim_erfc_pair()
+    claim_auto_omega_gcount()
     j2, j3, fts, xs, pairs = claim_split()
     claim_fit(j2, j3, fts, xs, pairs)
     if FAILURES:

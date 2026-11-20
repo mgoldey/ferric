@@ -9,8 +9,9 @@
 //! `AoIntegrals.df_jk(aux)` returns a `DfJk`: the production RI-J/RI-K
 //! fitters, built once and reused for every density.
 //!
-//! MO transforms: `ao2mo(c1, c2, c3, c4)` (integral-direct (pq|rs), never
-//! holding the nao⁴ AO tensor) and `df_mo(aux, c1, c2)` (fitted B^P_pq).
+//! MO transforms: `ao2mo(c1, c2, c3, c4)` ((pq|rs) from the dense AO tensor
+//! when that is small, else integral-direct, never holding nao⁴) and
+//! `df_mo(aux, c1, c2)` (fitted B^P_pq).
 //!
 //! `AoIntegrals.xc_functional(name)` returns an `XcFunctional`: E_xc and V_xc
 //! (closed or spin-polarized) and the XC gradient on the SCF's own grid;
@@ -54,7 +55,7 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
-use ferric_integrals::engine_pool::eri_precision;
+use ferric_integrals::engine_pool::{eri_precision, for_each_with_engine, EnginePool};
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
@@ -164,17 +165,130 @@ fn checked_coeffs(c: PyReadonlyArray2<'_, f64>, nao: usize, what: &str) -> PyRes
     Ok(c)
 }
 
-/// (μν|rs) for every AO pair μν and the ket MO pair rs, from one shell pair
-/// (s1, s2) of the bra: all kets (s3 ≥ s4) are computed, scattered into
-/// `(n1·n2, nao, nao)`, and transformed with `c3`/`c4`. Returns the block as
-/// `(n1·n2, n3·n4)` rows in (a, b) order within the shell pair.
+/// At or below this many f64 words (32 MiB) of in-core peak, `ao2mo` takes
+/// the in-core path whatever the direct path would hold: a nao⁴ AO tensor
+/// this small is not a memory question, and computing each unique quartet
+/// once beats twice.
+const AO2MO_INCORE_FLOOR_WORDS: usize = (32 << 20) / 8;
+
+/// Peak words of a pipeline in which stage `i` is built from stage `i - 1`,
+/// which is then freed: the largest pair of adjacent stages.
+fn pipeline_peak(stages: &[usize]) -> usize {
+    match stages {
+        [only] => *only,
+        _ => stages.windows(2).map(|w| w[0] + w[1]).max().unwrap_or(0),
+    }
+}
+
+/// `ao2mo`'s two algorithms, with the stage sizes (f64 words) each holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ao2moPath {
+    /// The 8-fold dense (μν|λσ), then four GEMMs.
+    InCore,
+    /// Bra shell pairs, each against every ket: never holds nao⁴.
+    Direct,
+}
+
+/// Stage sizes of `path` for `nao` AOs and orbital widths `k`; `pair_rows`
+/// is Σ over bra shell pairs s1 ≥ s2 of n1·n2 (the direct path's collected
+/// blocks). Per-worker scratch (one shell pair's (n1·n2, nao, nao) block per
+/// rayon thread) is not counted.
+fn ao2mo_stages(path: Ao2moPath, nao: usize, k: [usize; 4], pair_rows: usize) -> Vec<usize> {
+    let ket = k[2] * k[3];
+    let tail = [nao * nao * ket, k[0] * nao * ket, k[0] * k[1] * ket];
+    let head = match path {
+        // dense AO, then (nao², λ, r) and its transpose (nao², r, λ).
+        Ao2moPath::InCore => vec![nao.pow(4), nao.pow(3) * k[2], nao.pow(3) * k[2]],
+        Ao2moPath::Direct => vec![pair_rows * ket],
+    };
+    head.into_iter().chain(tail).collect()
+}
+
+/// The path `ao2mo` takes and its peak words: in-core when that peak is
+/// under the 32 MiB floor or strictly below the direct one. Equal peaks (all
+/// four widths = nao: both are 2·nao⁴) go direct, which measured faster
+/// there from nao ~41 up (water/cc-pVTZ, nao 58: 540 vs 626 ms on one
+/// thread); in-core was ~2x faster at nao 24.
+fn ao2mo_plan(nao: usize, k: [usize; 4], pair_rows: usize) -> (Ao2moPath, usize) {
+    let incore = pipeline_peak(&ao2mo_stages(Ao2moPath::InCore, nao, k, pair_rows));
+    let direct = pipeline_peak(&ao2mo_stages(Ao2moPath::Direct, nao, k, pair_rows));
+    if incore <= AO2MO_INCORE_FLOOR_WORDS || incore < direct {
+        (Ao2moPath::InCore, incore)
+    } else {
+        (Ao2moPath::Direct, direct)
+    }
+}
+
+/// t[R, a, b] = Σ_λσ ca_λa cb_σb g[R, λ, σ], with `g` viewed as
+/// (R, nao, nao) and SYMMETRIC in (λ, σ): both callers fill both ket
+/// triangles. The symmetry lets the first GEMM contract σ with `ca`
+/// (x[R, λ, a] = Σ_σ g[R, σ, λ] ca_σa); `x` is transposed to (R, a, λ) and
+/// a second GEMM contracts λ with `cb`. Two GEMMs, no per-R loop.
+fn ket_transform(g: Array2<f64>, ca: &Array2<f64>, cb: &Array2<f64>) -> Array2<f64> {
+    let (rows, n) = (g.nrows(), ca.nrows());
+    let (ma, mb) = (ca.ncols(), cb.ncols());
+    let x = g
+        .into_shape_with_order((rows * n, n))
+        .expect("contiguous")
+        .dot(ca)
+        .into_shape_with_order((rows, n, ma))
+        .expect("contiguous");
+    let xt = x.permuted_axes([0, 2, 1]).as_standard_layout().into_owned();
+    xt.into_shape_with_order((rows * ma, n))
+        .expect("contiguous")
+        .dot(cb)
+        .into_shape_with_order((rows, ma * mb))
+        .expect("contiguous")
+}
+
+/// out[p, q, c] = Σ_μν c1_μp c2_νq half[μ, ν, c], with `half` viewed as
+/// (nao, nao, cols): C1ᵀ over μ in one GEMM, then C2ᵀ over ν per p (each a
+/// (k2, nao)·(nao, cols) GEMM, large whenever cols is).
+fn bra_transform(half: Array2<f64>, c1: &Array2<f64>, c2: &Array2<f64>) -> Array3<f64> {
+    let n = c1.nrows();
+    let cols = half.ncols();
+    let (m1, m2) = (c1.ncols(), c2.ncols());
+    let t1 = c1
+        .t()
+        .dot(
+            &half
+                .into_shape_with_order((n, n * cols))
+                .expect("contiguous"),
+        )
+        .into_shape_with_order((m1, n, cols))
+        .expect("contiguous");
+    let mut out = Array3::<f64>::zeros((m1, m2, cols));
+    for (p, slab) in t1.axis_iter(Axis(0)).enumerate() {
+        out.index_axis_mut(Axis(0), p).assign(&c2.t().dot(&slab));
+    }
+    out
+}
+
+/// One shell quartet, or the engine's refusal as an error.
+fn quartet<'e>(
+    eng: &'e mut Engine,
+    prep: &PreparedBasis,
+    [s1, s2, s3, s4]: [usize; 4],
+) -> Result<Option<&'e [f64]>, FerricError> {
+    eng.compute_quartet_checked(prep, s1, s2, s3, s4)
+        .map_err(|status| {
+            FerricError::Libint(format!(
+                "ERI engine refused shell quartet ({s1},{s2}|{s3},{s4}): status {status}"
+            ))
+        })
+}
+
+/// (μν|rs) for every AO pair μν of the bra shell pair (s1, s2) and the ket
+/// MO pair rs: all kets (s3 ≥ s4) are computed, scattered into
+/// `(n1·n2, nao, nao)` (both triangles), and ket-transformed with `c3`/`c4`.
+/// Returns `(n1·n2, k3·k4)` rows in (a, b) order within the shell pair.
 fn half_transformed_pair(
     eng: &mut Engine,
     prep: &PreparedBasis,
     (s1, s2): (usize, usize),
     c3: &Array2<f64>,
     c4: &Array2<f64>,
-) -> Result<Array2<f64>, String> {
+) -> Result<Array2<f64>, FerricError> {
     let n = prep.nbasis();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
@@ -182,14 +296,8 @@ fn half_transformed_pair(
     let mut g = Array3::<f64>::zeros((n1 * n2, n, n));
     for s3 in 0..prep.nshells() {
         for s4 in 0..=s3 {
-            let block = match eng.compute_quartet_checked(prep, s1, s2, s3, s4) {
-                Ok(Some(b)) => b,
-                Ok(None) => continue,
-                Err(status) => {
-                    return Err(format!(
-                        "ERI engine refused shell quartet ({s1},{s2}|{s3},{s4}): status {status}"
-                    ))
-                }
+            let Some(block) = quartet(eng, prep, [s1, s2, s3, s4])? else {
+                continue;
             };
             let (n3, n4) = (dims[s3], dims[s4]);
             for ab in 0..n1 * n2 {
@@ -204,120 +312,149 @@ fn half_transformed_pair(
             }
         }
     }
-    let (m3, m4) = (c3.ncols(), c4.ncols());
-    // (ab·λ, σ) · C4 -> (ab, λ, s); then C3ᵀ per ab -> (ab, r, s).
-    let gs = g
-        .into_shape_with_order((n1 * n2 * n, n))
-        .expect("contiguous")
-        .dot(c4)
-        .into_shape_with_order((n1 * n2, n, m4))
+    let g = g
+        .into_shape_with_order((n1 * n2, n * n))
         .expect("contiguous");
-    let mut out = Array2::<f64>::zeros((n1 * n2, m3 * m4));
-    for (ab, slab) in gs.axis_iter(Axis(0)).enumerate() {
-        let rs = c3.t().dot(&slab);
-        out.row_mut(ab)
-            .assign(&rs.into_shape_with_order(m3 * m4).expect("contiguous"));
-    }
-    Ok(out)
+    Ok(ket_transform(g, c3, c4))
 }
 
-/// (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), integral-direct: one pass
-/// over bra shell pairs (parallel, 2-fold bra symmetry, 2-fold ket symmetry)
-/// builds the half-transformed `(nao, nao, n3·n4)`, then two GEMMs finish it.
-fn ao2mo_direct(
+/// Bra shell pairs s1 ≥ s2, in order.
+fn bra_pairs(nsh: usize) -> Vec<(usize, usize)> {
+    (0..nsh)
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect()
+}
+
+/// Σ over bra shell pairs s1 ≥ s2 of n1·n2: the rows the direct path holds.
+fn bra_pair_rows(prep: &PreparedBasis) -> usize {
+    let dims = prep.shell_dims();
+    bra_pairs(prep.nshells())
+        .iter()
+        .map(|&(s1, s2)| dims[s1] * dims[s2])
+        .sum()
+}
+
+/// (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), shape (k1, k2, k3, k4), by
+/// the path `ao2mo_plan` picked. Both paths build the half-transformed
+/// (μν|rs) as `(nao², k3·k4)` and finish with the same `bra_transform`.
+fn ao2mo_transform(
     op: Operator,
     prep: &PreparedBasis,
+    path: Ao2moPath,
     c: [&Array2<f64>; 4],
-) -> Result<Array4<f64>, String> {
+) -> Result<Array4<f64>, FerricError> {
+    let n = prep.nbasis();
+    let half = match path {
+        Ao2moPath::InCore => {
+            let eri = dense_eri(op, prep)?
+                .into_shape_with_order((n * n, n * n))
+                .expect("contiguous");
+            ket_transform(eri, c[2], c[3])
+        }
+        Ao2moPath::Direct => half_transformed_direct(op, prep, c[2], c[3])?,
+    };
+    let k = [c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols()];
+    Ok(bra_transform(half, c[0], c[1])
+        .into_shape_with_order(k)
+        .expect("contiguous"))
+}
+
+/// Integral-direct half transform (μν|rs) as `(nao², k3·k4)`: one parallel
+/// pass over bra shell pairs with pooled engines (2-fold bra, 2-fold ket symmetry; each unique
+/// quartet is computed twice, once from each side of the bra–ket swap).
+fn half_transformed_direct(
+    op: Operator,
+    prep: &PreparedBasis,
+    c3: &Array2<f64>,
+    c4: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
     let n = prep.nbasis();
     let offs = prep.shell_offsets();
     let dims = prep.shell_dims();
-    let (m1, m2, m3, m4) = (c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols());
-    let pairs: Vec<(usize, usize)> = (0..prep.nshells())
-        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
-        .collect();
-    let blocks = pairs
+    let pool = EnginePool::new(op, prep, eri_precision())?;
+    let blocks = bra_pairs(prep.nshells())
         .par_iter()
-        .map_init(
-            || Engine::new_2e(op, prep, eri_precision()),
-            |eng, &pair| -> Result<_, String> {
-                let eng = eng.as_mut().map_err(|e| e.to_string())?;
-                Ok((pair, half_transformed_pair(eng, prep, pair, c[2], c[3])?))
-            },
-        )
-        .collect::<Result<Vec<_>, String>>()?;
-    let mut half = Array3::<f64>::zeros((n, n, m3 * m4));
+        .map(|&pair| -> Result<_, FerricError> {
+            let blk = pool.with(|eng| half_transformed_pair(eng, prep, pair, c3, c4))?;
+            Ok((pair, blk))
+        })
+        .collect::<Result<Vec<_>, FerricError>>()?;
+    let mut half = Array2::<f64>::zeros((n * n, c3.ncols() * c4.ncols()));
     for ((s1, s2), blk) in blocks {
         for a in 0..dims[s1] {
             for b in 0..dims[s2] {
                 let row = blk.row(a * dims[s2] + b);
                 let (mu, nu) = (offs[s1] + a, offs[s2] + b);
-                half.slice_mut(ndarray::s![mu, nu, ..]).assign(&row);
-                half.slice_mut(ndarray::s![nu, mu, ..]).assign(&row);
+                half.row_mut(mu * n + nu).assign(&row);
+                half.row_mut(nu * n + mu).assign(&row);
             }
         }
     }
-    // C1ᵀ over μ, then C2ᵀ over ν per p.
-    let t1 = c[0]
-        .t()
-        .dot(
-            &half
-                .into_shape_with_order((n, n * m3 * m4))
-                .expect("contiguous"),
-        )
-        .into_shape_with_order((m1, n, m3 * m4))
-        .expect("contiguous");
-    let mut out = Array3::<f64>::zeros((m1, m2, m3 * m4));
-    for (p, slab) in t1.axis_iter(Axis(0)).enumerate() {
-        out.index_axis_mut(Axis(0), p).assign(&c[1].t().dot(&slab));
-    }
-    Ok(out
-        .into_shape_with_order((m1, m2, m3, m4))
-        .expect("contiguous"))
+    Ok(half)
 }
 
-/// Dense (μν|λσ) over every shell quartet, scattered by 8-fold symmetry.
-///
-/// Serial on purpose: this is the nao⁴ reference tensor for small systems,
-/// not a production path (`jk()` is the production path).
-fn dense_eri(op: Operator, prep: &PreparedBasis) -> PyResult<Array4<f64>> {
+/// Unique shell quartets below which `dense_eri` runs serially. Measured
+/// 2026-11-19 on a loaded box (load ~13 on 6 cores): water/cc-pVDZ (3k
+/// quartets) took 22 ms serial vs 56 ms at 6 rayon threads; water/cc-pVTZ
+/// (32k) 221 ms serial vs 130 ms.
+const PAR_DENSE_ERI_QUARTET_THRESHOLD: usize = 10_000;
+
+/// Dense (μν|λσ) over every unique shell quartet, scattered by 8-fold
+/// symmetry. Parallel over bra shell pairs above
+/// [`PAR_DENSE_ERI_QUARTET_THRESHOLD`] with one pooled engine per worker
+/// (`for_each_with_engine`), serial below it. Deterministic: every element
+/// is the image of exactly one unique quartet, so each is written by one
+/// task with one value whatever the thread count or schedule.
+fn dense_eri(op: Operator, prep: &PreparedBasis) -> Result<Array4<f64>, FerricError> {
     let n = prep.nbasis();
-    let nsh = prep.nshells();
-    let dims = prep.shell_dims();
-    let offs = prep.shell_offsets();
-    let mut eng = Engine::new_2e(op, prep, eri_precision()).map_err(make_err)?;
     let mut eri = Array4::<f64>::zeros((n, n, n, n));
-    for s1 in 0..nsh {
-        for s2 in 0..=s1 {
-            let p12 = s1 * (s1 + 1) / 2 + s2;
-            for s3 in 0..nsh {
-                for s4 in 0..=s3 {
-                    if s3 * (s3 + 1) / 2 + s4 > p12 {
-                        continue;
-                    }
-                    let block = match eng.compute_quartet_checked(prep, s1, s2, s3, s4) {
-                        Ok(Some(b)) => b,
-                        Ok(None) => continue,
-                        Err(status) => {
-                            return Err(make_err(format!(
-                                "ERI engine refused shell quartet ({s1},{s2}|{s3},{s4}): status {status}"
-                            )))
-                        }
-                    };
-                    let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                    for a in 0..n1 {
-                        for b in 0..n2 {
-                            for c in 0..n3 {
-                                for d in 0..n4 {
-                                    let v = block[((a * n2 + b) * n3 + c) * n4 + d];
-                                    let (i, j) = (offs[s1] + a, offs[s2] + b);
-                                    let (k, l) = (offs[s3] + c, offs[s4] + d);
-                                    for (p, q) in [(i, j), (j, i)] {
-                                        for (r, s) in [(k, l), (l, k)] {
-                                            eri[[p, q, r, s]] = v;
-                                            eri[[r, s, p, q]] = v;
-                                        }
-                                    }
+    let base = eri.as_mut_ptr() as usize;
+    let pairs = bra_pairs(prep.nshells());
+    let parallel = pairs.len() * (pairs.len() + 1) / 2 >= PAR_DENSE_ERI_QUARTET_THRESHOLD;
+    for_each_with_engine(
+        parallel,
+        pairs.len(),
+        || Engine::new_2e(op, prep, eri_precision()),
+        |eng, p12| scatter_bra_pair(eng, prep, &pairs, p12, base),
+    )?;
+    Ok(eri)
+}
+
+/// Every unique quartet (s1 s2|s3 s4) with bra pair `pairs[p12]` and ket
+/// pair at or below it, written with its 8 images into the (nao,)*4 tensor
+/// at `base`.
+fn scatter_bra_pair(
+    eng: &mut Engine,
+    prep: &PreparedBasis,
+    pairs: &[(usize, usize)],
+    p12: usize,
+    base: usize,
+) -> Result<(), FerricError> {
+    let n = prep.nbasis();
+    let (dims, offs) = (prep.shell_dims(), prep.shell_offsets());
+    let at = |p: usize, q: usize, r: usize, s: usize| ((p * n + q) * n + r) * n + s;
+    let (s1, s2) = pairs[p12];
+    for &(s3, s4) in &pairs[..=p12] {
+        let Some(block) = quartet(eng, prep, [s1, s2, s3, s4])? else {
+            continue;
+        };
+        let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
+        for a in 0..n1 {
+            for b in 0..n2 {
+                for c in 0..n3 {
+                    for d in 0..n4 {
+                        let v = block[((a * n2 + b) * n3 + c) * n4 + d];
+                        let (i, j) = (offs[s1] + a, offs[s2] + b);
+                        let (k, l) = (offs[s3] + c, offs[s4] + d);
+                        for (p, q) in [(i, j), (j, i)] {
+                            for (r, s) in [(k, l), (l, k)] {
+                                // SAFETY: (p,q,r,s) and (r,s,p,q) are images
+                                // of the unique quartet (s1 s2|s3 s4), which
+                                // only this task computes; indices are < n.
+                                unsafe {
+                                    let e = base as *mut f64;
+                                    *e.add(at(p, q, r, s)) = v;
+                                    *e.add(at(r, s, p, q)) = v;
                                 }
                             }
                         }
@@ -326,7 +463,7 @@ fn dense_eri(op: Operator, prep: &PreparedBasis) -> PyResult<Array4<f64>> {
             }
         }
     }
-    Ok(eri)
+    Ok(())
 }
 
 /// AO integrals and J/K builds for one molecule in one basis.
@@ -599,7 +736,7 @@ impl PyAoIntegrals {
             )));
         }
         let prep = &self.prep;
-        let eri = py.allow_threads(|| dense_eri(op, prep))?;
+        let eri = py.allow_threads(|| dense_eri(op, prep)).map_err(make_err)?;
         self.log.note(self.op_use("eri", operator, omega, None));
         Ok(PyArray4::from_owned_array(py, eri))
     }
@@ -744,9 +881,19 @@ impl PyAoIntegrals {
     /// MO-basis ERIs (pq|rs) = Σ C1_μp C2_νq C3_λr C4_σs (μν|λσ), shape
     /// (k1, k2, k3, k4), chemists' notation.
     ///
-    /// Integral-direct: the nao⁴ AO tensor is never stored; peak memory is
-    /// the half-transformed nao²·k3·k4 plus the result, and above `max_gb`
-    /// GiB it raises `ValueError`. Put the smaller orbital sets in `c3`/`c4`.
+    /// Two algorithms, picked by peak memory (f64 words, K = k3·k4):
+    ///
+    /// * in-core: the 8-fold dense AO tensor (each unique quartet computed
+    ///   once), then four GEMMs. Peak max(nao⁴ + nao³·k3, 2·nao³·k3,
+    ///   nao³·k3 + nao²·K, nao²·K + k1·nao·K, k1·nao·K + k1·k2·K).
+    /// * integral-direct: never holds nao⁴; each unique quartet is computed
+    ///   twice. Peak max(P·K + nao²·K, nao²·K + k1·nao·K, k1·nao·K +
+    ///   k1·k2·K), P = Σ_{s1≥s2} n1·n2 ≈ nao²/2.
+    ///
+    /// In-core runs when its peak is at most 32 MiB or strictly below the
+    /// direct one. Above `max_gb` GiB for the chosen path it raises
+    /// `ValueError`.
+    /// Put the smaller orbital sets in `c3`/`c4`.
     #[pyo3(signature = (c1, c2, c3, c4, operator="coulomb", omega=None, max_gb=DEFAULT_ERI_MAX_GB))]
     #[allow(clippy::too_many_arguments)]
     fn ao2mo<'py>(
@@ -768,18 +915,18 @@ impl PyAoIntegrals {
             checked_coeffs(c3, n, "c3")?,
             checked_coeffs(c4, n, "c4")?,
         ];
-        let k: Vec<f64> = c.iter().map(|m| m.ncols() as f64).collect();
-        let words = (n * n) as f64 * k[2] * k[3] + k.iter().product::<f64>();
-        let gb = words * 8.0 / f64::from(1u32 << 30);
+        let k = [c[0].ncols(), c[1].ncols(), c[2].ncols(), c[3].ncols()];
+        let (path, words) = ao2mo_plan(n, k, bra_pair_rows(&self.prep));
+        let gb = words as f64 * 8.0 / f64::from(1u32 << 30);
         if gb > max_gb {
             return Err(PyValueError::new_err(format!(
-                "ao2mo needs {gb:.2} GiB > max_gb={max_gb} (half-transformed nao^2*k3*k4 plus \
-                 the result); use df_mo(), or raise max_gb"
+                "ao2mo needs {gb:.2} GiB > max_gb={max_gb} (peak of its {path:?} path); use \
+                 df_mo(), or raise max_gb"
             )));
         }
         let prep = &self.prep;
         let out = py
-            .allow_threads(|| ao2mo_direct(op, prep, [&c[0], &c[1], &c[2], &c[3]]))
+            .allow_threads(|| ao2mo_transform(op, prep, path, [&c[0], &c[1], &c[2], &c[3]]))
             .map_err(make_err)?;
         self.log.note(self.op_use("ao2mo", operator, omega, None));
         Ok(PyArray4::from_owned_array(py, out))

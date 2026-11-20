@@ -1,5 +1,5 @@
 # Coloring the rings {#coloring-the-rings}
 
-<!-- status: gap; registry: rs-mp2-rpa -->
+<!-- status: gap; registry: none -->
 
 Deferred until publication.

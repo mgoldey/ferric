@@ -3457,9 +3457,10 @@ pub struct ScfCfg {
     /// JK-fitting basis for `jk = "rijk" | "rijcosx"` (bundled name, default
     /// def2-universal-jkfit). Never the correlation method's RI aux.
     pub jk_aux: Option<String>,
-    /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
-    /// (UHF / ROHF / UKS / ROKS). The shift is rational-damped by the DIIS
-    /// error so the converged Fock is the unshifted stationary point. A
+    /// Optional virtual-virtual block level shift (Ha). The shift is ramped
+    /// by the DIIS error (`ferric_scf::closed_shell_level_shift_ramp` /
+    /// `open_shell_level_shift_ramp`) so the converged
+    /// Fock is the unshifted stationary point. A
     /// value of 0.2 is a useful default for OH-like doublets at LDA/PBE
     /// where DIIS otherwise plateaus.
     pub level_shift: Option<f64>,
@@ -5519,12 +5520,20 @@ impl Config {
             return Ok(());
         };
         if q.polarizabilities_angstrom3.is_empty() {
-            return match q.thole_a {
-                Some(_) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
-                                polarizable site it would be silently ignored"
+            return match (q.thole_a, &q.polarization_exclusions) {
+                (Some(_), _) => Err("[qmmm] thole_a needs polarizabilities_angstrom3: with no \
+                                     polarizable site it would be silently ignored"
                     .to_string()),
-                None => Ok(()),
+                (_, Some(_)) => Err("[qmmm] polarization_exclusions needs \
+                                     polarizabilities_angstrom3: with no polarizable site it \
+                                     would be silently ignored"
+                    .to_string()),
+                _ => Ok(()),
             };
+        }
+        if let Some(e) = &q.polarization_exclusions {
+            ferric_scf::qmmm::PolarizationExclusions::parse_config_str(e)
+                .map_err(|err| format!("[qmmm] {err}"))?;
         }
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -10283,6 +10292,32 @@ json = [1, 2]
         assert!(pol.exclusions.is_empty());
     }
 
+    /// The PQR residue field is the molecule: with the ion as the QM region
+    /// and the water's oxygen polarizable, the oxygen ignores its own two
+    /// hydrogens by default, and `"none"` turns that off.
+    #[test]
+    fn qmmm_polarization_excludes_the_pqr_residue_by_default() {
+        let base = "qm_indices = [3]\npolarizabilities_angstrom3 = [1.44, 0.0, 0.0, 0.0]";
+        let pol = |extra: &str| {
+            let q = qmmm_cfg(&format!("{base}{extra}"));
+            let sys = q.to_system(1, 1).unwrap();
+            let h: Vec<[f64; 3]> = [1, 2]
+                .iter()
+                .map(|&i| [sys.atoms[i].x, sys.atoms[i].y, sys.atoms[i].z_pos])
+                .collect();
+            (q.polarizable_embedding(&sys).unwrap().unwrap(), h)
+        };
+        let (p, h) = pol("");
+        assert_eq!(p.excluded_charges, vec![h]);
+        let (p, _) = pol("\npolarization_exclusions = \"none\"");
+        assert!(p.excluded_charges.is_empty() && p.exclusions.is_empty());
+        let q = qmmm_cfg(&format!("{base}\npolarization_exclusions = \"bonds\""));
+        let e = q
+            .polarizable_embedding(&q.to_system(1, 1).unwrap())
+            .unwrap_err();
+        assert!(e.contains("unknown value"), "{e}");
+    }
+
     #[test]
     fn qmmm_thole_a_selects_the_damping_and_zero_disables_it() {
         let with = |t: &str| {
@@ -10421,6 +10456,7 @@ json = [1, 2]
                 boundary_scheme: default_boundary_scheme(),
                 polarizabilities_angstrom3: vec![],
                 thole_a: None,
+                polarization_exclusions: None,
             };
             match cfg.to_system(0, 1) {
                 Ok(_) => panic!("{label}: an unknown element must be refused"),
@@ -10463,6 +10499,7 @@ json = [1, 2]
             boundary_scheme: default_boundary_scheme(),
             polarizabilities_angstrom3: vec![],
             thole_a: None,
+            polarization_exclusions: None,
         };
         assert!(cfg.to_system(0, 1).is_ok(), "a valid PQR must still build");
     }
@@ -13078,6 +13115,13 @@ pub struct QmmmCfg {
     /// disables damping (the bare dipole-dipole tensor), the convention of
     /// Python `run_qmmm(thole_a=0.0)`. Needs `polarizabilities_angstrom3`.
     pub thole_a: Option<f64>,
+    /// Which charges and sites a polarizable site ignores: `"molecule"`
+    /// (default) = its own PQR residue (the residue sequence number), so a
+    /// water's sites are not polarized by that water's own charges; `"none"`
+    /// = no exclusions, right only for isolated sites such as ions. Parsed by
+    /// [`ferric_scf::qmmm::PolarizationExclusions::parse_config_str`]. Needs
+    /// `polarizabilities_angstrom3`.
+    pub polarization_exclusions: Option<String>,
 }
 
 fn default_boundary_scheme() -> String {
@@ -13094,6 +13138,9 @@ fn default_boundary_scheme() -> String {
 #[derive(Debug, Clone)]
 pub struct PqrAtom {
     pub name: String,
+    /// The residue sequence field as written (`resSeq`), the molecule label
+    /// of same-molecule polarization exclusion.
+    pub res_seq: String,
     pub q: f64,
     /// Angstrom, as written in the file.
     pub x: f64,
@@ -13137,6 +13184,22 @@ fn element_from_pqr_name(name: &str) -> String {
 /// Deliberately strict: a record whose field count is not 10 is an ERROR, not
 /// a skipped line. A silently dropped atom changes the MM field without
 /// changing anything a user would look at.
+/// Molecule labels from the PQR residue field, numbered in order of first
+/// appearance (read by same-molecule polarization exclusion).
+fn pqr_residue_ids(atoms: &[PqrAtom]) -> Vec<usize> {
+    let mut seen: Vec<&str> = Vec::new();
+    atoms
+        .iter()
+        .map(|a| match seen.iter().position(|r| *r == a.res_seq) {
+            Some(k) => k,
+            None => {
+                seen.push(&a.res_seq);
+                seen.len() - 1
+            }
+        })
+        .collect()
+}
+
 pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         ferric_core::FerricError::General(format!("[qmmm] pqr: cannot read {path}: {e}"))
@@ -13165,6 +13228,7 @@ pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
         };
         out.push(PqrAtom {
             name: f[2].to_string(),
+            res_seq: f[4].to_string(),
             x: num(f[5], "x")?,
             y: num(f[6], "y")?,
             z: num(f[7], "z")?,
@@ -13236,29 +13300,34 @@ impl QmmmCfg {
         &self,
         sys: &ferric_scf::qmmm::QmmmSystem,
     ) -> Result<Option<ferric_scf::polarizable::PolarizableSites>, String> {
-        use ferric_scf::polarizable::{PolarizableSites, DEFAULT_THOLE_A};
+        use ferric_scf::polarizable::DEFAULT_THOLE_A;
+        use ferric_scf::qmmm::PolarizationExclusions;
         if self.polarizabilities_angstrom3.is_empty() {
             return Ok(None);
-        }
-        let sites = sys.to_polarizable_sites();
-        if sites.is_empty() {
-            return Err(
-                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
-                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
-                 give an MM atom a polarizability."
-                    .to_string(),
-            );
         }
         let thole_a = match self.thole_a {
             None => Some(DEFAULT_THOLE_A),
             Some(a) if a > 0.0 => Some(a),
             Some(_) => None,
         };
-        Ok(Some(PolarizableSites {
-            sites,
-            thole_a,
-            ..Default::default()
-        }))
+        let scheme = PolarizationExclusions::parse_config_str(
+            self.polarization_exclusions
+                .as_deref()
+                .unwrap_or("molecule"),
+        )
+        .map_err(|e| format!("[qmmm] {e}"))?;
+        let ids = sys
+            .polarization_molecule_ids(scheme, None)
+            .map_err(|e| format!("[qmmm] {e}"))?;
+        sys.polarizable_embedding(thole_a, ids.as_deref())
+            .map_err(|e| format!("[qmmm] {e}"))?
+            .map(Some)
+            .ok_or_else(|| {
+                "[qmmm] polarizabilities_angstrom3 has no positive entry on an MM atom (entries \
+                 on QM-region atoms are ignored), so nothing would polarize. Remove the key or \
+                 give an MM atom a polarizability."
+                    .to_string()
+            })
     }
 
     /// Build the `QmmmSystem` this section describes.
@@ -13266,13 +13335,44 @@ impl QmmmCfg {
     /// `qm_charge`/`qm_multiplicity` come from `[molecule]` and apply to the QM
     /// REGION, not the whole structure -- the MM atoms carry their own partial
     /// charges and are not part of the SCF.
+    /// The QM region: explicit `qm_indices`, or every atom within
+    /// `qm_radius_angstrom` of a `qm_seeds` atom.
+    fn qm_selection(
+        &self,
+        have_indices: bool,
+    ) -> Result<ferric_scf::qmmm::QmSelection, ferric_core::FerricError> {
+        use ferric_core::units::ANGSTROM_TO_BOHR;
+        use ferric_core::FerricError;
+        use ferric_scf::qmmm::QmSelection;
+        if have_indices {
+            return Ok(QmSelection::Indices(self.qm_indices.clone()));
+        }
+        let r = self.qm_radius_angstrom.ok_or_else(|| {
+            FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
+        })?;
+        if self.qm_seeds.is_empty() {
+            return Err(FerricError::General(
+                "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
+            ));
+        }
+        if !(r.is_finite() && r > 0.0) {
+            return Err(FerricError::General(format!(
+                "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
+            )));
+        }
+        Ok(QmSelection::WithinRadius {
+            seeds: self.qm_seeds.clone(),
+            radius: r * ANGSTROM_TO_BOHR,
+        })
+    }
+
     pub fn to_system(
         &self,
         qm_charge: i32,
         qm_multiplicity: usize,
     ) -> Result<ferric_scf::qmmm::QmmmSystem, ferric_core::FerricError> {
         use ferric_core::FerricError;
-        use ferric_scf::qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
+        use ferric_scf::qmmm::{BoundaryChargeScheme, QmmmAtom, QmmmSystem};
 
         use ferric_core::units::ANGSTROM_TO_BOHR;
 
@@ -13349,29 +13449,9 @@ impl QmmmCfg {
             check("qm_seeds", i)?;
         }
 
-        let selection = if have_indices {
-            QmSelection::Indices(self.qm_indices.clone())
-        } else {
-            let r = self.qm_radius_angstrom.ok_or_else(|| {
-                FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
-            })?;
-            if self.qm_seeds.is_empty() {
-                return Err(FerricError::General(
-                    "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
-                ));
-            }
-            if !(r.is_finite() && r > 0.0) {
-                return Err(FerricError::General(format!(
-                    "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
-                )));
-            }
-            QmSelection::WithinRadius {
-                seeds: self.qm_seeds.clone(),
-                radius: r * ANGSTROM_TO_BOHR,
-            }
-        };
-
-        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?;
+        let selection = self.qm_selection(have_indices)?;
+        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?
+            .with_residue_ids(pqr_residue_ids(&atoms_pqr))?;
 
         if !self.link_bonds.is_empty() {
             for b in &self.link_bonds {

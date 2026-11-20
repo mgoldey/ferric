@@ -123,7 +123,15 @@ When are the symmetrized charges equal to the raw ones? Exactly when $DAS$ is
 symmetric, $SAD^{\mathsf T} = DAS$. That is the discrete form of the
 continuum Calderón identity $\hat S\hat D^{\dagger} = \hat D\hat S$. A Lebedev
 sphere satisfies it only approximately, and a molecular cavity not at all.
-So in practice $q \ne Qv$, while $E_{\mathrm{pcm}}$ is unaffected.
+So in practice $q \ne Qv$, while $E_{\mathrm{pcm}}$ is unaffected. Expanding
+the two products gives the asymmetry directly,
+
+$$ RK^{\mathsf T} - KR^{\mathsf T} = \frac{f(f-1)}{2\pi}\big(SAD^{\mathsf T} - DAS\big) , $$
+
+for any $S$, $D$ and $A$, so $Q$ is symmetric when $DAS$ is, and at $f = 1$
+on any cavity: the conductor limit of section @sec:conductor-limit-and-cosmo
+needs no symmetrization. `scripts/pcm_ief_sympy.py` claim 5 checks the
+identity with $f$ symbolic.
 
 Why symmetrize at all, when the energy is the same? The charges also set the
 reaction-field operator. The SCF needs $V^{\mathrm{pcm}} = \partial
@@ -173,7 +181,7 @@ let e_pcm = 0.5 * q.dot(v);
 > | | |
 > |---|---|
 > | Proof | `scripts/pcm_ief_sympy.py`, claim 5 (exact rational arithmetic, $n = 4$) |
-> | Negative control | the reversed order $(K^{\mathsf T})^{-1}R^{\mathsf T}v$ changes the energy; a generic $D$ gives $q_{\mathrm{sym}} \ne Qv$ |
+> | Negative control | the reversed order $(K^{\mathsf T})^{-1}R^{\mathsf T}v$ changes the energy; a generic $D$ gives $q_{\mathrm{sym}} \ne Qv$; the runner builds $q_{\mathrm{sym}}$ in the reversed order (claim 5 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pcm/src/solver.rs::solve_pcm_charges` |
 > | Code test | `symmetrized_energy_equals_unsymmetrized_quadratic_form` in `crates/ferric-pcm/src/solver.rs` |
@@ -231,12 +239,12 @@ breaks every channel (the control of box @eq:pcm-sphere-kirkwood).
 > $K$ and $R$ is $k_l = (\varepsilon-1)(l+1)/((l+1)\varepsilon+l)$ for every
 > $l$. At $l = 0$ this is Gauss's law, total induced charge
 > $-(\varepsilon-1)/\varepsilon$, and the Born energy
-> $-(\varepsilon-1)Q^2/(2\varepsilon R)$.
+> $-(\varepsilon-1)q_0^2/(2\varepsilon R)$ of a central charge $q_0$.
 >
 > | | |
 > |---|---|
 > | Proof | `scripts/pcm_ief_sympy.py`, claim 3 |
-> | Negative control | $f = (\varepsilon-1)/\varepsilon$ is not Kirkwood; the C-PCM factor $(\varepsilon-1)/\varepsilon$ and the COSMO factor $(\varepsilon-1)/(\varepsilon+\tfrac12)$ each match at one $l$ only |
+> | Negative control | $f = (\varepsilon-1)/\varepsilon$ is not Kirkwood; the C-PCM factor $(\varepsilon-1)/\varepsilon$ and the COSMO factor $(\varepsilon-1)/(\varepsilon+\tfrac12)$ each match at one $l$ only; the runner writes $R_l$ with $1 + D_l/2\pi$ (claim 3 fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pcm/src/matrices.rs::build_k_r` |
 > | Code test | `point_charge_in_sphere_matches_born_kirkwood_and_gauss_law` in `crates/ferric-pcm/tests/ief_limits.rs`, the discrete counterpart (equation @eq:pcm-sphere-discrete) |
@@ -267,8 +275,10 @@ The test asserts that the error falls monotonically from 50 to 110 to 302
 points, and that the 302-point error is below the a-posteriori estimate in
 the last column. The total charge must lie within $|Q_{302}-Q_{110}|$ of
 Gauss's $-(\varepsilon-1)/\varepsilon$. The test derives all its
-tolerances from these discretization estimates. `scripts/pcm_ief_sympy.py`
-claim 7 does the same in numpy on a scipy Lebedev sphere.
+tolerances from these discretization estimates, and prints the table to
+stderr (`cargo test -p ferric-pcm --test ief_limits -- --nocapture`).
+`scripts/pcm_ief_sympy.py` claim 7 does the same in numpy on a scipy Lebedev
+sphere and prints the same errors to two figures.
 
 > **Verified equation {#eq:pcm-sphere-discrete}** · the discrete sphere converges to Born, Kirkwood and Gauss
 >
@@ -294,18 +304,21 @@ because a charge nearer the surface puts weight on high $l$, and a Lebedev
 grid of $N_{\mathrm{Leb}}$ points resolves only harmonics up to a finite
 degree.
 
-The `PointCharge` $S$ and $D$ on the same spheres (numpy) converge far more
-slowly. The central-charge relative error is $4.5\times10^{-3}$,
+The `PointCharge` $S$ and $D$ on the same spheres (`scripts/pcm_ief_sympy.py`
+claim 7) converge far more slowly. The central-charge relative error is $4.5\times10^{-3}$,
 $3.2\times10^{-3}$ and $2.0\times10^{-3}$ at 50, 110 and 302 points. The
 cause is the self-term $1.0694\sqrt{4\pi/a_i}$ on a grid with unequal
 weights. This is why `GaussianSmeared` is the default.
 
-Water / cc-pVDZ against $\varepsilon$, from the `589b50832` build, printed
-next to the Born factor $(\varepsilon-1)/\varepsilon$. The energy rises with
-$\varepsilon$ and saturates, but it is not proportional to the Born factor.
-Water is neutral, so the $l = 0$ channel carries no charge; its leading
-channel is the dipole, whose Kirkwood factor $k_1 = 2(\varepsilon-1)/(2\varepsilon+1)$
-is smaller than the Born factor at small $\varepsilon$.
+Water / cc-pVDZ against $\varepsilon$, from the `3f612e0b3` build, printed
+next to the Born factor $(\varepsilon-1)/\varepsilon$ and the dipole factor
+$k_1 = 2(\varepsilon-1)/(2\varepsilon+1)$. The energy falls with
+$\varepsilon$ and saturates; its magnitude is not proportional to the Born
+factor. Water is neutral, so the $l = 0$ channel carries no charge; its
+leading channel is the dipole, and $k_1$ is smaller than the Born factor at
+small $\varepsilon$. $\Delta E/k_1$ runs from $-6.10$ to $-6.36$ kcal/mol
+over the five rows, while $\Delta E$ over the Born factor runs from $-4.81$
+to $-6.36$.
 
 ```python
 import ferric
@@ -316,15 +329,16 @@ bs = ferric.BasisSet.bundled("cc-pvdz")
 e_vac = ferric.run_rhf(mol, bs).energy
 for eps in (1.88, 4.71, 32.6, 78.4, 1.0e4):
     d = ferric.run_rhf(mol, bs, solvent=eps).energy - e_vac
-    print(f"eps {eps:9.2f}: dE = {d * 627.5095:9.4f} kcal/mol   (eps-1)/eps = {(eps - 1) / eps:.4f}")
+    born, k1 = (eps - 1) / eps, 2 * (eps - 1) / (2 * eps + 1)
+    print(f"eps {eps:9.2f}: dE = {d * 627.5095:9.4f} kcal/mol   (eps-1)/eps = {born:.4f}   k1 = {k1:.4f}")
 ```
 
 ```text
-eps      1.88: dE =   -2.2539 kcal/mol   (eps-1)/eps = 0.4681
-eps      4.71: dE =   -4.4408 kcal/mol   (eps-1)/eps = 0.7877
-eps     32.60: dE =   -6.0501 kcal/mol   (eps-1)/eps = 0.9693
-eps     78.40: dE =   -6.2275 kcal/mol   (eps-1)/eps = 0.9872
-eps  10000.00: dE =   -6.3551 kcal/mol   (eps-1)/eps = 0.9999
+eps      1.88: dE =   -2.2539 kcal/mol   (eps-1)/eps = 0.4681   k1 = 0.3697
+eps      4.71: dE =   -4.4408 kcal/mol   (eps-1)/eps = 0.7877   k1 = 0.7121
+eps     32.60: dE =   -6.0501 kcal/mol   (eps-1)/eps = 0.9693   k1 = 0.9547
+eps     78.40: dE =   -6.2275 kcal/mol   (eps-1)/eps = 0.9872   k1 = 0.9810
+eps  10000.00: dE =   -6.3551 kcal/mol   (eps-1)/eps = 0.9999   k1 = 0.9999
 ```
 
 ## The algorithm {#ief-operators-algorithm}
@@ -382,6 +396,9 @@ construction.
   sphere tests (section @sec:ief-operators-sphere-limits): the central-charge
   error stays at the $10^{-3}$ level at 302 points, from the self-term on a
   grid with unequal weights.
+- `solve_pcm_charges` factorizes $K$ and $K^{\mathsf T}$ afresh on every SCF
+  iteration, two dense $N^3$ LU factorizations, although $K$ is fixed for
+  the SCF and one LU of $K$ would serve both solves and every iteration.
 - The sphere tests cannot see a swap of the source and field normals,
   because $D$ is symmetric on a sphere. The molecular-cavity PySCF
   comparison is the test for that.

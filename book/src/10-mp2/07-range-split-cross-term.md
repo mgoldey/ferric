@@ -10,7 +10,7 @@ with long is long-range MP2, and one of each is a third contribution, the
 cross term $X$, that belongs to neither. Every method that pairs a
 short-range MP2 with a separate long-range treatment has to decide what to
 do with $X$: MP2-V (section @sec:mp2-v) and RS-MP2 + LR-RPA
-(`ferric-rpa/src/rs_mp2_rpa.rs`) decide differently.
+(section @sec:cross-term) decide differently.
 
 The plan: derive the identity (@sec:range-split-cross-term-identity), list what each construction does
 with $X$ (@sec:range-split-cross-term-consequences), and read the code that evaluates the three energies
@@ -56,8 +56,9 @@ $$ B(g, h) = -\sum_{ijab} \frac{g_{ijab}\,\big(2h_{ijab} - h^\times_{ijab}\big)}
 
 which is symmetric by the same relabelling, $E[g] = B(g, g)$ and
 $X = 2B(s, l)$. The cross term is twice an MP2 energy evaluated with one
-short-range and one long-range factor. (Both forms checked numerically on
-random tensors, to $10^{-15}$.)
+short-range and one long-range factor. Claim 4 of
+`scripts/mp2_variant_identities.py` checks both forms of $X$ and the
+symmetry of $B$ on random tensors.
 
 Check the limits. As $\omega \to 0$, $\operatorname{erf}(\omega r) \to 0$,
 so $l \to 0$, $X \to 0$ and $E[s] \to E[1/r]$. As $\omega \to \infty$,
@@ -77,7 +78,7 @@ so $E[\operatorname{erfc}] + E[\operatorname{erf}] \ne E[1/r]$.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/attenuated.rs::rs_mp2_decomposition` |
 >
-> <!-- verified: id=mp2.rs.cross-term; script=scripts/mp2_variant_identities.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/attenuated.rs::rs_mp2_decomposition, ferric-mp2/src/attenuated.rs::attenuated_ri_mp2_long_range -->
+> <!-- verified: id=mp2.rs.cross-term; script=scripts/mp2_variant_identities.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/attenuated.rs::rs_mp2_decomposition, ferric-mp2/src/attenuated.rs::attenuated_ri_mp2_long_range; registry=attenuated-mp2 -->
 
 ## Consequences {#range-split-cross-term-consequences}
 
@@ -89,7 +90,8 @@ say where $X$ goes. The three constructions in ferric answer differently:
 |---|---|
 | Attenuated MP2 (section @sec:attenuated-mp2) | drops $E[l]$ and $X$ together; the fitted length absorbs the loss |
 | MP2-V (section @sec:mp2-v) | drops $E[l]$ and $X$, then adds a model long-range tail (damped VV10) |
-| RS-MP2 + LR-RPA, formulation B (`delta-lr`) | keeps full-Coulomb MP2 and corrects the long range by $E_{\mathrm{dRPA}}[\operatorname{erf}] - 2E_{\mathrm{OS}}[\operatorname{erf}]$, so $X$ is never separated |
+| RS-MP2 + LR-RPA, formulation B (`delta-lr`, section @sec:two-formulations) | keeps full-Coulomb MP2 and corrects the long range by $E_{\mathrm{dRPA}}[\operatorname{erf}] - 2E_{\mathrm{OS}}[\operatorname{erf}]$, so $X$ is never separated |
+| RS-MP2 + LR-RPA, formulation T (`coupled-rings`) | keeps full-Coulomb MP2 and adds $\Delta\mathrm{dRPA}[1/r] - \Delta\mathrm{dRPA}[\operatorname{erfc}]$, $\Delta\mathrm{dRPA} = E_{\mathrm{dRPA}} - 2E_{\mathrm{OS}}$; $X$ stays inside $E_{\mathrm{MP2}}[1/r]$, and the ring correction also keeps the mixed short–long rings beyond second order |
 
 $X$ is not small next to $E[l]$. For the S66 dimers at the terfc length
 of MP2(terfc, aTZ), $r_0 = 1.35$ Å, Goldey, Belzunces and Head-Gordon
@@ -131,7 +133,9 @@ Points about it:
   integrals fitted in one common metric, because the identity needs
   $s + l$ to equal the fitted Coulomb integral. With three fits the
   residual $E[1/r] - E[\operatorname{erfc}] - E[\operatorname{erf}]$ is $X$
-  plus the difference of three fitting errors.
+  plus the difference of three fitting errors. With one common metric
+  for all three operators the residual would be $X$ exactly; no entry
+  point fits them that way.
 
 The unit test
 `ferric-mp2/src/attenuated.rs::tests::test_rs_mp2_decomposition_sums_approximately_to_full`
@@ -139,7 +143,10 @@ bounds that residual by 0.05 Ha for H2 at $\omega = 0.5$ Bohr⁻¹. That is a
 smoke check that the three energies are wired, not a measurement of $X$.
 
 For water in cc-pVDZ at $\omega = 0.420$ Å⁻¹, from the `589b50832` build, the
-three energies and the residual are below. The residual is 5 mEh, larger than
+three energies and the residual are below. `run_rs_mp2_rpa` converges its
+reference with RI-JK by default, so its $E_{\mathrm{MP2}}[1/r]$ differs from
+the value of section @sec:closed-shell-ri-mp2 by $2.5\times10^{-5}$ Ha;
+`scf_jk="exact"` gives an exact-$J/K$ reference. The residual is 5 mEh, larger than
 the long-range energy itself; it is $X$ plus the three fitting differences,
 and this run does not separate the two:
 
@@ -164,16 +171,17 @@ E_MP2[erf]  = -0.00014730 Ha
 residual E[1/r] - E[erfc] - E[erf] = -0.00523687 Ha  (X plus fit differences)
 ```
 
-## Known limits (2026-11-15)
+## Known limits {#range-split-cross-term-limits}
 
 - No entry point returns $X$ itself.
 - No analytic anchor for the residual beyond the proof's identity.
 
-## Sources
+## Sources {#range-split-cross-term-sources}
 
 | Source | Used for |
 |---|---|
-| section @sec:attenuated-mp2-energy ("Range split") | equation @eq:mp2-rs-cross-term |
+| section @sec:erf-terf-properties-decide-integrals-used | the quadratic-in-the-integrals argument behind (@eq:mp2-rs-cross-term) |
+| section @sec:cross-term | the same split in RS-MP2 + LR-RPA |
 | `crates/ferric-mp2/src/attenuated.rs` | the decomposition, the test |
 | `scripts/mp2_variant_identities.py`, claim 4 | verified box |
 | Goldey, Belzunces and Head-Gordon, JCTC 11, 4159 (2015), Fig. 1 and section 2 | the S66 sizes of the long-range and mixed terms; the reason they are replaced together |

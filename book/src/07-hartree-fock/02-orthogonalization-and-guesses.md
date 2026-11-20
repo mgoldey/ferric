@@ -74,69 +74,19 @@ invertible, and $C = X\tilde C$ spans the full space: the result is the
 Roothaan solution in the full basis. If one column is dropped, the SCF runs
 in $N - 1$ dimensions and returns one fewer orbital with physical meaning.
 
-$\tau$ is absolute, $10^{-6}$ (`LINDEP_THRESH`), overridden by the
-environment variable `FERRIC_LINDEP_THRESH` (`lindep_thresh`). Each
-iteration diagonalizes $\tilde F$ in `ferric-scf/src/driver.rs::diagonalize_rect`,
-and the $N - m$ dropped columns are padded with zeros and energy $10^6$. A
-guess that needs more occupied orbitals than $m$ is an error.
+$\tau$ is absolute, $10^{-6}$ (`LINDEP_THRESH`), not relative to the
+largest eigenvalue, and the environment variable `FERRIC_LINDEP_THRESH`
+overrides it for one process (`lindep_thresh`). A basis with near-dependent
+diffuse functions therefore solves in $m < N$ dimensions. Each iteration
+diagonalizes $\tilde F$ in `ferric-scf/src/driver.rs::diagonalize_rect`, and
+the result's MO coefficient matrix carries the $N - m$ dropped columns as
+zeros with energy $10^6$. A guess that needs more occupied orbitals than $m$
+is an error.
 
 ROHF uses the symmetric $X = U\lambda^{-1/2}U^{\mathsf T}$ when nothing is
-dropped (`rohf_orthogonalizer`). It also satisfies $X^{\mathsf T}SX = 1$, and
+dropped (`ferric-scf/src/rohf.rs::rohf_orthogonalizer`) and the canonical
+form otherwise. The symmetric form also satisfies $X^{\mathsf T}SX = 1$, and
 when $m = N$ both orthogonalizers solve the same full-space eigenproblem.
-
-### The core guess
-
-`hcore_guess` drops the electron repulsion altogether: diagonalize
-$X^{\mathsf T}hX$ and occupy the lowest $n_o$ orbitals,
-$D = 2C_oC_o^{\mathsf T}$. It ignores electron repulsion. The documentation of
-`RhfConfig::use_sad_guess` records that the default guess below cures a class
-of heavy-atom RHF divergences (COSe, C2H3Br) that the core guess triggers.
-
-### The default guess
-
-The default (`[scf] guess = "minao"`, alias `"sad"`;
-`minao_projection_guess`) is a superposition of atomic densities. $D$ is
-block diagonal over atoms, with zero inter-atomic blocks. Each atomic block is
-built in the target basis; there is no projection from a minimal basis,
-despite the name. Two kinds of block are used:
-
-- $Z \le 20$ with no $g$ or higher shell: the density of a free-atom SCF in
-  that atom's basis. The atom is solved with RHF for a singlet ground state,
-  otherwise UHF with MOM from iteration 5. The density is then spherically
-  averaged: each diagonal shell block is replaced by its mean diagonal times
-  the unit matrix, and the cross-$l$ blocks are zeroed.
-- Otherwise: a generalized Wolfsberg–Helmholz (GWH) block,
-
-  $$ F_{\mu\mu} = h_{\mu\mu}, \qquad F_{\mu\nu} = \tfrac12 KS_{\mu\nu}(h_{\mu\mu} + h_{\nu\nu}), \quad K = 1.75, $$
-
-  diagonalized in the atom's own orthogonalizer, with occupation 2 on the
-  lowest doubly occupied orbitals and the $2S$ unpaired electrons spread
-  equally over the orbitals within $10^{-4}$ Ha of the first partly filled
-  one (`atomic_hcore_density`).
-
-The GWH matrix is a Hückel-type model. The diagonal $h_{\mu\mu}$ stands in
-for the energy of an electron in $\chi_\mu$, and the coupling of two
-functions is proportional to their overlap and to their mean energy. It needs
-only one-electron integrals, so it works for any element and any shell.
-Spreading the unpaired electrons over the degenerate frontier orbitals keeps
-the atomic density spherical; filling two of three $p$ orbitals would give
-the atom a shape.
-
-The blocks are those of neutral atoms, so $\operatorname{tr}(DS) = N_{\mathrm{el}}$
-holds for a neutral molecule only; the first Fock build and the aufbau step
-restore the electron count.
-
-### Open-shell guesses
-
-Open-shell guesses start from the same closed-shell $D$. UHF sets
-$D^\alpha = D^\beta = D/2$, builds $F^\alpha = F^\beta = h + J[D] - K[D/2]$
-without exchange–correlation, diagonalizes per spin, and for
-$n_\alpha = n_\beta$ mixes the $\beta$ HOMO and LUMO by 0.1 rad
-(`uhf_guess_mos`, `mix_beta_homo_lumo`). Without the mixing the two spins
-would start equal and stay equal, and a broken-symmetry solution could not
-be reached. ROHF scales $D^\sigma = D\,n_\sigma/N_{\mathrm{el}}$ and
-diagonalizes the Roothaan effective Fock matrix of section @sec:energy-functionals
-(`rohf_guess_mos`).
 
 ### The secondary basis
 
@@ -144,25 +94,34 @@ With `[scf] guess_basis` (`crates/ferric-scf/src/basis2.rs`) the same SCF is
 first converged in a smaller basis, and its result is moved into the target
 basis. Write $P = S_{bb}^{+}S_{bs}$, where $S_{bb}^{+} = XX^{\mathsf T}$ is the
 lindep-filtered inverse of the target overlap and $S_{bs}$ is the overlap
-between the target and the small basis. The Fock projection carries the
-converged small-basis densities, $D^\sigma = PD^\sigma_{\mathrm{small}}P^{\mathsf T}$.
-The overlap projection carries the occupied orbitals,
-$C = PC_{o,\mathrm{small}}$, re-orthonormalized as
-$C(C^{\mathsf T}S_{bb}C)^{-1/2}$. It is refused when the smallest eigenvalue
-of $C^{\mathsf T}S_{bb}C$ is below $10^{-8}$, because the projected orbitals
-are then nearly dependent.
+between the target and the small basis. If a small-basis orbital
+$\psi = \sum_s c_s\chi_s$ lies in the span of the target functions, $Pc$ are
+its exact target-basis coefficients: $S_{bs}c$ is the overlap of each target
+function with $\psi$, and $S_{bb}^{+}$ solves the normal equations for the
+expansion. The Fock projection carries the converged small-basis densities,
+$D^\sigma = PD^\sigma_{\mathrm{small}}P^{\mathsf T}$. The overlap projection
+carries the occupied orbitals, $C = PC_{o,\mathrm{small}}$, re-orthonormalized
+as $C(C^{\mathsf T}S_{bb}C)^{-1/2}$. It is refused when the smallest
+eigenvalue of $C^{\mathsf T}S_{bb}C$ is below $10^{-8}$, because the
+projected orbitals are then nearly dependent.
+
+> **Verified equation {#eq:scf-canonical-orthogonalizer}** · the canonical orthogonalizer and the secondary-basis projection
+>
+> $X = U_k\lambda_k^{-1/2}$ over the eigenvalues $\lambda_i \ge \tau$ satisfies
+> $X^{\mathsf T}SX = 1_m$ with the near-dependent modes dropped, and
+> $P = XX^{\mathsf T}S_{bs}$ reproduces a small-basis orbital that lies in the
+> target span.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/hf_energy_sympy.py`, claims O1 and O2 |
+> | Negative control | $\lambda^{-1/2} \to \lambda^{-1}$ must fail O1; $P \to S_{bs}$ must fail O2 |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-scf/src/rhf.rs::canonical_orthogonalizer` |
+>
+> <!-- verified: id=scf.canonical-orthogonalizer; script=scripts/hf_energy_sympy.py; claim=O1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/rhf.rs::canonical_orthogonalizer -->
 
 ## What is dropped {#orthogonalization-and-guesses-dropped}
-
-The threshold is absolute, not relative to the largest eigenvalue. A column
-with $\lambda_i < 10^{-6}$ is removed, so a basis with near-dependent diffuse
-functions solves in $m < N$ dimensions and the result's MO coefficient matrix
-carries $N - m$ zero columns at energy $10^6$
-(`ferric-scf/src/driver.rs::diagonalize_rect`). The environment variable
-`FERRIC_LINDEP_THRESH` changes $\tau$ for one process. ROHF uses the
-symmetric $S^{-1/2}$ when no column is dropped
-(`ferric-scf/src/rohf.rs::rohf_orthogonalizer`) and the canonical form
-otherwise.
 
 The selection is three lines of
 `ferric-scf/src/rhf.rs::canonical_orthogonalizer`, shown here with the BLAS
@@ -193,11 +152,47 @@ for (col, &i) in kept.iter().enumerate() {
   $[10^{-6}, 10^{-4})$ that its SCF handles and a larger $\tau$ would drop.
   The override is per process for that reason.
 
-## The default guess {#orthogonalization-and-guesses-default-guess}
+## Starting guesses {#orthogonalization-and-guesses-default-guess}
 
-The default is a block-diagonal atomic density, built atom by atom in the
-target basis. The GWH branch, used for $Z \ge 21$ or any atom with a $g$ or
-higher shell, is a single loop:
+### The core guess
+
+`hcore_guess` drops the electron repulsion altogether: diagonalize
+$X^{\mathsf T}hX$ and occupy the lowest $n_o$ orbitals,
+$D = 2C_oC_o^{\mathsf T}$. The documentation of `RhfConfig::use_sad_guess`
+records that the default guess below cures a class of heavy-atom RHF
+divergences (COSe, C2H3Br) that the core guess triggers.
+
+### The default guess
+
+The default (`[scf] guess = "minao"`, alias `"sad"`;
+`ferric-scf/src/guess.rs::minao_projection_guess`) is a superposition of
+atomic densities. $D$ is block diagonal over atoms, with zero inter-atomic
+blocks. Each atomic block is built in the target basis; there is no
+projection from a minimal basis, despite the name. Two kinds of block are
+used:
+
+- $Z \le 20$ with no $g$ or higher shell: the density of a free-atom SCF in
+  that atom's basis. The atom is solved with RHF for a singlet ground state,
+  otherwise UHF with MOM from iteration 5. The density is then spherically
+  averaged: each diagonal shell block is replaced by its mean diagonal times
+  the unit matrix, and the cross-$l$ blocks are zeroed.
+- Otherwise ($Z \ge 21$, or any atom with a $g$ or higher shell): a
+  generalized Wolfsberg–Helmholz (GWH) block,
+
+  $$ F_{\mu\mu} = h_{\mu\mu}, \qquad F_{\mu\nu} = \tfrac12 k_{\rm GWH}S_{\mu\nu}(h_{\mu\mu} + h_{\nu\nu}), \quad k_{\rm GWH} = 1.75, $$
+
+  diagonalized in the atom's own orthogonalizer, with occupation 2 on the
+  lowest doubly occupied orbitals and the $2S$ unpaired electrons spread
+  equally over the orbitals within $10^{-4}$ Ha of the first partly filled
+  one (`atomic_hcore_density`).
+
+The GWH matrix is a Hückel-type model. The diagonal $h_{\mu\mu}$ stands in
+for the energy of an electron in $\chi_\mu$, and the coupling of two
+functions is proportional to their overlap and to their mean energy. It needs
+only one-electron integrals, so it works for any element and any shell.
+Spreading the unpaired electrons over the degenerate frontier orbitals keeps
+the atomic density spherical; filling two of three $p$ orbitals would give
+the atom a shape. The GWH block is a single loop:
 
 <!-- excerpt: ferric-scf/src/guess.rs::atomic_hcore_density -->
 ```rust
@@ -215,20 +210,32 @@ for i in 0..nao_h {
 |---|---|
 | `h` | the atom's core Hamiltonian block $h$ |
 | `s` | the atom's overlap block $S$ |
-| `GWH_K` | $K = 1.75$ |
+| `GWH_K` | $k_{\rm GWH} = 1.75$ |
 | `f_eff` | the GWH matrix $F$ diagonalized for the atomic density |
 
 The diagonal is set separately because the off-diagonal formula at
-$\mu = \nu$, for a normalized function ($S_{\mu\mu} = 1$), would give $Kh_{\mu\mu}$ instead of
-$h_{\mu\mu}$.
+$\mu = \nu$, for a normalized function ($S_{\mu\mu} = 1$), would give
+$k_{\rm GWH}h_{\mu\mu}$ instead of $h_{\mu\mu}$.
 
-Three facts about the default that its name and docs do not convey:
+Three facts about the default:
 
 | Fact | Consequence |
 |---|---|
 | No minimal-basis projection takes place: each atomic block is a free-atom SCF or a GWH density in the target basis | the name "MINAO projection" describes the history, not the algorithm |
-| The atoms are neutral | $\operatorname{tr}(DS) = N_{\mathrm{el}}$ only for a neutral molecule; for an ion the first aufbau step fixes the count |
+| The atoms are neutral | $\operatorname{tr}(DS) = N_{\mathrm{el}}$ only for a neutral molecule; for an ion the first Fock build and aufbau step restore the count |
 | Inter-atomic blocks are zero | the first Fock matrix has no bonding density; DIIS starts from it at iteration 1 |
+
+### Open-shell guesses
+
+Open-shell guesses start from the same closed-shell $D$. UHF sets
+$D^\alpha = D^\beta = D/2$, builds $F^\alpha = F^\beta = h + J[D] - K[D/2]$
+without exchange–correlation, diagonalizes per spin, and for
+$n_\alpha = n_\beta$ mixes the $\beta$ HOMO and LUMO by 0.1 rad
+(`uhf_guess_mos`, `mix_beta_homo_lumo`). Without the mixing the two spins
+would start equal and stay equal, and a broken-symmetry solution could not
+be reached. ROHF scales $D^\sigma = D\,n_\sigma/N_{\mathrm{el}}$ and
+diagonalizes the Roothaan effective Fock matrix of section @sec:energy-functionals
+(`rohf_guess_mos`).
 
 ## Options that change the start {#orthogonalization-and-guesses-options-change-start}
 
@@ -241,24 +248,17 @@ Three facts about the default that its name and docs do not convey:
 
 ## Status {#orthogonalization-and-guesses-status}
 
-No proof script covers this section. The canonical orthogonalizer identity
-$X^{\mathsf T}SX = 1_m$ is elementary (@sec:orthogonalization-and-guesses-equations writes it out). The guesses are
-heuristics, not derivations, so their correctness is a matter of the SCF
-converging to the same state from them, which the anchors of section @sec:energy-functionals
-test. The section stays `edit` until the doc fixes below land.
-
-| Doc fix needed | Where |
-|---|---|
-| the `use_sad_guess` documentation says it runs `sad_guess`; the code runs `minao_projection_guess` | `crates/ferric-scf/src/rhf.rs` (`RhfConfig`) |
-| "MINAO projection" projects nothing | `crates/ferric-scf/src/guess.rs` module doc |
-| the electron count is exact for neutral molecules only | `crates/ferric-scf/src/guess.rs` |
-| the `[scf] guess` field doc calls `"sad"` the legacy free-atom-SCF superposition; the parser maps it to `minao` | `crates/ferric-cli/src/config.rs` |
-| orphaned doc comments detached from their functions | `crates/ferric-scf/src/guess.rs`, `crates/ferric-scf/src/rohf.rs` |
+Claims O1 and O2 cover the orthogonalizer and the secondary-basis
+projection. The guesses themselves are heuristics, not derivations, so their
+correctness is a matter of the SCF converging to the same state from them,
+which the anchors of section @sec:energy-functionals test.
 
 ## Sources
 
 | Source | Used for |
 |---|---|
 | `crates/ferric-scf/src/guess.rs` | the atomic blocks and the GWH constant |
+| M. Wolfsberg and L. Helmholz, J. Chem. Phys. 20, 837 (1952) | the GWH model |
+| `scripts/hf_energy_sympy.py`, claims O1 and O2 | verified equation @eq:scf-canonical-orthogonalizer |
 | `crates/ferric-scf/tests/basis2_guess.rs` | the secondary-basis projection |
 | `crates/ferric-scf/src/rhf.rs` (`canonical_orthogonalizer`, `lindep_thresh`) | the selection loop and the reason the threshold is per process |

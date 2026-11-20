@@ -24,7 +24,10 @@
 //! restricted density perturbation). It then forms
 //!   δF = δJ − ½·k_mix·δK + δV_xc,
 //! projects δF to MO basis, reads the occ→virt block, and adds the diagonal
-//! orbital-energy-gap term (F_aa − F_ii)·κ_ai.
+//! orbital-energy-gap term (F_aa − F_ii)·κ_ai. That gap term is the
+//! canonical-orbital form, so the product is the exact Hessian product only at
+//! canonical orbitals; off them the occupied–occupied and virtual–virtual
+//! Fock blocks contribute too (`trah::offdiag_gap_correction` adds them).
 //!
 //! Rotation is applied via the Cayley unitary U = (I − κ/2)^{−1}(I + κ/2), which
 //! exactly preserves orthonormality (identical to `uhf_newton.rs`).

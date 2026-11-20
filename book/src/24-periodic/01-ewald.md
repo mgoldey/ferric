@@ -41,7 +41,7 @@ anchors.
 
 $$ \frac1r = \frac{\operatorname{erfc}(\eta r)}{r} + \frac{\operatorname{erf}(\eta r)}{r} . $$
 
-The first term dies like a Gaussian, because $\operatorname{erfc}(x) < e^{-x^2}$.
+The first term decays as a Gaussian, because $\operatorname{erfc}(x) < e^{-x^2}$.
 The second is the potential of a unit Gaussian charge
 $\rho_\eta(r) = (\eta^2/\pi)^{3/2}e^{-\eta^2r^2}$: it is finite at $r = 0$,
 where it equals $2\eta/\sqrt\pi$, and smooth everywhere. A smooth function has
@@ -113,7 +113,7 @@ pieces is finite and converges absolutely, so the result no longer depends on
 the order of summation.
 
 **Independence of $\eta$.** The split point is arbitrary, so the total must
-not depend on it. Differentiate each piece. Three identities do the work:
+not depend on it. Differentiate each piece. Three identities are needed:
 
 $$
 \frac{\partial}{\partial\eta}\frac{\operatorname{erfc}(\eta r)}{r}
@@ -234,7 +234,7 @@ Sections @sec:exchange-divergence and @sec:kpoint-scf explain why exchange needs
 > | | |
 > |---|---|
 > | Proof | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S1, claim `madelung` |
-> | Negative control | none in the script |
+> | Negative control | the runner's mutation $v_M = -E$ in place of $-2E$ fails the simple-cubic constant |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-pbc/src/ewald.rs::madelung_constant` |
 > | Code test | `madelung_matches_pyscf` in `crates/ferric-pbc/tests/pbc_stage0.rs` |
@@ -247,12 +247,44 @@ nothing. The short-range term differentiates through its radial function:
 
 $$ f'(d) = \frac{d}{dd}\frac{\operatorname{erfc}(\eta d)}{d} = -\Big[\frac{\operatorname{erfc}(\eta d)}{d^2} + \frac{2\eta}{\sqrt\pi}\frac{e^{-\eta^2d^2}}{d}\Big], $$
 
-times the unit vector $(\mathbf R_i - \mathbf R_j - \mathbf L)/d$. The
-long-range term differentiates through the phase of $S(\mathbf G)$, which
-brings down $-i\mathbf G$. The two parts are returned separately by
-`ferric-pbc/src/ewald.rs::ewald_nuclear_gradient_parts`, so a mutation test
-can drop one, and are checked against PySCF `grad_nuc` and finite
-differences in `ewald_gradient_matches_pyscf_grad_nuc_and_fd`
+times the unit vector $(\mathbf R_i - \mathbf R_j - \mathbf L)/d$, summed
+over every partner $j$ and translation $\mathbf L$ (the pair appears twice in
+$E_\text{SR}$, which cancels the $\tfrac12$). The long-range term
+differentiates through the phase of $S(\mathbf G)$:
+$\partial S/\partial\mathbf R_i = -i\mathbf G\,Z_ie^{-i\mathbf G\cdot\mathbf R_i}$,
+so
+$\partial|S|^2/\partial\mathbf R_i = 2\operatorname{Re}[S^*\,\partial S/\partial\mathbf R_i] = -2Z_i\mathbf G\operatorname{Im}[S(\mathbf G)e^{i\mathbf G\cdot\mathbf R_i}]$.
+With the prefactor of $E_\text{LR}$:
+
+$$ \frac{\partial E_\text{LR}}{\partial\mathbf R_i} = -\frac{4\pi}{\Omega}Z_i\sum_{\mathbf G\neq0}\frac{e^{-G^2/4\eta^2}}{G^2}\,\mathbf G\,\operatorname{Im}\big[S(\mathbf G)\,e^{i\mathbf G\cdot\mathbf R_i}\big] . \label{eq:pbc-ewald-lr-gradient} $$
+
+Check the limit of a rigid translation. Summed over $i$,
+$\sum_iZ_ie^{i\mathbf G\cdot\mathbf R_i} = S^*$, and $\operatorname{Im}[SS^*] = 0$,
+so the long-range rows sum to zero; the short-range rows cancel in pairs. The
+total force on the nuclei is zero, as it must be for an energy that depends on
+differences of positions only.
+
+> **Verified equation {#eq:pbc-ewald-gradient}** · the Ewald nuclear gradient
+>
+> The short-range radial derivative and the long-range row
+> (@eq:pbc-ewald-lr-gradient) reproduce a central difference of the Ewald
+> energy on a charged triclinic toy cell to $2.4\times10^{-11}$ Ha/Bohr, and
+> sum to zero over the charges.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/pbc_ewald_pairft_stress_sympy.py`, part S1, claim `ewald-gradient` |
+> | Negative control | the runner's mutation: the long-range row with the wrong sign |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-pbc/src/ewald.rs::ewald_nuclear_gradient_parts` |
+> | Code test | `ewald_gradient_matches_pyscf_grad_nuc_and_fd` in `crates/ferric-pbc/tests/pbc_grad.rs` |
+>
+> <!-- verified: id=pbc.ewald.gradient; script=scripts/pbc_ewald_pairft_stress_sympy.py; claim=ewald-gradient; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pbc/src/ewald.rs::ewald_nuclear_gradient_parts; rust_test=ferric-pbc/tests/pbc_grad.rs::ewald_gradient_matches_pyscf_grad_nuc_and_fd; registry=pbc-ewald-pairft-stress -->
+
+`ferric-pbc/src/ewald.rs::ewald_nuclear_gradient_parts` returns the two parts
+separately, so a mutation test can drop one; both are checked against PySCF
+`grad_nuc` and finite differences in
+`ewald_gradient_matches_pyscf_grad_nuc_and_fd`
 (`crates/ferric-pbc/tests/pbc_grad.rs`).
 
 ## The algorithm {#ewald-algorithm}
@@ -302,7 +334,10 @@ The reciprocal sum and the two constants, from
   background convention: the uniform background removes that term, and its
   finite remainder is `e_g0`.
 - **Compensated sums.** `lr` and the real-space accumulator are Neumaier
-  sums, and so is the final total. The module documentation records why: at
+  sums, and so is the final total. The module documentation records why, from
+  a numpy measurement that no test pins (the test evidence is the
+  $\eta$-spread below $10^{-12}$ in
+  `ewald_matches_pyscf_and_is_omega_independent`): at
   $\eta = 3$ the self and long-range terms of H$_2$O in a 7-Bohr cell are each
   about $10^2$ Ha and cancel to about $10^1$, and naive summation of the
   roughly $10^5$ $\mathbf G$ terms left a $2.6\times10^{-11}$ Ha
@@ -324,7 +359,7 @@ From the tests named in section @sec:ewald-ewald-sum-independence.
 | $E_{nn}$ on three charged nuclear cells | PySCF `energy_nuc` | $10^{-10}$ Ha; $\eta$-spread $< 10^{-12}$ at $\eta = 0.8, 1.5, 3$ | `crates/ferric-pbc/tests/pbc_stage0.rs` `ewald_matches_pyscf_and_is_omega_independent` |
 | $v_M$ | PySCF and the simple-cubic textbook value | $10^{-11}$ | `madelung_matches_pyscf` |
 | rock-salt $E = -8M/a$ | $M = 1.747564594633182$ | $\eta$-spread $< 10^{-12}$ | `ewald_rock_salt_madelung_is_textbook_and_omega_independent` |
-| Ewald gradient | PySCF `grad_nuc` and finite differences | | `crates/ferric-pbc/tests/pbc_grad.rs` `ewald_gradient_matches_pyscf_grad_nuc_and_fd` |
+| Ewald gradient | PySCF `grad_nuc` and finite differences; the script's central difference | $2.4\times10^{-11}$ Ha/Bohr (script) | `crates/ferric-pbc/tests/pbc_grad.rs` `ewald_gradient_matches_pyscf_grad_nuc_and_fd` |
 
 ## Sources {#ewald-sources}
 

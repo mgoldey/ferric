@@ -84,6 +84,12 @@ of section @sec:ccd-ccsd-spin-orbital with every index restricted to the spin-al
 The update is $t \leftarrow r/(-\Delta)$ with the per-spin denominators, and
 DIIS runs on all five blocks jointly.
 
+The per-spin factorization is not displayed here, and no script
+transcribes it; the registry lists that as the gap `u-ccsd-update-amps`.
+Its evidence is the amplitude-by-amplitude agreement with the
+spin-orbital solver of section @sec:ccd-ccsd-spin-orbital, which is
+displayed and proved, in the anchors below.
+
 **Energy.** With $\tau_{ij}^{ab} = t_{ij}^{ab} + t_i^at_j^b - t_j^at_i^b$
 the spin-orbital energy $\tfrac14\sum\langle ij\|ab\rangle\tau_{ij}^{ab}$
 splits by the spins of $(i,j)$. For two α electrons the integral is
@@ -181,7 +187,8 @@ aaa, aab, abb, bbb:
 pub(crate) const CLASS_WEIGHTS: [f64; 4] = [1.0 / 6.0, 0.5, 0.5, 1.0 / 6.0];
 ```
 
-For each occupied triple the kernel builds $X$ and $Y$ block by block: a
+For each occupied triple the kernel builds $W$ and $V$ of section
+@sec:triples block by block: a
 term enters only when the spins of its $t_2$ element (table above) and its
 integral both match, and $P(i/jk)P(a/bc)$ acts on the three occupied labels
 and on the three virtual positions with their spins. The loop runs over
@@ -296,8 +303,7 @@ comparison.
 | 7 | (T): canonical occupied triples of the four classes in parallel, folded serially in a fixed order | $n_o^3n_v^4$ | `u_ccsd_t` |
 
 The memory pre-flight (`u_ccsd_memory_plan`) sizes the dense `vvvv`
-blocks; there is no integral-direct ladder on this route. Frozen core drops
-the lowest `frozen_core` orbitals of each spin (`active_occ`).
+blocks; there is no integral-direct ladder on this route.
 
 ## Numerical anchors {#uccsd-numerical-anchors}
 
@@ -324,7 +330,8 @@ $t_{iJ}^{aB}$ ring term ($1.1\times10^{-2}$ Ha), an aab weight of $1/6$
 the spin-orbital comparison. The two Rust solvers share the RI factors and
 orbital energies. So giving the α virtual block the β orbital energies
 passes the spin-orbital comparison; only the PySCF test catches it
-($2.3\times10^{-3}$ Ha).
+($2.3\times10^{-3}$ Ha). That test is `#[ignore]`d as a validation test, so the default suite
+cannot see this fault.
 
 ## Sources {#uccsd-sources}
 

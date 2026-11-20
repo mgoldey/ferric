@@ -57,7 +57,7 @@
 //! | [`FieldClass::StateSelecting`] | warn | error |
 //! | [`FieldClass::Route`] | log | error |
 //! | `energy_conv`, `density_conv` | ignored | file at least as tight |
-//! | file exit state | any | `Converged` or `Plateau` (echoed), with `converged = true` |
+//! | file exit state | any | `Converged`, with `converged = true` |
 //! | build | log | error unless overridden, and the override is recorded |
 //!
 //! A read that fails is always `Err`: there is no return value that means "start
@@ -149,9 +149,9 @@ pub enum CheckpointError {
         /// The running [`BuildStamp`], via `Display`.
         current: String,
     },
-    /// A skip read of a file whose exit state is not `Converged` or
-    /// `Plateau`, or whose `converged` flag is false.
-    #[error("checkpoint exit state {exit} cannot replace an SCF (Converged or Plateau only)")]
+    /// A skip read of a file whose exit state is not `Converged`, or whose
+    /// `converged` flag is false.
+    #[error("checkpoint exit state {exit} cannot replace an SCF (Converged only)")]
     ExitRefused {
         /// The file's `ScfExit` in `Debug` form, with a note when
         /// `converged = false` is the reason.
@@ -232,7 +232,7 @@ pub struct FinalState {
     /// `None` means exact four-centre J/K. Dropping a route here would pair an
     /// RI energy with an exact gradient, silently.
     pub df_jk: Option<DfJkRoute>,
-    /// `ScfResult::exit`; a skip accepts only `Converged` and `Plateau`.
+    /// `ScfResult::exit`; a skip accepts only `Converged`.
     pub exit: ScfExit,
     /// `ScfResult::converged`; a skip requires `true`.
     pub converged: bool,

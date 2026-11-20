@@ -429,7 +429,6 @@ fn df_jk_route_is_never_confused_with_exact() {
 fn every_exit_state_round_trips() {
     for exit in [
         ScfExit::Converged,
-        ScfExit::Plateau,
         ScfExit::Stalled,
         ScfExit::Diverged,
         ScfExit::MaxIter,
@@ -1770,11 +1769,10 @@ fn skip_needs_a_file_at_least_as_tight_and_guess_ignores_it() {
 }
 
 #[test]
-fn skip_accepts_converged_and_echoes_plateau_and_refuses_every_other_exit() {
+fn skip_accepts_converged_and_refuses_every_other_exit() {
     let current = Scenario::water(Spin::Restricted).identity();
     for (exit, accepted) in [
         (ScfExit::Converged, true),
-        (ScfExit::Plateau, true),
         (ScfExit::Stalled, false),
         (ScfExit::Diverged, false),
         (ScfExit::MaxIter, false),

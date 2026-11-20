@@ -19,3 +19,7 @@ analysis that checks which kind of stationary point it found.
   steps from the orbital Hessian, and the shift that keeps them downhill.
 - [@sec:stability Stability analysis](04-stability.md): the lowest eigenvalue of the
   orbital Hessian at the converged orbitals, and the descent off a saddle.
+- [@sec:scf-exits Exits, the ladder and opt-in solvers](05-exits-ladder.md): the
+  stopping test, the exit reasons, the vetoes that refuse an exit when the
+  density has stopped moving but the orbitals are not stationary, the
+  convergence ladder, AURORA and the symmetry-blocked solve.

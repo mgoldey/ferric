@@ -237,7 +237,8 @@ impl GammaRoksConfig {
     ///   non-aufbau stationary state −1.4434745673 (22 mHa above the pin).
     ///
     /// The shift acts on the virtual block only and is ramped by the solver
-    /// as `ls·err/(err + 1e-3)` (the molecular ROHF ramp; `level_shift` is
+    /// as `ls·err/(err + 1e-3)` (`ferric_scf::open_shell_level_shift_ramp`,
+    /// the molecular open-shell ramp; `level_shift` is
     /// accepted by `validate_injected_rohf`), so it vanishes at convergence
     /// and cannot move the converged state: in the replica LDA/PBE/PBE0 (none
     /// and staged ewald) reproduce their pins to 1e-13 with it. The replica

@@ -2128,20 +2128,19 @@ impl UhfState {
         });
         // Optional level shift on each spin's virtual–virtual block, applied
         // after DIIS so the DIIS error / convergence criterion remains
-        // anchored to the unshifted Fock. Rational-damped by err_max so the
-        // converged Fock is the unshifted stationary point (see solve_rohf
-        // for the same formula and rationale).
+        // anchored to the unshifted Fock. Ramped by err_max
+        // (`driver::open_shell_level_shift_ramp`) so the converged Fock is the
+        // unshifted stationary point.
         if inp.effective_level_shift > 0.0 && iter > 1 {
-            const SHIFT_DAMP_ERR: f64 = 1e-3;
             let err_max = self
                 .err_a
                 .iter()
                 .chain(self.err_b.iter())
                 .map(|v| v.abs())
                 .fold(0.0_f64, f64::max);
-            let damp = err_max / (err_max + SHIFT_DAMP_ERR);
-            let shift_eff = inp.effective_level_shift * damp;
-            if shift_eff > 1e-10 {
+            let shift_eff =
+                crate::driver::open_shell_level_shift_ramp(inp.effective_level_shift, err_max);
+            if shift_eff > 0.0 {
                 let (shift_a, shift_b) =
                     virtual_level_shift_terms(&self.c_a, &self.c_b, nocc_a, nocc_b, s, shift_eff);
                 f_a_new += &shift_a;

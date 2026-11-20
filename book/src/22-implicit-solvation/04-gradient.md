@@ -12,8 +12,8 @@ carry $V^{\mathrm{pcm}}$ through the Fock matrix, so nothing else changes.
 This section is that one term.
 
 The plan: split the derivative into a potential part and a response part
-(@sec:gradient-derivative), derive each, then the algorithm (@sec:gradient-algorithm), the refusals (@sec:gradient-options-refusals)
-and the anchors (@sec:gradient-numerical-anchors).
+(@sec:gradient-derivative), derive each, then the algorithm (@sec:gradient-algorithm), a run (@sec:gradient-running-it), the
+refusals (@sec:gradient-options-refusals) and the anchors (@sec:gradient-numerical-anchors).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -55,43 +55,6 @@ on the geometry. The areas and the diagonal $S_{kk}$ depend on it only
 through $\mathrm{swf}_k$, the switch that measures how deep the tessera sits
 inside its neighbours' spheres.
 
-With the gradient, geometries can be optimized in the continuum. Water /
-cc-pVDZ optimized at RHF in vacuum and in IEF-PCM water, from the `589b50832`
-build. The optimizer's per-step tables are cut at `...`; the two summary
-lines are the end of the output. In the continuum the O–H bond lengthens
-and the angle closes.
-
-```python
-import math
-
-import ferric
-
-mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
-
-
-def geometry(m):
-    o, h1, h2 = m.coords_bohr()
-    v1 = [h1[i] - o[i] for i in range(3)]
-    v2 = [h2[i] - o[i] for i in range(3)]
-    r1 = math.sqrt(sum(x * x for x in v1))
-    r2 = math.sqrt(sum(x * x for x in v2))
-    cos = sum(a * b for a, b in zip(v1, v2)) / (r1 * r2)
-    return r1, r2, math.degrees(math.acos(cos))
-
-
-for label, solvent in (("vacuum", None), ("water", "water")):
-    r = ferric.run_optimize(mol, "cc-pvdz", solvent=solvent)
-    r1, r2, ang = geometry(r.mol())
-    print(f"{label:7s}: converged={r.converged} steps={r.steps} E={r.energy:.8f} "
-          f"r(OH)={r1:.5f},{r2:.5f} Bohr angle={ang:.3f} deg")
-```
-
-```text
-...
-vacuum : converged=True steps=4 E=-76.02705351 r(OH)=1.78820,1.78820 Bohr angle=104.613 deg
-water  : converged=True steps=3 E=-76.03686401 r(OH)=1.79353,1.79353 Bohr angle=103.835 deg
-```
-
 ### The potential term
 
 $q^{\mathsf T}\partial v$ is the gradient of the interaction of fixed
@@ -103,16 +66,18 @@ $\sum_{\mu\nu}P_{\mu\nu}\,\partial V^{\mathrm{pcm}}_{\mu\nu}(q)$. Libint's
 nuclear-attraction derivative engine computes it with the tesserae as the
 only charges. The derivative blocks of the two shell centres go to the
 atoms of the AOs, and the block of charge $k$ goes to $A(k)$. The classical
-part is
+part of $q\cdot v$ is
 
-$$ \sum_k q_k \sum_{B\ne A(k)} Z_B\,\phi(|\mathbf r_k-\mathbf R_B|), \qquad \phi(r) = 1/r , $$
+$$ \sum_k q_k \sum_B Z^{\rm eff}_B\,\phi(|\mathbf r_k-\mathbf R_B|), \qquad \phi(r) = 1/r . $$
 
-and its derivative moves $A(k)$ against $B$ (`nuclear_tessera_term`). The
-own atom $B = A(k)$ is left out: the tessera stays at the fixed distance
-$R_{A(k)}$ from it, so that term does not change. For Gaussian probes
+Its $B = A(k)$ term does not change: the tessera stays at the fixed distance
+$R_{A(k)}$ from its own atom. So the derivative runs over $B\ne A(k)$ and
+moves $A(k)$ against $B$ (`nuclear_tessera_term`). For Gaussian probes
 (`potential_term_smeared`) $\phi(r) = \operatorname{erf}(\xi_k r)/r$, and the
 electronic part uses the derivative three-centre integrals
-$\partial(\mu\nu|g_k)/N_k$, with the site block going to $A(k)$.
+$\partial(\mu\nu|g_k)/N_k$, with the site block going to $A(k)$. $N_k = \int g_k\,d\mathbf r$
+is the integral of the s Gaussian, `SiteBasis::norm_int` (section
+@sec:external-potentials-terms-enter-scf).
 
 ### The response term
 
@@ -182,6 +147,26 @@ $$ S' = \frac{c\,\xi e^{-\xi^2r^2}}{r} - \frac{\operatorname{erf}(\xi r)}{r^2}, 
    h' = \frac{3c\,\xi e^{-\xi^2r^2}}{r^3} - \frac{3\operatorname{erf}(\xi r)}{r^4} + \frac{2c\,\xi^3 e^{-\xi^2r^2}}{r} . $$
 
 For `PointCharge`, $S' = -1/r^2$, $h = 1/r^3$ and $h' = -3/r^4$.
+
+> **Verified equation {#eq:pcm-gradient-kernels}** · the kernel, switch and diagonal derivatives
+>
+> The transcribed `sd_kernel` gives $S' = dS/dr$, $h = -S'/r$ and
+> $h' = dh/dr$ for $S = \operatorname{erf}(\xi r)/r$ and $S = 1/r$;
+> $h_{\rm sw}'(x) = 30x^2(1-x)^2$ is the derivative of the quintic switch,
+> and $\nabla_{\mathbf r}\ln h_{\rm sw}(t) = h_{\rm sw}'(t)/h_{\rm sw}(t)\,(1/R^{\rm sw})\,\hat{\mathbf r}$;
+> the coefficients of $\partial\ln\mathrm{swf}_j$ are $\tfrac12 z_jx_jS_{jj}$
+> (`GaussianSmeared`) and $\tfrac14 z_jx_jS_{jj} - \tfrac14 p\,y_ju_jD_{jj}$
+> (`PointCharge`).
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/pcm_ief_sympy.py`, claim 9 (symbolic derivatives) |
+> | Negative control | $h'$ without its $\xi^3$ term, and the switch gradient without $1/R^{\rm sw}$, both miss; the runner halves the $\xi^3$ term of the transcribed $h'$ (claim 9 fails) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-pcm/src/gradient.rs::response_term` |
+> | Code test | `sd_kernel_matches_finite_differences` in `crates/ferric-pcm/src/gradient.rs` |
+>
+> <!-- verified: id=pcm.gradient.kernels; script=scripts/pcm_ief_sympy.py; claim=9; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-pcm/src/gradient.rs::response_term; rust_test=ferric-pcm/src/gradient.rs::sd_kernel_matches_finite_differences; registry=pcm-gradient -->
 
 The diagonal and area terms are all proportional to
 $\partial\ln\mathrm{swf}_j$. The area is $a_j \propto \mathrm{swf}_j$, so
@@ -287,11 +272,10 @@ grad += &ferric_pcm::pcm_gradient(mol, prep, result.density_total(), pcm)?;
 ```
 
 Box @eq:pcm-gradient-response proves the response formula on a model with $S$, $D$ and $A$ as
-functions of one coordinate. It does not prove the kernel derivatives
-$S'(r)$, $h(r)$, $h'(r)$ or the switching derivative, which are transcribed
-from the code. Those are covered by the finite-difference tests in the
-anchors table, and by nine single-term mutants of the Rust code that each
-fail them (section @sec:gradient-numerical-anchors).
+functions of one coordinate. Box @eq:pcm-gradient-kernels proves the kernel derivatives
+$S'(r)$, $h(r)$, $h'(r)$, the switching derivative and the diagonal
+coefficients. The assembly of the pieces into atom rows is covered by the
+finite-difference tests in the anchors table (section @sec:gradient-numerical-anchors).
 
 ## The algorithm {#gradient-algorithm}
 
@@ -307,6 +291,45 @@ fail them (section @sec:gradient-numerical-anchors).
 `pcm_gradient_parts` rebuilds the cavity from the molecule exactly as
 `PcmContext::new` does, and re-solves the charges at the converged density.
 It does not reuse the SCF's factorization.
+
+## Running it {#gradient-running-it}
+
+With the gradient, geometries can be optimized in the continuum. Water /
+cc-pVDZ optimized at RHF in vacuum and in IEF-PCM water, from the `589b50832`
+build. The optimizer's per-step tables are cut at `...`; the two summary
+lines are the end of the output. In the continuum the O–H bond lengthens
+and the angle closes.
+
+```python
+import math
+
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+
+
+def geometry(m):
+    o, h1, h2 = m.coords_bohr()
+    v1 = [h1[i] - o[i] for i in range(3)]
+    v2 = [h2[i] - o[i] for i in range(3)]
+    r1 = math.sqrt(sum(x * x for x in v1))
+    r2 = math.sqrt(sum(x * x for x in v2))
+    cos = sum(a * b for a, b in zip(v1, v2)) / (r1 * r2)
+    return r1, r2, math.degrees(math.acos(cos))
+
+
+for label, solvent in (("vacuum", None), ("water", "water")):
+    r = ferric.run_optimize(mol, "cc-pvdz", solvent=solvent)
+    r1, r2, ang = geometry(r.mol())
+    print(f"{label:7s}: converged={r.converged} steps={r.steps} E={r.energy:.8f} "
+          f"r(OH)={r1:.5f},{r2:.5f} Bohr angle={ang:.3f} deg")
+```
+
+```text
+...
+vacuum : converged=True steps=4 E=-76.02705351 r(OH)=1.78820,1.78820 Bohr angle=104.613 deg
+water  : converged=True steps=3 E=-76.03686401 r(OH)=1.79353,1.79353 Bohr angle=103.835 deg
+```
 
 ## Options and refusals {#gradient-options-refusals}
 
@@ -352,15 +375,18 @@ included. The torque is not zero, because the Lebedev frame is fixed in the
 lab; the test checks that it equals the finite-difference derivative under
 a rigid rotation. The PySCF comparison runs on ferric's own cavity at
 Lebedev order 302, which reproduces PySCF's `gen_surface` (tessera count,
-total area and area centroid to $10^{-10}$, section @sec:cavity-and-bem). Nine single-term
+total area and area centroid to $10^{-10}$, section @sec:cavity-and-bem). The IEF-PCM
+gradient row of `site/src/reference/validation.md` records nine single-term
 mutants (the switching, area, $S$ and $D$ diagonal and off-diagonal,
-tessera-site and nuclear-tessera terms) each fail the FD tests.
+tessera-site and nuclear-tessera terms) that each fail the FD tests; the
+mutant patches are not committed, so that record is not re-runnable.
 
 ## Sources {#gradient-sources}
 
 | Source | What it gives |
 |---|---|
 | `scripts/pcm_ief_sympy.py`, claim 8 | the response formula on a model |
+| `scripts/pcm_ief_sympy.py`, claim 9 | the kernel, switch and diagonal derivatives |
 | `crates/ferric-pcm/tests/pcm_gradient.rs`, `crates/ferric-scf/tests/pcm_gradient.rs` | FD at fixed density and at SCF level |
 
 **Known limits (2026-11-15).**

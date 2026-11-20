@@ -110,6 +110,7 @@ fn close_polarizable_sites() -> (PolarizableSites, ExternalPotential) {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -162,6 +163,7 @@ fn close_polarizable_sites_uks() -> (PolarizableSites, ExternalPotential) {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };

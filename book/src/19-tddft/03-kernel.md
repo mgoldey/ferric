@@ -1,4 +1,4 @@
-# The kernel and the functional gate {#kernel}
+# The kernel and which functionals are accepted {#kernel}
 
 <!-- status: ready; registry: tddft -->
 
@@ -67,12 +67,16 @@ full-Coulomb exchange, not `run_tddft`.
 |---|---|---|---|
 | HF (no functional) | $c = 1$ | none | CIS or TDHF; a `c_hf` other than 1 is refused |
 | LDA, GGA, global hybrid | $c_{\rm HF}$ from libxc | `GgaFxcKernel` | accepted; `c_hf` replaces the fraction |
-| $\tau$-only meta-GGA, hybrid meta-GGA | from libxc | `MggaFxcKernel` | accepted |
+| $\tau$-only meta-GGA, hybrid meta-GGA (TPSSh, M06-2X) | from libxc | `MggaFxcKernel` | accepted |
 | range-separated hybrid | $c_{\rm sr}, c_{\rm lr}, \omega$ | `GgaFxcKernel` | accepted (section @sec:rsh); any `c_hf` is refused |
 | meta-GGA with no libxc second derivative | | | refused |
 | VV10 | | | refused: its response is not in the kernel |
+| any functional on an ROHF or ROKS reference | | | refused (section @sec:unrestricted-occupations-refusals) |
 
-The $\tau$-only meta-GGAs are SCAN, r2SCAN and TPSS. The `c_hf` refusals
+The $\tau$-only meta-GGAs are SCAN, r2SCAN and TPSS. The hybrid meta-GGAs
+TPSSh and M06-2X are validated against PySCF on water / 6-31G
+(`water_631g_tpssh`, `water_631g_m062x` in
+`crates/ferric-tddft/tests/validation_tddft.rs`). The `c_hf` refusals
 follow from what an override would mean. On an HF reference any value
 other than 1 is neither CIS or TDHF nor any TDDFT, since there is no kernel
 to pair it with. On a range-separated functional, at any value, it would
@@ -88,7 +92,10 @@ The kernel is evaluated on `TddftConfig.grid`, the grid of the reference
 SCF. For a meta-GGA the default is 150 × 434 with NWChem radial pruning
 (`ferric-dft/src/grid.rs::response_default_grid`, which returns
 `AtomicGridConfig::meta_gga_response`), because the $\tau$ kernel is more
-grid-sensitive than the LDA and GGA ones. An explicit grid key wins.
+grid-sensitive than the LDA and GGA ones. The finer default keeps the
+radial pruning and raises the shell count, so the thinned atoms still have
+enough shells (section @sec:kernel-grid-sensitivity measures it). An
+explicit grid key wins.
 
 ## The kernel block {#kernel-kernel-block}
 
@@ -117,12 +124,12 @@ without rescaling.
 > | | |
 > |---|---|
 > | Proof | `scripts/tddft_response_sympy.py`, claim A2 |
-> | Negative control | the runner gives the triplet the singlet sign in the transcribed `fxc_ov_block` (B1 fails) |
+> | Negative control | without the factor 2, $\partial^2 e(\rho/2,\rho/2)/\partial\rho^2 \ne f_{\alpha\alpha}+f_{\alpha\beta}$; the runner's mutation drops the 2 and A2 fails |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-dft/src/lr_kernel.rs::{fxc_ov_block,singlet_fxc_ov_block}` |
-> | Code test | `crates/ferric-tddft/tests/validation_tddft.rs` (LDA, PBE, B3LYP and r2SCAN against PySCF) |
+> | Code test | `check_case` in `crates/ferric-tddft/tests/validation_tddft.rs` (`water_631g_lda`, `water_631g_pbe`, `water_631g_b3lyp`, `water_631g_r2scan` against PySCF) |
 >
-> <!-- verified: id=td.kernel.singlet-normalization; script=scripts/tddft_response_sympy.py; claim=A2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/lr_kernel.rs::singlet_fxc_ov_block; registry=tddft -->
+> <!-- verified: id=td.kernel.singlet-normalization; script=scripts/tddft_response_sympy.py; claim=A2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/lr_kernel.rs::singlet_fxc_ov_block; rust_test=ferric-tddft/tests/validation_tddft.rs::check_case; registry=tddft -->
 
 `ferric-tddft/src/tddft.rs::add_fxc_block` checks the block before adding
 it. Its relative asymmetry must stay below `FXC_BLOCK_ASYMMETRY_TOL`
@@ -152,13 +159,15 @@ TDDFT excitation energies".
 
 | Quantity | Value | Test |
 |---|---|---|
-| B3LYP roots vs PySCF, default pruned grid | $\le 8.1\times10^{-4}$ eV | `crates/ferric-tddft/tests/validation_tddft.rs` |
-| the same on the reference's flat 75 × 110 grid | $\le 2.8\times10^{-6}$ eV | the same |
+| B3LYP roots vs PySCF, default pruned grid (grid error) | $\le 8.1\times10^{-4}$ eV | `crates/ferric-tddft/tests/validation_tddft.rs` |
+| the same on the reference's flat 75 × 110 grid (implementation error at a fixed grid) | $\le 2.8\times10^{-6}$ eV | the same |
 | r2SCAN water roots, 150 × 434 default vs flat 150 × 590 | $9.2\times10^{-5}$ eV (6-31G), $5.5\times10^{-6}$ eV (aug-cc-pVDZ) | `water_631g_r2scan_default_grid_matches_fine_flat_grid` in the same file |
-| r2SCAN on 75 × 110 vs flat 150 × 590 | $2.1\times10^{-3}$ eV | the same |
+| r2SCAN on 75 × 110 vs flat 150 × 590 (grid error; against PySCF on one flat 75 × 110 grid the roots agree to $2.1\times10^{-6}$ eV) | $2.1\times10^{-3}$ eV | the same |
 
 ## Sources {#kernel-sources}
 
 | Source | What it gives |
 |---|---|
 | section @sec:fxc-linearized-potential | the kernel and its libxc packing |
+| R. Bauernschmitt and R. Ahlrichs, *Chem. Phys. Lett.* **256**, 454 (1996) | the adiabatic kernel with a hybrid's exact-exchange fraction |
+| Q. Sun *et al.*, *J. Chem. Phys.* **153**, 024109 (2020) | PySCF, whose `tdscf` `get_ab` is the reference for the kernel normalization |

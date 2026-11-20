@@ -25,3 +25,7 @@ $p, q, r, s$ over all of them. Determinants put every α spin orbital before
 every β one, and that order fixes every phase below. The second-quantized
 operators are those of chapter @sec:second-quantization, and the orbital-rotation machinery of
 CASSCF is the one chapter @sec:convergence builds for SCF.
+
+CASSCF and SC-NEVPT2 are CLI kinds (`method.kind = "casscf"` and
+`"nevpt2"`); CAS-CI has no CLI kind of its own and is a Python entry point
+(`run_casci`) and the inner solver of the other two.

@@ -24,7 +24,8 @@ sources of $\alpha^A(iu)$ (@sec:casimir-polder-c6-three-sources), the direct-RPA
 | $u_k, w_k$ | frequency node and weight (section @sec:quadratures) | `freqs`, `weights` |
 | $\alpha^A_{ij}(iu)$ | per-atom polarizability tensor | `DynamicPolarizability::per_atom[a][k]` |
 | $\bar\alpha = \tfrac13\operatorname{tr}\alpha$ | isotropic average | `iso[a][k]` |
-| $g_{ia}(u)$ | $\Delta_i^a/(u^2 + (\Delta_i^a)^2)$ | `Frequency::weights` |
+| $g_{ia}(u)$, $\boldsymbol\Gamma = \operatorname{diag}(g_{ia})$ | $\Delta_i^a/(u^2 + (\Delta_i^a)^2)$ | `Frequency::weights`, `g` |
+| $\varrho_A = v_A/v_A^{\mathrm{free}}$ | Hirshfeld volume ratio | `volume_ratios` |
 
 | Entry point | Location |
 |---|---|
@@ -103,7 +104,11 @@ writes its own cells, and the result equals the serial loop.
 
 The anisotropic coefficient is element-wise,
 $C^{AB}_{6,ij} = \frac3\pi\sum_k w_k\,\alpha^A_{ij}(iu_k)\,\alpha^B_{ij}(iu_k)$,
-not a tensor contraction (section @sec:polarizability-pdep-c6). The molecular $C_{6,\mathrm{mol}}$
+not a tensor contraction (section @sec:polarizability-pdep-c6). It is a per-component descriptor:
+it does not transform as a tensor under rotation, and $\tfrac13\operatorname{tr}$
+of it equals $C_6^{AB}$ only when both tensors are isotropic (the unit test
+`casimir_polder_single_pole_analytic` in `crates/ferric-rpa/src/dispersion.rs`
+asserts that relation on an isotropic single pole). The molecular $C_{6,\mathrm{mol}}$
 comes from the molecular $\bar\alpha(iu)$. When the molecular tensor is the
 sum of the per-atom ones, expand the square of the sum: the molecular
 coefficient is then exactly the sum of the full pair matrix,
@@ -115,16 +120,17 @@ returns the pair sum.
 
 | `c6_source` | $\alpha^A(iu)$ | Function |
 |---|---|---|
-| `ts` (default) | single pole $\bar\alpha_A/(1 + (u/\omega_A)^2)$ with $\bar\alpha_A = r_A\alpha^{\mathrm{free}}$, $C_{6,A} = r_A^2C_6^{\mathrm{free}}$, $\omega_A = \tfrac43C_{6,A}/\bar\alpha_A^2$; the static per-atom tensor supplies only the shape (@eq:ml-c6-ts-pole) | `ts_dynamic_polarizability`, `mbd::ts_atom_params` |
+| `ts` (default) | single pole $\bar\alpha_A/(1 + (u/\omega_A)^2)$ with $\bar\alpha_A = \varrho_A\alpha^{\mathrm{free}}$, $C_{6,A} = \varrho_A^2C_6^{\mathrm{free}}$, $\omega_A = \tfrac43C_{6,A}/\bar\alpha_A^2$; the static per-atom tensor supplies only the shape (@eq:ml-c6-ts-pole) | `ts_dynamic_polarizability`, `mbd::ts_atom_params` |
 | `pdep` | the direct-RPA per-atom response (@eq:casimir-polder-c6-3) at each node | `pdep_dynamic_polarizability` |
 | `mbd` | the TS poles screened by full-range coupled dipoles (section @sec:mbd-full-range-screening) | `mbd_dynamic_polarizability` |
 
 The Tkatchenko–Scheffler (TS) model starts from a free atom and asks how much
 the molecule has squeezed it. The measure is the Hirshfeld volume ratio
-$r_A = V_A/V_A^{\mathrm{free}}$, where $V_A = \int w_A\rho\,r^3$ weights the
+$\varrho_A = v_A/v_A^{\mathrm{free}}$, where $v_A = \int w_A\rho\,|\mathbf r - \mathbf R_A|^3$ weights the
 density by the atom's Hirshfeld share. Polarizability scales like a volume,
-so $\bar\alpha_A = r_A\alpha^{\mathrm{free}}$, and $C_6$ is a product of two
-polarizabilities, so $C_{6,A} = r_A^2C_6^{\mathrm{free}}$. The frequency then
+so $\bar\alpha_A = \varrho_A\alpha^{\mathrm{free}}$, and $C_6$ is a product of two
+polarizabilities, so $C_{6,A} = \varrho_A^2C_6^{\mathrm{free}}$. Sections @sec:mbd and
+@sec:polarizability-pdep-c6 start from this oscillator. The frequency then
 follows from the homonuclear London identity of @sec:casimir-polder-c6-casimir-polder-integral, and the single pole
 is the whole frequency dependence. The tensor is $\bar\alpha_A(iu)$ times
 the static per-atom tensor normalized to unit isotropic average (an
@@ -138,14 +144,16 @@ Table I) for $Z \le 18$ and Gould and Bučko (JCTC 12, 3603 (2016)) for
 $Z = 19$–$54$, except Pd. Gould and Bučko's Pd is not the closed-shell
 $4d^{10}$ ground state; ferric takes $\alpha = 26.14$ a.u. from Jerabek,
 Schwerdtfeger and Nagle (PRA 98, 012508 (2018)) and $C_6 = 157.5$ a.u. from
-Gobre's compilation. Any other element ($Z > 54$) is a hard error, never a
-substituted value such as hydrogen's frequency. $V_A^{\mathrm{free}}$ has no
+V. V. Gobre, *Efficient modelling of linear electronic polarization in
+materials using atomic response functions*, PhD thesis, Technische
+Universität Berlin (2016), Table A.1 (the `C6(TS)` column of libMBD's
+`vdw-params.csv`). Any other element ($Z > 54$) is a hard error. $v_A^{\mathrm{free}}$ has no
 table at all. It
 comes only from a live free-atom SCF with the same basis and SCF settings,
 integrated on the same atom-centred Becke–Lebedev quadrature as the
 molecular volumes, so the ratio compares like with like. If that SCF fails,
 or gives a free volume at or below $10^{-10}$, TS $C_6$ is skipped with a
-warning; no denominator is fabricated. The volume ratios are always
+warning. The volume ratios are always
 Hirshfeld, whatever `c6_partition` says, because TS was parametrized with
 Hirshfeld volumes.
 
@@ -183,7 +191,11 @@ not: the pair sum is 5.94 a.u. and the molecular value 11.51 a.u., and the
 difference is the charge-transfer response that no atom owns
 (@sec:casimir-polder-c6-direct-rpa-per-atom). The `pdep` numbers are also far
 below the TS ones. TS scales tabulated free-atom values, while `pdep` is the
-RPA response of this basis, and cc-pVDZ has no diffuse functions.
+RPA response of this basis, and cc-pVDZ has no diffuse functions. With
+aug-cc-pVDZ and aug-cc-pVDZ-RI (same script, `3f612e0b3` build) the `pdep`
+molecular $C_6$ doubles to 24.55 a.u. (pair sum 14.72 a.u.) while `ts` moves
+to 51.98 a.u., so the ratio falls from 3.9 to 2.1: about half of the gap at
+cc-pVDZ is the missing diffuse functions.
 
 ## The direct-RPA per-atom polarizability {#casimir-polder-c6-direct-rpa-per-atom}
 
@@ -195,13 +207,13 @@ ferric uses the Krishtal–Senet–Van Alsenoy intrinsic polarizability (JCP
 $m^A_d = w_A(\mathbf r)(r - R_A)_d$ of a Becke or Hirshfeld partition
 (section @sec:atomic-partitions), the ket the molecular dipole $\mu_j$:
 
-$$ \alpha^A_{dj}(iu) = \langle m^A_d|\,\mathbf R(iu)\,|\mu_j\rangle, \qquad \mathbf R = \big(\tfrac14\mathbf G^{-1} + \mathbf K\big)^{-1}, \quad \mathbf G = \operatorname{diag}(g_{ia}), \quad \mathbf K = \tilde{\mathbf B}^{\mathsf T}\tilde{\mathbf B}, \label{eq:casimir-polder-c6-3} $$
+$$ \alpha^A_{dj}(iu) = \langle m^A_d|\,\mathbf R(iu)\,|\mu_j\rangle, \qquad \mathbf R = \big(\tfrac14\boldsymbol\Gamma^{-1} + \mathbf K\big)^{-1}, \quad \boldsymbol\Gamma = \operatorname{diag}(g_{ia}), \quad \mathbf K = \tilde{\mathbf B}^{\mathsf T}\tilde{\mathbf B}, \label{eq:casimir-polder-c6-3} $$
 
 with $\tilde B^P_{ia}$ the dressed RI factor (section @sec:factorization-and-metric) and the vectors
 $m^A_{d,ia} = \langle i|m^A_d|a\rangle$, $\mu_{j,ia} = \langle i|r_j|a\rangle$.
 
 Is this the usual singlet response? Substitute
-$\mathbf G^{-1} = (u^2 + \boldsymbol\Delta^2)\boldsymbol\Delta^{-1}$ and
+$\boldsymbol\Gamma^{-1} = (u^2 + \boldsymbol\Delta^2)\boldsymbol\Delta^{-1}$ and
 factor out $\boldsymbol\Delta^{-1}$:
 $\mathbf R = 4\,[\boldsymbol\Delta(\boldsymbol\Delta + 4\mathbf K) + u^2]^{-1}\boldsymbol\Delta$,
 the direct-RPA response of section @sec:polarizabilities-from-dielectric-modes. The 4 is 2 for spin and 2 for the
@@ -209,15 +221,15 @@ pair of poles.
 
 $\mathbf R$ is an $n_on_v\times n_on_v$ inverse, too large to form. The
 Woodbury identity moves it into the auxiliary basis. With
-$\mathbf A = \tfrac14\mathbf G^{-1}$, $\mathbf A^{-1} = 4\mathbf G$ and
+$\mathbf A = \tfrac14\boldsymbol\Gamma^{-1}$, $\mathbf A^{-1} = 4\boldsymbol\Gamma$ and
 $\mathbf K = \tilde{\mathbf B}^{\mathsf T}\mathbf 1\tilde{\mathbf B}$,
 
-$$ \mathbf R = 4\mathbf G - 4\mathbf G\tilde{\mathbf B}^{\mathsf T}\big(\mathbf 1 + 4\tilde{\mathbf B}\mathbf G\tilde{\mathbf B}^{\mathsf T}\big)^{-1}\tilde{\mathbf B}\,4\mathbf G . $$
+$$ \mathbf R = 4\boldsymbol\Gamma - 4\boldsymbol\Gamma\tilde{\mathbf B}^{\mathsf T}\big(\mathbf 1 + 4\tilde{\mathbf B}\boldsymbol\Gamma\tilde{\mathbf B}^{\mathsf T}\big)^{-1}\tilde{\mathbf B}\,4\boldsymbol\Gamma . $$
 
-Sandwich it between $m^A_d$ and $\mu_j$ and use that $\mathbf G$ is
-diagonal, so $\mathbf G\mu_j = g\circ\mu_j$:
+Sandwich it between $m^A_d$ and $\mu_j$ and use that $\boldsymbol\Gamma$ is
+diagonal, so $\boldsymbol\Gamma\mu_j = g\circ\mu_j$:
 
-$$ \alpha^A_{dj}(iu) = 4\,m^A_d\cdot(g\circ\mu_j) - 16\,\big(\tilde{\mathbf B}(g\circ m^A_d)\big)^{\mathsf T}\,\tilde{\boldsymbol\varepsilon}^{-1}\,\big(\tilde{\mathbf B}(g\circ\mu_j)\big), \qquad \tilde{\boldsymbol\varepsilon} = \mathbf 1 + 4\tilde{\mathbf B}\mathbf G\tilde{\mathbf B}^{\mathsf T}, \label{eq:disp-c6-kernel-vs-casida} $$
+$$ \alpha^A_{dj}(iu) = 4\,m^A_d\cdot(g\circ\mu_j) - 16\,\big(\tilde{\mathbf B}(g\circ m^A_d)\big)^{\mathsf T}\,\tilde{\boldsymbol\varepsilon}^{-1}\,\big(\tilde{\mathbf B}(g\circ\mu_j)\big), \qquad \tilde{\boldsymbol\varepsilon} = \mathbf 1 + 4\tilde{\mathbf B}\boldsymbol\Gamma\tilde{\mathbf B}^{\mathsf T}, \label{eq:disp-c6-kernel-vs-casida} $$
 
 the same dielectric matrix as the dRPA energy (@eq:drpa-three-ways-3). The first term is the
 bare, unscreened response; the second is the screening by the other
@@ -252,7 +264,7 @@ $f_n = 4\,(m^{\mathsf T}\boldsymbol\Delta^{1/2}\mathbf Z_n)(\mathbf Z_n^{\mathsf
 with $\mathbf Z_n$ the eigenvectors of
 $\boldsymbol\Delta^{1/2}(\boldsymbol\Delta + 4\mathbf K)\boldsymbol\Delta^{1/2}$.
 
-### Reading the kernel
+### Reading the kernel {#casimir-polder-c6-reading-kernel}
 
 `ferric-rpa/src/properties/per_atom.rs::closed_per_atom_alpha` builds
 $\tilde{\boldsymbol\varepsilon}$ once per node and solves it for the three
@@ -335,15 +347,17 @@ The proofs cover the identities (@eq:disp-c6-pole-sum)–(@eq:disp-c6-kernel-vs-
 free-atom tables, the partitions and the volume ratios are checked against
 the references in this table, not by a proof script.
 
-## Known limits (2026-11-15)
+## Known limits (2026-11-15) {#casimir-polder-c6-limits}
 
 - The Hirshfeld per-atom path is closed-shell only (open shells fall back to
   Becke).
-- TS and MBD cover $Z \le 54$.
+- TS and MBD cover $Z \le 54$. An element outside the table, a failed
+  free-atom SCF or a non-positive free volume is an error or a skipped
+  coefficient with a warning; no value is substituted.
 - These coefficients feed exports and analysis; no dispersion energy in
   ferric sums $-C_6^{AB}/R^6$ from them.
 
-## Sources
+## Sources {#casimir-polder-c6-sources}
 
 | Source | Used for |
 |---|---|

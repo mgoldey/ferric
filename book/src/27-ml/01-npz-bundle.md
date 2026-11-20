@@ -100,23 +100,23 @@ rigid rotation or translation of the input geometry.
 | `density_matrix` | $(n,n)$ | — | $D = 2C_oC_o^{\mathsf T}$, the density the charges and other density-based properties are derived from | no sign ambiguity; AO components mix under rotation |
 | `orbital_centers` | $(n_{\mathrm{MO}},3)$ | Bohr | $\langle\phi_p\lvert\mathbf r\rvert\phi_p\rangle$ | vectors; translate with the molecule |
 | `orbital_spreads` | $(n_{\mathrm{MO}},)$ | Bohr | $\sqrt{\max(0,\langle r^2\rangle_p - \lvert\langle\mathbf r\rangle_p\rvert^2)}$ | invariant |
-| `density_second_moment` | $(3,3)$ | Bohr² | $M_{cd} = \sum_{\mu\nu} D_{\mu\nu}\langle\mu\lvert r_c r_d\rvert\nu\rangle$ about the origin, electronic only; its trace is $\langle r^2\rangle$ of the density | rank-2 tensor about the origin; changes under translation |
+| `density_second_moment` | $(3,3)$ | Bohr² | $M_{cd} = \sum_{\mu\nu} D_{\mu\nu}\langle\mu\lvert r_c r_d\rvert\nu\rangle$ about the origin, electronic only and positive as written (multiply by $-1$ for the electrons' charge moment, the sign `dipole` uses); its trace is $\langle r^2\rangle$ of the density | rank-2 tensor about the origin; changes under translation |
 | `dipole` | $(3,)$ | $e\,a_0$ | $\sum_A Z^{\mathrm{eff}}_A\mathbf R_A - \sum D_{\mu\nu}\langle\mu\lvert\mathbf r\rvert\nu\rangle$, origin at 0 | vector; origin-dependent for ions |
 | `pdep_eigenvectors` | $(N_{\mathrm{aux}},M)$ | — | aux coefficients of the PDEP mode densities, $c^{\mathsf T}Vc = I$ (section @sec:polarizability-pdep-c6-pdep-eigenvectors) | signs and degenerate subspaces arbitrary |
-| `esp_atoms` | $(N,)$ | Hartree/$e$ | eq. @eq:electrostatics-and-charges-1, own nucleus excluded | invariant |
-| `esp_surface`, `esp_points` | $(N_p,)$, $(N_p,3)$ | Hartree/$e$, Bohr | eq. @eq:electrostatics-and-charges-3 on Lebedev spheres (section @sec:electrostatics-and-charges-potential-arbitrary-points-surface) | the point set is fixed in the lab frame, so it changes under rotation |
+| `esp_atoms` | $(N,)$ | Hartree/$e$ | (@eq:electrostatics-and-charges-1), own nucleus excluded | invariant |
+| `esp_surface`, `esp_points` | $(N_p,)$, $(N_p,3)$ | Hartree/$e$, Bohr | (@eq:electrostatics-and-charges-3) on Lebedev spheres (section @sec:electrostatics-and-charges-potential-arbitrary-points-surface) | the point set is fixed in the lab frame, so it changes under rotation |
 | `electric_field` | $(N,3)$ | Hartree/($e$ Bohr) | $-\nabla V$ at each nucleus, own nucleus excluded | vectors |
-| `alpha_tensor` | $(3,3)$ | Bohr³ | static dRPA polarizability, eq. @eq:polarizability-pdep-c6-1 | rank-2 tensor; origin-independent |
-| `alpha_atomic` | $(N,3,3)$ | Bohr³ | Krishtal intrinsic per-atom α, eq. @eq:ml-alpha-per-atom-kernel | rank-2 tensors, up to the Becke grid's lab-frame orientation |
+| `alpha_tensor` | $(3,3)$ | Bohr³ | static dRPA polarizability, (@eq:polarizability-pdep-c6-1) | rank-2 tensor; origin-independent |
+| `alpha_atomic` | $(N,3,3)$ | Bohr³ | Krishtal intrinsic per-atom α, (@eq:ml-alpha-per-atom-kernel) | rank-2 tensors, up to the Becke grid's lab-frame orientation |
 | `alpha_ct` | $(3,3)$ | Bohr³ | `alpha_tensor - alpha_atomic.sum(0)` | as `alpha_atomic` |
-| `lowdin_charges`, `mulliken_charges` | $(N,)$ | $e$ | eqs. @eq:electrostatics-and-charges-l-wdin, @eq:electrostatics-and-charges-mulliken | invariant |
-| `hirshfeld_charges` | $(N,)$ | $e$ | eq. @eq:electrostatics-and-charges-hirshfeld on an atom-centred grid | invariant to grid error |
+| `lowdin_charges`, `mulliken_charges` | $(N,)$ | $e$ | (@eq:electrostatics-and-charges-l-wdin), (@eq:electrostatics-and-charges-mulliken) | invariant |
+| `hirshfeld_charges` | $(N,)$ | $e$ | (@eq:electrostatics-and-charges-hirshfeld) on an atom-centred grid | invariant to grid error |
 | `chelpg_charges`, `resp_charges` | $(N,)$ | $e$ | ESP fits on a lab-frame lattice | orientation-dependent (section @sec:electrostatics-and-charges-five-charge-schemes) |
 | `c6_freqs`, `c6_weights` | $(N_u,)$ | a.u. | Gauss–Legendre nodes $u_k$ and weights $w_k$ | constants |
 | `alpha_atomic_dynamic` | $(N,N_u,3,3)$ | Bohr³ | per-atom $\alpha^A(iu_k)$ from the `c6_source` model | as `alpha_atomic` |
 | `alpha_ct_dynamic` | $(N_u,3,3)$ | Bohr³ | dynamic CT remainder; `c6_source = "pdep"` only | as `alpha_ct` |
-| `c6_iso` | $(N,N)$ | Hartree Bohr⁶ | pair $C_6^{AB}$, eq. @eq:ml-c6-cp-quadrature | invariant; a partition convention |
-| `c6_aniso` | $(N,N,3,3)$ | Hartree Bohr⁶ | element-wise $\alpha^A_{ij}\alpha^B_{ij}$ quadrature | **not** a tensor (section @sec:polarizability-pdep-c6-casimir-polder) |
+| `c6_iso` | $(N,N)$ | Hartree Bohr⁶ | pair $C_6^{AB}$, (@eq:ml-c6-cp-quadrature) | invariant; a partition convention |
+| `c6_aniso` | $(N,N,3,3)$ | Hartree Bohr⁶ | element-wise $\alpha^A_{cd}\alpha^B_{cd}$ quadrature | **not** a tensor (section @sec:polarizability-pdep-c6-casimir-polder) |
 | `c6_molecular_iso` | $(1,)$ | Hartree Bohr⁶ | molecular $C_6$ from the molecular $\alpha(iu)$, the DOSD-comparable value | invariant |
 | `c6_source`, `c6_partition` | bytes | — | `ts`, `pdep` or `mbd`; `becke` or `hirshfeld` | labels |
 | `certificate` | bytes | — | result certificate as JSON (section @sec:python-cube-provenance-certificate-provenance-label) | label |

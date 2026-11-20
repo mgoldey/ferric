@@ -528,52 +528,6 @@ impl ThreeIndexSource {
         self.tensor_resident_bytes()
     }
 
-    /// Recompute this f32 source's rows in f64, in its own column layout, one
-    /// block of global aux rows at a time (ascending, `f(p0, rows)`), without
-    /// storing them: the f64 exit pass of `ferric_scf::df_j`. The bases must be
-    /// the ones the tensor was built from. Errors unless this is the f32 tier.
-    ///
-    /// The values are those of the f64 tier with the same layout, bit for bit
-    /// (same engine calls as [`Self::build_ri_j_f32`]). Blocks are sized to the
-    /// budget left beside the f32 tensor (capped at 512 MiB, at least one row).
-    pub fn for_each_ri_j_f64_block_recomputed(
-        &self,
-        (op, obs, dfbs): (Operator, &PreparedBasis, &PreparedBasis),
-        budget_bytes: usize,
-        mut f: impl FnMut(usize, ArrayView2<'_, f64>) -> Result<(), FerricError>,
-    ) -> Result<(), FerricError> {
-        let Backend::InCoreF32 { data, screen } = &self.backend else {
-            return Err(FerricError::General(
-                "the f64 exit pass needs the f32 RI-J tier".into(),
-            ));
-        };
-        if obs.nbasis() != self.nao || dfbs.nbasis() != self.naux {
-            return Err(FerricError::General(format!(
-                "f64 exit pass: bases (nao {}, naux {}) do not match the tensor (nao {}, naux {})",
-                obs.nbasis(),
-                dfbs.nbasis(),
-                self.nao,
-                self.naux
-            )));
-        }
-        let cols = data.ncols();
-        let scratch_row = match screen {
-            None => self.nao.saturating_mul(self.nao).saturating_mul(8),
-            Some(_) => cols.saturating_mul(8),
-        };
-        let bytes = data.len().saturating_mul(4);
-        let step = block_rows(bytes, scratch_row, budget_bytes).min(self.band_naux().max(1));
-        let _charge = super::charge_three_index_soft(
-            "DF 3-index f64 exit block",
-            step.saturating_mul(scratch_row),
-        );
-        for (q0, q1) in shell_aligned_edges(dfbs.shell_offsets(), self.band(), step) {
-            let blk = f64_rows((op, obs, dfbs), (q0, q1), screen.as_deref())?;
-            f(q0, blk.view())?;
-        }
-        Ok(())
-    }
-
     /// The stored rows as f64 `(band_naux, cols)` and their `(μ, ν)` columns:
     /// the f32 tier upcast exactly, the pair-screened tier as stored, every other
     /// tier as its packed triangle. Test hook.

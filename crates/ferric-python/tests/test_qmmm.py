@@ -150,7 +150,10 @@ def test_qmmm_system_residue_ids_selects_whole_residues():
     assert sys.mm_indices() == [3, 4]
 
 
-def test_qmmm_system_residue_ids_and_qm_indices_conflict():
+def test_qmmm_system_residue_ids_with_qm_indices_only_label_molecules():
+    # With an explicit index list residue_ids completes nothing: the partition
+    # is the index list, the labels feed polarization exclusion. A wrong
+    # length is still an error.
     ref = _load("water_sto-3g_qmmm_two_charges.json")
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X", "X"]
     coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
@@ -158,13 +161,13 @@ def test_qmmm_system_residue_ids_and_qm_indices_conflict():
     ]
     coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
     charges = [0, 0, 0, 1.0, -1.0]
-    with pytest.raises(ValueError):
+    sys = ferric.QmmmSystem(
+        symbols, coords_ang, charges, qm_indices=[0, 1], residue_ids=[0, 0, 0, 1, 2]
+    )
+    assert sys.qm_indices() == [0, 1]
+    with pytest.raises(RuntimeError, match="one per atom"):
         ferric.QmmmSystem(
-            symbols,
-            coords_ang,
-            charges,
-            qm_indices=[0, 1, 2],
-            residue_ids=[0, 1, 2, 3, 4],
+            symbols, coords_ang, charges, qm_indices=[0, 1, 2], residue_ids=[0, 1]
         )
 
 
@@ -752,6 +755,8 @@ def _pe_case(tag):
         coords_angstrom,
         charges,
         qm_indices=qm_indices,
+        # Every site is its own molecule (the prototype has no exclusions).
+        residue_ids=list(range(len(symbols))),
         polarizabilities_angstrom3=polarizabilities_angstrom3,
     )
     return sys, ref
@@ -870,6 +875,7 @@ def _oh_polarizable_system(extra_angstrom):
         qm_indices=[0, 1],
         charge=0,
         multiplicity=2,
+        residue_ids=list(range(len(symbols))),
         polarizabilities_angstrom3=polarizabilities_angstrom3,
     )
 
@@ -947,6 +953,7 @@ def _water_plus_one_polarizable_atom(cl_xyz_angstrom, cl_charge, cl_alpha_bohr3)
         coords_angstrom,
         charges,
         qm_indices=[0, 1, 2],
+        residue_ids=list(range(len(symbols))),
         polarizabilities_angstrom3=polarizabilities_angstrom3,
     )
 
@@ -1269,3 +1276,78 @@ def test_the_basis_argument_convention_is_stable():
         fn = getattr(ferric, name)
         assert takes(fn, "sto-3g"), f"{name} must take a basis NAME"
         assert not takes(fn, bs), f"{name} must NOT take a BasisSet"
+
+
+# ── Same-molecule polarization exclusion (2026-11-19) ──
+#
+# The book's 23.3 example: a QM water and two TIP3P waters whose oxygens
+# carry alpha = 1.44 A^3. Without exclusion each oxygen is polarized by its
+# own hydrogens (-1/2 alpha E^2 ~ -0.12 Ha per site); with it E_pol is the
+# small interaction with the QM water and the other MM water.
+
+_BOOK_SYM = ["O", "H", "H", "O", "H", "H", "O", "H", "H"]
+_BOOK_XYZ = [
+    (0.000, 0.000, 0.000),
+    (0.757, 0.586, 0.000),
+    (-0.757, 0.586, 0.000),
+    (0.000, -2.900, 0.000),
+    (0.757, -3.486, 0.000),
+    (-0.757, -3.486, 0.000),
+    (2.900, 1.200, 0.500),
+    (3.400, 1.900, 0.900),
+    (3.300, 0.400, 0.800),
+]
+_BOOK_CHG = [0.0, 0.0, 0.0, -0.834, 0.417, 0.417, -0.834, 0.417, 0.417]
+_BOOK_POL = [0.0, 0.0, 0.0, 1.44, 0.0, 0.0, 1.44, 0.0, 0.0]
+
+
+def _book_system(**kw):
+    return ferric.QmmmSystem(
+        _BOOK_SYM,
+        _BOOK_XYZ,
+        _BOOK_CHG,
+        qm_indices=[0, 1, 2],
+        polarizabilities_angstrom3=_BOOK_POL,
+        **kw,
+    )
+
+
+def test_run_qmmm_polarizable_without_molecule_labels_raises():
+    with pytest.raises(ValueError, match="residue_ids"):
+        ferric.run_qmmm(_book_system(), "sto-3g")
+
+
+def test_run_qmmm_polarization_exclusions_rejects_unknown_value():
+    with pytest.raises(ValueError, match="unknown value"):
+        ferric.run_qmmm(
+            _book_system(residue_ids=[0, 0, 0, 1, 1, 1, 2, 2, 2]),
+            "sto-3g",
+            polarization_exclusions="residue",
+        )
+
+
+def test_run_qmmm_excludes_each_waters_own_charges():
+    labels = [0, 0, 0, 1, 1, 1, 2, 2, 2]
+    excl = ferric.run_qmmm(_book_system(residue_ids=labels), "sto-3g")
+    none = ferric.run_qmmm(
+        _book_system(residue_ids=labels), "sto-3g", polarization_exclusions="none"
+    )
+    # Unlabelled + opt-out is the same run as labelled + opt-out.
+    none_nolabel = ferric.run_qmmm(
+        _book_system(), "sto-3g", polarization_exclusions="none"
+    )
+    assert none.energy == none_nolabel.energy
+    # Without exclusion the self-polarization dominates (two sites ~ -0.24 Ha);
+    # with it E_pol is the interaction remainder, two orders smaller.
+    assert none.e_pol < -0.2
+    assert -0.02 < excl.e_pol < 0.0
+    # Bonds of an MM topology give the same molecules as the residue labels.
+    bonds = [
+        (i, j, 450.0, 0.9572)
+        for i, j in [(0, 1), (0, 2), (3, 4), (3, 5), (6, 7), (6, 8)]
+    ]
+    top = ferric.MmTopology.from_amber_units(
+        _BOOK_CHG, [1.0] * 9, [0.0] * 9, bonds, [], []
+    )
+    by_bonds = ferric.run_qmmm(_book_system(), "sto-3g", mm_topology=top)
+    assert by_bonds.e_pol == excl.e_pol

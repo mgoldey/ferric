@@ -29,12 +29,18 @@ continuation line, and its own static shift.
 or ROKS reference is first semi-canonicalized per spin
 (`ferric_scf::semicanonical::unrestricted_reference`): each spin's Fock
 matrix is diagonalized within its occupied block and within its virtual
-block, which gives each spin a set of orbitals and orbital energies.
+block, which gives each spin a set of orbitals and orbital energies. The
+semi-canonical orbitals do not diagonalize each spin's Fock matrix: its
+occupied–virtual block stays nonzero, because ROHF stationarity removes that
+block only from the effective Roothaan Fock operator. So the reference is
+not a UHF stationary point. Open-shell G0W0 uses the diagonal energies and
+drops that block, as U-RI-MP2 on an ROHF reference drops its singles term
+(section @sec:unrestricted-ri-mp2-code-evaluates).
 
 **The spin-summed dielectric.** Each spin contributes its own particle–hole
 pairs to the response:
 
-$$ \tilde{\boldsymbol\varepsilon}_U(iu) = \mathbf 1 + \Pi_\alpha(iu) + \Pi_\beta(iu), \qquad \Pi_\sigma = 2\sum_{i_\sigma a_\sigma} B_\sigma B_\sigma^{\mathsf T}\frac{\Delta_{i\sigma}^{a}}{u^2+(\Delta_{i\sigma}^{a})^2} $$
+$$ \tilde{\boldsymbol\varepsilon}_U(iu) = \mathbf 1 + \Pi_\alpha(iu) + \Pi_\beta(iu), \qquad [\Pi_\sigma(iu)]_{PQ} = 2\sum_{i_\sigma a_\sigma} B^P_{\sigma,ia}B^Q_{\sigma,ia}\,\frac{\Delta_{i\sigma}^{a}}{u^2+(\Delta_{i\sigma}^{a})^2} $$
 
 (`ferric-rpa/src/energy.rs`; section @sec:open-shell-dielectric). Where does the prefactor come
 from? The closed-shell 4 of section @sec:screened-interaction-dielectric-matrix-single-pole is 2 for spin times 2 for the
@@ -76,10 +82,39 @@ $\tilde{\boldsymbol\varepsilon}_U(0)$. `ferric-gw/src/u_cohsex.rs::run_u_cohsex`
 calls the closed-shell `cohsex_pieces` once per spin with the shared
 weights. The Coulomb-hole sum runs over the complete set of that spin, and
 its closure turns it into the local $\tfrac12 W_d(\mathbf r,\mathbf r)$, as
-in section @sec:cohsex. The dynamic $\Sigma^c_\sigma$ sums over that spin's MOs in
-the same way, and the static shift is per spin,
+in section @sec:cohsex. The static shift is per spin,
 $\delta_{\sigma p} = \Sigma^x_{\sigma p} - v^{xc}_{\sigma p}$
 (`ferric-gw/src/u_sigma.rs::static_shifts`).
+
+**The dynamic self-energy.** U-G0W0, the default method of `run_u_gw`, uses
+the integral of section @sec:correlation-self-energy-frequency-integral with
+the sum over $q$ restricted to spin $\sigma$ and the screened element built
+from that spin's projection and the shared $\tilde W_d$:
+
+$$ \Sigma^c_{\sigma,p}(z) = -\frac1\pi\sum_{q\in\sigma}\int_0^\infty du\,W_{\sigma,pq}(iu)\,\frac{z-\epsilon_{q\sigma}}{(z-\epsilon_{q\sigma})^2+u^2}, \qquad W_{\sigma,pq}(iu) = \sum_{\xi\eta}B^{\xi}_{\sigma,pq}\,[\tilde W_d(iu)]_{\xi\eta}\,B^{\eta}_{\sigma,pq} . $$
+
+Check the closed-shell limit: with identical spins $\tilde W_d$ is the
+closed-shell one (claim U1b) and each spin's sum is the closed-shell sum, so
+$\Sigma^c_\alpha = \Sigma^c_\beta = \Sigma^c$. Claim U3 evaluates the
+formula on the lattice model of claim U1 at $z = \epsilon_{F,\sigma} + iy$,
+with the spin-summed $\tilde{\boldsymbol\varepsilon}(iu)$ on 400
+Gauss–Legendre nodes, and compares it with an independent pole sum over the
+spin-unrestricted direct-RPA excitations.
+
+> **Verified equation {#eq:gw-u-dynamic-sigma-c}** · the per-spin dynamic correlation self-energy
+>
+> $\Sigma^c_{\sigma,p}(z) = -\frac1\pi\sum_{q\in\sigma}\int_0^\infty du\,W_{\sigma,pq}(iu)\,\frac{z-\epsilon_{q\sigma}}{(z-\epsilon_{q\sigma})^2+u^2}$, with $W_{\sigma,pq} = B^{\xi}_{\sigma,pq}[\tilde W_d]_{\xi\eta}B^{\eta}_{\sigma,pq}$ from the spin-summed $\tilde{\boldsymbol\varepsilon} = 1 + \Pi_\alpha + \Pi_\beta$, equals the pole sum over the spin-unrestricted direct-RPA excitations on $z = \epsilon_{F,\sigma} + iy$, and the closed-shell $\Sigma^c$ at $\alpha = \beta$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/gw_ucohsex_sympy.py`, claim U3 |
+> | Negative control | the other spin's orbital energies in the kernel fail the comparison |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-gw/src/u_sigma.rs::run_u_g0w0` |
+> | Code test | `u_g0w0_oh_vs_pyscf_ugw_ac` in `crates/ferric-gw/tests/validation_gw.rs` |
+>
+> <!-- verified: id=gw.u.dynamic-sigma-c; script=scripts/gw_ucohsex_sympy.py; claim=U3; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/u_sigma.rs::run_u_g0w0; rust_test=ferric-gw/tests/validation_gw.rs::u_g0w0_oh_vs_pyscf_ugw_ac; registry=u-gw -->
+
 
 **How the per-spin pieces are checked.** Claim U1 of the script builds the
 same three quantities with no auxiliary or PDEP basis: a 6-site lattice with
@@ -158,10 +193,10 @@ together, so the pool check sums them before either is built
 (`guard_m_proj_both_spins`).
 
 **Why the product rule matters most here.** The product-integration rule of
-section @sec:correlation-self-energy-product-integration is built once and used by both spins. The plain quadrature at
-the same points misses the open-shell $\Sigma^c$ at the continuation nodes by
-0.11 Ha at 100 points for OH/cc-pVDZ at PBE, because the $\beta$ HOMO and LUMO
-lie 0.015 Ha either side of $\epsilon_{F,\beta}$.
+section @sec:correlation-self-energy-product-integration is built once and used by both spins. A radical's per-spin
+mid-gap can sit very close to that spin's frontier states, which is the case
+where the plain quadrature fails (the OH figures are in section
+@sec:correlation-self-energy-product-integration).
 
 The default QP window is HOMO−2 … LUMO+2 around $\max(n_\alpha, n_\beta)$
 (`default_u_qp_range`). A closed-shell result passed to `run_u_gw` is an
@@ -173,9 +208,44 @@ error. U-sc-COHSEX is not implemented and returns an error.
 UHF (UKS). The CLI solves UHF with maximum overlap after five DIIS iterations
 when the multiplicity is above 1, for `task = "energy"` only.
 
-**Known limits (2026-11-15).** Energy only; no gradient. The reference of a
-ROHF or ROKS run is the semi-canonical per-spin view, and the validation
-compares at that convention.
+OH / cc-pVDZ, U-G0W0@UHF at the matched settings, from the `3f612e0b3`
+build. OH has 5 $\alpha$ and 4 $\beta$ electrons, so each spin has its own
+HOMO and LUMO and its own continuation line.
+
+```python
+# OH / cc-pVDZ, U-G0W0@UHF: each spin's HOMO and LUMO, mean field and quasiparticle.
+import ferric
+
+HA_EV = 27.211386245988
+mol = ferric.Molecule.from_xyz("testdata/molecules/oh.xyz", multiplicity=2)
+bs = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+
+r = ferric.run_u_gw(mol, bs, aux, method="g0w0", n_quad=100, trunc_thresh=0.0)
+mo = list(r.mo_indices)
+for spin, nocc, emf, eqp in (("alpha", 5, r.eps_mf_a, r.eps_qp_a), ("beta", 4, r.eps_mf_b, r.eps_qp_b)):
+    h, l = mo.index(nocc - 1), mo.index(nocc)
+    print(f"{spin:5s} HOMO {emf[h]*HA_EV:9.4f} -> {eqp[h]*HA_EV:9.4f} eV   "
+          f"LUMO {emf[l]*HA_EV:9.4f} -> {eqp[l]*HA_EV:9.4f} eV")
+```
+
+```text
+alpha HOMO  -14.8301 ->  -13.5693 eV   LUMO    5.0303 ->    4.7747 eV
+beta  HOMO  -13.5836 ->  -12.5325 eV   LUMO    3.7465 ->    1.8415 eV
+```
+
+The $\beta$ gap, 17.3 eV at the mean field, is smaller than the $\alpha$
+gap, 19.9 eV, and the two mid-gaps lie within 0.02 eV of each other. Here a
+single continuation line would pass through both gaps; claim U2 is the case
+where it does not. The quasiparticle correction is spin-dependent: the
+$\beta$ LUMO, the half-filled $\pi$ orbital, moves down by 1.9 eV, the
+$\alpha$ LUMO by 0.26 eV. The CLI input for the same run is
+`examples/oh-ugw.toml` (`oh-ugw-rohf.toml` for the ROHF reference).
+
+**Known limits (2026-11-19).** Energy only; no gradient. The reference of a
+ROHF or ROKS run is the semi-canonical per-spin view with its
+occupied–virtual Fock block dropped, and the validation compares at that
+convention.
 
 ## Numerical anchors {#open-shell-gw-numerical-anchors}
 
@@ -186,9 +256,16 @@ From `site/src/reference/validation.md` (the U-G0W0, U-COHSEX and ROHF rows):
 | U-G0W0@UHF against the grid-free U-dRPA pole sum at the same 18 nodes | OH, CH3, NH2 / cc-pVDZ and aug-cc-pVDZ; O2, CH2 triplets | $\le 3.8\times10^{-8}$ Ha; OH/cc-pVDZ $\beta$ LUMO+2 $1.2\times10^{-5}$ Ha | `u_g0w0_{oh,ch3,nh2}_vs_pyscf_ugw_ac`, `u_g0w0_triplets_o2_ch2_vs_pyscf_ugw_ac` in `crates/ferric-gw/tests/validation_gw.rs` |
 | U-G0W0@UKS/PBE, product-rule $\Sigma^c$ against the pole sum | OH, CH3, NH2 / cc-pVDZ | $\le 5.2\times10^{-10}$ Ha | `u_g0w0_uks_pbe_*` in `crates/ferric-gw/tests/validation_gw.rs` |
 | U-G0W0@UKS/PBE quasiparticle energies against the pole sum, every orbital | OH, CH3, NH2 / cc-pVDZ | $\le 2.7\times10^{-8}$ Ha | the same |
-| U-COHSEX@UHF against numpy on PySCF density-fitted integrals | OH, CH3, NH2 / cc-pVDZ and aug-cc-pVDZ | $\varepsilon^{\rm QP}$ $\le 3.3\times10^{-9}$ Ha | `crates/ferric-gw/tests/validation_u_cohsex.rs` |
+| U-COHSEX@UHF against numpy on PySCF density-fitted integrals | OH, CH3, NH2 / cc-pVDZ and aug-cc-pVDZ | $\epsilon^{\rm QP}$ $\le 3.3\times10^{-9}$ Ha | `crates/ferric-gw/tests/validation_u_cohsex.rs` |
 | singlet H2O UHF through `run_u_gw` against closed-shell COHSEX | H2O / cc-pVDZ | $8.1\times10^{-10}$ Ha | `u_cohsex_singlet_h2o_equals_closed_shell_cohsex` |
 | U-G0W0 on a ROHF reference, semi-canonicalized | OH, CH3 / cc-pVDZ | $\le 1.5\times10^{-5}$ Ha (OH $\beta$), $\le 1.3\times10^{-6}$ Ha (CH3) | `crates/ferric-gw/tests/validation_rohf_reference.rs` |
+
+The pole-sum comparisons carry PySCF in their names (`..._vs_pyscf_ugw_ac`)
+because their reference files come from the PySCF-based generator: the
+tests compare the mean-field energies and the density-fitted $\Sigma^x$ with
+PySCF, and $\Sigma^c$ and the quasiparticle energies with the grid-free
+U-dRPA pole sum stored in the same file. PySCF's own 100-point plain
+quadrature is off by up to about 1.5 meV on these systems.
 
 Further tests: `crates/ferric-gw/tests/u_cohsex_evgw_closed_shell_limit.rs`
 (the closed-shell limit of U-COHSEX and U-evGW) and
@@ -198,5 +275,5 @@ Further tests: `crates/ferric-gw/tests/u_cohsex_evgw_closed_shell_limit.rs`
 
 | Source | What it gives |
 |---|---|
-| `scripts/gw_ucohsex_sympy.py`, claims U1, U1b, U2 | the proofs |
+| `scripts/gw_ucohsex_sympy.py`, claims U1, U1b, U2, U3 | the proofs |
 | `scripts/gw_self_energy_sympy.py`, claim 1 | the closed-shell limit of the dielectric |

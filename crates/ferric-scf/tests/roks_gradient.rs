@@ -13,7 +13,7 @@ use ndarray::Array2;
 
 fn cfg(xc: &str) -> RhfConfig {
     // Doublet OH at LDA/PBE benefits from a level shift to damp DIIS
-    // oscillations. The shift is rational-damped by err_max in solve_rohf
+    // oscillations. The shift is ramped by err_max (open_shell_level_shift_ramp)
     // so the converged state is the unshifted stationary point.
     // The SOMO/HOMO near-degeneracy on doublet OH at LDA/PBE makes plain
     // DIIS oscillate without converging. The Maximum-Overlap Method

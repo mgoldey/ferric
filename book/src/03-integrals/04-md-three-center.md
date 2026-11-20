@@ -10,10 +10,9 @@ orbital product $\chi_\mu\chi_\nu$:
 $$ A^{g}_{\mu\nu} = \int \frac{\chi_\mu(\mathbf r)\chi_\nu(\mathbf r)}{|\mathbf r - \mathbf r_g|}\, d\mathbf r . $$
 
 This is a nuclear-attraction integral with the nucleus replaced by a grid
-point, and with the repulsive sign (raw libint2 nuclear attraction has the
-opposite sign). libint2 can produce it one point at a time, but each call
-repeats the work that does not depend on the point, so the repeated work grows
-with the number of grid points. The Rust engine in
+point and the sign of a repulsion. libint2 can produce it one point at a
+time, but each call repeats the work that does not depend on the point, so
+the repeated work grows with the number of grid points. The Rust engine in
 `md3c1e.rs` builds the parts that do not depend on the point once per shell
 pair and runs the point-dependent recursion over tiles of points.
 
@@ -80,7 +79,10 @@ does not appear in $1/|\mathbf r - \mathbf C|$, so the derivatives move
 outside the integral. Every Hermite term becomes a derivative of the
 spherical result:
 
-$$ A^g = \frac{2\pi}{p} \sum_{tuv} E^{ij}_t E^{kl}_u E^{mn}_v\, R^0_{tuv}(p, \mathbf P - \mathbf r_g), $$
+$$ A^g = \frac{2\pi}{p} \sum_{tuv} E^{i_xj_x}_t E^{i_yj_y}_u E^{i_zj_z}_v\, R^0_{tuv}(p, \mathbf P - \mathbf r_g), $$
+
+where $(i_x, i_y, i_z)$ and $(j_x, j_y, j_z)$ are the Cartesian powers of the
+two primitives, and
 
 $$ R^n_{000} = (-2p)^n F_n(T), \quad T = p|\mathbf P - \mathbf r_g|^2, \qquad R^{n}_{t+1,u,v} = t R^{n+1}_{t-1,u,v} + X_{PC} R^{n+1}_{tuv} , $$
 
@@ -98,32 +100,15 @@ runs $R$ over a tile of 8 points (`TILE`) in lock step
 (`ferric-integrals/src/md3c1e.rs::Md3c1e::pair_block`; the COSX caller is
 `ferric-integrals/src/cosx_a.rs::a_matrix_at_point`).
 
-### The Boys function
+### The Boys function evaluator
 
-The Boys function is
+The Boys function $F_n(T)$ seeds the recursion. Section @sec:two-electron-boys
+defines it and derives the three facts the evaluator uses: the stable
+downward recursion, the Taylor series from $dF_n/dT = -F_{n+1}$, and the
+asymptotic form of $F_0$.
 
-$$ F_n(T) = \int_0^1 t^{2n} e^{-T t^2}\,dt . $$
-
-Three facts about it drive the evaluator. First, integrate by parts, taking
-$t^{2n}$ as the factor to integrate:
-
-$$ F_n(T) = \frac{e^{-T} + 2T\,F_{n+1}(T)}{2n+1} . $$
-
-Read downward, this gives $F_n$ from $F_{n+1}$ by adding positive terms, which
-is stable. Read upward, $F_{n+1} = \big((2n+1)F_n - e^{-T}\big)/(2T)$, it
-subtracts two nearly equal numbers at small $T$ and is stable only at large
-$T$. Second, differentiating under the integral gives $dF_n/dT = -F_{n+1}$,
-so a Taylor series of $F_n$ about a point $T_k$ needs only the higher-order
-values at $T_k$:
-
-$$ F_n(T_k + \delta) = \sum_{j \ge 0} \frac{(-\delta)^j}{j!}\,F_{n+j}(T_k) . $$
-
-Third, for large $T$ the integrand has decayed long before $t = 1$, and
-extending the upper limit to infinity gives
-$F_0(T) \approx \tfrac12\sqrt{\pi/T}$. The neglected part is the relative
-error $\operatorname{erfc}(\sqrt T)$.
-
-The code (`boys`, `BOYS_T_SWITCH`) combines them. Below $T = 35$ it takes a
+The code (`ferric-integrals/src/md3c1e.rs::boys`, `BOYS_T_SWITCH`) combines
+them. Below $T = 35$ it takes a
 10-term Taylor expansion about the nearest node of a table on
 $T_k = k/8$, giving $F_{n_{\max}}$, then runs the downward recursion for the
 lower orders. At $T \ge 35$ it uses the asymptotic $F_0$ and the upward
@@ -173,7 +158,7 @@ for st in &prog.steps {                              // one R^n_{t+1,u,v} per st
 }
 ```
 
-Three points about it:
+Four points about it:
 
 - **The recursion is a program, built once.** `prog.steps` is a list of
   (destination, source, second source, coefficient, direction) entries, built
@@ -185,6 +170,12 @@ Three points about it:
   contiguous entries, one per grid point, and each line of arithmetic is the
   same operation on all eight. The compiler turns these into SIMD
   instructions, and an AVX2+FMA variant is selected at run time.
+- **The sign is repulsive with no flip.** The expansion of $A^g$ has no
+  overall minus sign, so `pair_block` returns $+1/|\mathbf r - \mathbf r_g|$
+  directly. Raw libint2 nuclear attraction has the opposite sign, and the
+  libint2 path `ferric-integrals/src/cosx_a.rs::a_matrix_at_point` negates its
+  block. A caller that switches from that path to this one must not negate
+  again.
 - **FMA changes only the rounding.** `fma::<true>` computes
   $c\cdot a_2 + x$ with one rounding, `fma::<false>` with two. The tests hold
   the two within $10^{-13}$ (@sec:md-three-center-numerical-anchors).
@@ -225,8 +216,18 @@ The engine has an independent oracle: libint2's nuclear-attraction integral,
 evaluated one point at a time through `a_matrix_at_point`. No proof script
 covers the recursions. For this section, the $E$ recursion was checked against
 the direct expansion of $x_A^ix_B^je^{-ax_A^2-bx_B^2}$ for $i, j \le 2$, the
-first $R$ step against a numerical derivative of $F_0$, and the two Boys
-identities against quadrature of the definition.
+first $R$ step against a numerical derivative of $F_0$, and the Boys
+identities against quadrature of the definition (section
+@sec:two-electron-boys).
+
+## Known limits
+
+Checked 2026-11-19.
+
+- Shells up to $g$ ($l \le 4$, `MAX_L`); `Md3c1e::new` returns an error for
+  a higher $l$ and for a pure $p$ shell.
+- The Hermite program covers total order $l_a + l_b \le 8$, which is the
+  pair of two $g$ shells.
 
 ## Sources
 

@@ -264,7 +264,15 @@ def _pqr_atoms():
 
 def _py_system(alphas):
     atoms = _pqr_atoms()
-    kw = {} if alphas is None else {"polarizabilities_angstrom3": alphas}
+    # Each MM site is its own PQR residue, the molecule labels the CLI reads.
+    kw = (
+        {}
+        if alphas is None
+        else {
+            "polarizabilities_angstrom3": alphas,
+            "residue_ids": list(range(len(atoms))),
+        }
+    )
     return ferric.QmmmSystem(
         [a[0] for a in atoms],
         [a[1] for a in atoms],

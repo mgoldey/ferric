@@ -133,8 +133,9 @@ The test compares the split $V$ at three values of $\eta$ with it.
 
 **Gaussian nuclei.** The short-range part needs
 $\langle\mu|\operatorname{erfc}(\eta r_C)/r_C|\nu\rangle$ for a point
-nucleus. libint2's `erf_nuclear` and `erfc_nuclear` kernels are wrong in the
-libint2 versions ferric builds against, so ferric does not use them. Each
+nucleus. libint2's `erf_nuclear` and `erfc_nuclear` kernels are wrong in
+libint2 2.7.2, the version ferric builds against, so ferric does not use them
+(the workaround stays correct whatever a later version does). Each
 nucleus is instead a unit-normalized s Gaussian of exponent
 $\zeta = 10^{16}$ (PySCF's `fakemol_for_charges` value), and the integral
 comes from the ordinary erfc three-centre engine, with the nucleus translated
@@ -149,11 +150,66 @@ by the same integral as above with $\eta = \sqrt\zeta$. The module
 documentation evaluates it for an O 1s AO ($\rho(0) \approx Z^3/\pi \approx 163$):
 $4\times10^3/\zeta$, which is $4\times10^{-13}$ Ha at $\zeta = 10^{16}$.
 
+**Overlap and kinetic energy need no split.** The other two one-electron
+matrices are lattice sums of ordinary integrals,
+
+$$ S_{\mu\nu} = \sum_{\mathbf L}\langle\mu_0|\nu_{\mathbf L}\rangle, \qquad T_{\mu\nu} = \sum_{\mathbf L}\langle\mu_0|-\tfrac12\nabla^2|\nu_{\mathbf L}\rangle . $$
+
+Both integrands are products of two Gaussians, so each term falls as
+$e^{-\alpha\beta|\mathbf A - \mathbf B - \mathbf L|^2/p}$ and the sum over
+$\mathbf L$ converges absolutely after a few shells. Only the Coulomb
+operators, which reach to infinity, need the Ewald treatment.
+
+**Which charge.** Every $Z_C$ on this page, in $S(\mathbf G)$, $Z_\text{tot}$
+and the real-space sum, is the effective charge `Atom::effective_z`,
+$Z_C - n^\text{core}_C$, when the basis carries an ECP. The next subsection
+adds the ECP's own operator.
+
+## Effective core potentials {#nuclear-attraction-ecp}
+
+An ECP replaces the core electrons of atom $C$ by a charge reduction and a
+short-range operator $U_C$ (section @sec:ecp gives the molecular form). In a
+crystal the operator sits on every image $\mathbf R_C + \mathbf M$
+of every ECP atom, and the one-electron matrix gains
+
+$$ V^{\mathbf L}_{\mu\nu} = \sum_{C,\mathbf M}\langle\mu_0|U_C(\mathbf r - \mathbf R_C - \mathbf M)|\nu_{\mathbf L}\rangle, \qquad V_\text{ECP}(k) = \sum_{\mathbf L}e^{ik\cdot\mathbf L}V^{\mathbf L} . \label{eq:pbc-ecp-bloch} $$
+
+Every radial term of $U_C$ is a Gaussian $r^{n-2}e^{-\zeta r^2}$, so the
+double sum over $\mathbf L$ and $\mathbf M$ converges like the overlap and
+touches neither $\mathbf G = 0$ nor the Madelung constant. Two properties
+follow from the image sum alone, and both are the code's anchors:
+
+- **Translation.** Shifting the whole crystal by $-\mathbf L$ maps the pair
+  $(\mu_0, \nu_{\mathbf L})$ to $(\mu_{-\mathbf L}, \nu_0)$ and permutes the
+  centres, so $V^{-\mathbf L} = (V^{\mathbf L})^{\mathsf T}$. With a real
+  basis, $V_\text{ECP}(k)$ is Hermitian and $V_\text{ECP}(-k) = V_\text{ECP}(k)^*$.
+- **Unfolding.** On an $N$-point mesh, the Bloch matrices are the block
+  diagonal of the supercell's Gamma matrix in the Bloch basis: the
+  supercell matrix between home cell $0$ and cell $\mathbf T$ is the sum of
+  $V^{\mathbf T + N\mathbf L'}$ over supercell translations $\mathbf L'$, and
+  $\tfrac1N\sum_ke^{-ik\cdot\mathbf T}V_\text{ECP}(k)$ returns exactly that.
+
+The trivial limit is the box: in a cell much larger than every $U_C$ only
+$\mathbf L = \mathbf M = 0$ survive, and $V_\text{ECP}$ is the molecular
+matrix. The effective charge is the one point of failure: a bare $Z$ applied
+to both sides of the mesh-supercell comparison passes it, so
+`ferric-pbc/src/ecp.rs::check_ecp_applied` refuses a cell whose molecule has
+not been through `Molecule::apply_ecp`.
+
+| Quantity | Reference | Test |
+|---|---|---|
+| 40-Bohr box | the molecular ECP matrix | `crates/ferric-pbc/tests/pbc_ecp.rs` `big_box_periodic_ecp_is_the_molecular_ecp` |
+| Hermiticity, $V(-k) = V(k)^*$, unfolding on $1\times1\times3$ | the supercell Gamma $V_\text{ECP}$, $10^{-12}$ | `bloch_sum_is_hermitian_and_unfolds_to_the_supercell_gamma_ecp` |
+| $k$-mesh energy per cell | the supercell energy per cell, $10^{-11}$ | `kmesh_rhf_with_ecp_equals_supercell` |
+| bare-$Z$ cell | a typed error | `apply_ecp_guard_refuses_a_bare_z_cell` |
+
+The Rust entry points are `ferric-pbc/src/ecp.rs::{periodic_ecp_images,periodic_ecp_gradient,periodic_ecp_strain}`.
+
 ## The algorithm {#nuclear-attraction-algorithm}
 
 | Step | Quantity | Cost |
 |---|---|---|
-| 1 | $S$, $T$ by lattice-summed shifted one-electron blocks | $N_\text{shell}^2N_{\mathbf L}$ |
+| 1 | $S$, $T$ by lattice-summed shifted one-electron blocks; $V_\text{ECP}$ by (@eq:pbc-ecp-bloch) when the basis has one | $N_\text{shell}^2N_{\mathbf L}$ |
 | 2 | $V_\text{SR}$: erfc three-centre integrals of $\langle\mu_0|\cdot|\nu_{\mathbf L}\rangle$ with Gaussian nuclei at $\mathbf R_C + \mathbf M$, screened per triplet | $N_\text{shell}^2N_{\mathbf L}N_\text{nuc}$ |
 | 3 | $V_\text{LR}$ on the half $\mathbf G$ sphere (weight 2): $-(2/\Omega)\sum v_\eta(\mathbf G)\operatorname{Re}[P^*_{\mu\nu}S(\mathbf G)]$ | $N_\text{pair}N_{\mathbf G}$ |
 | 4 | $V_\text{G0} = c_0Z_\text{tot}S$ | $n_\text{ao}^2$ |
@@ -221,7 +277,7 @@ walks. A run that sets its own `gdf_omega` caps with that value instead.
 | Quantity | Reference | Test |
 |---|---|---|
 | $V(\eta)$ at three $\eta$ | the pure-AFT oracle `pure_aft_nuclear` | `crates/ferric-pbc/tests/pbc_hcore.rs` `periodic_hcore_is_omega_independent_triclinic_sp` |
-| one s primitive | the closed form $V_\text{erf} = -(2/\sqrt\pi)(1/\eta^2 + 1/p + 1/\zeta)^{-1/2}$ | `single_s_primitive_matches_closed_form` |
+| a unit-normalized s pair density centred on the nucleus | the closed form $V_\text{erf} = -(2/\sqrt\pi)(1/\eta^2 + 1/p + 1/\zeta)^{-1/2}$ | `single_s_primitive_matches_closed_form` |
 | erf + erfc on a Gaussian nucleus (`ferric-pbc/src/hcore.rs::gaussian_nucleus_attraction`) | the point nucleus | `gaussian_nucleus_erf_plus_erfc_is_point_nuclear` |
 | H$_2$/STO-3G at $a = 4$ | the Python prototype | `periodic_hcore_matches_prototype_h2_sto3g_a4` |
 

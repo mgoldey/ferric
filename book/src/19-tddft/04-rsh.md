@@ -52,9 +52,13 @@ with $(pq|rs)_\omega$ the erf-attenuated integral. So, for both spins,
 $$ A_{ia,jb} \mathrel{-}= c_{\rm sr}(ij|ab) + \Delta c\,(ij|ab)_\omega,\qquad
 B_{ia,jb} \mathrel{-}= c_{\rm sr}(ib|ja) + \Delta c\,(ib|ja)_\omega . $$
 
-The Coulomb term $2(ia|jb)$ and the kernel do not change. The kernel is
-libxc's for the same functional, whose semilocal exchange is already the
-short-range-attenuated one.
+The Coulomb term $2(ia|jb)$ and the kernel do not change form. The kernel
+is libxc's second derivative of the same functional, whose semilocal
+exchange is already attenuated to short range with the functional's own
+$\omega$. So the semilocal part of the response is range-separated too,
+and its $\omega$ must be the one in the exact-exchange split. It is: the
+gate reads $c_{\rm sr}$, $c_{\rm lr}$ and $\omega$ from the same libxc
+object that supplies the kernel (section @sec:kernel-gate).
 
 Check the limits. With $c_{\rm sr} = c_{\rm lr}$, $\Delta c = 0$ and the
 exchange is the global hybrid's. With $\omega \to 0$, $\mathrm{erf}(0) = 0$
@@ -83,7 +87,7 @@ global hybrid never enters the second branch.
 `subtract_exchange_b`, reading $(ib|ja)_\omega$ from
 $B^{\omega\mathsf T}_{ov}B^\omega_{ov}$.
 
-### Which integrals are fitted, and in which metric
+### Which integrals are fitted, and in which metric {#rsh-fitted-integrals}
 
 The full-Coulomb exchange reuses the Coulomb-metric tensors
 $B_{ov}, B_{oo}, B_{vv}$ of section @sec:response-matrices, which the Coulomb term needs
@@ -106,7 +110,8 @@ Why the erf metric?
   $(pq|\mathrm{erf}|rs) \approx \sum_P B^{\omega,P}_{pq}B^{\omega,P}_{rs}$ is
   second order in the fitting residual, measured in the erf norm. The fitted
   block is a Gram matrix, so it stays symmetric positive semidefinite, as
-  the exact one is.
+  the exact one is: $\mathrm{erf}(\omega r)/r$ has a positive Fourier
+  transform, $4\pi e^{-k^2/4\omega^2}/k^2$.
 - A Coulomb-metric fit of erf integrals has no symmetric $B^{\mathsf T}B$
   form. It needs
   $(pq|\mathrm{erf}|P)\,\mathbf V^{-1}(\ldots)\mathbf V^{-1}(Q|\mathrm{erf}|rs)$
@@ -127,7 +132,7 @@ differ by fitting error, of the same kind as the difference that already
 exists between the JK-fitted SCF and the RI-fitted response of a global
 hybrid.
 
-### Limits that are exact in the code
+### Limits that are exact in the code {#rsh-exact-limits}
 
 - **$\omega = 0$.** The long-range term is identically zero. The driver
   builds no erf tensors, and the run is bitwise the global hybrid with
@@ -138,7 +143,7 @@ hybrid.
   long-range term is weighted wrongly (by $c_{\rm lr}$ in place of
   $\Delta c$, for example). This limit is a test of the weighting.
 
-### Matrix-free products and memory
+### Matrix-free products and memory {#rsh-matrix-free}
 
 Write $K^\omega_A(x)_{ia} = \sum_{jb}(ij|ab)_\omega x_{jb}$ and $K^\omega_B$
 likewise. The products of `matvec.rs` gain $-\Delta c\,K^\omega_A$ in
@@ -162,13 +167,18 @@ the erf tensors are built.
 > | Negative control | the runner's B1 mutations; in the Rust validation, dropping the long-range term moves the roots by 2.9 to 6.0 eV |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-tddft/src/tddft.rs::{build_a_matrix,build_b_matrix}` |
-> | Code test | `crates/ferric-tddft/tests/validation_tddft_rsh.rs` (CAM-B3LYP and ωB97X against PySCF `get_ab`) |
+> | Code test | `range_separated_exchange_reduces_to_the_global_hybrid` in `crates/ferric-tddft/src/tddft.rs` (the two exact limits above); `water_cam_b3lyp`, `water_wb97x` and the C2H4 and benzene cases in `crates/ferric-tddft/tests/validation_tddft_rsh.rs` (against PySCF `get_ab`) |
 >
-> <!-- verified: id=td.rsh.split; script=scripts/tddft_response_sympy.py; claim=A4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::build_b_matrix; registry=tddft -->
+> <!-- verified: id=td.rsh.split; script=scripts/tddft_response_sympy.py; claim=A4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/tddft.rs::build_b_matrix; rust_test=ferric-tddft/src/tddft.rs::range_separated_exchange_reduces_to_the_global_hybrid; registry=tddft -->
 
 B3LYP against CAM-B3LYP for water / 6-31G (TDA), from the `589b50832`
-build. The long-range exchange of CAM-B3LYP ($c_{\rm lr} = 0.65$ against
-0.2) raises each of the five roots, by 0.03 to 0.15 eV.
+build. CAM-B3LYP raises each of the five roots, by 0.03 to 0.15 eV. The
+comparison changes more than the long-range term: CAM-B3LYP also has a
+different $c_{\rm sr}$ (0.19) and a different semilocal part, and water's
+low roots are not charge-transfer states. What isolates the long-range
+term is the negative control in the box: removing it from CAM-B3LYP and
+ωB97X, with everything else fixed, moves the roots by 2.9 to 6.0 eV. The
+charge-transfer case of the opening is not run here.
 
 ```python
 import ferric
@@ -209,3 +219,6 @@ long-range term moves the roots by 2.9 to 6.0 eV.
 | Source | What it gives |
 |---|---|
 | section @sec:hybrids-exact-exchange | the SCF exchange (section @sec:hybrids) |
+| T. Yanai, D. P. Tew and N. C. Handy, *Chem. Phys. Lett.* **393**, 51 (2004) | CAM-B3LYP and the $c_{\rm sr}$, $c_{\rm lr}$, $\omega$ split |
+| A. Dreuw, J. L. Weisman and M. Head-Gordon, *J. Chem. Phys.* **119**, 2943 (2003) | the missing $-1/R$ of charge-transfer excitations in semilocal TDDFT |
+| A. Dreuw and M. Head-Gordon, *J. Am. Chem. Soc.* **126**, 4007 (2004) | the charge-transfer failure in a large donor–acceptor system |

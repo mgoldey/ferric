@@ -4,8 +4,9 @@
 
 A converged SCF is a stationary point of the energy, not necessarily a
 minimum. Stretch the O–H bonds of water to 2.0 Å and the RHF solution still
-converges, but a spin-broken UHF solution lies lower; on N2 at 1.60 Å plain DIIS converges to an RHF saddle
-1.906e-2 Ha above the RHF minimum (section @sec:stability-numerical-anchors). Stability analysis
+converges, but a spin-broken UHF solution lies lower; on N2 at 1.60 Å plain
+DIIS converges to an RHF saddle 1.906e-2 Ha above the RHF minimum (section
+@sec:stability-numerical-anchors). Stability analysis
 computes the lowest eigenvalues of the orbital Hessian at the converged
 orbitals. A negative one means a lower solution exists along its
 eigenvector: of the same kind (internal) or with broken spin symmetry
@@ -52,6 +53,17 @@ converged orbitals (`crates/ferric-scf/src/stability.rs`):
 | RHF internal (real, singlet) | $\mathbf H$ of RHF: $(\varepsilon_a-\varepsilon_i)\delta + 4(ai\vert bj) - c_x[(ab\vert ij)+(aj\vert bi)]$ | `rhf_internal_stability` |
 | RHF external (RHF → UHF, triplet) | $(\varepsilon_a-\varepsilon_i)\delta - c_x[(ab\vert ij)+(aj\vert bi)]$ | `rhf_external_stability` |
 | UHF internal | $\mathbf H$ of UHF | `uhf_internal_stability` |
+
+Real-to-complex, UHF-to-GHF and ROHF stability are not implemented.
+`check_stability` runs the internal analysis on RHF, RKS, UHF and UKS, and
+on an RHF reference also the external one:
+
+| Reference | Internal | External (RHF → UHF) |
+|---|---|---|
+| RHF, UHF | analysed | RHF only |
+| LDA, GGA, hybrid, range-separated, τ-only meta-GGA (RKS, UKS) | analysed, with the $f_{xc}$ response | refused: no triplet XC kernel |
+| VV10 functionals | skipped with a printed reason (`ks_reference_is_analysable`) | refused |
+| ROHF, ROKS | skipped with a printed reason: the Roothaan Hessian is a third operator | not analysed |
 
 At converged canonical orbitals the diagonal-gap form of the one-electron
 term is exact, so the operators are the full Hessians in their spaces.
@@ -225,12 +237,15 @@ stability descent:  E = -147.6352963864  converged=True
 difference (mHa):   1.327
 ```
 
+The state it reaches has a zero mode, the rotation between the degenerate
+$\pi^*$ orbitals, so its verdict is MARGINAL, as for OH below: the lowest
+eigenvalue after the descent is +1.3e-11 to +7.8e-11 in the three
+re-converged candidates, inside the $10^{-6}$ noise floor.
+
 The RHF descent is skipped, with a printed reason, when the SCF did not
 converge (the Hessian would be evaluated at a non-stationary point), when
 Fermi smearing is on (the integer-occupation Hessian does not describe
 fractional occupations), and when no stability verdict was computed.
-
-Real-to-complex, UHF-to-GHF and ROHF stability are not implemented.
 
 ## Numerical anchors {#stability-numerical-anchors}
 
@@ -250,16 +265,10 @@ mode; ferric reports it MARGINAL where PySCF reports stable, which is the
 intended reading of the noise floor. Kohn–Sham references are refused for
 the external channel, which would need the triplet XC kernel.
 
-## Doc fixes needed {#stability-doc-fixes-needed}
-
-| Text | Code |
-|---|---|
-| eigenvalues described as Hartree per radian squared | they are the quarter-scale (RHF) or half-scale (UHF) Newton operator's |
-| the `check_stability` doc | name both the internal and the external result it fills |
-
 ## Sources
 
 | Source | Used for |
 |---|---|
 | `scripts/scf_orbital_hessian_sympy.py` | verified equation @eq:scf-stability-channels |
 | `site/src/reference/validation.md` | the anchors |
+| R. Seeger and J. A. Pople, J. Chem. Phys. 66, 3045 (1977) | the stability conditions |

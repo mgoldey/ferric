@@ -31,29 +31,47 @@ real one afterwards (section @sec:continuation-and-qp-equation).
 
 ## The frequency integral {#correlation-self-energy-frequency-integral}
 
-**The integral.** For any complex $z$ off the real axis the code evaluates
+**The convolution.** The propagator of state $q$ is
+$G_q(z) = 1/(z - \epsilon_q)$. With $W$ on the imaginary axis the GW
+correlation self-energy is the convolution
+
+$$ \Sigma^c_p(z) = -\frac{1}{2\pi}\sum_q\int_{-\infty}^{\infty}du'\,\frac{W_{pq}(iu')}{z + iu' - \epsilon_q} . $$
+
+Write $\zeta_q = z - \epsilon_q$ and expand
+$1/(\zeta_q + iu') = (\zeta_q - iu')/(\zeta_q^2 + u'^2)$. $W$ is even in
+$u'$, so the odd part $-iu'/(\zeta_q^2+u'^2)$ integrates to zero, and the
+even part over $(-\infty, \infty)$ is twice the integral over
+$(0, \infty)$. With $\frac{1}{2\pi}\cdot 2 = \frac1\pi$, the code evaluates
 
 $$ \Sigma^c_p(z) = -\frac{1}{\pi}\sum_q \int_0^\infty du'\; W_{pq}(iu')\,\frac{z - \epsilon_q}{(z - \epsilon_q)^2 + u'^2} . $$
 
-The convolution is an integral over the whole imaginary axis with prefactor
-$\frac{1}{2\pi}$. Its integrand is even in $u'$, so the integral over
-$(-\infty, \infty)$ is twice the integral over $(0, \infty)$, and
-$\frac{1}{2\pi}\cdot 2 = \frac1\pi$. The integral uses the PDEP quadrature
+The integral uses the PDEP quadrature
 (`pdep.quad_freqs`, `pdep.quad_weights`): scaled Gauss–Legendre nodes
 $u = u_0(1+x)/(1-x)$ from `ferric-rpa/src/quadrature.rs::gauss_legendre_nodes`.
 
 **Where the occupied and virtual states separate.** The sum over $q$ runs
 over every active orbital, with no occupied/virtual distinction in the code.
-The time ordering sits in the kernel. Write $a = z - \epsilon_q$. For real
-$a \neq 0$,
+The time ordering sits in the kernel. For real $\zeta_q \neq 0$,
 
-$$ \int_0^\infty \frac{a}{a^2+u'^2}\,du' = \frac{\pi}{2}\,\mathrm{sgn}(a) , $$
+$$ \int_0^\infty \frac{\zeta_q}{\zeta_q^2+u'^2}\,du' = \frac{\pi}{2}\,\mathrm{sgn}(\zeta_q) , $$
 
 so the kernel changes sign with $\mathrm{Re}(z - \epsilon_q)$. A state below
 $z$ (occupied, on the continuation line of section @sec:continuation-and-qp-equation) enters with one sign
 and a state above it with the other. $z$ is an absolute energy, and the
 propagator energies `eps_act` are a separate argument so that evGW can
 replace them (section @sec:eigenvalue-self-consistency).
+
+**Where the formula is the GW self-energy.** Rotating the frequency contour
+onto the imaginary axis is allowed only if it crosses no pole of $G$. The
+integral therefore classifies state $q$ by $\mathrm{sgn}\,\mathrm{Re}(z -
+\epsilon_q)$, and that matches the occupation only while $\mathrm{Re}\,z$
+lies in the gap between the highest occupied and the lowest virtual
+propagator energy. Inside that strip the integral is the GW self-energy;
+outside it the integral is a different function. At $z = \epsilon_p + i\eta$
+it gives the wrong occupation to every state between $\epsilon_p$ and
+$\epsilon_F$. That is why section @sec:continuation-and-qp-equation samples
+on the line $\mathrm{Re}\,z = \epsilon_F$ and continues from there, and
+never evaluates near the real axis.
 
 **Check the single-pole model.** Feed in the $W$ of one particle–hole pair,
 $W_{pq}(iu) = -2\Omega s_{pq}/(u^2+\Omega^2)$ (section @sec:screened-interaction-dielectric-matrix-single-pole). The integral
@@ -128,7 +146,7 @@ form of the screened elements against a scalar loop.
 ## Product integration {#correlation-self-energy-product-integration}
 
 **What goes wrong with the plain rule.** On the continuation line
-$z = \epsilon_F + iu$ the kernel $a/(a^2+u'^2)$, $a = z - \epsilon_q$, peaks at
+$z = \epsilon_F + iu$ the kernel $\zeta_q/(\zeta_q^2+u'^2)$ peaks at
 $u' = u$ with width $|\epsilon_F - \epsilon_q|$. When a state sits close to
 $\epsilon_F$ the ridge is narrow, and a Gauss–Legendre sum with a few dozen
 nodes cannot resolve it. The per-spin mid-gap $\epsilon_{F,\sigma}$ of a UKS
@@ -138,22 +156,27 @@ plain rule misses $\Sigma^c$ at the Padé nodes by 0.11 Ha at 100 points and
 0.02 Ha at 400, and the QP energies wander by 0.1 to 2 eV with $n_{\rm quad}$.
 States away from the frontier suffer too: on H2O/cc-pVDZ G0W0@PBE the plain
 rule puts HOMO−2 +136, −102 and −9.7 meV from the exact-$\Sigma^c$ root at
-40, 100 and 200 points.
+40, 100 and 200 points. These molecular figures are recorded measurements
+(the doc comments of `ferric-gw/src/sigma.rs::sigma_c_at_z_product` and
+`ferric-gw/src/sigma.rs::solve_qp_for_mo`); no test asserts them. The unit
+test `sigma::tests::product_rule_converges_where_the_plain_quadrature_cannot`
+pins a single-pole model of the OH case, with states 0.015 Ha from
+$\epsilon_F$, and asserts that the plain rule misses there.
 
-**The fix: integrate the kernel exactly.** $W_{pq}(iu')$ is smooth. The kernel
+**Integrate the kernel exactly.** $W_{pq}(iu')$ is smooth. The kernel
 is the part that is hard to sample, and it is known in closed form. So
 interpolate $W$ and integrate the kernel against the interpolant exactly.
 
 Step 1, partial fractions in $u'$:
 
-$$ \frac{a}{a^2+u'^2} = \frac12\left[\frac{1}{a+iu'} + \frac{1}{a-iu'}\right] . $$
+$$ \frac{\zeta_q}{\zeta_q^2+u'^2} = \frac12\left[\frac{1}{\zeta_q+iu'} + \frac{1}{\zeta_q-iu'}\right] . $$
 
 Step 2, change variable to the Gauss–Legendre coordinate,
 $u' = u_0(1+x)/(1-x)$ with $du' = 2u_0\,dx/(1-x)^2$. Each fraction becomes a
 rational function of $x$. Expand both in partial fractions in $x$: the
 $1/(1-x)$ terms cancel between the two, and what remains is exactly
 
-$$ \frac{a}{a^2+u'^2}\,du' = \frac{i}{2}\left[\frac{1}{x-x_1} - \frac{1}{x-x_2}\right]dx, \qquad x_1 = \frac{a - iu_0}{a + iu_0}, \quad x_2 = \frac{1}{x_1} . $$
+$$ \frac{\zeta_q}{\zeta_q^2+u'^2}\,du' = \frac{i}{2}\left[\frac{1}{x-x_1} - \frac{1}{x-x_2}\right]dx, \qquad x_1 = \frac{\zeta_q - iu_0}{\zeta_q + iu_0}, \quad x_2 = \frac{1}{x_1} . $$
 
 Step 3, interpolate. Let $\mathcal P$ be the degree-$(n-1)$ polynomial through
 the values $W_{pq}(iu_k)$ at the $n$ Gauss–Legendre nodes $x_k$. Each piece of
@@ -166,13 +189,15 @@ degree $n-2$, which the Gauss–Legendre rule integrates exactly. So the only
 error left is $W$'s interpolation error.
 
 **Check the static limit.** A frequency-independent $W$ is its own
-interpolant, so the rule returns $\tfrac{\pi}{2}\,\mathrm{sgn}(\mathrm{Re}\,a)$
+interpolant, so the rule returns $\tfrac{\pi}{2}\,\mathrm{sgn}(\mathrm{Re}\,\zeta_q)$
 times $W$ exactly, at any grid. That is the COHSEX limit of section @sec:cohsex.
 
 **The far field.** When $x_0$ is far from $[-1, 1]$, the barycentric
 interpolant loses accuracy to cancellation, while the plain Gauss–Legendre sum
-there has error $\rho^{-2n}$, with $\rho(x_0)$ the Bernstein-ellipse parameter
-of $x_0$. The code switches to the plain sum where $n\ln\rho(x_0) > \ln 10^6$.
+there has error $\rho^{-2n}$, with $\rho(x_0) = |x_0 + \sqrt{x_0^2 - 1}|$
+the Bernstein-ellipse parameter of $x_0$: the sum of the semi-axes of the
+ellipse with foci $\pm1$ through $x_0$ (the branch of the root with
+$\rho \ge 1$). The code switches to the plain sum where $n\ln\rho(x_0) > \ln 10^6$.
 
 The loop over states in `ferric-gw/src/sigma.rs::sigma_c_at_z_product`:
 
@@ -193,7 +218,7 @@ The loop over states in `ferric-gw/src/sigma.rs::sigma_c_at_z_product`:
 | Code | Equation |
 |---|---|
 | `p` | the node values $\mathcal P_k = W_{pq}(iu_k)$ for one $q$ |
-| `a` | $a = z - \epsilon_q$ |
+| `a` | $\zeta_q = z - \epsilon_q$ |
 | `x1`, `x2` | $x_1$, $x_2 = 1/x_1$ |
 | `pq.cauchy(&p, x0)` | $\int_{-1}^1\mathcal P/(x-x_0)\,dx$, step 3 |
 | `half_i * (...)` | $\tfrac i2[\cdots]$ of step 2 |
@@ -201,7 +226,13 @@ The loop over states in `ferric-gw/src/sigma.rs::sigma_c_at_z_product`:
 **Measured effect.** On OH and NH2 / cc-pVDZ at PBE the node error against the
 pole sum is $2\times10^{-8}$ Ha at 40 points and $2\times10^{-13}$ at 100, and
 the frontier QP energies are converged to 0.005 meV at 40. On the H2O HOMO−2
-case above, the product rule is within 0.004 meV from 40 points on.
+case above, the product rule is within 0.004 meV from 40 points on. The
+$n_{\rm quad}$ convergence of the OH and NH2 frontier energies is asserted by
+`u_g0w0_uks_{oh,nh2}_converges_in_n_quad` in
+`crates/ferric-gw/tests/validation_gw_defaults.rs`, and the product-rule
+$\Sigma^c$ against the pole sum by `u_g0w0_uks_pbe_*` in
+`crates/ferric-gw/tests/validation_gw.rs`; the node errors at 40 and 100
+points and the H2O figure are recorded measurements.
 
 **Which drivers use it.** Every driver uses `sigma_c_at_z_product` whenever
 the $W$ grid is a scaled Gauss–Legendre rule: the closed-shell G0W0, evGW$_0$,
@@ -242,8 +273,9 @@ sum. The tests are `sigma::tests::product_rule_*`, `u_g0w0_uks_pbe_*` in
 
 The per-state sweep takes a soft scratch charge from the memory pool
 (`charge_qp_sweep_scratch`). When the pool refuses it, the sweep runs
-serially instead. GEMM and the Newton work are scalar-sized, so the sweep is
-deterministic in the thread count up to the last bits of BLAS summation order.
+serially instead. Each state's solve reads shared data and writes its own
+result, so the sweep gives the same answer at any thread count, up to the
+BLAS summation order inside each GEMM.
 
 ## Numerical anchors {#correlation-self-energy-numerical-anchors}
 
@@ -253,14 +285,18 @@ anchors table), at matched settings `n_quad = 100` and `trunc_thresh = 0`:
 | Quantity | Reference | Error | Test |
 |---|---|---|---|
 | $\Sigma^c(\epsilon_F + iu)$ at the Padé nodes, plain quadrature | PySCF `gw_ac` | $\le 8.6\times10^{-11}$ Ha | `sigma_c_imag_axis_h2o_pbe_and_hf_vs_pyscf`, `sigma_c_imag_axis_n2_pbe_vs_pyscf` in `crates/ferric-gw/tests/validation_gw.rs` |
-| G0W0@HF QP energies | grid-free dRPA pole sum | $\le 1.2\times10^{-8}$ Ha | `crates/ferric-gw/tests/validation_gw.rs` |
-| G0W0@PBE QP energies | grid-free dRPA pole sum | $\le 1.8\times10^{-8}$ Ha | `crates/ferric-gw/tests/validation_gw.rs` |
-| G0W0@HF QP energies | PySCF `gw_ac` | $\le 1.6\times10^{-7}$ Ha | `crates/ferric-gw/tests/validation_gw.rs` |
+| G0W0@HF QP energies | grid-free dRPA pole sum | $\le 1.2\times10^{-8}$ Ha | `g0w0_hf_{h2o,nh3,n2}_vs_pyscf_gw_ac` in `crates/ferric-gw/tests/validation_gw.rs` |
+| G0W0@PBE QP energies | grid-free dRPA pole sum | $\le 1.8\times10^{-8}$ Ha | `g0w0_pbe_{h2o,n2}_vs_pyscf_gw_ac` in the same file |
 
-The grade is Proven (narrow). Narrow means: states far from $\epsilon_F$ with
-split spectral weight are limited by the analytic continuation (section
-@sec:continuation-and-qp-equation), and the defaults (`n_quad = 40`, `trunc_thresh = 1e-4`) are coarser
-than the matched settings, within 10 meV for HOMO and LUMO.
+The comparison of G0W0@HF with PySCF `gw_ac` itself is in the anchors of
+section @sec:continuation-and-qp-equation-numerical-anchors.
+
+**Known limits (2026-11-19).** The grade is Proven (narrow). Narrow means:
+states far from $\epsilon_F$ with split spectral weight are limited by the
+analytic continuation (section @sec:continuation-and-qp-equation), and the
+defaults (`n_quad = 40`, `trunc_thresh = 1e-4`) are coarser than the matched
+settings, within 10 meV for HOMO and LUMO. A $W$ grid that is not a scaled
+Gauss–Legendre rule keeps the plain sum and its near-$\epsilon_F$ error.
 
 ## Sources {#correlation-self-energy-sources}
 

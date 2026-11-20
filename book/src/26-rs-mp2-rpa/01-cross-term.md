@@ -31,8 +31,14 @@ $g^{\mathrm C} = g^{\mathrm{sr}} + g^{\mathrm{lr}}$, equation (@eq:mp2-rs-cross-
 
 $$ E_{\mathrm{MP2}}[\mathrm C] = E_{\mathrm{MP2}}[\mathrm{sr}] + E_{\mathrm{MP2}}[\mathrm{lr}] + X . \label{eq:cross-term-2} $$
 
+Writing $s = g^{\mathrm{sr}}$ and $l = g^{\mathrm{lr}}$ in
+(@eq:mp2-rs-cross-term) gives the cross term explicitly:
+
+$$ X = -\sum_{ijab}\frac{4\,g^{\mathrm{sr}}_{ijab}\,g^{\mathrm{lr}}_{ijab} - g^{\mathrm{sr}}_{ijab}\,g^{\mathrm{lr}\times}_{ijab} - g^{\mathrm{lr}}_{ijab}\,g^{\mathrm{sr}\times}_{ijab}}{\Delta_{ij}^{ab}} . $$
+
 $X$ is second order and mixes the two ranges: one interaction of the pair
-is short-range, the other long-range. The dissertation (section 7.2.3)
+is short-range, the other long-range. The author's dissertation (M. Goldey,
+University of California, Berkeley, 2014, section 7.2.3)
 writes the energy under $H = H_0 + \lambda V_{\mathrm{sr}} + \mu V_{\mathrm{lr}}$
 as a double perturbation series: $X$ is its $E^{(1,1)}$ term, and each
 energy term of MP$n$ has $2^n$ range contributions.
@@ -46,7 +52,8 @@ In the drCCD form (@eq:drpa-three-ways-2), in canonical orbitals,
 
 $$ \Delta\circ\mathbf T_1 = -\mathbf K, \qquad \Delta\circ\mathbf T_2 = -(\mathbf K\mathbf T_1 + \mathbf T_1\mathbf K), \qquad E^{(n+1)}_{\mathrm{dRPA}} = \tfrac12\sum_{ia,jb}K_{ia,jb}(\mathbf T_n)_{ia,jb}, \label{eq:cross-term-3} $$
 
-with $\Delta_{ia,jb} = \Delta_i^a + \Delta_j^b$. The second-order ring is the
+with $\Delta_i^a = \varepsilon_a - \varepsilon_i$ and
+$\Delta_{ia,jb} = \Delta_i^a + \Delta_j^b = \Delta_{ij}^{ab}$. The second-order ring is the
 direct part of MP2 and contains no exchange:
 
 $$ E^{(2)}_{\mathrm{dRPA}}[v] = -\sum_{ijab}\frac{2\,(g^v_{ijab})^2}{\Delta_{ij}^{ab}} = 2E_{\mathrm{OS}}[v] . \label{eq:rsrpa-ring2-2eos} $$
@@ -71,7 +78,9 @@ $$ E^{(2)}_{\mathrm{dRPA}}[v] = -\sum_{ijab}\frac{2\,(g^v_{ijab})^2}{\Delta_{ij}
 >
 > <!-- verified: id=rsrpa.ring2-2eos; script=scripts/rpa_rs_mp2_rpa_sympy.py; claim=ring2-equals-2eos; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/rimp2.rs::spin_components_from_b_ov, ferric-rpa/src/rs_mp2_rpa.rs::rs_mp2_lr_rpa; rust_test=ferric-rpa/tests/validation_rs_mp2_rpa.rs::rs_mp2_rpa_h2o_cc_pvdz_vs_numpy; registry=rs-mp2-rpa -->
 
-In one mode, with coupling $k$ and excitation energy $\Delta$, (@eq:rpa-drpa-three-routes) gives
+In one mode, with coupling $k = K_{ia,ia}$ and excitation energy
+$\Delta = \Delta_i^a$ (so the pair denominator is $2\Delta$),
+(@eq:rpa-drpa-three-routes) gives
 
 $$ E_{\mathrm{dRPA}}(k) = \tfrac12\Big(\sqrt{\Delta(\Delta + 2k)} - \Delta - k\Big) = -\frac{k^2}{4\Delta} + \frac{k^3}{4\Delta^2} + O(k^4) . \label{eq:rsrpa-one-mode-series} $$
 

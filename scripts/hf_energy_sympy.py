@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Hartree-Fock energy functionals and Fock matrices as ferric codes them.
 
-Derivation: `book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals`. Code: crates/ferric-scf/src/rhf.rs (solve_rhf),
+Derivation: `book/src/07-hartree-fock/01-energy-functionals.md#energy-functionals-functionals`
+and `book/src/07-hartree-fock/02-orthogonalization-and-guesses.md#orthogonalization-and-guesses-equations`. Code: crates/ferric-scf/src/rhf.rs (solve_rhf),
 uhf.rs (solve_uhf), rohf.rs (solve_rohf, roothaan_fock_inner,
 rohf_gradient_mo).
 
@@ -39,6 +40,15 @@ orthonormal AO basis, n = 7):
   N6  The ROHF energy (UHF functional at the ROHF densities) equals the
       high-spin Slater-Condon energy of the same determinant.
   N7  E_UHF <= E_ROHF for the same occupation (variational ordering).
+  N9  The one-orbital limits: one doubly occupied orbital phi gives
+      E_RHF = 2 h_pp + (pp|pp), one alpha electron gives E_UHF = h_pp (no
+      self-repulsion).
+  O1  The canonical orthogonalizer (rhf.rs canonical_orthogonalizer) on a
+      basis with one near-duplicate function: X^T S X = 1_m with m = N - 1,
+      the dropped eigenvalue below tau = 1e-6.
+  O2  The secondary-basis projection (basis2.rs) P = S_bb^+ S_bs with
+      S_bb^+ = X X^T reproduces, as a function, an orbital of a small basis
+      that lies in the span of the target basis.
   N8  (claim N8) <0|H|0> of the spin-orbital determinant energy, expanded
       from SPATIAL integrals with the spin selection rule (spin-orbital
       h_PQ = h_[P][Q] delta_sigma and <PQ||PQ> = (pp|qq) - (pq|qp) delta_sigma(P)sigma(Q),
@@ -57,6 +67,8 @@ one-occurrence substitutions):
   rohf_gradient_mo: closed-virtual F_a + F_b -> F_a  (N4 dE/dkappa fails)
   spin_exchange: the exchange term of N8 ignores the spin delta
                                                      (N8 symbolic and numeric fail)
+  canonical_orthogonalizer: lam^-1/2 -> lam^-1        (O1 fails)
+  secondary_projector: X X^T S_bs -> S_bs              (O2 fails)
 Exits nonzero on the first failed check; prints "FAIL <label>".
 """
 
@@ -403,6 +415,11 @@ def expm_antisym(k):
     return np.real(v @ np.diag(np.exp(-1j * w)) @ v.conj().T)
 
 
+def _antisym():
+    k = rng.standard_normal((N, N))
+    return k - k.T
+
+
 def rohf_energy_of_c(h, g, c, nc, no):
     da, db = rohf_densities(c, nc, no)
     return uhf_energy(h, g, da, db)
@@ -454,6 +471,18 @@ def numeric_checks():
         "N2 E_RHF = Slater-Condon closed shell (claim N2)",
         abs(e_rhf - e_sc) < 1e-10,
         f"diff {e_rhf - e_sc:.2e}",
+    )
+
+    # N9: the one-orbital and one-electron limits of the book's RHF/UHF text.
+    phi = expm_antisym(_antisym())[:, :1]
+    h_pp = float((phi.T @ h @ phi)[0, 0])
+    g_pppp = float(np.einsum("mnls,m,n,l,s->", g, *(phi[:, 0],) * 4))
+    e_two = rhf_energy(h, g, 2.0 * phi @ phi.T)
+    e_one = uhf_energy(h, g, phi @ phi.T, np.zeros((N, N)))
+    check(
+        "N9 one doubly occupied orbital: E = 2 h + (pp|pp); one electron: E = h",
+        abs(e_two - (2 * h_pp + g_pppp)) < 1e-12 and abs(e_one - h_pp) < 1e-12,
+        f"diffs {e_two - 2 * h_pp - g_pppp:.1e}, {e_one - h_pp:.1e}",
     )
 
     # ROHF: nc closed, no open (high spin). N3 (table) and N4 hold at ANY
@@ -646,10 +675,55 @@ def spin_sum_checks():
     )
 
 
+def canonical_orthogonalizer(s, tau):
+    """rhf.rs canonical_orthogonalizer: keep eigenvalues >= tau, X = U lam^-1/2."""
+    lam, u = np.linalg.eigh(s)
+    kept = lam >= tau
+    return u[:, kept] / np.sqrt(lam[kept])
+
+
+def secondary_projector(x, s_bs):
+    """basis2.rs: P = S_bb^+ S_bs with the lindep-filtered inverse S_bb^+ = X X^T."""
+    return x @ x.T @ s_bs
+
+
+def orthogonalization_checks():
+    # Basis functions are vectors in R^r with the plain dot product as metric.
+    r, n = 12, 7
+    b = rng.standard_normal((r, n))
+    b[:, -1] = b[:, 0] + 1e-5 * rng.standard_normal(r)  # near-duplicate function
+    s = b.T @ b
+    tau = 1e-6
+    x = canonical_orthogonalizer(s, tau)
+    lam = np.linalg.eigvalsh(s)
+    m = x.shape[1]
+    err = np.max(np.abs(x.T @ s @ x - np.eye(m)))
+    check(
+        "[O1] canonical orthogonalizer: X^T S X = 1_m with the near-dependent mode dropped",
+        err < 1e-10 and m == n - 1 and lam[0] < tau,
+        f"m = {m} of {n}, lam_min {lam[0]:.1e}, max err {err:.1e}",
+    )
+
+    # O2: a small basis inside the target span; its orbital is carried over exactly.
+    bt = rng.standard_normal((r, n))
+    t = rng.standard_normal((n, 3))
+    a_small = bt @ t  # small-basis functions, combinations of target functions
+    c_small = rng.standard_normal(3)
+    xt = canonical_orthogonalizer(bt.T @ bt, tau)
+    p_proj = secondary_projector(xt, bt.T @ a_small)
+    diff = np.max(np.abs(bt @ (p_proj @ c_small) - a_small @ c_small))
+    check(
+        "[O2] secondary-basis projection P = S_bb^+ S_bs reproduces an orbital in the target span",
+        diff < 1e-10,
+        f"max |psi_target - psi_small| {diff:.1e}",
+    )
+
+
 def main():
     symbolic_checks()
     numeric_checks()
     spin_sum_checks()
+    orthogonalization_checks()
     if failures:
         print(f"{len(failures)} check(s) failed")
         sys.exit(1)

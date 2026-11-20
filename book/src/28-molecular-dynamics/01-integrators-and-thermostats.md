@@ -6,8 +6,10 @@ Given the forces on the nuclei, how do you advance them in time without the
 energy running away? A textbook Runge–Kutta step is accurate for a short run
 but does not respect the structure of Hamilton's equations. Over the
 $10^4$ to $10^6$ steps of a trajectory its energy drifts. The velocity-Verlet
-step has the same cost per step, one gradient, and its energy error does not
-accumulate: the step is the exact flow of a nearby Hamiltonian. Constant-energy
+step has the same cost per step, one gradient, and its energy error stays
+bounded over very long runs: the step follows a nearby Hamiltonian, exactly
+for a harmonic potential and to all orders of an asymptotic series
+otherwise. Constant-energy
 dynamics is rarely the experiment, though. A simulation at fixed temperature
 needs a thermostat, and thermostats differ in what ensemble they sample.
 
@@ -15,15 +17,17 @@ ferric implements three integrators in `ferric-md`: velocity Verlet (NVE),
 velocity Verlet with Berendsen velocity rescaling, and Langevin dynamics with
 the BAOAB splitting. The force comes from a `ForceProvider`, so the same
 driver runs ab-initio MD on an SCF gradient and force-field MD on the
-molecular-mechanics gradient.
+molecular-mechanics gradient. A trajectory is also a source of geometries
+for machine-learning labels (section @sec:training-labels-trajectories).
 
 The plan: units (@sec:molecular-dynamics-units), degrees of freedom and
 initial velocities (@sec:molecular-dynamics-initialisation), velocity Verlet
 (@sec:molecular-dynamics-velocity-verlet), the Berendsen thermostat
 (@sec:molecular-dynamics-berendsen), Langevin BAOAB
 (@sec:molecular-dynamics-baoab), the conserved quantity
-(@sec:molecular-dynamics-conserved) and what is proven
-(@sec:molecular-dynamics-proven).
+(@sec:molecular-dynamics-conserved), the code
+(@sec:molecular-dynamics-code), running it (@sec:molecular-dynamics-running)
+and what is proven (@sec:molecular-dynamics-proven).
 
 | Symbol | Meaning | Code name |
 |---|---|---|
@@ -64,8 +68,8 @@ the boundary with three constants from `ferric-md/src/units.rs`:
 
 A step of 0.5 fs is 20.67 atomic units of time. A friction of $\gamma$ per
 picosecond is $\gamma \times \texttt{AU\_TIME\_FS}/1000$ per atomic unit
-of time. A velocity in Bohr per atomic unit times 1 is the form the equations
-below use, so no further factor appears in them.
+of time. The equations below use velocities in Bohr per atomic unit of
+time, so they carry no conversion factor.
 
 ## Degrees of freedom and initial velocities {#molecular-dynamics-initialisation}
 
@@ -101,7 +105,7 @@ xoshiro256++ seeded through SplitMix64, with Box–Muller Gaussians. It is
 self-contained, so a given `seed` reproduces a trajectory on every platform.
 If the user supplies `initial_velocities`, nothing is drawn.
 
-Check the limit $T = 0$: every $\sigma$ vanishes, the velocities are zero and
+Check the limit $T = 0$: every standard deviation $\sqrt{k_BT/m_a}$ vanishes, the velocities are zero and
 the rescaling factor is not needed. With `init_temperature_k` unset and no
 `temperature_k`, the run starts from rest.
 
@@ -189,9 +193,11 @@ oscillator $V = \tfrac12 k x^2$ with $\omega^2 = k/m$, where the step is linear
 and everything can be written out. The step matrix has trace
 $2 - \omega^2\Delta t^2$ and determinant 1, so it is a rotation with
 $\cos\theta = 1 - \omega^2\Delta t^2/2$. The trajectory is stable when
-$\lvert\cos\theta\rvert \le 1$, which is $\omega\Delta t \le 2$. For a
-vibration of period $T_{\mathrm{vib}} = 2\pi/\omega$ that is
-$\Delta t \le T_{\mathrm{vib}}/\pi$. A practical step is a tenth of the
+$\lvert\cos\theta\rvert < 1$, which is $\omega\Delta t < 2$. At equality the
+step matrix is $-\mathbf 1$ plus a nilpotent part, and $x$ grows linearly
+with the number of steps. For a vibration of period
+$T_{\mathrm{vib}} = 2\pi/\omega$ the bound is
+$\Delta t < T_{\mathrm{vib}}/\pi$. A practical step is a tenth of the
 shortest period or less: the O–H stretch of water (about 10 fs) wants
 $\Delta t \lesssim 1$ fs.
 
@@ -239,7 +245,10 @@ fluctuation holds only if the gradient is the exact gradient of the energy the
 integrator sees. If the SCF is converged loosely the force is not
 $-\nabla E$ of any smooth surface, and the energy drifts regardless of
 $\Delta t$. The SCF convergence threshold, not the time step, then sets the
-drift; this is why the AIMD tests tighten the density convergence explicitly.
+drift. The AIMD tests (`crates/ferric-scf/tests/md_aimd.rs`) therefore set
+`density_conv = 1e-10` and `energy_conv = 1e-12` in place of the defaults
+$10^{-6}$ and $10^{-3}$; from Python pass `scf_density_conv` and
+`scf_energy_conv` to `run_aimd`.
 
 ## The Berendsen thermostat {#molecular-dynamics-berendsen}
 
@@ -307,8 +316,8 @@ O (the OU step), in the order B, A, O, A, B with halves on B and A:
 4. A: $\mathbf R \leftarrow \mathbf R + \tfrac{\Delta t}{2}\,\mathbf v$
 5. B: evaluate the gradient at the new positions, then $\mathbf v \leftarrow \mathbf v - \tfrac{\Delta t}{2}\,\mathbf g/m$
 
-The two A steps and the two B steps are adjacent between steps, so the
-step costs one gradient. The O step is the exact solution of the OU equation
+The closing B of one step and the opening B of the next use the same
+gradient, so a step costs one gradient evaluation. The O step is the exact solution of the OU equation
 over $\Delta t$ and it preserves the Maxwell–Boltzmann variance. If
 $\operatorname{Var}\,v = k_B T_0/m$, then
 
@@ -353,9 +362,10 @@ with no $\Delta t$ error. The velocity variance carries the factor
 $1 - \omega^2\Delta t^2/4$, which is the same factor as in the shadow
 Hamiltonian (@eq:molecular-dynamics-shadow), so the kinetic temperature of a
 BAOAB run is low by $O(\Delta t^2)$ while the configurational temperature is
-not. Use configurational quantities (potential energy, bond lengths) for sampling
-and expect the kinetic temperature at a few percent low for a 1 fs step on a stiff
-stretch. For an anharmonic surface the exactness is lost and the position
+not. Use configurational quantities (potential energy, bond lengths) for sampling.
+For the O–H stretch of water (3657 cm$^{-1}$, period 9.1 fs) the factor
+$\omega^2\Delta t^2/4$ puts the kinetic energy of that mode 12% low at a
+1 fs step and 3% low at 0.5 fs; softer modes are affected less. For an anharmonic surface the exactness is lost and the position
 error is $O(\Delta t^2)$ (literature result, not proved here).
 
 > **Verified equation @eq:molecular-dynamics-baoab-config** · BAOAB is exact in the configurational variance of a harmonic well
@@ -387,7 +397,7 @@ not counted). Then
 $$ E_{\mathrm{cons}} = E_{\mathrm{pot}} + E_{\mathrm{kin}} - Q \label{eq:molecular-dynamics-conserved} $$
 
 is constant up to the integrator's error, because each thermostat step moves
-$E_{\mathrm{kin}}$ by exactly the amount subtracted from $Q$. It is the
+$E_{\mathrm{kin}}$ by exactly the amount added to $Q$. It is the
 quantity that exposes a too-large time step or an unconverged SCF under a
 thermostat. Each recorded frame holds `potential`, `kinetic`, `total`
 (without $Q$), `conserved` and `temperature_k`; `MdResult::max_conserved_drift`
@@ -395,6 +405,101 @@ is the largest departure of `conserved` from its first value. In NVE
 $Q = 0$ and the two coincide. This identity is bookkeeping, not
 a derived result, so no sympy claim covers it; the Rust conservation tests
 do.
+
+## The code {#molecular-dynamics-code}
+
+The Langevin step of `ferric-md/src/driver.rs::run_md` is the method
+`baoab`, unchanged:
+
+<!-- excerpt: ferric-md/src/driver.rs::baoab -->
+```rust
+        self.kick(0.5 * self.dt);
+        self.drift(0.5 * self.dt);
+        self.ornstein_uhlenbeck(gamma, t0);
+        self.drift(0.5 * self.dt);
+        self.force(provider, step)?;
+        self.kick(0.5 * self.dt);
+        Ok(())
+```
+
+and its O step is `ornstein_uhlenbeck`, unchanged:
+
+<!-- excerpt: ferric-md/src/driver.rs::ornstein_uhlenbeck -->
+```rust
+        let ke = kinetic_energy(&self.masses, &self.v);
+        let c = (-gamma * self.dt).exp();
+        let kt = BOLTZMANN_HARTREE_PER_K * t0;
+        for (mut v, &m) in self.v.rows_mut().into_iter().zip(&self.masses) {
+            let sigma = ((1.0 - c * c) * kt / m).sqrt();
+            for vk in v.iter_mut() {
+                *vk = c * *vk + sigma * self.rng.next_gaussian();
+            }
+        }
+        self.q += kinetic_energy(&self.masses, &self.v) - ke;
+```
+
+- The six calls of `baoab` are steps 1 to 5 of section
+  @sec:molecular-dynamics-baoab: `kick(h)` is $\mathbf v \leftarrow \mathbf v - h\,\mathbf g/m$
+  and `drift(h)` is $\mathbf R \leftarrow \mathbf R + h\,\mathbf v$. The
+  opening kick uses the gradient the previous step's `force` stored, which
+  is why a step costs one gradient. The velocity-Verlet method `verlet` is
+  the same sequence without the O step and with one full drift.
+- `c` is $e^{-\gamma\Delta t}$ and `sigma` is $\sqrt{(1 - c^2)k_BT_0/m}$ of
+  (@eq:molecular-dynamics-ou), per atom; `next_gaussian` is the Box–Muller
+  draw of `Xoshiro256pp`. `gamma` arrives in inverse atomic units of time and
+  `self.dt` in atomic units (section @sec:molecular-dynamics-units).
+- The last line is the bookkeeping of (@eq:molecular-dynamics-conserved):
+  `self.q` accumulates the change of $K$ across the O step. The Berendsen
+  rescale (`berendsen`) ends with the same line, and the kicks and drifts
+  never touch `q`.
+
+## Running it {#molecular-dynamics-running}
+
+The CLI reads `[md]` with `method.task = "md"`; `run_aimd` and `run_ffmd`
+take the same settings as keyword arguments (`crates/ferric-cli/src/config.rs::MdCfg`,
+`ferric-md/src/config.rs::MdConfig`).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `n_steps` | required | number of time steps |
+| `dt_fs` | 0.5 (`run_ffmd`: 1.0) | time step, fs |
+| `thermostat` | `"nve"` | `"nve"`, `"berendsen"` (needs `tau_fs` and `temperature_k`) or `"langevin"` (needs `friction_per_ps` and `temperature_k`) |
+| `temperature_k` | unset | target temperature $T_0$, K |
+| `init_temperature_k` | `temperature_k` | Maxwell–Boltzmann temperature of the initial velocities; with neither set the run starts from rest |
+| `tau_fs`, `friction_per_ps` | unset | $\tau$ and $\gamma$ of the chosen thermostat; setting one for the other thermostat is an error |
+| `seed` | 0 | seed of the initial velocities and the Langevin noise |
+| `remove_com_motion` | true | remove the centre-of-mass velocity (section @sec:molecular-dynamics-initialisation) |
+| `stride` | 1 | record every `stride`-th step |
+| `scf_warm_start` | true | start each SCF from the previous step's orbitals (AIMD only) |
+| `trajectory`, `energies` | `<input stem>.md.xyz`, `.md.csv` | output files (Python: `trajectory_path`, `energies_path`) |
+
+`MdConfig` also has `initial_velocities` (Rust only) and `keep_trajectory`
+(default true), which the CLI and Python do not expose.
+
+The factor-4 band of section @sec:molecular-dynamics-velocity-verlet is
+visible on water. NVE in cc-pVDZ from 300 K, the same 10 fs at two time
+steps, with the SCF converged as the AIMD tests converge it, from the
+`3f612e0b3` build (about 10 s):
+
+```python
+import ferric
+
+mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
+for dt in (0.5, 0.25):
+    r = ferric.run_aimd(mol, "cc-pvdz", n_steps=int(10 / dt), dt_fs=dt,
+                        init_temperature_k=300.0, seed=1,
+                        scf_density_conv=1e-10, scf_energy_conv=1e-12)
+    e = r.total_energies
+    print(f"dt = {dt:4.2f} fs  steps = {len(e) - 1:3d}  band of E_pot + E_kin = {e.max() - e.min():.3e} Ha")
+```
+
+```text
+dt = 0.50 fs  steps =  20  band of E_pot + E_kin = 7.543e-06 Ha
+dt = 0.25 fs  steps =  40  band of E_pot + E_kin = 1.886e-06 Ha
+```
+
+Halving the step shrinks the band by a factor of 4.00, the $\Delta t^2$ of
+(@eq:molecular-dynamics-shadow).
 
 ## What is proven and what is not {#molecular-dynamics-proven}
 
@@ -413,7 +518,15 @@ runs. The general-potential shadow series, the non-canonical ensemble of the
 Berendsen thermostat and the $O(\Delta t^2)$ position error of BAOAB beyond the
 harmonic well are literature statements, not checked here.
 
-**Known limits.**
+No grade covers a trajectory. The validation page lists molecular dynamics
+in a table outside the `method.kind` matrix, and appendix @sec:appendix-c
+grades no `task = "md"`. The certificate of a run, from the CLI or from
+`MdResult.certificate`, has capability `md:<kind>` or `md:<label>`, the
+grade `ungraded`, the integrator, thermostat, time step and seed as
+approximations, and `MdResult::max_conserved_drift` as a warning. For an
+AIMD run the SCF at the final geometry is folded in as the reference.
+
+## Known limits (2026-11-19) {#molecular-dynamics-known-limits}
 
 - Velocity Verlet, Berendsen and BAOAB only. No Nosé–Hoover chains, no
   barostat, no constraints (a rigid or SHAKE-constrained water needs a different
@@ -431,3 +544,5 @@ harmonic well are literature statements, not checked here.
 |---|---|
 | `crates/ferric-md/src/driver.rs`, `crates/ferric-md/src/config.rs`, `crates/ferric-md/src/velocities.rs`, `crates/ferric-md/src/rng.rs` | the integrators, thermostats, velocities, random numbers |
 | `scripts/md_integrators_sympy.py` | verified boxes |
+| `crates/ferric-cli/src/config.rs` (`MdCfg`), `crates/ferric-cli/src/md.rs`, `crates/ferric-python/ferric.pyi` (`run_aimd`, `run_ffmd`, `MdResult`) | the `[md]` keys, defaults and the certificate |
+| `crates/ferric-scf/tests/md_aimd.rs` | the SCF thresholds of the AIMD tests |

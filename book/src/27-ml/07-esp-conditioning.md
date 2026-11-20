@@ -58,7 +58,6 @@ RPA settings. It does affect the energy.
 **Names that drifted.** The renamed `polarizability_tensor` is ferric's Becke
 Krishtal per-atom α, and the CM5 baseline is Löwdin in the code. Comments in
 the builder call the first "Hirshfeld" and the second "Hirshfeld baseline".
-Read the code, not the comments.
 
 **Float32 is applied after the fact.** The arrays are computed in f64 and
 cast on write, which is safe for the features; the precision loss is the
@@ -75,7 +74,7 @@ scalars.
 
 | Source | Used for |
 |---|---|
-| the esp-conditioning builder code (TOML generation, NPZ loading, CM5 post-processing, HDF5 schema, shard provenance) | every step in @sec:esp-conditioning-pipeline and the provenance hash |
+| the esp-conditioning builder at commit `46a58e3` (2026-11-17): `src/esp_conditioning/build/prep.py` (conformers), `build/rpa.py` (TOML generation, the CLI run, NPZ loading and the energy line), `build/postprocess.py` (CM5), `build/pack.py` and `storage/hdf5_io.py` (HDF5 schema, shard provenance), `schema.py` (field names) | every step in @sec:esp-conditioning-pipeline and the provenance hash |
 | `crates/ferric-export/src/ml.rs`, `crates/ferric-rpa/src/property_bundle.rs` | the ferric side of each step |
 | `site/src/using/run-logs.md`, `crates/ferric-cli/src/lib.rs` | why step 5 has no structured alternative in the CLI |
 

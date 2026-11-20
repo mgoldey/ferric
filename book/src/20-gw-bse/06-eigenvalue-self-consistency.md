@@ -33,7 +33,7 @@ in the denominators do.
 $(z - \epsilon_q)/[(z-\epsilon_q)^2 + u'^2]$ of section @sec:correlation-self-energy are the only
 input the loop updates. Sweep $k$ uses
 
-$$ \epsilon_q^{\rm prop} = \begin{cases} \epsilon^{\rm QP,(k-1)}_q & q \text{ in the QP window} \\ \epsilon_q & \text{otherwise} \end{cases} $$
+$$ \epsilon_q^{\rm prop} = \begin{cases} \epsilon^{\rm QP,(k-1)}_q & q \text{ in the QP window} \\ \epsilon_q & \text{otherwise} \end{cases}, \qquad \epsilon^{\rm QP,(-1)}_q = \epsilon_q , $$
 
 and solves, for every state $p$ in the window,
 
@@ -83,8 +83,31 @@ rebuilt $W$ (`it > 0`).
 | per-state QP solve against the snapshot | section @sec:continuation-and-qp-equation | `solve_qp_for_mo` |
 | $\max_p\lvert\Delta\epsilon^{\rm QP}_p\rvert <$ `ev_conv_thresh` | $O(n_{\rm win})$ | the loop test |
 
-There is no identity to prove here: the update rule is a definition. The
-evidence is the validation below.
+**Check the fixed point on one pair.** The update rule is a definition, but
+its consequences can be checked on the two-state model of section
+@sec:screened-interaction-dielectric-matrix-single-pole: one occupied state
+$i$, one virtual $a$, one auxiliary function. There $\Sigma^c$ is the
+single-pole closed form of section
+@sec:correlation-self-energy-frequency-integral, and the evGW$_0$ fixed point
+is a quadratic in the quasiparticle gap $g = E_a - E_i$. For evGW the gap in
+$\Pi$ is the quasiparticle gap $e'$, so the pole of $W$ moves from
+$\Omega^2 = e(e + 4b^2)$ to $\Omega'^2 = e'(e' + 4b^2)$. The script runs a
+transcription of the outer loops of `run_evgw0` and `run_evgw` on this model
+and reaches both fixed points.
+
+> **Verified equation {#eq:gw-evgw-fixed-point}** · the eigenvalue-self-consistent updates and their fixed points
+>
+> Sweep 0 of evGW$_0$ and evGW, with $\epsilon^{{\rm QP},(-1)} = \epsilon$, is G0W0. On the one-pair, two-state model the evGW$_0$ gap $g = E_a - E_i$ at the fixed point solves $(g - e_0)(g + \Omega) = 2B_{ia}^2 s$ with $e_0 = \epsilon_a + \delta_a - \epsilon_i - \delta_i - (B_{ii}^2 + B_{aa}^2)s/\Omega$; for evGW the pole moves to $\Omega'^2 = e'(e' + 4b^2)$ with the QP gap $e'$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/gw_evgw_sympy.py`, claims EV1, EV2, EV3 |
+> | Negative control | the G0W0 roots are not the evGW$_0$ fixed point, and the evGW$_0$ fixed point is not the evGW one |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-gw/src/sigma.rs::{run_evgw0,run_evgw}` |
+> | Code test | `evgw0_evgw_hf_h2o_vs_iterated_pyscf` in `crates/ferric-gw/tests/validation_gw.rs` |
+>
+> <!-- verified: id=gw.evgw.fixed-point; script=scripts/gw_evgw_sympy.py; claim=EV2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-gw/src/sigma.rs::run_evgw0; rust_test=ferric-gw/tests/validation_gw.rs::evgw0_evgw_hf_h2o_vs_iterated_pyscf; registry=gw -->
 
 ## Options and limits {#eigenvalue-self-consistency-options-limits}
 
@@ -101,9 +124,17 @@ starting orbitals, which the loop does not change. States outside the
 window, the Fermi level and $\epsilon_p$ in the QP equation are never
 updated.
 
-**Known limits (2026-11-15).** No external reference exists for evGW@KS, so
+**Known limits (2026-11-19).** No external reference exists for evGW@KS, so
 `crates/ferric-gw/tests/evgw_pbe_h2o.rs` checks convergence and the KS shift
-only.
+only. Only the states in `qp_mos` are updated, so with the default window
+(HOMO−2 … LUMO+2) the propagator, and for evGW also $W$, sees a spectrum
+that is part quasiparticle and part mean-field. $\epsilon_F$ is computed
+once from the mean-field spectrum (`fermi_level` in `run_evgw0`), and the
+occupation of state $q$ in the kernel is
+$\mathrm{sgn}(\epsilon_F - \epsilon_q^{\rm prop})$ (section
+@sec:correlation-self-energy-frequency-integral). The method assumes that no
+updated energy crosses that fixed $\epsilon_F$; the code does not check it,
+and a state that crossed would change side without an error.
 
 ## Numerical anchors {#eigenvalue-self-consistency-numerical-anchors}
 
@@ -121,3 +152,5 @@ COHSEX, evGW$_0$ and evGW on water at cc-pVDZ.
 
 | Source | What it gives |
 |---|---|
+| Shishkin and Kresse, *Phys. Rev. B* **75**, 235102 (2007) | eigenvalue self-consistency in $G$ alone and in $G$ and $W$ |
+| Blase, Attaccalite and Olevano, *Phys. Rev. B* **83**, 115103 (2011) | evGW for molecules |

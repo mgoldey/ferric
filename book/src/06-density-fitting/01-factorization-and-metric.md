@@ -1,6 +1,6 @@
 # The factorization, the metric, Cholesky and eigendecomposition factors {#factorization-and-metric}
 
-<!-- status: edit; registry: none -->
+<!-- status: edit; registry: rs-mp2-rpa, u-rs-mp2-rpa -->
 
 A two-electron integral $(pq|rs)$ is the Coulomb energy between two charge
 distributions, the orbital products $\rho_{pq} = \phi_p\phi_q$ and
@@ -48,7 +48,7 @@ measure. The integrals we are after are energies under a kernel $\hat w$, so
 measure the error by the self-energy of the error density under that same
 kernel:
 
-$$ D_x(c) = (\rho_x - \tilde\rho_x|\hat w|\rho_x - \tilde\rho_x) = (x|\hat w|x) - 2\sum_P c_{Px}A_{Px} + \sum_{PQ} c_{Px}V_{PQ}c_{Qx}, \qquad A_{Px} = (P|\hat w|x), \quad V_{PQ} = (P|\hat w|Q) . $$
+$$ \mathcal E_x(c) = (\rho_x - \tilde\rho_x|\hat w|\rho_x - \tilde\rho_x) = (x|\hat w|x) - 2\sum_P c_{Px}A_{Px} + \sum_{PQ} c_{Px}V_{PQ}c_{Qx}, \qquad A_{Px} = (P|\hat w|x), \quad V_{PQ} = (P|\hat w|Q) . $$
 
 Set the derivative with respect to $c_{Px}$ to zero. That gives
 $-2A_x + 2Vc_x = 0$, so
@@ -59,7 +59,7 @@ Two facts follow at once. First, the residual
 $\delta_x = \rho_x - \tilde\rho_x$ has zero $\hat w$-overlap with every
 auxiliary function, since $(P|\hat w|\delta_x) = A_{Px} - (Vc_x)_P = 0$. The
 fitted density is the $\hat w$-projection of $\rho_x$ onto the auxiliary
-space. Second, for a Coulomb kernel $D_x \ge 0$, and $D_x$ is the electrostatic
+space. Second, for a Coulomb kernel $\mathcal E_x \ge 0$, and $\mathcal E_x$ is the electrostatic
 self-repulsion of the part of $\rho_x$ the basis misses.
 
 Now replace both densities in $(x|\hat w|y)$ by their fits. Substitute
@@ -89,14 +89,18 @@ use the same operator. With that choice the residual is $\hat w$-orthogonal
 to the auxiliary space, and the error in (@eq:factorization-and-metric-1) is the interaction of two
 residuals, second order in the fitting residual (section @sec:closed-shell-ri-mp2, equation @eq:df-quadratic-error;
 section @sec:robust-fit derives it and shows what happens when the kernels differ).
-A fit under any other kernel loses the orthogonality and leaves a
-first-order error. In the code the default is
+A fit under another kernel loses the orthogonality. If the fitted densities
+are then evaluated under the physical kernel, the cross terms
+$(\tilde\rho|\hat w|\delta)$ survive and the error is first order in the
+residual. If only the metric is swapped, $J^{\mathsf T}V_w^{-1}J$, the result
+is wrong even for a density the auxiliary basis spans
+(section @sec:robust-fit-robust-form). In the code the default is
 `RiMp2Config::metric_op = None`, which means the metric uses the integral
 operator.
 
 `ferric-integrals/src/threeindex.rs::coulomb_metric_2c(op, dfbs)` builds $V$
-for any operator, Coulomb or not. Here is its serial branch, unchanged
-(the parallel branch over shells is removed):
+for any operator, Coulomb or not. Here is its serial branch, with line
+comments added (the parallel branch over shells is removed):
 
 ```rust
 let mut eng = Engine::new_2center(op, dfbs, 1e-14)?;   // (P|w|Q) engine for op
@@ -142,7 +146,7 @@ through $B^{\mathsf T}B$, because $\det(1 + B G B^{\mathsf T}) =
 > | | |
 > |---|---|
 > | Proof | `scripts/rpa_drpa_pdep_sympy.py`, checks `ri-factor-freedom` and `sylvester` |
-> | Negative control | none; the claim is an identity with no tunable part |
+> | Negative control | the factor applied from the wrong side, $M = L^{-\mathsf T}$ (so $M^{\mathsf T}M = L^{-1}L^{-\mathsf T} \ne V^{-1}$), turns `ri-factor-freedom` red (recorded mutation) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/rimp2.rs::metric_inverse_sqrt` |
 >
@@ -177,9 +181,13 @@ match op.kind {
 }
 ```
 
-**Cholesky is the default.** Section @sec:closed-shell-ri-mp2-density-fitting-making-affordable shows why $M = L^{-1}$ satisfies
-$M^{\mathsf T}M = V^{-1}$ and why the code prefers it to $V^{-1/2}$. Coulomb,
-erfc, terfc and Yukawa have positive definite kernels (section @sec:erf-terf), so their
+**Cholesky is the default.** $M = L^{-1}$ satisfies the condition of
+(@eq:factorization-and-metric-1):
+$(L^{-1})^{\mathsf T}L^{-1} = (LL^{\mathsf T})^{-1} = V^{-1}$. Section
+@sec:closed-shell-ri-mp2-density-fitting-making-affordable gives the cost
+argument for preferring it to $V^{-1/2}$. Coulomb, erfc and terfc
+(section @sec:erf-terf) and Yukawa (section @sec:yukawa-geminal) have
+positive definite kernels, so their
 metric is positive definite and the factorization exists. A Cholesky failure
 on one of them is an error, and the run stops: it means an integral or
 auxiliary-basis defect, not near-dependence to be regularized away.
@@ -263,7 +271,7 @@ near $kr_0 = \pi$ (section @sec:erf-terf-properties-decide-integrals-used), so t
 $V_{\mathrm t} = (P|\operatorname{terf}|Q)$ has negative eigenvalues in any
 auxiliary basis that can describe a density modulated at that wavelength,
 and eigenvalues that cross zero between the two signs. The error functional
-$D_x(c)$ is then unbounded below, and $c_x = V^{-1}A_x$ is a saddle point of
+$\mathcal E_x(c)$ is then unbounded below, and $c_x = V^{-1}A_x$ is a saddle point of
 it, not a minimum.
 
 Neither factor of section @sec:factorization-and-metric-factors applies. Cholesky fails. The
@@ -303,15 +311,20 @@ product to the right:
 
 $$ \det\big(\mathbf 1_{ov} + G^{1/2}\mathbf B^{\mathsf T}\boldsymbol\Sigma\,\mathbf B\,G^{1/2}\big) = \det\big(\mathbf 1_{2N_{\mathrm{aux}}} + \boldsymbol\Sigma\,\mathbf B G\mathbf B^{\mathsf T}\big), \qquad \operatorname{tr}\big(G\,\mathbf B^{\mathsf T}\boldsymbol\Sigma\,\mathbf B\big) = \operatorname{tr}\big(\boldsymbol\Sigma\,\mathbf B G\mathbf B^{\mathsf T}\big) . \label{eq:factorization-and-metric-signed-sylvester} $$
 
-With $G = \chi_0(i\omega)$ the left sides are the dRPA integrand in the
-excitation space, so the right sides give it in a space of $2N_{\mathrm{aux}}$
+With $G = -\chi_0(iu)$, the diagonal of $4\Delta_{ia}/(u^2 + \Delta_{ia}^2)$
+for a closed shell (the book's $\chi_0$ is negative), the left sides are the
+dRPA integrand in the excitation space, so the right sides give it in a space of $2N_{\mathrm{aux}}$
 dimensions. $\boldsymbol\Sigma\mathbf B G\mathbf B^{\mathsf T}$ is not symmetric, so
 `eval_signed_trace_log_summands` takes the log-determinant by LU, as the
 energy-only dielectric route of chapter @sec:rpa already does, and
 needs no eigenvalues. The frequency integral of $\ln\det - \operatorname{tr}$
 equals the plasmon formula for an indefinite kernel too, as long as the
-determinant stays positive; for one mode the integral is
-$\tfrac12\big(\sqrt{D(D + 4k)} - D - 2k\big)$ for every $k > -D/4$. The LU
+determinant stays positive. For one excitation of energy $\Delta$ coupled by
+$k$ (so $A = \Delta + 2k$, $B = 2k$, plasmon frequency
+$\Omega = \sqrt{\Delta(\Delta + 4k)}$), the integral is
+$\tfrac12(\Omega - \Delta - 2k)$ for every $k > -\Delta/4$. Section
+@sec:two-formulations-terf-sign proves this one-mode case with the coupling
+written as $2k$. The LU
 routine refuses a nonpositive determinant. The static-eigenbasis route of
 chapter @sec:rpa diagonalizes a symmetric $\epsilon(0)$ and keeps its
 modes by $|\lambda - 1|$; it has no meaning for a signed factor, and the code
@@ -370,24 +383,25 @@ factorizations may use threaded BLAS there.
 |---|---|
 | Auxiliary basis | the fitting space; the RI sets bundled with ferric are listed in `crates/ferric-core/src/basis/bundled` |
 | Operator | chooses the metric operator and, through it, the factor; a terf metric is an error |
-| `RiMp2Config::metric_op` (library) | a metric operator different from the integral operator; a measurement option that makes the fitting error first order (section @sec:robust-fit) |
+| `RiMp2Config::metric_op` (library) | a metric operator different from the integral operator; a measurement option. It evaluates $J^{\mathsf T}V_w^{-1}J$, whose error does not vanish with the fitting residual (section @sec:robust-fit) |
 
 ## Numerical anchors {#factorization-and-metric-numerical-anchors}
 
 The factor choice has no anchor of its own; every RI anchor in the book
 exercises it. The RI-MP2 energy anchors (section @sec:closed-shell-ri-mp2) use the Cholesky
-factor. The attenuated PDEP anchors with an erf operator use the
-eigendecomposition: $\le 5.8\times10^{-11}$ Ha (erf) and $3.5\times10^{-11}$ Ha
-(erfc) against an independent reference (`site/src/reference/validation.md`).
+factor. The attenuated PDEP anchors cover both factors: erf through the
+eigendecomposition ($\le 5.8\times10^{-11}$ Ha) and erfc through Cholesky
+($3.5\times10^{-11}$ Ha), each against an independent reference
+(`site/src/reference/validation.md`).
 
 ## Sources {#factorization-and-metric-sources}
 
 | Source | What it gives |
 |---|---|
-| section @sec:closed-shell-ri-mp2-density-fitting-making-affordable | (@eq:factorization-and-metric-1), the Cholesky default |
+| section @sec:closed-shell-ri-mp2-density-fitting-making-affordable | the cost argument for the Cholesky default |
 | `scripts/rpa_drpa_pdep_sympy.py` | factor freedom (checks `ri-factor-freedom`, `sylvester`) |
 | Dissertation, chapter 1 (section 1.4.1) and chapter 4 (Eq. 4.5) | the RI approximation with $V^{-1/2}$ |
 
 **Known limits (2026-11-15).** No Rust test compares the two factors on one
-system; the script proves the equivalence, and the eigendecomposition path is
-covered only through the erf anchors.
+system. Each factor is anchored on its own kernel (erf and erfc above), and
+the script proves the equivalence.

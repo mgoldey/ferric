@@ -32,7 +32,7 @@ BLAS counts differ by about 1e-13 Ha (`site/src/using/sharp-bits.md`).
 
 | Goal | Setting |
 |---|---|
-| bit-identical across machines with different core counts | `[parallel] blas_threads = 1` or `ferric.set_blas_threads(1)` |
+| bit-identical across thread counts (same binary, same CPU family) | `[parallel] blas_threads = 1` or `ferric.set_blas_threads(1)` |
 | many molecules at once | many single-threaded processes (`RAYON_NUM_THREADS=1`) |
 | several jobs from Python threads in one process | `ferric.set_blas_threads(1)` first; the BLAS count is process-wide |
 
@@ -83,13 +83,17 @@ validation page, summarized here.
 | $\alpha_{\mathrm{CT}}$ | identity with α − Σα^A; independent charge-flow form | exact; 1.1e-4 (grid error of the lab dipole) | identity plus reference |
 | PDEP eigenvectors | PySCF generalized dielectric eigenproblem | metric 4.3e-12, projector 2.6e-7 | independent reference |
 | TS $C_6$ | recomputed from the exported α(iu) and the TS free-atom table | exact | consistency |
-| PDEP-RPA energy | `pdep-rpa` | — | Proven |
-| BSE-TDA, statically screened TDHF α | `bse-tda`, `tdhf-static-polarizability` | — | Smoke |
+
+The energies themselves carry the capability grade of their `method.kind`
+(appendix @sec:appendix-c): the PDEP-RPA energy (`pdep-rpa`) is Proven, and
+BSE-TDA and the statically screened TDHF α (`bse-tda`,
+`tdhf-static-polarizability`) are Smoke.
 
 All figures are from `site/src/reference/validation.md`, "Anchors" and
 "CLI `method.kind` matrix". As in @sec:electrostatics-and-charges-well-these-checked, "same density" isolates ferric's
-integrals and contractions, and the "own SCF" figures quoted in 27.2 and
-27.3 add ferric's SCF convergence.
+integrals and contractions, and the "own SCF" figures quoted in sections
+@sec:electrostatics-and-charges and @sec:polarizability-pdep-c6 add ferric's
+SCF convergence.
 
 The last column says how much a row proves. An independent reference
 computes the same definition by another route, so it catches a wrong

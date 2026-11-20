@@ -49,7 +49,7 @@ $\mathbf A_{\beta\alpha} = \mathbf A_{\alpha\beta}^{\mathsf T}$. TDA, the
 Casida reduction and the Davidson solvers of section @sec:response apply unchanged to
 the $(d_\alpha + d_\beta)$-dimensional matrices.
 
-### Assembly
+### Assembly {#unrestricted-assembly}
 
 Equation @eq:td-unrestricted-matrices reuses the restricted builders. Each same-spin block is the
 restricted $\mathbf A$ or $\mathbf B$ of section @sec:response-matrices over that spin's
@@ -83,7 +83,7 @@ and the kernel $F$. $(\mathbf A+\mathbf B)x$ takes $2J$ and $2F$, and
 $(\mathbf A-\mathbf B)x$ neither, since both terms are equal in
 $\mathbf A$ and $\mathbf B$.
 
-### The kernel
+### The kernel {#unrestricted-kernel}
 
 `ferric_dft::lr_kernel::UksKernel` is the spin-resolved AO kernel at the
 UKS reference $(D^\alpha, D^\beta)$, screened per spin on its own
@@ -106,7 +106,7 @@ Every functional the restricted path accepts is accepted here, $\tau$-only
 meta-GGAs and hybrid meta-GGAs included (`MggaFxcKernel` is polarized).
 VV10 stays refused.
 
-### Occupations and refusals
+### Occupations and refusals {#unrestricted-occupations-refusals}
 
 $n_\alpha$ and $n_\beta$ come from the molecule's charge and multiplicity,
 and the occupied orbitals are the lowest $n_\sigma$ of each spin.
@@ -114,13 +114,17 @@ and the occupied orbitals are the lowest $n_\sigma$ of each spin.
 - **A non-aufbau (MOM) reference** is refused, because its density is not
   built from those orbitals.
 - **A triplet request** is refused, since the roots are not spin-adapted.
+  What an open-shell reference gives is every spin-conserving
+  ($\Delta M_S = 0$) excitation. For a triplet ground state such as O2
+  that means the excited states with the reference's $M_S = 1$; states
+  reached by flipping a spin (spin-flip TDDFT) are not computed.
 - **An ROHF or ROKS reference** is refused. ROHF orbitals diagonalize one
   Roothaan-coupled Fock operator, not separate $\alpha$ and $\beta$ Fock
   operators, so equation @eq:td-unrestricted-matrices, with orbital-energy differences on its
   diagonal, is not the response of that reference. The ROKS response needs
   the ROHF orbital-rotation Hessian.
 
-### The closed-shell limit
+### The closed-shell limit {#unrestricted-closed-shell-limit}
 
 For a closed-shell molecule $C_\alpha = C_\beta$, and the problem splits on
 $X_\alpha \pm X_\beta$ as in section @sec:triplets. The unrestricted roots are the
@@ -131,7 +135,7 @@ $2B^{\mathsf T}B$, and the kernel's density screen, applied per spin in
 place of on $\rho_\alpha + \rho_\beta$, which acts only at points at the
 density floor.
 
-### Transition dipoles
+### Transition dipoles {#unrestricted-transition-dipoles}
 
 Each spin is its own block, so there is no $\sqrt2$:
 
@@ -157,13 +161,13 @@ turns the spin sum into equation @eq:td-osc-sum-rule.
 > | Negative control | the runner drops the cross-spin Coulomb block of $\mathbf A$ (B5 fails); in the Rust validation, dropping the $\alpha\beta$ kernel block moves the TDA roots by 0.018 to 0.128 eV |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-tddft/src/unrestricted.rs::run_unrestricted` |
-> | Code test | `crates/ferric-tddft/tests/validation_tddft_open_shell.rs` (against PySCF `tdscf.uhf.get_ab`) |
+> | Code test | `closed_shell_through_the_unrestricted_route_is_singlets_plus_triplets` in `crates/ferric-tddft/src/unrestricted/tests.rs`; `nh2_pbe`, `o2_b3lyp` and the other cases in `crates/ferric-tddft/tests/validation_tddft_open_shell.rs` (against PySCF `tdscf.uhf.get_ab`) |
 >
-> <!-- verified: id=td.unrestricted.matrices; script=scripts/tddft_response_sympy.py; claim=B5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/unrestricted.rs::run_unrestricted; registry=tddft -->
+> <!-- verified: id=td.unrestricted.matrices; script=scripts/tddft_response_sympy.py; claim=B5; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/unrestricted.rs::run_unrestricted; rust_test=ferric-tddft/src/unrestricted/tests.rs::closed_shell_through_the_unrestricted_route_is_singlets_plus_triplets; registry=tddft -->
 
 ## $\langle S^2\rangle$ of each root {#unrestricted-each-root}
 
-### Which wavefunction
+### Which wavefunction {#unrestricted-which-wavefunction}
 
 To compute $\langle S^2\rangle$ a root needs a wavefunction. Each root is
 given
@@ -174,7 +178,10 @@ with unit-normalized $X$. For TDA that is the eigenvector. For Casida it is
 the $X$ part, renormalized: $X = \tfrac12\big((X+Y) + (X-Y)\big)$, with
 $X - Y = (\mathbf A+\mathbf B)(X+Y)/\Omega$ from the first row-sum equation
 of section @sec:response-tda-casida-reduction. Casida response defines no excited-state wavefunction;
-$X$ is the particle–hole part of the root.
+$X$ is the particle–hole part of the root. Taking it as the state is
+ferric's convention. The validation generator evaluates the same $X$-only
+state in numpy, so a Casida $\langle S^2\rangle$ is checked against this
+definition, not against an independent Casida $\langle S^2\rangle$.
 `ferric-tddft/src/unrestricted.rs::casida_x` computes the unnormalized $X$:
 
 <!-- excerpt: ferric-tddft/src/unrestricted.rs::casida_x -->
@@ -189,7 +196,7 @@ for (n, mut col) in x.columns_mut().into_iter().enumerate() {
 The renormalization happens in `SpinOverlap::excited`, which divides by
 $|X|$.
 
-### The operator
+### The operator {#unrestricted-operator}
 
 Write $S^2 = M^2 + M + S_-S_+$ with $M = (n_\alpha - n_\beta)/2$, the
 $S_z$ eigenvalue of every determinant in the space. $S_+$ turns a $\beta$
@@ -205,7 +212,7 @@ operators. The anticommutator leaves a one-body $\beta$ term:
 $$ S_-S_+ = \sum_{sq\in\beta}P_{sq}E^\beta_{sq} - \sum_{pr\in\alpha}\sum_{sq\in\beta}O_{rs}O_{pq}\,E^\alpha_{pr}E^\beta_{sq},
 \qquad P = O^{\mathsf T}O . $$
 
-### Matrix elements
+### Matrix elements {#unrestricted-matrix-elements}
 
 Two rules give everything. Within one spin, between single excitations,
 
@@ -216,7 +223,22 @@ $\alpha$-even times $\beta$-even operator factorizes:
 $\langle\Phi_{i\alpha}^{a}|E^\alpha_{pr}E^\beta_{sq}|\Phi_{\bar\jmath}^{\bar b}\rangle = \delta_{pa}\delta_{ri}\,\delta_{s\bar\jmath}\delta_{q\bar b}$,
 with overbars marking $\beta$ orbitals.
 
-Collect the terms. Write $X_\alpha$ ($n_\alpha\times n^\alpha_{\rm vir}$)
+Collect the terms. Each comes from one piece of $S_-S_+$:
+
+- the one-body $\beta$ term $\sum P_{sq}E^\beta_{sq}$, between $\beta$
+  excitations by the same-spin rule and with the reference value on the
+  $\alpha$ ones, gives $\sum_{\bar\jmath}P_{\bar\jmath\bar\jmath} + \pi(X_\beta,P)$;
+- the two-body term between two $\alpha$ excitations, where $E^\beta_{sq}$
+  acts on the $\beta$ reference and gives $\delta_{sq}$ over occupied
+  $\bar\jmath$, collapses $\sum_{\bar\jmath}O_{r\bar\jmath}O_{p\bar\jmath}$ to
+  $Q_{pr}$ and gives the $Q$ bracket;
+- the same term between two $\beta$ excitations, with $E^\alpha_{pr}$ on
+  the $\alpha$ reference, collapses to $R_{sq}$ and gives the $R$ bracket;
+- the same term between an $\alpha$ and a $\beta$ excitation, by the
+  cross-spin rule, gives the last term, with the 2 from the two orders of
+  the pair.
+
+Write $X_\alpha$ ($n_\alpha\times n^\alpha_{\rm vir}$)
 and $X_\beta$ as matrices, $w_\sigma = |X_\sigma|^2$ (so
 $w_\alpha + w_\beta = 1$), and define $Q$ ($\alpha\times\alpha$) and $R$
 ($\beta\times\beta$) as in the table. For a matrix $N$ over one spin let
@@ -279,7 +301,7 @@ after the normalization.
 > | Code | `ferric-tddft/src/unrestricted.rs::{excited,reference,casida_x}` |
 > | Code test | `crates/ferric-tddft/tests/validation_tddft_open_shell.rs` (`compare_s2`, against values the generator checks with `pyscf.fci.spin_op.spin_square`) |
 >
-> <!-- verified: id=td.s2.per-root; script=scripts/tddft_response_sympy.py; claim=s2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/unrestricted.rs::excited; registry=tddft -->
+> <!-- verified: id=td.s2.per-root; script=scripts/tddft_response_sympy.py; claim=s2; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-tddft/src/unrestricted.rs::excited; rust_test=ferric-tddft/tests/validation_tddft_open_shell.rs::compare_s2; registry=tddft -->
 
 The generator `scripts/validation/gen_tddft_open_shell_refs.py` evaluates
 equation @eq:td-s2-per-root in numpy. For OH and NH2 it also expands the same $X$ into a
@@ -333,6 +355,22 @@ NH2 PBE: <S^2> of the reference 0.7516594991540426
   water UHF root 6:  11.87564 eV  <S^2> 0.00000
 ```
 
+Where does 2.7 come from? Excite an electron from a doubly occupied orbital
+$i$ to a virtual $a$ of NH2, and three electrons are unpaired: the radical's
+own $\alpha$ electron and the two in $i$ and $a$. Three spins with
+$M_S = \tfrac12$ span one quartet and two doublets over three determinants.
+The spin-conserving singles $i_\alpha\to a_\alpha$ and $i_\beta\to a_\beta$
+are two of them. In the third the radical's own electron, in orbital $u$,
+is the $\beta$ one; from the reference that is the double excitation
+$u_\alpha\to a_\alpha$ with $i_\beta\to u_\beta$, outside the space. The
+quartet component projects onto the two available determinants with
+weight $\tfrac23$. One combination of them is a pure doublet; the other is
+$\tfrac23$ quartet and $\tfrac13$ doublet, with
+$\langle S^2\rangle = \tfrac23\cdot\tfrac{15}4 + \tfrac13\cdot\tfrac34 = 2.75$.
+Roots 3 and 6 (2.668 and 2.710) are such states, slightly mixed with
+others. The contamination comes from the single-excitation space, not from
+the functional, and no functional removes it.
+
 ## Numerical anchors {#unrestricted-numerical-anchors}
 
 From `site/src/reference/validation.md`, "Spin-conserving TDA and Casida
@@ -352,3 +390,6 @@ $\langle S^2\rangle$ 0 or 2, for HF, PBE, B3LYP, CAM-B3LYP and r2SCAN.
 
 | Source | What it gives |
 |---|---|
+| section @sec:triplets-spin-blocks | the spin-orbital matrices this page generalizes |
+| D. Maurice and M. Head-Gordon, *Int. J. Quantum Chem.* **56** (S29), 361 (1995) | CIS on UHF and ROHF references and $\langle S^2\rangle$ of its states |
+| Q. Sun *et al.*, *J. Chem. Phys.* **153**, 024109 (2020) | PySCF, whose `tdscf.uhf.get_ab` blocks are the reference |

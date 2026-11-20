@@ -19,9 +19,12 @@ code, and then see where the envelope changes which quartets are kept.
 | four-index | `ferric-scf/src/qqr.rs::QqrBounds` (implements `ferric-scf/src/screening.rs::Bound`) |
 | three-index | `ferric-integrals/src/qqr3.rs::QqrBounds3` (`estimate3`) |
 
-### The envelope
+## The envelope {#qqr-envelope}
 
-The bound is
+The estimate is $Q_{ij}Q_{kl}$ times a distance envelope. It is a proven
+bound for primitive $s$ pairs under the Coulomb kernel
+(section @sec:qqr-s-pair-proof) and a measured one otherwise
+(section @sec:qqr-numerical-anchors):
 
 $$ |(ij|kl)| \le Q_{ij}Q_{kl}\,\min\Big(1, \frac{1.10\,(\epsilon_{ij} + \epsilon_{kl})}{R_{\mathrm{eff}}}\Big), \qquad R_{\mathrm{eff}} = \max(0, R - \epsilon_{ij} - \epsilon_{kl}), $$
 
@@ -44,23 +47,24 @@ The three-index version replaces one pair by an auxiliary shell with its own
 centre (its atom) and extent, $(2\alpha_{\min}(P))^{-1/2}$
 (`ferric-integrals/src/qqr3.rs::QqrBounds3::estimate3`).
 
-### The proof for primitive $s$ pairs
+## The proof for primitive $s$ pairs {#qqr-s-pair-proof}
 
-Take two primitive $s$ pair densities with exponents $P_1$, $P_2$ and charges
-$q_1$, $q_2$, at distance $R$. Their Coulomb integral and their Schwarz
-factors are closed forms (section @sec:schwarz-bound-admitted-kernels):
+Take two primitive $s$ pair densities $\rho_1$, $\rho_2$ with exponents
+$p_1$, $p_2$ and charges $q_1$, $q_2$, at distance $R$. Their Coulomb
+integral and their Schwarz factors are closed forms
+(section @sec:schwarz-bound-admitted-kernels):
 
-$$ (12|12) = q_1q_2\,\frac{\operatorname{erf}(\theta R)}{R}, \qquad Q_n^2 = q_n^2\,\frac{2\theta_n}{\sqrt\pi},\quad \theta_n^2 = \frac{P_n}{2} . $$
+$$ (\rho_1|\rho_2) = q_1q_2\,\frac{\operatorname{erf}(\theta R)}{R}, \qquad Q_n^2 = q_n^2\,\frac{2\theta_n}{\sqrt\pi},\quad \theta_n^2 = \frac{p_n}{2} . $$
 
 Since $\operatorname{erf} \le 1$, the integral is at most the point-charge
 value $q_1q_2/R$. Multiply the two factors:
 
-$$ Q_1Q_2 = q_1q_2\sqrt{\frac 2\pi}\,(P_1P_2)^{1/4} . $$
+$$ Q_1Q_2 = q_1q_2\sqrt{\frac 2\pi}\,(p_1p_2)^{1/4} . $$
 
-Divide, and write the extents as $\epsilon = P^{-1/2}$, so that
-$(P_1P_2)^{-1/4} = \sqrt{\epsilon_1\epsilon_2}$. The charges cancel:
+Divide, and write the extents as $\epsilon = p^{-1/2}$, so that
+$(p_1p_2)^{-1/4} = \sqrt{\epsilon_1\epsilon_2}$. The charges cancel:
 
-$$ \frac{|(12|12)|}{Q_1Q_2} \le \sqrt{\frac{\pi}{2}}\, \frac{\sqrt{\epsilon_1\epsilon_2}}{R} . $$
+$$ \frac{|(\rho_1|\rho_2)|}{Q_1Q_2} \le \sqrt{\frac{\pi}{2}}\, \frac{\sqrt{\epsilon_1\epsilon_2}}{R} . $$
 
 The geometric mean is at most the arithmetic mean,
 $\sqrt{\epsilon_1\epsilon_2} \le (\epsilon_1 + \epsilon_2)/2$, because
@@ -68,12 +72,16 @@ $\big((\epsilon_1 + \epsilon_2)/2\big)^2 - \epsilon_1\epsilon_2 = (\epsilon_1 - 
 That turns the product of extents into the sum the code uses. Finally
 $\sqrt{\pi/8} = 0.627 < 1.10$ and $R_{\mathrm{eff}} < R$:
 
-$$ \frac{|(12|12)|}{Q_1Q_2} \le \sqrt{\frac{\pi}{2}}\, \frac{\sqrt{\epsilon_1\epsilon_2}}{R} \le \sqrt{\frac{\pi}{8}}\, \frac{\epsilon_1 + \epsilon_2}{R} \le \frac{1.10\,(\epsilon_1 + \epsilon_2)}{R_{\mathrm{eff}}} . $$
+$$ \frac{|(\rho_1|\rho_2)|}{Q_1Q_2} \le \sqrt{\frac{\pi}{2}}\, \frac{\sqrt{\epsilon_1\epsilon_2}}{R} \le \sqrt{\frac{\pi}{8}}\, \frac{\epsilon_1 + \epsilon_2}{R} \le \frac{1.10\,(\epsilon_1 + \epsilon_2)}{R_{\mathrm{eff}}} . $$
 
 Schwarz alone bounds the ratio by $1$, so the minimum with $1$ is also a
 bound. For these pairs the envelope is a proven bound. For contracted and
 higher-$l$ pairs the argument does not cover the dipole and quadrupole terms
 the monopole picture neglects, and the factor $1.10$ is a measured margin.
+Without it the three-index envelope undershoots by up to 5.9% (worst
+true/bound 1.059 over 797,568 shell triples of alkane_6, water and benzene,
+cc-pVDZ / cc-pVDZ-RI, erfc with $\omega = 0.222$); with it the worst ratio
+is 0.9998 (`ferric-integrals/src/qqr3.rs::QqrBounds3`).
 
 > **Verified equation {#eq:screening-qqr-s-pairs}** · the envelope bounds primitive $s$ pairs
 >
@@ -91,20 +99,31 @@ the monopole picture neglects, and the factor $1.10$ is a measured margin.
 >
 > <!-- verified: id=screening.qqr-s-pairs; script=scripts/screening_bounds_sympy.py; claim=qqr-s; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-scf/src/qqr.rs::QqrBounds; rust_test=ferric-scf/tests/qqr_diagonal_noop.rs::qqr_equals_schwarz_on_every_diagonal_quartet -->
 
-### No operator factor
+## No operator factor {#qqr-no-operator-factor}
 
 The envelope is the Coulomb one for every kernel. Attenuation enters only
 through the erfc Schwarz factors, so QQR shares the blindness of section
 @sec:schwarz-bound-admitted-kernels. The erfc case of the verification script is a sweep over
 $\omega \in \{0.2, 1, 5\}$, a measured bound, not a proof.
 
-Why not multiply in a Gaussian factor for erfc? Its Schwarz factors already
-carry what attenuation they have (@sec:schwarz-bound-admitted-kernels), and the Coulomb envelope over them
-is close to tight on the sampled quartets. An extra factor smaller than $1$
-would count the attenuation a second time and push the estimate below real
-long-range integrals.
+Why is there no erfc factor? The erfc integral between two $s$ pairs decays
+as $\operatorname{erfc}(\phi R)$ with $\phi^2 = 1/(1/p_1 + 1/p_2 + 1/\omega^2)$
+(section @sec:schwarz-bound-admitted-kernels), so a valid factor depends on
+the pair exponents, and through $\phi < \omega$ on the most diffuse pair in
+the block. $e^{-\omega^2R^2}$ is not one: it decays faster than the
+integral. On benzene / cc-pVDZ at $\omega = 1$ it fell below every one of
+30,000 sampled quartets, by up to 12 orders of magnitude. ferric has no
+kernel-aware envelope. For compact pairs the Coulomb envelope is therefore
+far from tight under erfc: the Schwarz factors keep none of the attenuation,
+and the gain over Schwarz is the factor $1/R$ and no more. For two pairs of
+exponent 20 at $\omega = 0.7$ and $R = 8/\omega$, the true erfc integral is
+$7.15\times10^{-30}$ of the Schwarz product (`screening_bounds_sympy.py`,
+claim blind), where the envelope is 0.045. The worst ratio of 0.998 on the
+script's sweep comes from near-concentric pairs, where the envelope is 1.
+Thompson and Ochsenfeld (2017), cited in section @sec:schwarz, derive
+distance-including bounds for short-range kernels.
 
-### The code
+## The code {#qqr-code}
 
 The four-index estimate is `ferric-scf/src/qqr.rs::QqrBounds`'s `estimate`,
 with the centre lookup elided and the comments replaced:
@@ -153,11 +172,14 @@ diagonal quartet $(ij|ij)$, where bra and ket are the same pair, so $R = 0$
 and the code returns the Schwarz product. Section @sec:pair-lists shows that LinK's
 density lists already restrict the ket loop to pairs the density couples, so
 the per-quartet envelope inside LinK finds few distant quartets left to
-remove. The documentation of `QqrBounds` records the quartet counts that show
-this.
+remove. On alkane_16 / cc-pVDZ at $10^{-8}$, QQR removes 3.83% more of all
+unique quartets than Schwarz, 0.273% of those the pair lists admit, and
+0.009% at the innermost test (`crates/ferric-scf/tests/qqr_population_gap.rs`).
+One composition on one linear topology was measured; it says nothing about
+builders without a pair-list prune, such as the three-index QQR-3.
 
-The RHF driver does not build `QqrBounds` itself; a caller passes it in as the
-`Bound`. The envelope never reads $\omega$, so for erfc the attenuation enters
+`solve_rhf` builds `SchwarzBounds`, and no production path uses the
+four-index `QqrBounds`; a caller can pass it in as the `Bound`. The envelope never reads $\omega$, so for erfc the attenuation enters
 only through the Schwarz factors (section @sec:schwarz), and the gain is geometric.
 
 ## Numerical anchors {#qqr-numerical-anchors}
@@ -168,6 +190,8 @@ only through the Schwarz factors (section @sec:schwarz), and the gain is geometr
 | QQR equals Schwarz on every diagonal quartet | `crates/ferric-scf/tests/qqr_diagonal_noop.rs` | exact |
 | LinK K at a threshold sweep with QQR against the dense K | `crates/ferric-scf/tests/screening_exactness.rs` (`link_k_thresh_sweep_alkane_8_qqr`) | per test |
 | QQR-3 on terfc three-index tensors | `crates/ferric-integrals/tests/qqr3_terfc_screening.rs` | per test |
+| four-index envelope against PySCF quartets, benzene / cc-pVDZ, 30,000 quartets (`scripts/qqr4_bound_validity.py`) | recorded in `ferric-scf/src/qqr.rs::QqrBounds` | worst true/bound 0.92 (Coulomb), 0.77 (erfc, $\omega = 1$) |
+| three-index envelope with and without 1.10, 797,568 triples | recorded in `ferric-integrals/src/qqr3.rs::QqrBounds3` | worst 0.9998 with, 1.059 without |
 
 The proof covers primitive $s$ pairs and the Coulomb kernel. Contracted and
 higher-$l$ pairs, and the erfc kernel, rest on the measured anchors above.

@@ -47,8 +47,14 @@ The window is a difference of two energies, not the energy of a difference
 kernel. $E_{\mathrm{SS}}$ is quadratic in the integrals. Write the
 $r_0^{(2)}$ integrals as $g_1 + d$, with $g_1$ the $r_0^{(1)}$ integrals and
 $d$ the integrals of $\operatorname{terfc}(r; r_0^{(2)}) - \operatorname{terfc}(r; r_0^{(1)})$.
-Expand $E_{\mathrm{SS}}[g_1 + d]$ as in section @sec:erf-terf-properties-decide-integrals-used. The window is
-$E_{\mathrm{SS}}[d]$ plus a cross term between $g_1$ and $d$.
+Expand $E_{\mathrm{SS}}[g_1 + d]$ as in section @sec:range-split-cross-term-identity, with the
+same-spin bilinear form
+$B_{\mathrm{SS}}(g, h) = -\sum_{ijab} g_{ijab}(h_{ijab} - h^\times_{ijab})/\Delta_{ij}^{ab}$
+in place of $B$. The window is
+$E_{\mathrm{SS}}[d] + 2B_{\mathrm{SS}}(g_1, d)$: the energy of the
+difference kernel plus a cross term between $g_1$ and $d$ (part C of
+`scripts/mp2_family_sympy.py` checks it on a random model, and checks that
+the cross term is not zero).
 
 The limits make the construction clear. terfc$(r; r_0) \to 0$ for $r > 0$
 as $r_0 \to 0$ and $\to 1$ as $r_0 \to \infty$, and each spin component is
@@ -79,7 +85,23 @@ $E_{\mathrm{HF}}$) is what the rows list.
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-mp2/src/scs.rs::scs_mp2_2terfc` |
 >
-> <!-- verified: id=mp2.scs2terfc.limits; script=scripts/mp2_family_sympy.py; claim=C; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/scs.rs::scs_mp2_2terfc; rust_test=ferric-mp2/src/scs.rs::scs_2terfc_matches_eq12_assembled_by_hand -->
+> <!-- verified: id=mp2.scs2terfc.limits; script=scripts/mp2_family_sympy.py; claim=C; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/scs.rs::scs_mp2_2terfc; rust_test=ferric-mp2/src/scs.rs::scs_2terfc_matches_eq12_assembled_by_hand; registry=scs-mp2-2terfc -->
+
+## Summary from the dissertation {#scs-mp2-2terfc-summary-dissertation}
+
+RMSD in kcal/mol, aug-cc-pVTZ, no counterpoise (dissertation Tables 5.1,
+5.2):
+
+| Method | S66 | W4-11 |
+|---|---|---|
+| MP2 | 1.533 | 7.29 |
+| SCS-MP2 | 0.632 | 5.16 |
+| MP2(terfc, aTZ) | 0.251 | 6.97 |
+| SCS-MP2(2terfc, aTZ) | 0.228 | 4.79 |
+
+The single parameter set improves on SCS-MP2 for thermochemistry and on
+attenuated MP2 for intermolecular interactions. These are dissertation
+numbers, run in Q-Chem; ferric has not re-run the fits.
 
 ## Parameters {#scs-mp2-2terfc-parameters}
 
@@ -147,21 +169,6 @@ c_SS * window             = -0.006760
 SCS-MP2(2terfc) E_c       = -0.195076
 ```
 
-## Summary from the dissertation {#scs-mp2-2terfc-summary-dissertation}
-
-RMSD in kcal/mol, aug-cc-pVTZ, no counterpoise (dissertation Tables 5.1,
-5.2):
-
-| Method | S66 | W4-11 |
-|---|---|---|
-| MP2 | 1.533 | 7.29 |
-| SCS-MP2 | 0.632 | 5.16 |
-| MP2(terfc, aTZ) | 0.251 | 6.97 |
-| SCS-MP2(2terfc, aTZ) | 0.228 | 4.79 |
-
-The single parameter set improves on SCS-MP2 for thermochemistry and on
-attenuated MP2 for intermolecular interactions.
-
 ## How the code evaluates it {#scs-mp2-2terfc-code-evaluates}
 
 This is `ferric-mp2/src/scs.rs::scs_mp2_2terfc` after the length check and
@@ -184,7 +191,10 @@ Ok(ScsMp2Result {
 ```
 
 Two calls, each with its own terfc metric, so the cost is twice an RI-MP2.
-`sc2.e_os` is computed and not used. The reported $E_{\mathrm{SS}}$ is the
+`sc2.e_os` is computed and not used: `ri_mp2_spin_components_any` has no
+same-spin-only mode, and the pair loop forms both components from the same
+integral block, so skipping $E_{\mathrm{OS}}$ would save the loop
+arithmetic, not the integrals or the GEMMs. The reported $E_{\mathrm{SS}}$ is the
 window difference, so the reported components combine with
 $c_{\mathrm{OS}}$, $c_{\mathrm{SS}}$ directly. `Operator::terfc` applies the
 curvature link of (@eq:mp2-att-terfc-kernel). On a UHF reference
@@ -209,7 +219,7 @@ parameters at aug-cc-pVTZ are exercised only on a five-dimer S66 subset,
 with no external anchor for the counterpoise path. Figures from
 `site/src/reference/validation.md`.
 
-## Known limits (2026-11-15)
+## Known limits {#scs-mp2-2terfc-limits}
 
 - This section covers the energy. Open shells run on a UHF reference (see
   "Open shell" in section @sec:attenuated-mp2). The analytic nuclear gradient, closed shell
@@ -220,17 +230,12 @@ with no external anchor for the counterpoise path. Figures from
 - The parameters are aug-cc-pVTZ, no-counterpoise values; other bases are
   unparameterized.
 
-## Sources
+## Sources {#scs-mp2-2terfc-sources}
 
 | Source | Used for |
 |---|---|
-| sections @sec:scs-and-kappa-scs-mp2, @sec:attenuated-mp2-energy and @sec:attenuated-mp2 | equation @eq:mp2-scs2terfc-limits, limits, the one-row table, open shell |
+| Goldey and Head-Gordon, J. Phys. Chem. B 118, 6519 (2014) (dissertation chapter 5) | the method, its parameters and the summary table |
 | `crates/ferric-mp2/src/scs.rs`, `crates/ferric-mp2/src/terfc_r0.rs` | defaults, validation of the lengths, assembly, the basis rules |
 | Goldey dissertation, chapter 5 (sections 5.1, 5.2, Eqs. 5.6, 5.7, Tables 5.1, 5.2) | motivation, definition, fit, summary table |
-| `scripts/mp2_family_sympy.py`, parts C and D | verified box |
+| `scripts/mp2_family_sympy.py`, parts C and D | verified box, the window identity |
 | `site/src/reference/validation.md` | anchors, gradient grade |
-
-The statement that the window equals $E_{\mathrm{SS}}[d]$ plus a cross term
-was checked numerically on a random model for this section; it is the
-identity of section @sec:erf-terf-properties-decide-integrals-used with $g_1$ and $d$ in place of the short- and
-long-range integrals.

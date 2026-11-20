@@ -61,9 +61,11 @@ fn sto3g_prep(mol: &Molecule) -> PreparedBasis {
     PreparedBasis::new(mol, &bs).unwrap()
 }
 
-/// Path (2), the independent reference: `∂/∂R_site ⟨μ|1/|r-R_site||ν⟩` for a
-/// unit point charge, contracted over ALL shell pairs into an (nbasis,
-/// nbasis) matrix per Cartesian component `[x, y, z]`.
+/// Path (2), the independent reference: `∂/∂R_site ⟨μ|-1/|r-R_site||ν⟩`, the
+/// libint `OP_NUCLEAR` derivative block for a +1 point charge (attraction
+/// carries the minus sign), contracted over ALL shell pairs into an (nbasis,
+/// nbasis) matrix per Cartesian component `[x, y, z]`. The p-shell potential
+/// is the derivative of `+1/|r-R|`, hence `reference == -norm_p * p_shell`.
 fn point_charge_field_matrix(prep: &PreparedBasis, site: [f64; 3]) -> [Array2<f64>; 3] {
     let nbas = prep.nbasis();
     let natoms = prep.atoms().len();
@@ -324,6 +326,7 @@ fn polarizable_empty_sites_is_bit_identical_to_plain_scf() {
             sites: vec![],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -367,6 +370,7 @@ fn alpha_zero_gives_zero_polarization_energy() {
             sites: vec![site],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -420,6 +424,7 @@ fn distant_single_site_matches_perturbative_limit() {
             sites: vec![site],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -566,6 +571,7 @@ fn run_pe_case(tag: &str) {
             sites,
             thole_a: r.thole_a,
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 4000,
         }),
@@ -612,6 +618,7 @@ fn run_pe_case(tag: &str) {
         sites: sites2,
         thole_a: r.thole_a,
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -682,6 +689,7 @@ fn induce_empty_sites_returns_zero_result() {
         sites: vec![],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -715,6 +723,7 @@ fn induce_rejects_more_sites_than_max_sites_dense() {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 1, // exceeded by 2 sites
     };
@@ -755,6 +764,7 @@ fn induce_rejects_non_positive_alpha() {
             }],
             thole_a: Some(2.1304),
             exclusions: vec![],
+            excluded_charges: vec![],
             dipole_zeta: 1e4,
             max_sites_dense: 8,
         };
@@ -794,6 +804,7 @@ fn two_site_setup() -> (Molecule, PolarizableSites, ExternalPotential) {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -851,6 +862,7 @@ fn two_site_setup_no_colocated_charge() -> (Molecule, PolarizableSites, External
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };
@@ -1066,6 +1078,7 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
+        excluded_charges: vec![],
         dipole_zeta: 1e4,
         max_sites_dense: 4000,
     };

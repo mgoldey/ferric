@@ -35,15 +35,15 @@ $(ia) \leftrightarrow (jb)$. The kept pattern is
 $$ \mathcal M = \{(ia, jb) : |K_{ia,jb}| > \varepsilon\}, $$
 
 closed under the swap because $\mathbf K$ is symmetric. The amplitudes are
-restricted to $\mathcal M$, and the damped fixed point of section @sec:drpa-three-ways is
-projected onto $\mathcal M$ after each step:
+restricted to $\mathcal M$, and the diagonally preconditioned fixed point of
+section @sec:drpa-three-ways is projected onto $\mathcal M$ after each step:
 
-$$ \mathbf T \leftarrow P_{\mathcal M}\Big[\mathbf T - \mathbf R(\mathbf T)/\mathbf D\Big], \qquad E_c(\varepsilon) = \tfrac12\sum_{(ia,jb)\in\mathcal M}K_{ia,jb}T_{ia,jb} . \label{eq:rpa-drpa-local-mask} $$
+$$ \mathbf T \leftarrow P_{\mathcal M}\Big[\mathbf T - \mathbf R(\mathbf T)/\bar{\mathbf D}\Big], \qquad E_c(\varepsilon) = \tfrac12\sum_{(ia,jb)\in\mathcal M}K_{ia,jb}T_{ia,jb} . \label{eq:rpa-drpa-local-mask} $$
 
-$P_{\mathcal M}$ is the `apply_pattern` call in the loop of @sec:drpa-three-ways-ring-amplitudes. It
-zeroes both the residual and the update outside the pattern, so the dropped
-amplitudes are exactly zero and the Riccati equation holds exactly on the
-kept ones. The ring products $\mathbf K\mathbf T$, $\mathbf T\mathbf K$ and
+$P_{\mathcal M}$ is the `apply_pattern` call in the loop of section
+@sec:drpa-three-ways-ring-amplitudes. It zeroes both the residual and the
+update outside the pattern, so the dropped amplitudes are exactly zero and
+the Riccati equation holds on the kept ones to the stopping tolerance. The ring products $\mathbf K\mathbf T$, $\mathbf T\mathbf K$ and
 $\mathbf T\mathbf K\mathbf T$ run over a ragged (per-pair) storage of the
 kept blocks. An integral-free distance gate can drop whole occupied pairs
 before assembly (`pair_gate_cal`).
@@ -65,6 +65,19 @@ where the Hylleraas energy is stationary at the solution, the term linear in
 the amplitude error cancels, and the truncation error is second order with a
 proven sign. dRPA has no such cancellation, so the error is first order in
 what is dropped, and nothing fixes its sign.
+
+The dropped term can be estimated further. On a dropped element the
+amplitude is small and close to its second-order value,
+$T_0 \approx -K/\Delta_{ij}^{ab}$, so
+
+$$ -\tfrac12\sum_{\notin\mathcal M}K\,T_0 \approx +\tfrac12\sum_{\notin\mathcal M}\frac{K^2}{\Delta_{ij}^{ab}} > 0 , $$
+
+an MP2-like positive term of size at most
+(dropped count)$\,\times\,\varepsilon^2/(2\Delta_{\min})$. It grows faster than
+linearly in $\varepsilon$, because both the count and $\varepsilon^2$ grow.
+The relaxation term $\tfrac12\sum_{\mathcal M}K(T_\varepsilon - T_0)$ is the
+part without a sign. This is an estimate, not a bound: nothing proves that
+the first term dominates.
 
 The energy sum of the code runs over the pattern only. From
 `ferric-mp2/src/drpa_amplitude.rs::riccati_masked_solve`, unchanged:
@@ -112,7 +125,7 @@ for (p, pb) in rg.pairs.iter().enumerate() {
 | 1 | RHF; Boys-localized occupied orbitals; projected valence virtuals and hard virtuals | shared with local MP2 (`ferric-mp2/src/lmp2_amplitude.rs::build_vvhv`) |
 | 2 | $K$ blocks in the localized basis, assembled from the global three-index tensor (`amplitude_drpa`) or integral-direct (`amplitude_drpa_direct`) | `assemble_ragged_direct`, `assemble_ragged_direct_local` |
 | 3 | the pattern $\mathcal M$ | in `riccati_masked_solve` |
-| 4 | damped fixed point, optional DIIS on the increment, stop at $\lVert\mathbf R\rVert/\lVert\mathbf K\rVert < 10^{-12}$, error after 500 iterations | `riccati_masked_solve` |
+| 4 | preconditioned fixed point, optional DIIS on the increment, stop at $\lVert\mathbf R\rVert/\lVert\mathbf K\rVert < \max(10^{-12}, c\,\varepsilon)$ with $c$ = `eps_rtol_factor`, error after 500 iterations | `riccati_masked_solve` |
 | 5 | optionally the canonical plasmon energy, for the error printout | `canonical_plasmon_drpa` |
 
 The CLI uses the global-tensor assembly (`amplitude_drpa`). The
@@ -131,12 +144,15 @@ tolerance that the pre-extrapolation iterate passed.
 | `[local] eps`, `eps=` | $\ge 0$ | none, required | the threshold; 0 is exact |
 | `[local] eps_sweep`, `run_drpa_scan(eps_list=)` | list | | several thresholds on one SCF |
 | `[local] reference`, `compute_reference=` | bool | false | also compute the canonical plasmon energy and print the error |
-| `diis=` | integer, 0 off | 8 (Python) | DIIS subspace |
-| `eps_rtol_factor=` | float | off | stopping tolerance $\max(10^{-12}, c\,\varepsilon)$ |
+| `diis=` | integer, 0 off | 8 (Python, CLI) | DIIS subspace |
+| `eps_rtol_factor=` | float | 0.1 (Python, and fixed in the CLI, which has no key for it); off in the library | stop at relative residual $\max(10^{-12}, c\,\varepsilon)$; 0 disables the link, leaving $10^{-12}$ |
 
 `[local]` on a kind other than `rimp2`, `drpa` and `linlccd`, or a stray key,
 is an error. `eps` has no default because it is part of the model, like the
-basis set.
+basis set. At finite $\varepsilon$ the stopping tolerance is part of the
+result too, and it does have a default: the energy carries a solver error
+of the order of $c\,\varepsilon$ times the residual-to-energy sensitivity,
+which the water example below shows can exceed the truncation error.
 
 ## Numerical anchors {#local-drpa-numerical-anchors}
 
@@ -149,8 +165,10 @@ dRPA on PySCF integrals to $\le 3.0\times10^{-11}$ Ha (H2, H2O, n-butane,
 n-octane; frozen cores 0, 1 and 4).
 
 **Finite threshold.** n-octane / 6-31G (cc-pVDZ-RI), carbon cores frozen,
-against the external $\varepsilon = 0$ reference. There is no external
-finite-$\varepsilon$ reference.
+against the external $\varepsilon = 0$ reference, with the stopping
+tolerance fixed at $10^{-12}$ (no link to $\varepsilon$), so the differences
+are truncation error alone. There is no external finite-$\varepsilon$
+reference.
 
 | $\varepsilon$ | $E_c(\varepsilon) - E_{\mathrm{ref}}$ (Ha) | amplitudes kept |
 |---|---|---|
@@ -165,14 +183,13 @@ step in $\varepsilon$ multiplies it by 14 to 58. The kept fraction falls
 quickly over the same range, so each step drops more amplitudes as well as
 larger ones. That is one molecule in one basis; the test asserts only the
 sign and the monotonic growth. The positive sign is a measurement, not a
-consequence of @sec:local-drpa-masked-riccati-equation, which allows either sign.
+consequence of section @sec:local-drpa-masked-riccati-equation, which allows either sign.
 
-A smaller case you can run in seconds, from the `589b50832` build:
+A smaller case you can run in seconds, from the `3f612e0b3` build:
 `run_drpa_scan` sweeps $\varepsilon$ on one SCF of water / 6-31G (oxygen
-core frozen). The error is $+1.6\times10^{-8}$ Ha at $10^{-5}$ and
-$-3.5\times10^{-8}$ Ha at $10^{-4}$, with the same kept fraction to three
-digits, so on water neither the positive sign nor the monotonic growth seen
-on n-octane holds below $10^{-3}$.
+core frozen), with the stopping tolerance fixed at $10^{-12}$
+(`eps_rtol_factor=0.0`) so that the difference is the truncation error
+alone, and the solver's final relative residual printed beside it.
 
 ```python
 import ferric
@@ -181,18 +198,34 @@ mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
 bs = ferric.BasisSet.bundled("6-31g")
 aux = ferric.BasisSet.bundled("cc-pvdz-ri")
 
-rows = ferric.run_drpa_scan(mol, bs, aux, eps_list=[0.0, 1e-5, 1e-4, 1e-3], frozen_core=1)
+eps_list = [0.0, 1e-5, 1e-4, 2e-4, 3e-4, 1e-3]
+rows = ferric.run_drpa_scan(mol, bs, aux, eps_list=eps_list, frozen_core=1, eps_rtol_factor=0.0)
 e0 = rows[0]["e_corr"]
-for eps, r in zip([0.0, 1e-5, 1e-4, 1e-3], rows):
-    print(f"eps={eps:.0e}  E_c={r['e_corr']:.10f}  E_c - E_c(0)={r['e_corr'] - e0:+.2e}  kept={r['keep_fraction']:.3f}")
+for eps, r in zip(eps_list, rows):
+    print(f"eps={eps:.0e}  E_c - E_c(0)={r['e_corr'] - e0:+.2e}  kept={r['keep_fraction']:.4f}  relres={r['relres']:.1e}")
 ```
 
 ```text
-eps=0e+00  E_c=-0.1370918099  E_c - E_c(0)=+0.00e+00  kept=1.000
-eps=1e-05  E_c=-0.1370917936  E_c - E_c(0)=+1.63e-08  kept=0.922
-eps=1e-04  E_c=-0.1370918452  E_c - E_c(0)=-3.52e-08  kept=0.922
-eps=1e-03  E_c=-0.1370495549  E_c - E_c(0)=+4.23e-05  kept=0.885
+eps=0e+00  E_c - E_c(0)=+0.00e+00  kept=1.0000  relres=1.5e-13
+eps=1e-05  E_c - E_c(0)=+0.00e+00  kept=0.9219  relres=1.5e-13
+eps=1e-04  E_c - E_c(0)=+0.00e+00  kept=0.9219  relres=1.5e-13
+eps=2e-04  E_c - E_c(0)=+0.00e+00  kept=0.9219  relres=1.5e-13
+eps=3e-04  E_c - E_c(0)=+6.55e-07  kept=0.9141  relres=1.5e-13
+eps=1e-03  E_c - E_c(0)=+4.22e-05  kept=0.8848  relres=1.4e-13
 ```
+
+A threshold mask is nested, so an equal kept fraction means the same
+pattern. From $10^{-5}$ to $2\times10^{-4}$ the mask drops the same 80 of
+1024 amplitudes, whose coupling elements vanish, and the energy is exact
+(the difference prints as zero). The first threshold that drops a nonzero
+amplitude is $3\times10^{-4}$; the error there is $+6.6\times10^{-7}$ Ha,
+and at $10^{-3}$ it is $+4.2\times10^{-5}$ Ha, positive as on n-octane.
+With the default `eps_rtol_factor=0.1` the same scan stops at relative
+residual $\max(10^{-12}, 0.1\,\varepsilon)$, and the solver error
+($+1.6\times10^{-8}$ Ha at $10^{-5}$, $-3.5\times10^{-8}$ Ha at $10^{-4}$)
+is larger than the truncation error below $3\times10^{-4}$. Compare a local
+run with its exact limit only at a tolerance tight enough that the
+difference stops moving.
 
 ## Sources {#local-drpa-sources}
 

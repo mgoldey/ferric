@@ -29,7 +29,9 @@ Checks, in spin-orbital notation (<pq||rs> = g[p,q,r,s], t_ij^ab = t[a,b,i,j]):
            (doubles only, full non-canonical Fock blocks f_oo, f_vv) and the
            reference energy E_HF = <0|H|0>, both from wicks. J is stationary
            at the amplitudes t = <ab||ij>/(e_i+e_j-e_a-e_b) of the code
-           (frame where f_oo, f_vv are diagonal) and J(t*) = E2.
+           (frame where f_oo, f_vv are diagonal) and J(t*) = E2. In that frame
+           J(t) = 1/2 sum <ij||ab> t + 1/4 sum Delta t^2 at ANY antisymmetric t,
+           Delta = e_a + e_b - e_i - e_j (the canonical form the book displays).
        B2  dE/dkappa_ai at fixed t (the Hylleraas theorem: the t-response
            vanishes). With E = sum h gamma + sum g Gamma, the densities are
            obtained by differentiating the sympy expressions with respect to
@@ -70,8 +72,14 @@ Mutations, each of which turns this script red (set OOMP2_MP3_MUTATION):
                    relative to the energy derivative)
   drop_two_particle  the correlation two-particle density Gamma_t removed from
                    the generalized Fock (B2 and B3 fail)
+  ehf_half         the 1/2 of E_HF = sum h_ii + 1/2 sum <ij||ij> replaced by 1
+                   in the reference formula (B1 E_HF fails)
+  fock_k_double    the spatial Fock model built as h + 2J - 2K instead of
+                   h + 2J - K (B0 fails)
+  delta_sign       Delta of the canonical J(t) written as e_i + e_j - e_a - e_b
+                   (B1 canonical form fails)
 
-Measured on this tree: all three exit 1; the unmutated run exits 0.
+Measured on this tree: all six exit 1; the unmutated run exits 0.
 """
 
 import itertools
@@ -91,11 +99,22 @@ from sympy.physics.secondquant import (
 )
 
 MUTATION = os.environ.get("OOMP2_MP3_MUTATION", "")
-if MUTATION not in ("", "ring_quarter", "kappa_sign", "drop_two_particle"):
+MUTATIONS = (
+    "ring_quarter",
+    "kappa_sign",
+    "drop_two_particle",
+    "ehf_half",
+    "fock_k_double",
+    "delta_sign",
+)
+if MUTATION not in ("", *MUTATIONS):
     sys.exit(f"unknown OOMP2_MP3_MUTATION {MUTATION!r}")
 RING_COEFF = Rational(1, 4) if MUTATION == "ring_quarter" else Rational(1)
 KAPPA_SIGN = -1.0 if MUTATION == "kappa_sign" else 1.0
 DROP_GAMMA_T = MUTATION == "drop_two_particle"
+EHF_PAIR_FACTOR = 1.0 if MUTATION == "ehf_half" else 0.5
+FOCK_K_WEIGHT = 2.0 if MUTATION == "fock_k_double" else 1.0
+DELTA_SIGN = -1.0 if MUTATION == "delta_sign" else 1.0
 
 failures = 0
 
@@ -543,9 +562,9 @@ def part_b():
     fov = 0.3 * rs.randn(nv_s, no_s)
     fsp[no_s:, :no_s] = fov
     fsp[:no_s, no_s:] = fov.T
-    jk = 2.0 * np.einsum("pqkk->pq", eri[:, :, :no_s, :no_s]) - np.einsum(
-        "pkqk->pq", eri[:, :no_s, :, :no_s]
-    )
+    jk = 2.0 * np.einsum(
+        "pqkk->pq", eri[:, :, :no_s, :no_s]
+    ) - FOCK_K_WEIGHT * np.einsum("pkqk->pq", eri[:, :no_s, :, :no_s])
     hsp = fsp - jk
 
     # spin-orbital model: occupied (i, s) -> 2i+s, virtual (a, s) -> 2 no_s + 2 (a-no_s) + s
@@ -589,6 +608,29 @@ def part_b():
     check(
         "B1 J(t*) == E2 = 1/4 <ij||ab> t*", abs(j0 - e2) < 1e-12, f"{abs(j0 - e2):.1e}"
     )
+    # J at an arbitrary antisymmetric t equals the canonical form, since f_oo
+    # and f_vv are diagonal in this frame.
+    eps_so = np.diag(f_so)
+    delta = DELTA_SIGN * (
+        eps_so[no:, None, None, None]
+        + eps_so[None, no:, None, None]
+        - eps_so[None, None, :no, None]
+        - eps_so[None, None, None, :no]
+    )
+    t_r = np.zeros_like(t0)
+    r_ = np.random.RandomState(99).randn(nv, nv, no, no)
+    r_ = r_ - r_.transpose(1, 0, 2, 3)
+    t_r[no:, no:, :no, :no] = r_ - r_.transpose(0, 1, 3, 2)
+    tv_r = t_r[no:, no:, :no, :no]
+    j_canon = 0.5 * np.sum(g_so[no:, no:, :no, :no] * tv_r) + 0.25 * np.sum(
+        delta * tv_r**2
+    )
+    d_canon = abs(energy(h_so, g_so, t_r)[1] - j_canon)
+    check(
+        "B1 canonical form: J(t) == 1/2 sum <ij||ab> t + 1/4 sum Delta t^2 at a random t (claim B1)",
+        d_canon < 1e-12,
+        f"{d_canon:.1e}",
+    )
     worst = 0.0
     for sd in range(4):
         dd = np.zeros_like(t0)
@@ -604,7 +646,7 @@ def part_b():
         worst < 1e-10,
         f"{worst:.1e}",
     )
-    e_hf_ref = np.trace(h_so[:no, :no]) + 0.5 * np.einsum(
+    e_hf_ref = np.trace(h_so[:no, :no]) + EHF_PAIR_FACTOR * np.einsum(
         "ijij->", g_so[:no, :no, :no, :no]
     )
     check(
