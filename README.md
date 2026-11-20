@@ -6,6 +6,9 @@ functionals.
 
 **Documentation: <https://matthew.thegoldeys.com/ferric/>**
 
+ferric is the bottom layer of a three-repository stack with
+[smeltery](https://github.com/mgoldey/smeltery) and [attestation](https://github.com/mgoldey/attestation); see the [stack overview](docs/stack.md).
+
 ## Install
 
 ```bash
