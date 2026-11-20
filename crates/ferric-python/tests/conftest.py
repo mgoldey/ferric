@@ -49,6 +49,7 @@ EXTENSION_FREE = frozenset(
     {
         "test_derivation_registry.py",
         "test_book_build.py",
+        "test_shared_workflows.py",
         "test_stack_doc.py",
         "test_derivation_scripts.py",
         "test_oomp2_mp3_identities_sympy.py",
