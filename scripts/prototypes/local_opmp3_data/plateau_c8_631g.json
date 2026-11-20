@@ -1,0 +1,40 @@
+[
+ {
+  "xyz": "alkane_8.xyz",
+  "basis": "6-31g",
+  "plateau": {
+   "eps": 1e-07,
+   "keep": 0.7957213866666667,
+   "err_masked": 1.6366423563063393e-06,
+   "norm_t_ex_dropped": 0.0007644824808758328,
+   "norm_diag_estimate_dropped": 5.890611291670058e-06,
+   "energy_on_dropped_exact_t": -4.0949155280634385e-10,
+   "max_fvv_offdiag_vv": 0.03944405205839646,
+   "max_fvv_offdiag_hv": 0.1961822038015031,
+   "max_fvv_vv_hv": 0.42224164712724427,
+   "hops": [
+    {
+     "tau": 0.01,
+     "keep_wide": 0.99894528,
+     "err_fock_hop": 8.659739592076221e-14,
+     "keep_random": 0.7967761066666667,
+     "err_random": 1.6366423205571579e-06
+    },
+    {
+     "tau": 0.001,
+     "keep_wide": 0.9999584711111111,
+     "err_fock_hop": 0.0,
+     "keep_random": 0.7957629155555556,
+     "err_random": 1.6366423563063393e-06
+    },
+    {
+     "tau": 0.0001,
+     "keep_wide": 1.0,
+     "err_fock_hop": 0.0,
+     "keep_random": 0.7957213866666667,
+     "err_random": 1.6366423563063393e-06
+    }
+   ]
+  }
+ }
+]

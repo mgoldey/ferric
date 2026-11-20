@@ -1127,6 +1127,11 @@ CASES = [
                 "return g + Fo * t + t",
                 "claim 3: transpose",
             ),
+            (
+                "beta += qj[b] * wi[a] + qi[a] * wj[b]",
+                "beta += 0",
+                "claim 4: bound",
+            ),
         ],
     ),
     (

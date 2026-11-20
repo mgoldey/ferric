@@ -588,9 +588,13 @@ Points about the screen:
 - **The pattern stays swap-closed.** The gate is covariant under the pair
   transpose, $\mathrm{gate}(g^{\mathsf T}) = \mathrm{gate}(g)^{\mathsf T}$, since $\Delta$
   and the two Fock products swap.
-- **It is pair-local.** It reads only the integrals already evaluated on the
-  pair's candidate square, two $\lvert C\rvert^3$ GEMMs. An element outside
-  $C_{ij}$ is not considered, the same scope as the WLLH25 embedding below.
+- **It is pair-local.** It reads only the pair's own integrals and the
+  virtual Fock block. On the integral-direct path $C_{ij}$ is the distance
+  domain $V_i \cup V_j$ and the gate is two $\lvert C\rvert^3$ GEMMs. On
+  the in-core path the Fock sums run over every virtual and the candidate
+  square is chosen by the bound of section
+  @sec:amplitude-lmp2-fock-screen-candidates. An element outside $C_{ij}$
+  is not considered, the same scope as the WLLH25 embedding below.
 - **The occupied off-diagonal coupling is left out.** It would need other
   pairs' integrals. On the systems measured it ranks the dropped amplitudes
   worse than the virtual part. Section @sec:amplitude-lmp2-combined-truncation
@@ -629,6 +633,110 @@ Points about the screen:
 > | Code test | `vacuous_screen_at_finite_eps_matches_canonical` in `crates/ferric-mp2/tests/lmp2_fock_screen.rs` |
 >
 > <!-- verified: id=lmp2.fock-screen; script=scripts/lmp2_fock_screen_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/ragged.rs::{fock_dressed_gate,pair_blocks_screened}; rust_test=ferric-mp2/tests/lmp2_fock_screen.rs::vacuous_screen_at_finite_eps_matches_canonical; registry=local-mp2 -->
+
+### The candidate pre-filter under the screen {#amplitude-lmp2-fock-screen-candidates}
+
+The in-core assembly does not evaluate the whole $nv \times nv$ square of
+every pair. It first keeps the virtuals $a$ with
+$q_{ia}\max_b q_{jb} \ge \varepsilon$ or $q_{ja}\max_b q_{ib} \ge \varepsilon$,
+where $q_{ia} = \lVert \tilde B_{ia} \rVert$ is the Schwarz factor of the
+whitened RI vector, so $\lvert g_{ab}\rvert \le q_{ia} q_{jb}$. That
+filter is exact for Eq 8: a virtual it drops has no element above
+$\varepsilon$.
+
+It is not exact for the screen. The dressed integral of
+(@eq:lmp2-fock-screen-dressed) collects $F_{ac} t^0_{cb}$ from every
+virtual $c$, so a virtual with a small bare integral can still have a
+dressed element above $κ\varepsilon$. Take one occupied with whitened row
+$(10^{-6}, 1)$, $f_{oo} = -1$, $F_{vv} = \begin{pmatrix} 2 & 1/2 \\ 1/2 & 2 \end{pmatrix}$
+and $\varepsilon = 10^{-4}$. The filter keeps virtual 1 only, while
+$\tilde g_{01} = -1/12$. On n-octane/6-31G at κ = 1 the plain filter
+changes the screened pattern by 2 to 4 elements at
+$\varepsilon = 10^{-3}$ to $10^{-2}$ and moves the energy by up to
+$3.8\times10^{-5}$ Ha.
+
+**The bound.** Bound each term of $\tilde g_{ab}$ separately. Use
+$\lvert g_{cb}\rvert \le q_{ic} q_{jb}$ and a lower bound on every
+denominator,
+
+$$ \Delta^{ij}_{cb} = f_{cc} + f_{bb} - f_{ii} - f_{jj} \;\ge\; D_c = f_{cc} + \min_b f_{bb} - 2\max_k f_{kk} . $$
+
+With $D_c > 0$ for every $c$,
+
+$$ \lvert\tilde g_{ab}\rvert \le q_{ia} q_{jb} + q_{jb} w_{ia} + q_{ia} w_{jb}, \qquad
+w_{ia} = \sum_{c \ne a} \frac{\lvert F_{ac}\rvert\, q_{ic}}{D_c} . \label{eq:lmp2-fock-screen-bound} $$
+
+The first term is Eq 8's own bound. The second bounds $F' t^0$, the third
+$t^0 F'$. The weights $w$ are one $nv \times nv$ by $nv \times no$ product
+for the whole molecule. Maximizing over $b$, virtual $a$ can index a kept
+element of pair $(i,j)$ only if
+
+$$ \max\big(q_{ia} Q_j,\; q_{ja} Q_i\big) \ge \varepsilon
+\quad\text{or}\quad
+\max\big(q_{ia} Q_j + Q_j w_{ia} + q_{ia} W_j,\; q_{ja} Q_i + Q_i w_{ja} + q_{ja} W_i\big) \ge κ\varepsilon , $$
+
+with $Q_i = \max_a q_{ia}$ and $W_i = \max_a w_{ia}$. A virtual that fails
+both is outside every kept element of the full-square gate. If some
+$D_c \le 0$ there is no bound and every virtual is kept.
+
+The candidates fix the rows and columns of the gate. Its Fock sums still
+need every $c$: a virtual outside the candidates contributes to
+$\tilde g_{ab}$ for $a, b$ inside. So the in-core assembly forms
+$g[C, :]$ and $g[:, C]$ and evaluates the dressed gate with $c$ over all
+virtuals (`ferric-mp2/src/ragged.rs::fock_dressed_gate_rect`). The result
+is the full-square gate restricted to $C \times C$, up to the summation
+order of the GEMMs. With the screen off the plain filter and the square
+$g[C, C]$ are used, bit for bit.
+
+**Measured effect** (2026-11-19, in core, 6-31G with cc-pVDZ-RI,
+all-electron, λ = 10, κ = 1; one arm uses the plain filter with the Fock
+sums over the candidates, the other this bound with the full sums). On n-butane/cc-pVDZ at $\varepsilon$ = 1e-5, 1e-4, 1e-3 the
+correlation energies agree to all 12 printed digits, and on n-octane the
+1e-3 recovery is unchanged at 95.57%. On C12, C16 and C20 at 1e-4 and 1e-5
+the energies move by 3e-10 to 9e-8 Ha and the kept fraction by at most
+2.5e-5 relative. Wall time, median of three interleaved runs per arm:
+
+| system | $\varepsilon$ | plain filter (s) | Fock-aware (s) | change |
+|---|---|---|---|---|
+| C12 | 1e-4 | 3.24 | 3.16 | −2.4% |
+| C12 | 1e-5 | 10.74 | 10.76 | +0.1% |
+| C16 | 1e-4 | 6.73 | 6.90 | +2.6% |
+| C16 | 1e-5 | 14.36 | 13.83 | −3.7% |
+| C20 | 1e-4 | 12.95 | 14.40 | +11.1% |
+| C20 | 1e-5 | 24.08 | 25.25 | +4.8% |
+
+The run-to-run spread is a few percent. The C20 1e-4 row is the one clear
+cost: its assembly grows from 8.60 to 9.98 s, the two rectangular
+$g$ blocks per pair.
+
+The integral-direct path has the same plain filter as an option,
+`virt_schwarz_kappa`. Its Fock sums run over the domain $V_i \cup V_j$,
+which the strips hold, and the option is refused when the screen is on.
+
+| Code | Equation |
+|---|---|
+| `ferric-mp2/src/ragged.rs::fock_bound_weights` | $w_{ia}$ and $W_i$ of (@eq:lmp2-fock-screen-bound) |
+| `ferric-mp2/src/ragged.rs::fock_bound_keeps` | the membership test above |
+| `ferric-mp2/src/ragged.rs::fock_dressed_gate_rect` | $\tilde g$ on $C\times C$ with $c$ over all virtuals |
+
+> **Verified equation @eq:lmp2-fock-screen-bound** · the Fock-aware Schwarz bound on the dressed integral
+>
+> The slack of one Fock term is a product of non-negative factors, in
+> symbols. The bound holds in exact arithmetic on random factorized pairs
+> on which the plain $q_{ia} q_{jb}$ bound fails, and keeps the review toy's
+> virtual 0 (claim 4). On n-octane/6-31G the pre-filtered pattern equals
+> the full-square pattern element for element at
+> $\varepsilon = 10^{-3}$, $3\times10^{-3}$ and $10^{-2}$.
+>
+> | | |
+> |---|---|
+> | Proof | `scripts/lmp2_fock_screen_sympy.py`, claim 4 |
+> | Negative control | the runner's mutation "claim 4: bound" (the $w$ terms removed) |
+> | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
+> | Code | `ferric-mp2/src/ragged.rs::{fock_bound_weights,fock_bound_keeps,fock_dressed_gate_rect}` |
+> | Code test | `fock_screen_pattern_is_independent_of_the_schwarz_prefilter` in `crates/ferric-mp2/tests/lmp2_fock_screen.rs` |
+>
+> <!-- verified: id=lmp2.fock-screen-bound; script=scripts/lmp2_fock_screen_sympy.py; claim=4; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/ragged.rs::{fock_bound_weights,fock_bound_keeps,fock_dressed_gate_rect}; rust_test=ferric-mp2/tests/lmp2_fock_screen.rs::fock_screen_pattern_is_independent_of_the_schwarz_prefilter; registry=local-mp2 -->
 
 ### Relation to prior work
 

@@ -10,7 +10,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::drpa_amplitude::{
     amplitude_drpa, amplitude_drpa_scan, amplitude_drpa_with_virtuals, AmplitudeDrpaConfig,
 };
-use ferric_mp2::lmp2_amplitude::{build_vvhv, VvHv};
+use ferric_mp2::lmp2_amplitude::{build_vvhv, verify_vvhv, VvHv};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::s;
@@ -588,4 +588,43 @@ fn default_config_does_not_compute_the_canonical_reference() {
     .unwrap();
     assert!(on.e_corr_plasmon_canonical.is_finite());
     assert!((on.e_corr - off.e_corr).abs() < 1e-12);
+}
+
+/// The VV-HV construction guard must REJECT a NaN deviation. The virtual
+/// space is built from the OCCUPIED MOs only, so NaN in the canonical
+/// VIRTUAL columns leaves the build intact and poisons only the span check
+/// (it projects onto those columns): the deviation is NaN. A bare
+/// `dev > 1e-8` guard accepts NaN (every comparison with NaN is false), and
+/// so did the deviation reductions themselves (`f64::max` drops a NaN
+/// operand). Both the full check and the probe must reject it, and the
+/// dRPA driver (formerly a bare guard) must refuse to run.
+#[test]
+fn nan_vvhv_deviation_is_rejected() {
+    let mut su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
+    let nocc = (su.mol.nelec() as usize) / 2;
+    su.rhf.mos_alpha.slice_mut(s![.., nocc..]).fill(f64::NAN);
+    let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    for full in [false, true] {
+        assert!(
+            verify_vvhv(&su.obs, &su.rhf, nocc, &vvhv.c_vloc, full, "t").is_err(),
+            "NaN deviation passed the {} check",
+            if full { "full" } else { "probe" }
+        );
+    }
+    let r = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &AmplitudeDrpaConfig::default(),
+    );
+    match r {
+        Err(e) => assert!(
+            format!("{e}").contains("VV-HV construction check"),
+            "rejected, but not by the VV-HV guard: {e}"
+        ),
+        Ok(r) => panic!("NaN VV-HV deviation accepted (e_corr {})", r.e_corr),
+    }
 }

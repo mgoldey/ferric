@@ -35,7 +35,6 @@ use ferric_mp2::ragged::{pair_block_from_g_cand_gated, PairBlock, Ragged};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::{s, Array2};
-use std::collections::HashMap;
 
 fn env_or(k: &str, d: &str) -> String {
     std::env::var(k).unwrap_or_else(|_| d.to_string())
@@ -144,13 +143,7 @@ fn ragged_from_mask(dn: &Dense, m: &[bool]) -> Ragged {
             }
         }
     }
-    let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut by_j: HashMap<usize, Vec<usize>> = HashMap::new();
-    for (p, pb) in pairs.iter().enumerate() {
-        by_i.entry(pb.i).or_default().push(p);
-        by_j.entry(pb.j).or_default().push(p);
-    }
-    Ragged { pairs, by_i, by_j }
+    Ragged::from_pairs(pairs)
 }
 
 /// Solve on a mask: (E_hylleraas, dense amplitudes, kept fraction, iters).

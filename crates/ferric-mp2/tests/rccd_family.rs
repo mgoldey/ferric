@@ -412,3 +412,37 @@ fn rccd_channel_weight_is_one_to_one_not_one_to_three() {
         "1:1 and 1:3 weights coincide here — this test cannot pin the choice"
     );
 }
+
+/// rCCD/SOSEX localize their occupieds with PLAIN Boys (λ = 0, through
+/// `AmplitudeLmp2Config::plain_boys`): the localized occupieds equal
+/// `localized_spaces` (plain Boys) bit for bit, and differ from the λ-Boys
+/// local-MP2 default — so a driver that picked up the MP2 default would
+/// fail here.
+#[test]
+fn rccd_localizes_with_plain_boys() {
+    use ferric_mp2::boys::LAMBDA_BOYS_DEFAULT;
+    use ferric_mp2::lmp2_amplitude::{build_vvhv, localized_spaces, localized_spaces_lambda};
+    let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
+    let (lp, _) = localized_problem_and_denominators(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &RccdConfig::default(),
+    )
+    .unwrap();
+    let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let fc = RccdConfig::default().frozen_core;
+    let plain = localized_spaces(&su.mol, &su.obs, &su.rhf, fc, &vvhv).unwrap();
+    let lam =
+        localized_spaces_lambda(&su.mol, &su.obs, &su.rhf, fc, &vvhv, LAMBDA_BOYS_DEFAULT).unwrap();
+    let bits = |a: &ndarray::Array2<f64>| a.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&lp.c_locc), bits(&plain.c_locc));
+    assert_ne!(
+        bits(&lam.c_locc),
+        bits(&plain.c_locc),
+        "λ-Boys must move the occupieds here, or this test cannot tell the two apart"
+    );
+}

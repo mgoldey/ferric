@@ -685,7 +685,21 @@ pub fn build_vvhv_local(
     rhf: &ScfResult,
     cfg: &LocalVvhvConfig,
 ) -> Result<LocalVvhv, FerricError> {
-    build_vvhv_local_with(mol, obs, obs_bs, rhf, cfg, Knobs::default())
+    build_vvhv_local_with_fock(mol, obs, obs_bs, rhf, rhf.fock_r(), cfg)
+}
+
+/// [`build_vvhv_local`] with the AO Fock matrix `f_ao` that
+/// pseudo-canonicalizes the hard virtuals supplied by the caller (the
+/// local-build sibling of [`crate::lmp2_amplitude::build_vvhv_with_fock`]).
+pub fn build_vvhv_local_with_fock(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    obs_bs: &BasisSet,
+    rhf: &ScfResult,
+    f_ao: &Array2<f64>,
+    cfg: &LocalVvhvConfig,
+) -> Result<LocalVvhv, FerricError> {
+    build_vvhv_local_with(mol, obs, obs_bs, rhf, f_ao, cfg, Knobs::default())
 }
 
 /// [`build_vvhv_local`] with the mutation knobs.
@@ -694,6 +708,7 @@ pub(crate) fn build_vvhv_local_with(
     obs: &PreparedBasis,
     obs_bs: &BasisSet,
     rhf: &ScfResult,
+    f_ao: &Array2<f64>,
     cfg: &LocalVvhvConfig,
     knobs: Knobs,
 ) -> Result<LocalVvhv, FerricError> {
@@ -934,7 +949,7 @@ pub(crate) fn build_vvhv_local_with(
         // atom-diagonal blocks F^h_AA = C_{h,A}ᵀ F C_{h,A} only (a
         // block-diagonal rotation: span and orthonormality unchanged). The
         // columns of one atom are a subset of one atom-group column block.
-        let f_b = Bsr::from_dense(rhf.fock_r(), aop.clone(), aop.clone(), cfg.tau, &mut cnt);
+        let f_b = Bsr::from_dense(f_ao, aop.clone(), aop.clone(), cfg.tau, &mut cnt);
         let fc = f_b.mul(&ch_b, cfg.tau, &mut cnt);
         for (g, cols) in hardp.groups.iter().enumerate() {
             if cols.is_empty() {

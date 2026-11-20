@@ -418,7 +418,9 @@ fn contract(a: &Array4<f64>, b: &Array4<f64>) -> f64 {
     Zip::from(a).and(b).fold(0.0, |s, &x, &y| s + x * y)
 }
 
-fn channel_energy(c: &SpinBlockedDoubles, k: &SpinBlockedDoubles) -> UMp3Channels {
+/// `¼ c^αα·k^αα`, `¼ c^ββ·k^ββ` and `c^αβ·k^αβ`: the per-channel energy of
+/// amplitudes `c` against the integrals (or residual) `k`.
+pub(crate) fn channel_energy(c: &SpinBlockedDoubles, k: &SpinBlockedDoubles) -> UMp3Channels {
     UMp3Channels {
         aa: 0.25 * contract(&c.aa, &k.aa),
         bb: 0.25 * contract(&c.bb, &k.bb),
@@ -435,7 +437,7 @@ fn divide_blocks(x: &mut SpinBlockedDoubles, orbs: &[SpinOrbitals; 2]) {
 }
 
 /// Build the integral source (after the gate).
-fn build_source<'a>(
+pub(crate) fn build_source<'a>(
     obs: &PreparedBasis,
     op: Operator,
     eri: UMp3Eri<'_>,
@@ -462,11 +464,13 @@ fn build_source<'a>(
     }
 }
 
-/// The amplitudes and energies from a built source.
-fn amplitudes(
+/// The doubles integrals `K` (`⟨ij‖ab⟩` αα / ββ, `(ia|JB)` αβ) of a built
+/// source, and the ovov blocks the residual's ring terms consume. Valid in
+/// any orthonormal orbitals the source was built over (nothing here reads
+/// an orbital energy).
+pub(crate) fn doubles_integrals(
     src: &EriSource<'_>,
-    orbs: &[SpinOrbitals; 2],
-) -> Result<(SpinBlockedDoubles, SpinBlockedDoubles, SpinBlockedDoubles), FerricError> {
+) -> Result<(SpinBlockedDoubles, RingInputs), FerricError> {
     let (o, v) = (Space::Occ, Space::Vir);
     let g_aa = src.block((ALPHA, o, v), (ALPHA, o, v))?;
     let k_aa = antisymmetrize(&g_aa);
@@ -479,9 +483,17 @@ fn amplitudes(
         bb: k_bb,
         ab: k_ab,
     };
+    Ok((ints, RingInputs { g_aa, g_bb, g_ab }))
+}
+
+/// The amplitudes and energies from a built source.
+fn amplitudes(
+    src: &EriSource<'_>,
+    orbs: &[SpinOrbitals; 2],
+) -> Result<(SpinBlockedDoubles, SpinBlockedDoubles, SpinBlockedDoubles), FerricError> {
+    let (ints, ring) = doubles_integrals(src)?;
     let mut c1 = ints.clone();
     divide_blocks(&mut c1, orbs);
-    let ring = RingInputs { g_aa, g_bb, g_ab };
     let mut c2 = mp3_residual(src, ring, &c1)?;
     divide_blocks(&mut c2, orbs);
     Ok((ints, c1, c2))

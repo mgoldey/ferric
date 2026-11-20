@@ -431,6 +431,7 @@ fn mutated(su: &Su, knobs: Knobs) -> LocalVvhv {
         &su.obs,
         &su.obs_bs,
         &su.rhf,
+        su.rhf.fock_r(),
         &LocalVvhvConfig::trivial(),
         knobs,
     )
@@ -651,8 +652,16 @@ fn production_threshold_energy_shift() {
                     skip_guard: skip,
                     ..Knobs::default()
                 };
-                let loc = build_vvhv_local_with(&su.mol, &su.obs, &su.obs_bs, &su.rhf, &lc, knobs)
-                    .unwrap();
+                let loc = build_vvhv_local_with(
+                    &su.mol,
+                    &su.obs,
+                    &su.obs_bs,
+                    &su.rhf,
+                    su.rhf.fock_r(),
+                    &lc,
+                    knobs,
+                )
+                .unwrap();
                 let (o, sp) = check_vvhv(&su.obs, &su.rhf, su.nocc, &loc.vv.c_vloc);
                 let lk = occupied_leak(&su, &loc.vv.c_vloc);
                 println!(

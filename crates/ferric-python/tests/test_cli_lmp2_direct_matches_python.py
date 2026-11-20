@@ -63,8 +63,11 @@ TOL_E = 1e-10
 def _cli_binary():
     env = os.environ.get("FERRIC_CLI")
     if env:
-        assert pathlib.Path(env).is_file(), f"FERRIC_CLI={env} does not exist"
-        return pathlib.Path(env)
+        # Resolve now: the CLI runs with cwd=ROOT, so a relative path given
+        # from elsewhere would point at the wrong file.
+        path = pathlib.Path(env).resolve()
+        assert path.is_file(), f"FERRIC_CLI={env} does not exist"
+        return path
     path = ROOT / "target" / "release" / "ferric-cli"
     return path if path.is_file() else None
 
@@ -85,7 +88,11 @@ def _cli_result(tmp_path, basis):
     log = tmp_path / "run.jsonl"
     env = dict(os.environ)
     # Same rayon width as this process, so both run the same reduction order.
-    env.setdefault("RAYON_NUM_THREADS", str(len(os.sched_getaffinity(0))))
+    if "RAYON_NUM_THREADS" not in env:
+        # sched_getaffinity is Linux-only (absent on macOS and Windows).
+        affinity = getattr(os, "sched_getaffinity", None)
+        width = len(affinity(0)) if affinity else (os.cpu_count() or 1)
+        env["RAYON_NUM_THREADS"] = str(width)
     env.setdefault("OPENBLAS_NUM_THREADS", "1")
     out = subprocess.run(
         [str(cli), str(toml), "--json", str(log)],

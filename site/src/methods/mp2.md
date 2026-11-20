@@ -358,6 +358,19 @@ compared with the paper's Q-Chem values (see the
 [validation page](../reference/validation.md)). Derivation:
 `book/src/10-mp2/11-opmp3.md#opmp3`.
 
+**Local OP-MP3** (`opmp3` with [`[local]`](../reference/input.md#local)
+`scheme = "amplitude-threshold"`, `examples/butane-local-opmp3-pbe0.toml`,
+`run_opmp3(local="amplitude-threshold", eps=...)`): both amplitude orders
+are solved on one amplitude pattern, the local MP2 pattern of the same `eps`
+(λ-Boys occupied orbitals, VV-HV virtuals and the Fock-propagated screen, all
+built against the HF Fock of the reference density), so W⁽²⁾ and W⁽³⁾ come from
+the same truncation and E⁽³⁾ obeys the 2n+1 identity on it. Closed shell,
+RI integrals, energy only. With `eps = 0` it reproduces the canonical OP-MP3
+to round-off for HF and PBE0 references (`crates/ferric-mp2/tests/local_opmp3.rs`).
+The third-order residual is still built densely, so this is not a
+reduced-cost method yet. Derivation:
+`book/src/13-local-mp2/04-local-opmp3.md#local-opmp3`.
+
 ## Laplace formulations
 
 **RI-Laplace MP2** (`laplace-mp2`, `examples/water-laplace-rimp2.toml`,
@@ -475,7 +488,9 @@ plain mask. Measured on 6-31G n-alkanes C12–C32, naphthalene, adamantane and t
 ACONF20 conformers, the screen lowers the truncation error at every `eps` tried on
 both paths (by 34–49% at `1e-4`, by 62–99.6% at `1e-6` and below). Integral-direct it
 costs 6–9% more wall time on C24 and C32 and 0.3–0.7 GB more peak memory; in core
-6–10% on C24, and at equal error it is cheaper than the plain mask on both paths
+6–10% on C24. At equal error it is cheaper than the plain mask in core (cost
+ratio 0.74–0.98); integral-direct the ratio is 0.85–1.03, just above 1 on C24
+and C32 at `eps = 1e-4`
 (book chapter 13, "On by default in the CLI and Python" and "The in-core path").
 Every printout and run-log record of a local run states `eps` and the
 fraction of amplitudes kept.

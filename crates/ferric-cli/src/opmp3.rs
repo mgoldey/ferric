@@ -4,7 +4,9 @@
 //!
 //! The run is its own restricted reference SCF (RHF/ROHF, or RKS/ROKS for a
 //! functional; exact J/K), then the HF-Fock semicanonical reference with
-//! non-Brillouin singles, so the CLI reads only `[opmp3]`, `[scf]`
+//! non-Brillouin singles, so the CLI reads only `[opmp3]`, `[local]` (the
+//! amplitude-threshold local OP-MP3, `ferric_mp2::local_opmp3`; RI and
+//! closed shell), `[scf]`
 //! `max_iter` / `energy_conv` / `density_conv`, `[memory]`, `[parallel]` and
 //! `[output]`. [`resolve_plan`] refuses every other section and key at load
 //! time.
@@ -17,8 +19,11 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
+use ferric_mp2::local_opmp3::{local_opmp3_on_reference, LocalOpmp3Result};
 use ferric_mp2::opmp3_driver::{
     opmp3_on_reference, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
+    Opmp3Result,
 };
 use ferric_scf::screening::SchwarzBounds;
 use serde::Deserialize;
@@ -52,11 +57,14 @@ pub struct Opmp3Plan {
     pub config: Opmp3Config,
     /// The RI auxiliary basis name, `None` for exact integrals.
     pub auxbasis: Option<String>,
+    /// `[local] scheme = "amplitude-threshold"`: the pattern config, and
+    /// whether to also run the canonical OP-MP3 (`[local] reference`).
+    pub local: Option<(AmplitudeLmp2Config, bool)>,
 }
 
 /// The sections an OP-MP3 run reads.
 pub(crate) const READ_SECTIONS: &[&str] = &[
-    "molecule", "basis", "method", "opmp3", "scf", "memory", "parallel", "output",
+    "molecule", "basis", "method", "opmp3", "local", "scf", "memory", "parallel", "output",
 ];
 
 /// The `[scf]` keys an OP-MP3 run reads.
@@ -75,8 +83,8 @@ fn check_sections(raw: &toml::Value) -> Result<(), String> {
     if let Some(top) = raw.as_table() {
         if let Some(s) = top.keys().find(|s| !READ_SECTIONS.contains(&s.as_str())) {
             return Err(format!(
-                "[{s}] is not read by method.kind = \"opmp3\", which reads [opmp3], [scf] {}, \
-                 [memory], [parallel] and [output]; remove it",
+                "[{s}] is not read by method.kind = \"opmp3\", which reads [opmp3], [local], \
+                 [scf] {}, [memory], [parallel] and [output]; remove it",
                 READ_SCF_KEYS.join(" / ")
             ));
         }
@@ -149,7 +157,28 @@ pub fn resolve_plan(cfg: &Config, text: &str) -> Result<Option<Opmp3Plan>, Strin
         ..Opmp3Config::new(reference)
     };
     config.resolved_x_ss().map_err(|e| format!("[opmp3] {e}"))?;
-    Ok(Some(Opmp3Plan { config, auxbasis }))
+    // the shared [local] rules (eps, integral_direct and the map keys per kind)
+    cfg.validate_local()?;
+    let local = match cfg.local_model()? {
+        None => None,
+        Some(model) => {
+            if auxbasis.is_none() {
+                return Err(
+                    "[local] scheme = \"amplitude-threshold\" with method.kind = \
+                            \"opmp3\" runs on RI integrals: set [opmp3] integrals = \"ri\" and \
+                            auxbasis"
+                        .into(),
+                );
+            }
+            let lcfg = model.amplitude_config(config.frozen_core, config.memory_budget_bytes);
+            Some((lcfg, model.reference))
+        }
+    };
+    Ok(Some(Opmp3Plan {
+        config,
+        auxbasis,
+        local,
+    }))
 }
 
 /// Run `cfg`'s OP-MP3 plan; `gpu_flag` is whether `--gpu` was given (refused:
@@ -218,8 +247,21 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap_or_else(|e| die(e));
     let scf = opmp3_scf(&ctx, &mol, &prep, &bounds, config).unwrap_or_else(|e| die(e));
-    let r = opmp3_on_reference(&ctx, &mol, &prep, &bounds, &scf, integrals, config)
-        .unwrap_or_else(|e| die(e));
+    let canonical = || {
+        opmp3_on_reference(&ctx, &mol, &prep, &bounds, &scf, integrals, config)
+            .unwrap_or_else(|e| die(e))
+    };
+    let (r, local) = match (&plan.local, aux.as_ref()) {
+        (Some((lcfg, with_reference)), Some(aux)) => {
+            let lr =
+                local_opmp3_on_reference(&ctx, &mol, &prep, &bs, &bounds, &scf, aux, config, lcfg)
+                    .unwrap_or_else(|e| die(e));
+            let reference = with_reference.then(canonical);
+            (lr.opmp3.clone(), Some((lr, reference)))
+        }
+        (Some(_), None) => die("internal: local OP-MP3 plan without an auxiliary basis"),
+        (None, _) => (canonical(), None),
+    };
     let scf_config = opmp3_scf_config(config);
     let reference = ferric_scf::certificate::with_scf_envelope(
         crate::scf_certificate_stamped(&mol, &scf, &scf_config, None),
@@ -228,12 +270,22 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
         &scf_config,
         &bs,
     );
-    let cert = ferric_mp2::certificate::opmp3_certificate(
-        &reference,
-        plan.auxbasis.as_deref(),
-        config.frozen_core,
-        x_ss,
-    )
+    let cert = match (&local, plan.auxbasis.as_deref()) {
+        (Some((lr, _)), Some(a)) => ferric_mp2::certificate::local_opmp3_certificate(
+            &reference,
+            a,
+            config.frozen_core,
+            x_ss,
+            lr.eps,
+            lr.keep_fraction,
+        ),
+        _ => ferric_mp2::certificate::opmp3_certificate(
+            &reference,
+            plan.auxbasis.as_deref(),
+            config.frozen_core,
+            x_ss,
+        ),
+    }
     .with_build(BuildStamp::new(
         ferric_build_info::VERSION,
         ferric_build_info::COMMIT,
@@ -261,6 +313,9 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
             r.total(e)
         );
     }
+    if let Some((lr, reference)) = &local {
+        print_local(lr, reference.as_ref());
+    }
     let cert_json = crate::print_certificate(&cert);
     let total = r.total(m.ssd_opmp3);
     if let Some(rl) = ferric_scf::runlog::log() {
@@ -279,6 +334,7 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
                 "correlation": corr,
                 "max_ov": r.max_ov,
                 "scf_iterations": r.scf_iterations,
+                "local": local.as_ref().map(|(lr, reference)| local_json(lr, reference.as_ref())),
                 "certificate": cert_json,
             }),
         );
@@ -294,4 +350,59 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
+}
+
+/// The local block of the printout: the model (ε, kept fraction), the
+/// solves, the one-pattern E3 identity, and with `[local] reference` the
+/// error of every model against the canonical OP-MP3.
+fn print_local(lr: &LocalOpmp3Result, reference: Option<&Opmp3Result>) {
+    println!(
+        "  local         = amplitude-threshold eps = {:e} (kept {:.6} of the amplitudes, {} pairs)",
+        lr.eps, lr.keep_fraction, lr.n_pairs
+    );
+    println!(
+        "  local maps    = lambda_boys {}, virtual space {:?}",
+        lr.lambda_boys.lambda, lr.virtual_space
+    );
+    println!(
+        "  local solves  = c1 {} iters (relres {:.1e}), c2 {} iters (relres {:.1e}); \
+         |E3 - E3(2n+1)| = {:.2e}",
+        lr.cg_iterations[0],
+        lr.cg_relres[0],
+        lr.cg_iterations[1],
+        lr.cg_relres[1],
+        lr.e3_identity_gap()
+    );
+    if let Some(c) = reference {
+        let (l, m) = (&lr.opmp3.models, &c.models);
+        for (name, a, b) in [
+            ("MP2", l.mp2, m.mp2),
+            ("OP-MP3", l.op_mp3, m.op_mp3),
+            ("SSD-OPMP3", l.ssd_opmp3, m.ssd_opmp3),
+        ] {
+            println!(
+                "  local error   {name:<10} = {:+.3e} Hartree vs canonical",
+                a - b
+            );
+        }
+    }
+}
+
+/// The run-log record of a local OP-MP3 run.
+fn local_json(lr: &LocalOpmp3Result, reference: Option<&Opmp3Result>) -> serde_json::Value {
+    serde_json::json!({
+        "scheme": "amplitude-threshold",
+        "eps": lr.eps,
+        "keep_fraction": lr.keep_fraction,
+        "n_pairs": lr.n_pairs,
+        "lambda_boys": lr.lambda_boys.lambda,
+        "cg_iterations": lr.cg_iterations,
+        "cg_relres": lr.cg_relres,
+        "e3_identity_gap": lr.e3_identity_gap(),
+        "canonical_correlation": reference.map(|c| serde_json::json!({
+            "mp2": c.models.mp2,
+            "op-mp3": c.models.op_mp3,
+            "ssd-opmp3": c.models.ssd_opmp3,
+        })),
+    })
 }

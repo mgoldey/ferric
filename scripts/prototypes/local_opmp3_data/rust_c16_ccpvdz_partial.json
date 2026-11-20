@@ -1,0 +1,56 @@
+{
+ "kind": "rust_lmp2_series",
+ "system": "alkane_16",
+ "basis": "cc-pvdz",
+ "auxbasis": "cc-pvdz-ri",
+ "frozen_core": true,
+ "status": "partial: stalled in disk sleep under memory pressure from ~06:19, killed by coordinator (exit 143, 09:59:27) during eps=3e-6",
+ "scope": "ferric-limited --max=7G --high=6G",
+ "rows": [
+  {
+   "eps": 0.0001,
+   "dE2": 0.01276,
+   "keep": 0.0097,
+   "n_pairs_unique": 871,
+   "dom_mean": 192.6,
+   "dom_max": 254,
+   "wall_s": 242
+  },
+  {
+   "eps": 3e-05,
+   "dE2": 0.002952,
+   "keep": 0.023,
+   "n_pairs_unique": 1107,
+   "dom_mean": 251.0,
+   "dom_max": 319,
+   "wall_s": 239
+  },
+  {
+   "eps": 1e-05,
+   "dE2": 0.0007622,
+   "keep": 0.0454,
+   "n_pairs_unique": 1215,
+   "dom_mean": 298.9,
+   "dom_max": 329,
+   "wall_s": 252
+  }
+ ],
+ "fallback_plans_in_log_order": [
+  {
+   "gather_plan_gb": 7.028,
+   "resident_solve_gb": 1.901,
+   "budget_gb": 6.013
+  },
+  {
+   "gather_plan_gb": 17.233,
+   "resident_solve_gb": 3.631,
+   "budget_gb": 6.013
+  },
+  {
+   "gather_plan_gb": 38.158,
+   "resident_solve_gb": 6.389,
+   "budget_gb": 6.013
+  }
+ ],
+ "source": "parsed from run log d4_rust_c16_ccpvdz.log (the run died before writing JSON)"
+}
