@@ -2549,7 +2549,10 @@ jobs:
         # NON-BLOCKING. Default `ruff check .` found 682 findings before the
         # Python-wide reformat (top codes: E702 315, E741 89, E701 84, F401
         # 55, F841 32). Measured again in-container 2026-09-16, with that
-        # reformat partially landed: 282. Exit criterion to flip this to
+        # reformat partially landed: 282. Re-measured 2026-11-19 with
+        # ruff 0.15.8 on main: 586 (E741 256, F811 74, F401 58, F841 44,
+        # E401 36, E402 34, E731 31, F541 28, F405 23, E722 1, F403 1), so
+        # the tree grew past the earlier figure and is NOT clean. Exit criterion to flip this to
         # BLOCKING: the count above reaches 0 (or every survivor carries an
         # explicit inline `# noqa: <code>` with a reason, the same bar
         # scripts/ci-gate.sh's clippy ALLOWED_LINTS list holds Rust lints to)
@@ -2749,7 +2752,10 @@ jobs:
           # and truncates it ("Object is too small", nightly 2026-10-27). The rm is
           # belt-and-braces for any other double build.
           rm -rf target/maturin
-          uv run --no-sync maturin develop --release --locked
+          # --features abi3: the SHIPPED configuration (wheels.yml builds one
+          # cp310-abi3 wheel), so the suite below tests what users install and
+          # the "Python compat" steps further down can reuse this one compile.
+          uv run --no-sync maturin develop --release --locked --features abi3
 
       - name: pytest -- Python bindings, with coverage
         # PROVISIONAL, continue-on-error: this suite has never been run in
@@ -2770,6 +2776,95 @@ jobs:
         env:
           OPENBLAS_NUM_THREADS: "1"
         run: uv run --no-sync pytest plugins/avogadro-ferric/tests -q
+
+      # ── Python version range: build once, test on both ends ────────────────
+      # `requires-python >= 3.10` and the wheels claim 3.10-3.13, but the full
+      # bindings suite above runs only on 3.11 (.python-version), and
+      # platform-tests.yml runs it on 3.12 (macOS/Windows). Nothing ran the
+      # Linux suite on 3.10 or 3.13 -- wheels.yml's smoke-test only imports the
+      # wheel there. Running the full suite per interpreter would multiply the
+      # slowest part of this job; it is also unnecessary, because the
+      # extension is abi3: ONE compiled .so is the same binary on every
+      # interpreter, so the only version-specific surface is (a) loading the
+      # abi3 module and (b) the pure-Python package ferric/*.py plus the
+      # tests' own syntax/stdlib use. A 3.10-only break (3.11+ stdlib such as
+      # tomllib or datetime.UTC, `except*`, typing.Self, PEP 695/696 syntax)
+      # or a 3.13-only break (removed modules, changed semantics) lands in
+      # exactly that surface. So: build the abi3 wheel here (cargo is already
+      # warm from the develop build above; only packaging is new), install it
+      # into 3.10 and 3.13 venvs (the endpoints; 3.11 is the full run above,
+      # 3.12 is platform-tests, and the middle versions add no new syntax
+      # surface), import every ferric submodule, and run the pure-Python
+      # test files (API snapshot, build info, qcschema, mlip, ASE, energy
+      # aliases, import-boundary). Cost: ~2 venvs + a couple of minutes, no
+      # extra compile.
+      # Blocking within this (already non-required, nightly) job, unlike the
+      # provisional 3.11 pytest steps above: these are new and fast, and a
+      # red here is exactly the signal they exist to give.
+      - name: Build abi3 wheel (reuses the develop build's compile)
+        run: |
+          set -euo pipefail
+          rm -rf target/maturin dist-abi3
+          # --auditwheel skip: this wheel never leaves the job (the
+          # libint2/BLAS libraries resolve from the runner exactly as they do
+          # for the editable install above); release wheels are built and
+          # repaired by wheels.yml, untouched by this.
+          uv run --no-sync maturin build --release --locked --features abi3 \
+            --auditwheel skip --out dist-abi3
+          ls -la dist-abi3
+
+      - name: Python compat -- 3.10 and 3.13 (imports + pure-Python tests)
+        env:
+          OPENBLAS_NUM_THREADS: "1"
+        run: |
+          set -uo pipefail
+          WHEEL="$PWD/$(ls dist-abi3/ferric-*-cp310-abi3-*.whl)"
+          FILES=(
+            test_api_snapshot.py test_build_info.py test_qcschema.py
+            test_mlip_export.py test_energy_aliases.py
+            test_python_does_not_import_above.py
+            test_ase_calculator.py test_ase_dipole_charges.py
+          )
+          TESTS=()
+          for f in "${FILES[@]}"; do TESTS+=("crates/ferric-python/tests/$f"); done
+          failed=()
+          for V in 3.10 3.13; do
+            echo "::group::python $V"
+            VENV="$RUNNER_TEMP/compat-$V"
+            if ! { uv venv --python "$V" "$VENV" \
+                && uv pip install --python "$VENV/bin/python" "$WHEEL" \
+                     "pytest>=9.1.1" "scipy>=1.11" "h5py>=3.9" "sympy>=1.14.0" \
+                     "matplotlib>=3.8" "ase>=3.23"; }; then
+              failed+=("$V (setup)"); echo "::endgroup::"; continue
+            fi
+            # conftest.py turns a failed `import ferric` into a whole-suite
+            # SKIP; import every module first, outside pytest, so a broken
+            # load or a version-specific syntax/import error fails loudly.
+            # Run from $RUNNER_TEMP so the checkout's source tree (which has
+            # no .so) cannot shadow the installed wheel.
+            if ! ( cd "$RUNNER_TEMP" && "$VENV/bin/python" - <<'PY'
+          import importlib, pkgutil, sys
+          import ferric, ferric.ferric as ext
+          print(sys.version.split()[0], ext.__file__)
+          assert ext.__file__.endswith(".abi3.so"), ext.__file__
+          bad = []
+          for m in pkgutil.walk_packages(ferric.__path__, "ferric."):
+              try:
+                  importlib.import_module(m.name)
+              except ImportError as e:  # optional extras (rdkit, ...) may be absent
+                  print("skip", m.name, e)
+              except Exception as e:
+                  bad.append((m.name, repr(e)))
+          assert not bad, bad
+          PY
+            ); then failed+=("$V (import)"); echo "::endgroup::"; continue; fi
+            "$VENV/bin/python" -m pytest "${TESTS[@]}" -q -rs -p no:cacheprovider \
+              || failed+=("$V (pytest)")
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::Python compat failures: ${failed[*]}"; exit 1
+          fi
 
       - name: Upload Python extension coverage artifact
         if: ${{ !cancelled() }}
