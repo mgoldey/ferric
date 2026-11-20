@@ -219,6 +219,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `integral-direct` | The integral-direct path | M mp2 "Exact and local MP2" | `ferric-mp2/src/lmp2_direct.rs::amplitude_lmp2_direct` | ready |
 | `pno-dlpno` | Pair natural orbitals and DLPNO-MP2 | W §10 | `ferric-mp2/src/dlpno_mp2.rs::dlpno_mp2_from_b_ov`, `ferric-mp2/src/local_pno.rs::build_pno_transforms` | ready |
 | `local-opmp3` | Amplitude-threshold local OP-MP3 | S `local_opmp3_sympy.py`; P `prototypes/local_opmp3_proto.py`; R local-opmp3 | `ferric-mp2/src/opmp3.rs::{pade_trace,ssd_opmp3}`, `ferric-mp2/src/ragged.rs::solve_ragged` | ready |
+| `lmp2-mask-certificate` | The mask certificate | S `lmp2_mask_certificate_sympy.py`; R local-mp2 | `ferric-mp2/src/lmp2_mask_certificate.rs::{mask_certificate,radau_one_step}` | edit |
 
 ### Part VI. Derivatives
 
@@ -449,7 +450,7 @@ registry row and are the largest block of `gap` sections.
 | II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
 | III. Self-consistent field | 8 | 2 | 0 | 0 | 10 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 19 | 3 | 1 | 5 | 28 |
+| V. The MP2 family | 19 | 4 | 1 | 5 | 29 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 7 | 1 | 0 | 0 | 8 |
 | VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
@@ -462,9 +463,9 @@ registry row and are the largest block of `gap` sections.
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | XVI. Dynamics | 0 | 1 | 0 | 0 | 1 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **101** | **49** | **8** | **6** | **164** |
+| **Total** | **101** | **50** | **8** | **6** | **165** |
 
-164 sections: 62% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
+165 sections: 61% `ready`, 30% `edit`, 5% `gap` and 4% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

@@ -1135,6 +1135,42 @@ CASES = [
         ],
     ),
     (
+        "lmp2_mask_certificate_sympy.py",
+        10,
+        [
+            ("rQ = gv[2:, :] + Apq.T * tP", "rQ = gv[2:, :]", "C1"),
+            ("Sc2 = Aqq - Apq.T * App.inv() * Apq", "Sc2 = Aqq", "C2"),
+            (
+                "    m = 2 * np.eye(len(g)) - sw\n    t_ex = -np.linalg.solve(am, g)\n    e_ex",
+                "    m = np.eye(len(g))\n    t_ex = -np.linalg.solve(am, g)\n    e_ex",
+                "C3",
+            ),
+            (
+                "    return 2 * (ev.min() - eo.max())",
+                "    return 2 * (np.diag(fvv).min() - np.diag(foo).max())",
+                "C4",
+            ),
+            (
+                "ru, cu = quad(am, m, r, 1.0 * node(foo, fvv, eo, ev))",
+                "ru, cu = quad(am, m, r, 1.5 * node(foo, fvv, eo, ev))",
+                "C5 enclosure",
+            ),
+            (
+                "    beta2 = nu / mu0 - alpha * alpha",
+                "    beta2 = 0.0 * (nu / mu0 - alpha * alpha)",
+                "C5: lanczos",
+            ),
+            ("        lb = x * x / y\n", "        lb = 2 * x\n", "C6"),
+            ("    ub = (np.sqrt(e1) + np.sqrt(e2)) ** 2", "    ub = e1 + e2", "C7"),
+            (
+                "    g_far2 = (\n        max(g_tot - np.sum(g[p] ** 2) - np.sum(g[near] ** 2), 0.0) if far.any() else 0.0\n    )",
+                "    g_far2 = 0.0",
+                "C8: upper",
+            ),
+            ("    r = g + h\n", "    r = g + np.where(p, h, 0.0)\n", "C8: upper"),
+        ],
+    ),
+    (
         "lmp2_lambda_boys_sympy.py",
         10,
         [

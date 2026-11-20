@@ -38,6 +38,26 @@ CERT_KEYS = [
     "eps_trust",
     "warnings",
     "solver_warnings",
+    "mask_certificate",
+]
+MASK_CERT_KEYS = [
+    "bounds",
+    "error_estimate",
+    "lower_bound",
+    "upper_bound",
+    "e_corr_interval_lo",
+    "e_corr_interval_hi",
+    "e_corr_corrected",
+    "near_upper",
+    "far_upper",
+    "g_far_sq",
+    "h_far_m_sq",
+    "lambda_min",
+    "tau",
+    "n_kept",
+    "n_near",
+    "n_far",
+    "t_s",
 ]
 MAP_KEYS = [
     "aux_radius",
@@ -116,6 +136,7 @@ def test_certificate_fields_round_trip_direct(water):
     commit, dirty = _build_stamp()
     assert loc["build_commit"] == commit and loc["build_dirty"] == dirty
     assert loc["gate_on"] is True and loc["n_pairs_unique"] > 0
+    assert loc["mask_certificate"] is None  # not requested
 
 
 def test_certificate_in_core_exact_limit(water):
@@ -174,3 +195,28 @@ def test_fock_screen_kwarg_off_on_both_paths(water, integral_direct):
     assert off["keep_fraction"] <= on["keep_fraction"]
     with pytest.raises(ValueError, match="fock_screen"):
         ferric.run_rimp2(mol, obs, aux, frozen_core=1, fock_screen=False)
+
+
+def test_mask_certificate_encloses_the_canonical_energy(water):
+    """`mask_certificate=True` (in core) fills `result.local["mask_certificate"]`;
+    its certified interval contains the canonical RI-MP2 correlation energy,
+    the E* it bounds on this path. Refused integral-direct and on the exact
+    method (ValueError, as the CLI)."""
+    mol, obs, aux = water
+    kw = dict(frozen_core=1, local="amplitude-threshold", eps=1e-4)
+    r = ferric.run_rimp2(
+        mol, obs, aux, compute_reference=True, mask_certificate=True, **kw
+    )
+    m = r.local["mask_certificate"]
+    assert sorted(m) == sorted(MASK_CERT_KEYS)
+    e_ref = r.local["e_corr_canonical_ri"]
+    assert m["e_corr_interval_lo"] <= e_ref <= m["e_corr_interval_hi"] + 1e-10
+    assert 0.0 <= m["lower_bound"] <= m["upper_bound"]
+    assert m["e_corr_corrected"] == r.mp2_corr - m["error_estimate"]
+    assert "RI" in m["bounds"]
+    with pytest.raises(ValueError, match="in-core"):
+        ferric.run_rimp2(
+            mol, obs, aux, integral_direct=True, mask_certificate=True, **kw
+        )
+    with pytest.raises(ValueError, match="mask_certificate"):
+        ferric.run_rimp2(mol, obs, aux, frozen_core=1, mask_certificate=True)

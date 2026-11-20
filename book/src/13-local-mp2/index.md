@@ -19,6 +19,7 @@ and every local run prints its truncation.
 | 13.2 | The integral-direct path | none | gap |
 | 13.3 | Pair natural orbitals and DLPNO-MP2 | none | gap |
 | 13.4 | Amplitude-threshold local OP-MP3 | `local-opmp3` | gap |
+| 13.5 | The mask certificate | `local-mp2` | edit |
 
 Sections @sec:amplitude-lmp2 and @sec:integral-direct are the production local method
 (`[local] scheme = "amplitude-threshold"`). It keeps an amplitude when the
@@ -28,6 +29,9 @@ same problem without ever forming the global three-index tensor. Section
 pair natural-orbital occupation. The two families are not compared like for
 like: the validation page reports their recoveries side by side and never
 ranks them.
+
+Section @sec:lmp2-mask-certificate bounds, for one run, the energy the
+amplitude mask of 13.1 loses, from the residual of the masked solve.
 
 Every truncation in this chapter has a trivial limit in which it removes
 nothing, and there the method reproduces the exact RI-MP2 energy. The

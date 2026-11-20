@@ -1141,12 +1141,14 @@
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-fock-screen",
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-combined-truncation",
         "book/src/13-local-mp2/01-amplitude-lmp2.md#amplitude-lmp2-lambda-boys",
-        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0"
+        "book/src/13-local-mp2/02-integral-direct.md#integral-direct-map-errors-eps0",
+        "book/src/13-local-mp2/05-mask-certificate.md#lmp2-mask-certificate"
       ],
       "scripts": [
         "scripts/lmp2_combined_sympy.py",
         "scripts/lmp2_direct_maps_sympy.py",
         "scripts/lmp2_lambda_boys_sympy.py",
+        "scripts/lmp2_mask_certificate_sympy.py",
         "scripts/lmp2_fock_screen_sympy.py",
         "scripts/lmp2_hylleraas_vs_wshg23_sympy.py",
         "scripts/local_mp2_fit_pno_sympy.py",

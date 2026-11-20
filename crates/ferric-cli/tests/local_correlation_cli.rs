@@ -498,6 +498,24 @@ fn refusals_fail_before_the_scf() {
             "integral_direct",
         ),
         (
+            "mask_cert_direct",
+            "rimp2",
+            "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\nintegral_direct = true\nmask_certificate = true\n",
+            "mask_certificate is available on the in-core local MP2 only",
+        ),
+        (
+            "mask_cert_drpa",
+            "drpa",
+            "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\nmask_certificate = true\n",
+            "mask_certificate",
+        ),
+        (
+            "mask_cert_exact",
+            "rimp2",
+            "[local]\nmask_certificate = true\n",
+            "scheme = \"none\"",
+        ),
+        (
             "local_rhf",
             "rhf",
             "[local]\nscheme = \"amplitude-threshold\"\neps = 1e-4\n",
@@ -524,6 +542,41 @@ fn refusals_fail_before_the_scf() {
             r.stdout
         );
     }
+}
+
+/// `[local] mask_certificate = true` prints the certificate and logs it as
+/// `local.mask_certificate`; without it the log carries `null`. The interval
+/// contains the canonical RI-MP2 correlation energy (`reference = true`): on
+/// the in-core path that is the E* the certificate bounds.
+#[test]
+fn rimp2_local_mask_certificate_prints_and_logs() {
+    let r = ok_run(
+        "rimp2_mask_cert",
+        "rimp2",
+        &local("eps = 1e-4\nreference = true\nmask_certificate = true\n"),
+    );
+    for needle in [
+        "mask certificate      = error in [",
+        "certified E_corr*",
+        "certificate bounds",
+    ] {
+        assert!(r.stdout.contains(needle), "{needle}:\n{}", r.stdout);
+    }
+    let c = &r.results[0]["components"];
+    let m = &c["local"]["mask_certificate"];
+    let (lo, hi) = (
+        m["e_corr_interval_lo"].as_f64().unwrap(),
+        m["e_corr_interval_hi"].as_f64().unwrap(),
+    );
+    let e_ref = c["e_corr_canonical_ri"].as_f64().unwrap();
+    assert!(
+        lo <= e_ref && e_ref <= hi + 1e-10,
+        "{lo} <= {e_ref} <= {hi}: {m}"
+    );
+    assert!(m["lower_bound"].as_f64().unwrap() <= m["upper_bound"].as_f64().unwrap());
+    let off = ok_run("rimp2_mask_cert_off", "rimp2", &local("eps = 1e-4\n"));
+    assert!(off.results[0]["components"]["local"]["mask_certificate"].is_null());
+    assert!(!off.stdout.contains("mask certificate"));
 }
 
 /// terfc + integral_direct takes the default Schwarz cut (1e-5), and a terfc
