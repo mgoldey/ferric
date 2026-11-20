@@ -287,6 +287,10 @@ pub struct Lmp2Certificate {
     /// Where the solve's tolerance leaves the energy error above, or without,
     /// its bound. Separate from `warnings`, which describe the measured record.
     pub solver_warnings: Vec<String>,
+    /// [`AmplitudeLmp2Result::mask_certificate`]: the Hylleraas mask
+    /// certificate when the run asked for it (serialized as
+    /// `"mask_certificate"`, `null` otherwise).
+    pub mask_certificate: Option<crate::lmp2_mask_certificate::MaskCertificate>,
 }
 
 impl Lmp2Certificate {
@@ -336,6 +340,7 @@ impl Lmp2Certificate {
                 r.cg_true_relres,
                 r.cg_relres,
             ),
+            mask_certificate: r.mask_certificate.clone(),
         }
     }
 
@@ -404,6 +409,12 @@ impl Lmp2Certificate {
             ("eps_trust", V::Str(self.eps_trust.clone())),
             ("warnings", V::StrList(self.warnings.clone())),
             ("solver_warnings", V::StrList(self.solver_warnings.clone())),
+            (
+                "mask_certificate",
+                self.mask_certificate
+                    .as_ref()
+                    .map_or(V::Null, |m| V::Map(m.fields())),
+            ),
         ]
     }
 }
@@ -683,6 +694,7 @@ mod tests {
             eps_trust: eps_trust(eps, true),
             warnings: vec!["w-record".into()],
             solver_warnings: vec!["w-solver".into(), "w-record".into()],
+            mask_certificate: None,
         }
     }
 

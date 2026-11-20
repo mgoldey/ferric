@@ -3378,6 +3378,7 @@ pub fn amplitude_lmp2_direct(
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
+    refuse_mask_certificate(cfg)?;
     let (vvhv, t_spaces_s, report) =
         checked_vvhv_with(mol, obs, obs_bs, rhf, "lmp2_direct", &cfg.virtual_space)?;
     let (mut r, st) =
@@ -3386,6 +3387,22 @@ pub fn amplitude_lmp2_direct(
     r.virtual_space = report;
     eprintln!("lmp2_direct: {}", r.virtual_space.log_line(&r.timings));
     Ok((r, st))
+}
+
+/// The mask certificate ([`crate::lmp2_mask_certificate`]) needs the
+/// integrals on the near set and the RI Gram of the global 3-index tensor,
+/// which this path never forms; and its locality maps change the integrals,
+/// an error the certificate would not see. Refused, never ignored.
+fn refuse_mask_certificate(cfg: &AmplitudeLmp2Config) -> Result<(), FerricError> {
+    if cfg.mask_certificate {
+        return Err(FerricError::General(
+            "lmp2_direct: mask_certificate is available on the in-core local MP2 only: it \
+             needs the global 3-index tensor this path never forms, and it would not bound \
+             the error of the integral-direct locality maps"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// [`amplitude_lmp2_direct`] with a caller-supplied virtual space (the
@@ -3402,6 +3419,7 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     vvhv: &VvHv,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     crate::lmp2_amplitude::require_hf_reference(rhf, "lmp2_direct")?;
+    refuse_mask_certificate(cfg)?;
     let t0 = Instant::now();
     let spaces = localized_spaces_lambda(mol, obs, rhf, cfg.frozen_core, vvhv, cfg.lambda_boys)?;
     let t_loc_s = t0.elapsed().as_secs_f64();

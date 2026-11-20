@@ -411,7 +411,11 @@ pub(crate) fn local_correlation_operator(
 /// `virt_schwarz_kappa` (off), the same names and defaults as the CLI's
 /// `[local]` keys. On both the in-core and the integral-direct path,
 /// `fock_screen` (default true) runs the Fock-propagated mask screen, κ = 1;
-/// false keeps the plain integral mask. The rules are the CLI's: every local kwarg is a
+/// false keeps the plain integral mask. In core only, `mask_certificate=True`
+/// adds the Hylleraas mask certificate, `result.local["mask_certificate"]`
+/// (`ferric_mp2::lmp2_mask_certificate`: rigorous bounds on the mask error
+/// for the RI integrals solved, an estimate, the certified interval).
+/// The rules are the CLI's: every local kwarg is a
 /// `ValueError` on the exact method, and `kappa` is a `ValueError` on the
 /// local one (it reads only `frozen_core` and `auxbasis`).
 ///
@@ -461,7 +465,7 @@ pub(crate) fn local_correlation_operator(
 /// `scf_max_iter`, `scf_energy_conv`, `scf_density_conv`: controls of the internal reference SCF,
 /// with the names and meaning of `run_rhf` (defaults unchanged when omitted).
 #[pyfunction]
-#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None))]
+#[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None, local=None, eps=None, compute_reference=None, integral_direct=None, aux_radius=None, virt_radius=None, ao_tail=None, schwarz_skip=None, batch_merge=None, gate_cal=None, virt_schwarz_kappa=None, fock_screen=None, att_operator=None, omega=None, att_r0=None, att_omega=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, virtual_space=None, virtual_tau=None, virtual_tau_loose=None, virtual_solve_radius=None, virtual_boys_tau=None, with_gradient=false, scf_eri=None, lambda_boys=None, mask_certificate=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rimp2(
     py: Python<'_>,
@@ -502,6 +506,7 @@ pub(crate) fn run_rimp2(
     with_gradient: bool,
     scf_eri: Option<&str>,
     lambda_boys: Option<f64>,
+    mask_certificate: Option<bool>,
 ) -> PyResult<PyRiMp2Result> {
     let (att_keys, sets_att) = att_keys_from_kwargs(att_operator, omega, att_r0, att_omega);
     let (mut rhf_config, jk) = mp2_exact_default_config(
@@ -536,6 +541,7 @@ pub(crate) fn run_rimp2(
             virtual_solve_radius,
             virtual_boys_tau,
             lambda_boys,
+            mask_certificate,
         },
     )?;
     if with_gradient {
