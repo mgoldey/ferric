@@ -253,7 +253,7 @@ The code evaluates $G_m$ from a Poisson series. With
 $\pi_S(i) = e^{-S}S^i/i!$, $c_s(i) = \sum_{j \le i} e^{-s}s^j/j!$,
 $\nabla f(i) = f(i) - f(i-1)$ and $(2i)!!/(2i+1)!!$,
 
-$$ G_m(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{m}\pi_S]{}(i)\, c_s(i) . $$
+$$ G_m(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, (\nabla^{m}\pi_S)(i)\, c_s(i) . $$
 
 For $m = 0$ the series is an average over the Poisson distribution
 $\pi_S(i)$, the probability of $i$ events at mean $S$, set by the distance
@@ -276,7 +276,7 @@ give $F_m = (-\partial_S)^mF_0$. Writing
 $c_s = 1 - \tau_s$ with the Poisson tail $\tau_s(i) = \sum_{j > i} e^{-s}s^j/j!$
 splits it exactly:
 
-$$ G_m(S, s) = F_m(S) - \Delta_m(S, s), \qquad \Delta_m(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, [\nabla^{m}\pi_S]{}(i)\, \tau_s(i) . $$
+$$ G_m(S, s) = F_m(S) - \Delta_m(S, s), \qquad \Delta_m(S, s) = \sum_{i \ge 0} \frac{(2i)!!}{(2i+1)!!}\, (\nabla^{m}\pi_S)(i)\, \tau_s(i) . $$
 
 $\Delta_m$ is the terfc auxiliary itself, and its sum length is set by $s$, not
 $S$, because $\tau_s(i)$ decays super-exponentially once $i > s$
@@ -319,7 +319,7 @@ the smallest terms first, because $1 - c_s(i)$ cancels catastrophically:
 for $s \le 1/2$, $c_s(i)$ is within about $10^{-17}$ of 1 by $i \approx 14$.
 The sum still needs more terms than that. The bar is on $\Delta_m$, not on
 $G_m$ (an error on $G_m$ is divided by $F_m(S) = O(1)$), and
-$[\nabla^m\pi_S](i)$ grows with $m$, so terms with a negligible $\tau_s(i)$
+$(\nabla^m\pi_S)(i)$ grows with $m$, so terms with a negligible $\tau_s(i)$
 still matter at $10^{-14}$ relative. The truncation index is
 
 ```cpp
