@@ -286,8 +286,8 @@ impl PyRhfResult {
     fn stationarity_tol(&self) -> Option<f64> {
         scf_stationarity_tol(&self.scf_data)
     }
-    /// SCF exit reason: the `ScfExit` variant name (`"Converged"`, `"Plateau"`,
-    /// `"Stalled"`, `"Diverged"`, `"MaxIter"`). `converged=False` with
+    /// SCF exit reason: the `ScfExit` variant name (`"Converged"`,
+    /// `"Stalled"`, `"Diverged"`, `"MaxIter"`, `"NotCertified"`). `converged=False` with
     /// `"MaxIter"` means the iteration cap (`max_iter`) was reached; the final
     /// residuals below say how far from the thresholds the run was.
     #[getter]

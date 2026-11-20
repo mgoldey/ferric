@@ -952,8 +952,9 @@ pub fn resolve_three_index_budget(config_bytes: usize) -> usize {
 /// `window` entries has not dropped below 0.9x its value over the previous
 /// `window` entries (gradient stopped falling — robust to oscillation, since a
 /// wide-band limit cycle has net-zero running-min change), AND `current_err` is
-/// still above the 1e-4 plateau floor (below it, the separate plateau-acceptance
-/// path owns the regime). Returns `false` when `window == 0` (degenerate/no-op
+/// still above the 1e-4 floor (below it the commutator can park on a fitting or
+/// near-degeneracy floor while the density settles, and the density-change
+/// stopping test, `scf_converged`, owns the regime). Returns `false` when `window == 0` (degenerate/no-op
 /// config) or when there isn't yet `2*window` entries of history.
 pub(crate) fn stall_detected(errmax_history: &[f64], window: usize, current_err: f64) -> bool {
     if window == 0 {
@@ -3451,7 +3452,7 @@ impl RhfState {
 
         // Stall: running-min err_max over a window stopped falling. Robust to
         // oscillation (a wide-band limit cycle has net-zero running-min change).
-        // Only fires above the 1e-4 floor — below it the plateau path accepts.
+        // Only fires above the 1e-4 floor — below it the ΔD stopping test decides.
         if self.mon.stalled(err_max, config.stall_window) {
             if scf_trace() {
                 let w = config.stall_window.unwrap_or(0);
@@ -5689,9 +5690,9 @@ mod tests {
     /// Na4 at aug-cc-pVTZ has a near-degenerate occupied manifold (four overlap
     /// eigenvalues ≈ 3e-5): bare DIIS reaches the correct ground-state energy but
     /// the orbital gradient parks on a noise floor (err_max ≈ 3e-5) it can never
-    /// drain below density_conv, so without plateau acceptance the SCF spins to
-    /// max_iter and returns Err (the "stuck job" in the GW100 aTZ sweep). This is
-    /// the regression for the plateau-acceptance fix: it must converge (flagged)
+    /// drain, so a stopping test on the commutator spins to max_iter (the "stuck
+    /// job" in the GW100 aTZ sweep). The density-change test (`scf_converged`)
+    /// accepts it once ΔD settles. This is the regression: it must converge
     /// to the CORRECT ground state −774.894064, NOT the ~−771.5/−771.7 excited
     /// states that MOM or a raised lindep threshold converge to. Slow (~5-7 min
     /// release): run with --ignored.
@@ -5716,7 +5717,7 @@ mod tests {
         let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert!(
             result.converged,
-            "Na4/aTZ did not converge (plateau acceptance failed); iters={}",
+            "Na4/aTZ did not converge on the density-change test; iters={}",
             result.iterations
         );
         assert!(
@@ -5980,7 +5981,7 @@ mod tests {
     #[test]
     fn stall_detected_false_below_plateau_floor() {
         // Flat history that would trip the running-min comparison, but
-        // current_err is below the 1e-4 floor: the plateau path (separate logic)
+        // current_err is below the 1e-4 floor: the density-change stopping test
         // owns this regime, not stall detection.
         let w = 4;
         let history = vec![5e-5; 8];

@@ -71,12 +71,6 @@ pub fn scf_certificate(mol: &Molecule, result: &ScfResult, config: &RhfConfig) -
         c = c.with_approximation(name, detail);
     }
     c = with_eri_route(c, config);
-    if result.exit == ScfExit::Plateau {
-        c.push_warning(
-            "SCF exit Plateau: accepted on a near-degeneracy plateau (orbital gradient \
-             stalled below the 1e-4 floor), not the standard convergence test",
-        );
-    }
     stability_warnings(&mut c, result);
     c = relativistic_cap(c, result);
     if !result.converged {

@@ -2,7 +2,7 @@
 
 <!-- status: edit; registry: rhf, uhf, rohf -->
 
-Every SCF loop ends in one of six ways, and only one of them is a converged
+Every SCF loop ends in one of five ways, and only one of them is a converged
 result. This section gives the stopping test, the exit reasons, the two
 vetoes that refuse an exit, and the convergence ladder that reruns a failed
 SCF with stronger settings. It closes with two opt-in solvers for closed
@@ -58,16 +58,15 @@ root-mean-square change is small.
 | `Diverged` | `divergence_tol` $= f$ is set and the energy rose by more than $f$ Ha on 3 consecutive iterations | RHF and RKS; off by default |
 | `MaxIter` | `max_iter` iterations without any of the above | every solver |
 | `NotCertified` | ROHF and ROKS: the SCF converged, but the swap witness found a one-electron move to a lower state and the restart budget ran out (`ferric-scf/src/rohf_occupation.rs`) | ROHF, ROKS |
-| `Plateau` | none: the variant exists and the certificate accepts it, but no solver returns it | none |
 
 `Stalled` compares running minima, not single values, so a limit cycle with
 a wide band trips it while a slow but steady descent does not. Below the
 $10^{-4}$ floor it never fires. Both early exits exist for the ladder below,
 which sets `stall_window` $= 15$ and `divergence_tol` $= 0.5$ Ha on every
 rung, so a stuck rung hands over after about 15 iterations instead of
-running to `max_iter`. The doc comment on the floor speaks of a "plateau
-path" that accepts the regime below it; no such path exists in the current
-solvers.
+running to `max_iter`. Below the floor the commutator can park on a fitting
+or near-degeneracy floor while the density settles, and the stopping test
+decides.
 
 ## Vetoes {#scf-exits-vetoes}
 

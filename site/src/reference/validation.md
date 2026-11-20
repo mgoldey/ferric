@@ -36,8 +36,8 @@ the energy and write it to the JSON run log (`run_end.extra.certificate`; a
 `certificate` record for the open-shell runs); Python `RhfResult`,
 `UhfResult` and `DftResult` carry it as `.certificate`. It states the kind's
 grade, the build, the approximations in effect (RI-J / RI-K, LinK / COSX, the
-XC grid, a level shift, ECPs, embedding, solvation) and warnings: a Plateau
-exit, a non-`Stable` stability verdict, and an unchecked UHF/UKS stability. An
+XC grid, a level shift, ECPs, embedding, solvation) and warnings: a
+non-`Stable` stability verdict and an unchecked UHF/UKS stability. An
 unconverged SCF is capped to not graded.
 
 The certificates of `rhf`, `uhf`, `rohf`, `ksdft` and `rimp2` also carry

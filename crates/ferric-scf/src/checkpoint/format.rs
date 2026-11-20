@@ -212,7 +212,6 @@ fn kind_from_name(name: &str) -> Result<OperatorKind, CheckpointError> {
 fn exit_name(exit: ScfExit) -> &'static str {
     match exit {
         ScfExit::Converged => "Converged",
-        ScfExit::Plateau => "Plateau",
         ScfExit::Stalled => "Stalled",
         ScfExit::Diverged => "Diverged",
         ScfExit::MaxIter => "MaxIter",
@@ -223,7 +222,6 @@ fn exit_name(exit: ScfExit) -> &'static str {
 fn exit_from_name(name: &str) -> Result<ScfExit, CheckpointError> {
     Ok(match name {
         "Converged" => ScfExit::Converged,
-        "Plateau" => ScfExit::Plateau,
         "Stalled" => ScfExit::Stalled,
         "Diverged" => ScfExit::Diverged,
         "MaxIter" => ScfExit::MaxIter,

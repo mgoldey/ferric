@@ -750,10 +750,9 @@ fn disposition(class: FieldClass, mode: ReadMode) -> Disposition {
 }
 
 /// The exit gate of a skip. No wildcard, so a new exit must be classified.
-/// `Plateau` passes because a fresh run accepts it too; the caller echoes it.
 fn exit_replaces_scf(exit: ScfExit) -> bool {
     match exit {
-        ScfExit::Converged | ScfExit::Plateau => true,
+        ScfExit::Converged => true,
         ScfExit::Stalled | ScfExit::Diverged | ScfExit::MaxIter | ScfExit::NotCertified => false,
     }
 }

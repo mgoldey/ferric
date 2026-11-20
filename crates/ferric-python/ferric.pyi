@@ -1070,8 +1070,8 @@ class RhfResult:
 
     @property
     def exit_reason(self) -> str:
-        """ScfExit variant name: "Converged", "Stalled", "Diverged" or "MaxIter" (the
-        iteration cap was reached). ("Plateau" is reserved: not produced by run_rhf today.)"""
+        """ScfExit variant name: "Converged", "Stalled", "Diverged", "MaxIter" (the
+        iteration cap was reached) or "NotCertified" (ROHF/ROKS only)."""
         ...
 
     @property

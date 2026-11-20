@@ -171,7 +171,6 @@ pub fn load_or_solve(
 fn exit_code(exit: ScfExit) -> Result<u8, String> {
     match exit {
         ScfExit::Converged => Ok(0),
-        ScfExit::Plateau => Ok(1),
         other => Err(format!("refusing an SCF that exited {other:?}")),
     }
 }
@@ -307,7 +306,6 @@ pub fn decode(bytes: &[u8], key: &str, nbasis: usize) -> Result<ScfResult, Strin
     let computed_quartets = r.usize()?;
     let exit = match r.u8()? {
         0 => ScfExit::Converged,
-        1 => ScfExit::Plateau,
         other => return Err(format!("unknown exit code {other}")),
     };
     let nmo = r.usize()?;
