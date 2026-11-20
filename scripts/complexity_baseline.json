@@ -49884,7 +49884,7 @@
     "mi": 125.53275533735598
   },
   "crates/ferric-python/src/lib.rs::ferric": {
-    "cc": 191.0,
+    "cc": 196.0,
     "mi": -0.2760123646229715
   },
   "crates/ferric-python/src/lib.rs::ferric::<anonymous>": {
@@ -72473,7 +72473,7 @@
   },
   "crates/ferric-scf/src/rhf.rs::stability_rhf::<anonymous>": {
     "cc": 1.0,
-    "mi": 157.8484854211024
+    "mi": 133.25010158003408
   },
   "crates/ferric-scf/src/rhf.rs::stall_detected": {
     "cc": 4.0,
