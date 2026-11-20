@@ -16,7 +16,7 @@ The derivations, proofs and measurements for `ferric-integrals` are in the ferri
 | Basis functions and their derivatives on a grid | `ao-grid` | [`book/src/03-integrals/07-ao-grid.md`](../../book/src/03-integrals/07-ao-grid.md) | — | — |
 | erf and erfc; terf and terfc; the curvature constraint | `erf-terf` | [`book/src/04-operators/01-erf-terf.md`](../../book/src/04-operators/01-erf-terf.md) | `scripts/mp2_family_sympy.py` | `op.terf.curvature-constraint` |
 | The terf table engine and its far-field fallback | `terf-table-engine` | [`book/src/04-operators/02-terf-table-engine.md`](../../book/src/04-operators/02-terf-table-engine.md) | `scripts/screening_bounds_sympy.py`, `scripts/terf_identities_sympy.py` | `operators.terf.far-field`, `operators.terf.fourier`, `operators.terf.series`, `operators.terf.two-center` |
-| Yukawa, Slater geminal and fitted geminal kernels | `yukawa-geminal` | [`book/src/04-operators/03-yukawa-geminal.md`](../../book/src/04-operators/03-yukawa-geminal.md) | — | — |
+| Yukawa, Slater geminal and fitted geminal kernels | `yukawa-geminal` | [`book/src/04-operators/03-yukawa-geminal.md`](../../book/src/04-operators/03-yukawa-geminal.md) | `scripts/yukawa_geminal_sympy.py` | `operators.geminal.fit`, `operators.yukawa.transforms` |
 | Schwarz bounds, and why they do not see attenuation | `schwarz` | [`book/src/05-screening/01-schwarz.md`](../../book/src/05-screening/01-schwarz.md) | `scripts/screening_bounds_sympy.py` | `screening.csb-pointwise`, `screening.schwarz-blind`, `screening.terf-indefinite` |
 | Distance-dependent bounds (QQR) | `qqr` | [`book/src/05-screening/02-qqr.md`](../../book/src/05-screening/02-qqr.md) | — | — |
 | The factorization, the metric, Cholesky and eigendecomposition factors | `factorization-and-metric` | [`book/src/06-density-fitting/01-factorization-and-metric.md`](../../book/src/06-density-fitting/01-factorization-and-metric.md) | — | — |
@@ -33,3 +33,4 @@ The derivations, proofs and measurements for `ferric-integrals` are in the ferri
 | The reaction field in the Fock matrix | `reaction-field` | [`book/src/22-implicit-solvation/03-reaction-field.md`](../../book/src/22-implicit-solvation/03-reaction-field.md) | — | — |
 | Point charges, smeared charges and uniform fields | `external-potentials` | [`book/src/23-embedding/01-external-potentials.md`](../../book/src/23-embedding/01-external-potentials.md) | `scripts/external_potential_sympy.py` | `ext.field.origin` |
 | Shared intermediates across the two kernels | `shared-intermediates` | [`book/src/26-rs-mp2-rpa/06-shared-intermediates.md`](../../book/src/26-rs-mp2-rpa/06-shared-intermediates.md) | — | — |
+| Notation and conventions | `notation` | [`book/src/00-notation.md`](../../book/src/00-notation.md) | — | — |

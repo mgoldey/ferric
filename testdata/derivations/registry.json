@@ -1809,7 +1809,7 @@
       ]
     },
     "u-ccsd-update-amps": {
-      "reason": "the per-spin factorization of u_ccsd.rs::update_amps (PySCF uccsd.update_amps: per-spin F, the six W_ovvo ring blocks, the ladders) is not displayed in the book or transcribed in a script; u-ccsd proves the amplitude blocks, the energy split and the (T) classes, and the residual itself is held to the spin-orbital ccsd_uhf_spin_orbital solver amplitude by amplitude in Rust",
+      "reason": "the per-spin factorization of ferric-cc/src/u_ccsd.rs::update_amps (PySCF uccsd.update_amps: per-spin F, the six W_ovvo ring blocks, the ladders) is not displayed in the book or transcribed in a script; u-ccsd proves the amplitude blocks, the energy split and the (T) classes, and the residual itself is held to the spin-orbital ccsd_uhf_spin_orbital solver amplitude by amplitude in Rust",
       "book": [
         "book/src/16-coupled-cluster/08-uccsd.md#uccsd-equations"
       ]

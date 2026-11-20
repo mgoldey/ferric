@@ -12,15 +12,16 @@ The derivations, proofs and measurements for `ferric-dft` are in the ferric book
 | $V_{xc}$ matrix elements: LDA, GGA, meta-GGA | `vxc` | [`book/src/09-kohn-sham/03-vxc.md`](../../book/src/09-kohn-sham/03-vxc.md) | `scripts/dft_vxc_matrix_elements_sympy.py` | `ks.vxc.matrix-elements` |
 | Global and range-separated hybrids; tuning $\omega$ | `hybrids` | [`book/src/09-kohn-sham/04-hybrids.md`](../../book/src/09-kohn-sham/04-hybrids.md) | `scripts/dft_hybrid_rsh_sympy.py` | `ks.rsh.libxc-map` |
 | VV10 nonlocal correlation | `vv10` | [`book/src/09-kohn-sham/05-vv10.md`](../../book/src/09-kohn-sham/05-vv10.md) | `scripts/dft_vv10_potential_sympy.py` | `ks.vv10.potentials` |
-| $f_{xc}$ response kernels | `fxc` | [`book/src/09-kohn-sham/06-fxc.md`](../../book/src/09-kohn-sham/06-fxc.md) | `scripts/dft_fxc_kernel_sympy.py`, `scripts/tddft_response_sympy.py` | `ks.fxc.linearization`, `ks.fxc.ov-block` |
-| Constrained DFT and the electron-transfer coupling | `cdft` | [`book/src/09-kohn-sham/07-cdft.md`](../../book/src/09-kohn-sham/07-cdft.md) | — | — |
+| Constrained DFT and the electron-transfer coupling | `cdft` | [`book/src/09-kohn-sham/06-cdft.md`](../../book/src/09-kohn-sham/06-cdft.md) | — | — |
+| $f_{xc}$ response kernels | `fxc` | [`book/src/09-kohn-sham/07-fxc.md`](../../book/src/09-kohn-sham/07-fxc.md) | `scripts/dft_fxc_kernel_sympy.py`, `scripts/tddft_response_sympy.py` | `ks.fxc.linearization`, `ks.fxc.ov-block` |
 | MP2-V: attenuated MP2 with a VV10 tail | `mp2-v` | [`book/src/10-mp2/08-mp2-v.md`](../../book/src/10-mp2/08-mp2-v.md) | `scripts/mp2_family_sympy.py` | `mp2v.damping` |
 | MP2-based double hybrids | `double-hybrids` | [`book/src/10-mp2/10-double-hybrids.md`](../../book/src/10-mp2/10-double-hybrids.md) | `scripts/double_hybrid_sympy.py` | `dh.parameters` |
-| XC gradient: AO-derivative and grid-response terms | `xc-gradient` | [`book/src/14-derivatives/03-xc-gradient.md`](../../book/src/14-derivatives/03-xc-gradient.md) | `scripts/dft_becke_weight_grad_sympy.py`, `scripts/dft_mgga_tau_gradient_sympy.py` | `ks.grad.ao-derivative`, `ks.grad.becke-weights`, `ks.grad.grid-response` |
+| Hartree–Fock nuclear gradient | `hf-gradient` | [`book/src/14-derivatives/01-hf-gradient.md`](../../book/src/14-derivatives/01-hf-gradient.md) | — | — |
+| XC gradient: AO-derivative and grid-response terms | `xc-gradient` | [`book/src/14-derivatives/03-xc-gradient.md`](../../book/src/14-derivatives/03-xc-gradient.md) | `scripts/dft_becke_weight_grad_sympy.py`, `scripts/dft_mgga_tau_gradient_sympy.py`, `scripts/dft_vv10_gradient_sympy.py` | `ks.grad.ao-derivative`, `ks.grad.becke-weights`, `ks.grad.grid-response`, `ks.grad.vv10.ao`, `ks.grad.vv10.dropped` |
 | Kohn–Sham Hessian on a fixed and a moving grid | `ks-hessian` | [`book/src/14-derivatives/05-ks-hessian.md`](../../book/src/14-derivatives/05-ks-hessian.md) | `scripts/dft_becke_weight_hessian_sympy.py` | `ks.hess.becke-second-derivative` |
 | The ωB97X-L-V double hybrid | `wb97x-l-v` | [`book/src/16-coupled-cluster/06-wb97x-l-v.md`](../../book/src/16-coupled-cluster/06-wb97x-l-v.md) | — | — |
-| Analytic continuation and the quasiparticle equation | `continuation-and-qp-equation` | [`book/src/20-gw-bse/05-continuation-and-qp-equation.md`](../../book/src/20-gw-bse/05-continuation-and-qp-equation.md) | — | — |
-| The kernel and the functional gate | `kernel` | [`book/src/19-tddft/03-kernel.md`](../../book/src/19-tddft/03-kernel.md) | `scripts/tddft_response_sympy.py` | `td.kernel.singlet-normalization` |
+| The kernel and which functionals are accepted | `kernel` | [`book/src/19-tddft/03-kernel.md`](../../book/src/19-tddft/03-kernel.md) | `scripts/tddft_response_sympy.py` | `td.kernel.singlet-normalization` |
 | Range-separated hybrids | `rsh` | [`book/src/19-tddft/04-rsh.md`](../../book/src/19-tddft/04-rsh.md) | — | — |
-| Triplets | `triplets` | [`book/src/19-tddft/05-triplets.md`](../../book/src/19-tddft/05-triplets.md) | — | — |
+| Triplets | `triplets` | [`book/src/19-tddft/05-triplets.md`](../../book/src/19-tddft/05-triplets.md) | `scripts/tddft_response_sympy.py` | `td.triplet.linearization` |
+| RI factors and the exchange self-energy | `ri-factors-and-exchange` | [`book/src/20-gw-bse/01-ri-factors-and-exchange.md`](../../book/src/20-gw-bse/01-ri-factors-and-exchange.md) | — | — |
 | Atomic partitions: Becke, Hirshfeld, Löwdin, ESP fits | `atomic-partitions` | [`book/src/21-polarizabilities/02-atomic-partitions.md`](../../book/src/21-polarizabilities/02-atomic-partitions.md) | — | — |

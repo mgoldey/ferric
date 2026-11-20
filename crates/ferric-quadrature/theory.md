@@ -8,4 +8,4 @@ The derivations, proofs and measurements for `ferric-quadrature` are in the ferr
 |---|---|---|---|---|
 | Radial and angular grids, the Becke partition, pruning | `grids` | [`book/src/09-kohn-sham/02-grids.md`](../../book/src/09-kohn-sham/02-grids.md) | — | — |
 | Laplace RI-MP2 and Laplace SOS-MP2 | `laplace-mp2` | [`book/src/12-oo-laplace/03-laplace-mp2.md`](../../book/src/12-oo-laplace/03-laplace-mp2.md) | — | — |
-| Imaginary-time and AO forms of $\chi_0$ | `laplace-ao-chi0` | [`book/src/18-rpa/05-laplace-ao-chi0.md`](../../book/src/18-rpa/05-laplace-ao-chi0.md) | — | — |
+| The Laplace form of $\chi_0$ | `laplace-ao-chi0` | [`book/src/18-rpa/05-laplace-ao-chi0.md`](../../book/src/18-rpa/05-laplace-ao-chi0.md) | — | — |

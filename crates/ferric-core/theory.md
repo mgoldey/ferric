@@ -12,7 +12,10 @@ The derivations, proofs and measurements for `ferric-core` are in the ferric boo
 | One-electron integrals and multipoles | `one-electron` | [`book/src/03-integrals/01-one-electron.md`](../../book/src/03-integrals/01-one-electron.md) | — | — |
 | Streaming the MO transform and the dressing | `streaming-transform` | [`book/src/11-rimp2-algorithms/02-streaming-transform.md`](../../book/src/11-rimp2-algorithms/02-streaming-transform.md) | — | — |
 | The memory budget, the admission checks and the shared pool | `memory-budget` | [`book/src/11-rimp2-algorithms/04-memory-budget.md`](../../book/src/11-rimp2-algorithms/04-memory-budget.md) | — | — |
-| Device and mixed-precision kernels | `device-mixed-precision` | [`book/src/11-rimp2-algorithms/06-device-mixed-precision.md`](../../book/src/11-rimp2-algorithms/06-device-mixed-precision.md) | — | — |
-| Distributed RI-MP2 by auxiliary bands | `distributed-rimp2` | [`book/src/11-rimp2-algorithms/07-distributed-rimp2.md`](../../book/src/11-rimp2-algorithms/07-distributed-rimp2.md) | — | — |
+| Device and mixed-precision kernels | `device-mixed-precision` | [`book/src/11-rimp2-algorithms/06-device-mixed-precision.md`](../../book/src/11-rimp2-algorithms/06-device-mixed-precision.md) | `scripts/mp2_variant_identities.py` | `rimp2alg.mixed-element-bound` |
+| Distributed RI-MP2 by auxiliary bands | `distributed-rimp2` | [`book/src/11-rimp2-algorithms/07-distributed-rimp2.md`](../../book/src/11-rimp2-algorithms/07-distributed-rimp2.md) | `scripts/mp2_variant_identities.py` | `rimp2alg.aux-band-decomposition` |
+| Hartree–Fock Hessian and coupled-perturbed equations | `hf-hessian` | [`book/src/14-derivatives/04-hf-hessian.md`](../../book/src/14-derivatives/04-hf-hessian.md) | `scripts/hessian_one_electron_ops_sympy.py` | `scf.hess.one-electron-operator` |
 | Geometry optimization, saddle points and reaction paths | `geometry-search` | [`book/src/14-derivatives/08-geometry-search.md`](../../book/src/14-derivatives/08-geometry-search.md) | `scripts/lindh_hessian_sympy.py` | `geom.lindh` |
 | Point charges, smeared charges and uniform fields | `external-potentials` | [`book/src/23-embedding/01-external-potentials.md`](../../book/src/23-embedding/01-external-potentials.md) | `scripts/external_potential_sympy.py` | `ext.smeared.classical` |
+| Many-body dispersion | `mbd` | [`book/src/25-dispersion/03-mbd.md`](../../book/src/25-dispersion/03-mbd.md) | — | — |
+| Notation and conventions | `notation` | [`book/src/00-notation.md`](../../book/src/00-notation.md) | — | — |

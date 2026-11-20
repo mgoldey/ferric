@@ -7,3 +7,4 @@ The derivations, proofs and measurements for `ferric-mm` are in the ferric book 
 | Section | Label | Page | Proof scripts | Verified boxes |
 |---|---|---|---|---|
 | The molecular-mechanics force field | `molecular-mechanics` | [`book/src/23-embedding/04-molecular-mechanics.md`](../../book/src/23-embedding/04-molecular-mechanics.md) | `scripts/mm_cutoff_sympy.py`, `scripts/mm_dihedral_gradient_sympy.py` | `mm.angle.gradient`, `mm.bond.gradient`, `mm.cutoff.reaction-field`, `mm.cutoff.switch`, `mm.dihedral.gradient`, `mm.pair.gradient` |
+| Notation and conventions | `notation` | [`book/src/00-notation.md`](../../book/src/00-notation.md) | — | — |
