@@ -382,7 +382,7 @@ $3.3\times10^{-2}$ and $\Delta$ shrinks with the grid:
 `crates/ferric-scf/tests/vv10_gradient_moving_grid.rs` hold the AO density
 matrix $D$ fixed and differentiate $E_{nl}$ on the default $50\times50$ NLC
 grid rebuilt at each displaced geometry, with a central difference of step
-$10^{-4}$ Bohr. From the build of commit `@BUILD@`:
+$10^{-4}$ Bohr. From the build of commit `e005b5d40`:
 
 | System ($D$) | $\max\lvert G - \mathrm{FD}\rvert$ | net force | $G^{\mathrm{AO}}$ alone: miss, net force |
 |---|---|---|---|
