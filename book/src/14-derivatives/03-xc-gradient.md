@@ -247,9 +247,9 @@ NLC grid (default $50\times50$ per atom, unpruned). Like the main grid it is
 built around the nuclei, so moving an atom changes three things: the AOs
 under every point, the position of every point that rides that atom (and so
 its distance to every point that rides another atom), and the Becke weights.
-ferric differentiates the first and drops the other two. This section derives
-all three, shows that the dropped part is a grid error that vanishes when the
-quadrature is exact, and measures it on water.
+ferric differentiates all three. This section derives them, shows that the
+two grid pieces together are the derivative of the quadrature error, and
+measures what a gradient without them misses on water.
 
 Keep the notation of section @sec:vv10-energy-potentials: $W_i$ is the weight
 of NLC point $i$ (the $w_g$ of section @sec:xc-gradient-terms), and
@@ -311,12 +311,33 @@ $\sum_C\partial q/\partial\mathbf R_C|_{\mathbf r} + \nabla_{\mathbf r}q = 0$
 of section @sec:xc-gradient-terms. The four terms together give forces that
 sum to zero on any grid.
 
-**What the code drops.** `ferric-dft/src/gradient.rs::vv10_gradient_from_density`
-computes $G^{\mathrm{AO}}$ alone. The dropped part is
+**What the code computes.** `ferric-dft/src/gradient.rs::vv10_gradient_from_density`
+computes all four terms. Two steps turn the formulas above into loops.
+
+The kernel term is a double sum, but only one of its two Kronecker deltas
+needs a loop. Swap $i$ and $p$ in the second one: $\Phi_{ip}$ is symmetric
+and $(\mathbf r_i - \mathbf r_p)$ changes sign, so the two deltas give the same
+sum and
+
+$$ G^{\mathrm{ker}}_{C\alpha} = \sum_{i:\,\mathrm{home}(i)=C} W_i\rho_i\,\frac{\partial f_i}{\partial r_{i,\alpha}}, \qquad \frac{\partial f_i}{\partial\mathbf r_i} = \sum_p W_p\rho_p\,2\frac{\partial\Phi_{ip}}{\partial R^2}(\mathbf r_i - \mathbf r_p) . $$
+
+Partners $p$ on the same atom as $i$ stay in $\partial f_i/\partial\mathbf r_i$;
+their contributions cancel pairwise in the sum over that atom's points, as
+the rigid-pair limit above requires. $\partial f_i/\partial\mathbf r_i$ is a pair
+sum of the same shape as $f_i$ itself (`ferric-dft/src/vv10.rs::vv10_egrad`),
+over the same cell list and cutoff, so it differentiates the pairs the
+energy kept.
+
+The weight factor $\rho_i(\beta + f_i)$ comes out of the energy pair sum,
+next to $v_\rho$ and $v_\sigma$
+(`ferric-dft/src/vv10.rs::compute_vv10_gradient_pieces`).
+
+**The grid terms are a grid error.** Write the three terms that come from
+the grid as
 
 $$ \Delta_{C\alpha} = G^{\mathrm{home}}_{C\alpha} + G^{\mathrm{ker}}_{C\alpha} + G^{\mathrm{wt}}_{C\alpha} . $$
 
-What is it? Write the energy as a quadrature rule applied to an integrand,
+What is $\Delta$? Write the energy as a quadrature rule applied to an integrand,
 $E_{nl} = Q_{\mathbf R}[F_{\mathbf R}]$. The rule $Q_{\mathbf R}$ is the set of
 points and weights, which depend on the nuclei; the integrand $F_{\mathbf R}$
 is built from the density, which depends on them through the AOs. The
@@ -327,29 +348,29 @@ $$ \Delta = \frac{\mathrm d}{\mathrm d\mathbf R}\,Q_{\mathbf R}\bigl[F_{\mathbf 
 
 A rule that integrates $F_{\mathbf R_0}$ exactly gives the same number,
 $\iint F_{\mathbf R_0}$, wherever the points sit, so $\Delta = 0$. On a finite
-grid $\Delta$ is the derivative of the quadrature error, a grid error, and
-it goes to zero as the grid is refined.
+grid $\Delta$ is the derivative of the quadrature error. It goes to zero as
+the grid is refined, but at any fixed grid it is part of the derivative of
+the energy the SCF computed, and a gradient without it does not belong to
+any energy.
 
 Two limits make this concrete.
 
 - **One atom.** All AOs and all points ride the same nucleus, so the
   moving-grid energy does not depend on its position, and the exact
   gradient is zero. $G^{\mathrm{ker}} = G^{\mathrm{wt}} = 0$, and
-  $G^{\mathrm{home}} = -G^{\mathrm{AO}}$ by the translation identity: ferric's
-  VV10 gradient of a lone atom is pure grid error.
-- **The net force.** Summed over atoms, the dropped part is
+  $G^{\mathrm{home}} = -G^{\mathrm{AO}}$ by the translation identity:
+  $G^{\mathrm{AO}}$ alone would be pure grid error.
+- **The net force.** Summed over atoms,
   $\sum_C\Delta_C = \sum_i W_i(v_{\rho,i}\nabla\rho_i + v_{\sigma,i}\nabla\sigma_i) = -\sum_C G^{\mathrm{AO}}_C$.
-  This sum is the grid's estimate of the derivative of $E_{nl}$ under a rigid
-  shift of the density with the grid held still. The continuous double
-  integral does not change under that shift, because $\Phi$ depends only on
-  $\lvert\mathbf r - \mathbf r'\rvert$ and on local values of $\rho$ and $\sigma$.
-  So ferric's VV10 forces sum to zero only to the grid error, and their net
-  force is a cheap measure of $\Delta$.
+  The continuous double integral does not change under a rigid shift of the
+  density, because $\Phi$ depends only on $\lvert\mathbf r - \mathbf r'\rvert$ and on
+  local values of $\rho$ and $\sigma$. So the net force of $G^{\mathrm{AO}}$ alone
+  is a cheap measure of $\Delta$.
 
-**What it means.** On a toy model (two atoms, five Gaussians, VV10 with
-$b = 6$, $C = 0.01$, a product grid riding each atom and a smooth two-atom
-partition; `scripts/dft_vv10_gradient_sympy.py`), the largest gradient
-component is $3.3\times10^{-2}$ and the dropped part shrinks with the grid:
+On a toy model (two atoms, five Gaussians, VV10 with $b = 6$, $C = 0.01$, a
+product grid riding each atom and a smooth two-atom partition;
+`scripts/dft_vv10_gradient_sympy.py`), the largest gradient component is
+$3.3\times10^{-2}$ and $\Delta$ shrinks with the grid:
 
 | Points | $\max\lvert\Delta\rvert$ | $\max\lvert\sum_C G^{\mathrm{AO}}_C\rvert$ |
 |---|---|---|
@@ -357,63 +378,81 @@ component is $3.3\times10^{-2}$ and the dropped part shrinks with the grid:
 | 1152 | $1.1\times10^{-3}$ | $2.4\times10^{-4}$ |
 | 3072 | $1.2\times10^{-4}$ | $2.4\times10^{-5}$ |
 
-On water in 6-31G, from the `3f612e0b3` build, with the default grids
-(production main grid, $50\times50$ NLC grid), the size of $\Delta$ is
-measured two ways.
+**Measured on ferric's grids.** The tests in
+`crates/ferric-scf/tests/vv10_gradient_moving_grid.rs` hold the AO density
+matrix $D$ fixed and differentiate $E_{nl}$ on the default $50\times50$ NLC
+grid rebuilt at each displaced geometry, with a central difference of step
+$10^{-4}$ Bohr. From the build of commit `@BUILD@`:
 
-- At a fixed density matrix (the converged ωB97X-V density), the XC gradient
-  (`AoIntegrals.xc_functional(...).grad`) against a central difference of
-  `eval` with $h = 10^{-4}$ Bohr: ωB97X-V misses by $5.4\times10^{-6}$
-  Ha/Bohr (the O $z$ component), ωB97M-V, which carries the same VV10
-  parameters, by the same $5.4\times10^{-6}$, and ωB97X without VV10
-  (`HYB_GGA_XC_WB97X`) by $1.0\times10^{-9}$. The analytic ωB97X-V forces sum
-  to $3.4\times10^{-6}$ Ha/Bohr; the ωB97X ones to $1\times10^{-14}$.
-- End to end, `run_dft(..., with_gradient=True)` against a central difference
-  of the re-converged energy ($h = 10^{-3}$ Bohr, `energy_conv=1e-12`,
-  `density_conv=1e-10`, `ri_j_precision="f64"`): ωB97X-V misses by
-  $5.4\times10^{-6}$ Ha/Bohr and ωB97X by $1.6\times10^{-7}$, the
-  $O(h^2)$ error of the difference.
+| System ($D$) | $\max\lvert G - \mathrm{FD}\rvert$ | net force | $G^{\mathrm{AO}}$ alone: miss, net force |
+|---|---|---|---|
+| asymmetric water / 6-31G (converged ωB97X-V) | $6.8\times10^{-12}$ | $3\times10^{-17}$ | $5.5\times10^{-6}$, $2.3\times10^{-6}$ |
+| OH doublet / 6-31G (UKS ωB97X-V, $D^\alpha + D^\beta$) | $4.1\times10^{-12}$ | $1\times10^{-17}$ | $3.5\times10^{-6}$, $1.7\times10^{-6}$ |
+| lone O / 6-31G (a non-spherical sp density) | $5.5\times10^{-18}$ (FD exactly 0) | | $2.9\times10^{-6}$ |
 
-So the VV10 part of the ωB97X-V water gradient carries a grid error of
-$5.4\times10^{-6}$ Ha/Bohr, about $3\times10^{-4}$ of the largest gradient
-component ($2.0\times10^{-2}$), and nothing else in the gradient comes close.
+The largest component of the water VV10 gradient is $1.3\times10^{-3}$
+Ha/Bohr. The $10^{-12}$ residual is the step-$10^{-4}$ difference's own
+error.
 
-**The code.** `vv10_gradient_from_density` builds the NLC grid with
-`build_atomic_grid_pruned` from the same configuration the SCF used (it is
-not stored on the result), and without the weight derivative. It evaluates
-$\chi$, $\nabla\chi$ and the AO Hessian on it, then:
+End to end, the whole ωB97X-V gradient against a central difference of
+re-converged energies (`crates/ferric-scf/tests/dft_gradient_wb97xv.rs`, step
+$5\times10^{-4}$ Bohr, SCF to $10^{-11}$ Ha, f64 RI-J) agrees to
+$5.8\times10^{-8}$ to $8.6\times10^{-8}$ Ha/Bohr on H2 and water in STO-3G and
+cc-pVDZ, the $O(h^2)$ error of the difference. The UKS gradient of the NH2
+doublet in 6-31G agrees to $1.8\times10^{-7}$ (step $10^{-3}$ Bohr).
+Against PySCF with its NLC grid response on
+(`crates/ferric-scf/tests/dft_gradient_vs_pyscf.rs`, cc-pVDZ, matched grid
+and density fit) the gradient agrees to $1.4\times10^{-7}$ Ha/Bohr for water
+and $1.1\times10^{-6}$ for H2; PySCF's water gradient moves by
+$1.1\times10^{-4}$ when that response is switched off.
+
+**The code.** `vv10_gradient_from_density` builds the NLC grid and its
+weight1 derivative with `build_atomic_grid_with_response` from the same
+configuration the SCF used (it is not stored on the result), so the points
+and weights are those of the `build_atomic_grid_pruned` grid the SCF
+integrated on. It evaluates $\chi$, $\nabla\chi$ and the AO Hessian on it,
+and adds the four terms:
 
 <!-- excerpt: ferric-dft/src/gradient.rs::vv10_gradient_from_density -->
 ```rust
-// Density on the NLC grid.
-let dens = crate::density_on_grid::eval_density_closed(d_total, &chi, &dchi);
-
-// VV10 potentials from the pair-sum.
-let (vrho, vsig) = crate::vv10::compute_vv10_potentials(&grid, &dens, params);
+// VV10 potentials, ∂E/∂W and ∂f/∂r from the pair sums.
+let vv = crate::vv10::compute_vv10_gradient_pieces(&grid, &dens, params);
+// ...
+let mut grad = vv10_ao_and_home_terms(
+    natoms, d_total, &grid, &map, &chi, &dchi, &ddchi, &dens, &vv,
+);
+add_vv10_kernel_term(&mut grad, &grid, &dens, &vv.df_dr);
+add_weight_response(&mut grad, &weight1, 0, grid.len(), |g| vv.de_dw[g]);
 ```
 
-`ferric-dft/src/vv10.rs::compute_vv10_potentials` runs the same pair sum as
-the SCF energy (the 40 Bohr cutoff and the $\rho < 10^{-8}$ skip included),
-so $v_\rho$ and $v_\sigma$ are the derivatives of the energy the SCF
-computed. `ferric-dft/src/gradient.rs::gga_gradient_from_potentials` then
-assembles $G^{\mathrm{AO}}$ with $t_\rho = Wv_\rho$ and the weight column
-$c_b = 2Wv_\sigma\partial_b\rho$, zeroing points with $\rho \le 10^{-10}$. The
-open-shell gradients call the same function on the total density
+`ferric-dft/src/vv10.rs::compute_vv10_potentials` and
+`compute_vv10_gradient_pieces` run the same pair sum as the SCF energy (the
+40 Bohr cutoff and the $\rho < 10^{-8}$ skip included), so $v_\rho$, $v_\sigma$
+and $\rho_i(\beta + f_i)$ are the derivatives of the energy the SCF computed.
+`ferric-dft/src/gradient.rs::vv10_ao_and_home_terms` forms $m = D\chi$ and
+$D\,\partial_b\chi$ once for both of its terms.
+`ferric-dft/src/gradient.rs::gga_gradient_from_potentials` assembles
+$G^{\mathrm{AO}}$ with $t_\rho = Wv_\rho$ and the weight column
+$c_b = 2Wv_\sigma\partial_b\rho$, zeroing points with $\rho \le 10^{-10}$.
+$G^{\mathrm{home}}$ and $G^{\mathrm{wt}}$ go through the helpers the semilocal
+grid response uses (`ferric-dft/src/gradient.rs::add_gga_home_response`,
+`ferric-dft/src/gradient.rs::add_weight_response`), with the VV10 potentials
+and $\rho_i(\beta + f_i)$ in place of libxc's potentials and $\varepsilon\rho$.
+The open-shell gradients call the same function on the total density
 (`ferric-scf/src/ks_gradient.rs::add_xc_gradient`), because $E_{nl}$ is a
 functional of the total density.
 
-**Design choices.** Two of the dropped terms cost more than the kept one.
-$G^{\mathrm{ker}}$ is a vector-valued pair sum over the whole NLC grid, of the
-same $O(N^2)$ order as the energy, and $G^{\mathrm{wt}}$ needs the weight1
-derivative of every NLC point with respect to every atom, which the NLC path
-does not build. $G^{\mathrm{home}}$ alone is cheap (the AO Hessian is already
-evaluated), but adding it without the other two would not give the
-derivative of any energy. What the omission costs is measured above: ωB97X-V
-and ωB97M-V gradients match finite differences of their own energy to a few
-$10^{-6}$ Ha/Bohr instead of $10^{-7}$, and their forces sum to zero only to
-that level.
+**Cost.** $G^{\mathrm{ker}}$ is a second pair sum over the NLC grid, of the
+same order as the energy's, parallel over rows and $O(N)$ in memory.
+$G^{\mathrm{wt}}$ needs the weight1 derivative of every NLC point with
+respect to every atom, $3N_{\mathrm{atoms}}$ numbers per point. Measured on
+the same build (6 cores, median of three, converged ωB97X-V/6-31G density):
+the VV10 gradient takes 0.45 s for water (7500 NLC points) and 8.2 s for
+benzene (30000 points), against 0.20 s and 4.1 s for $G^{\mathrm{AO}}$ alone;
+the whole ωB97X-V gradient goes from 0.35 s to 0.57 s and from 5.2 s to
+9.1 s.
 
-> **Verified equation {#eq:ks-grad-vv10-ao}** · the code's VV10 term is the derivative at a fixed grid
+> **Verified equation {#eq:ks-grad-vv10-ao}** · the code's VV10 AO term is the derivative at a fixed grid
 >
 > On a two-atom Gaussian density with ferric's VV10 constants and a grid
 > whose points ride the atoms: the code-form $v_\rho$, $v_\sigma$ (the
@@ -432,7 +471,7 @@ that level.
 >
 > <!-- verified: id=ks.grad.vv10.ao; script=scripts/dft_vv10_gradient_sympy.py; claim=code; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/gradient.rs::{vv10_gradient_from_density,gga_gradient_from_potentials}; rust_test=ferric-scf/tests/dft_gradient_vs_pyscf.rs::wb97xv_h2o_ccpvdz_vs_pyscf_grad; registry=vv10-gradient -->
 
-> **Verified equation {#eq:ks-grad-vv10-dropped}** · the full VV10 gradient and the part ferric drops
+> **Verified equation {#eq:ks-grad-vv10-full}** · the full VV10 gradient on the moving grid
 >
 > On the same model: $\partial E_{nl}/\partial W_i = \rho_i(\beta + f_i)$ and
 > the closed form of $\partial\Phi/\partial R^2$ (sympy, exact);
@@ -440,7 +479,7 @@ that level.
 > central difference of the moving-grid energy to $1.5\times10^{-10}$ and
 > sums to zero over atoms to $10^{-17}$, while $G^{\mathrm{AO}}$ alone has a net
 > force of $8.2\times10^{-4}$; on one atom $G^{\mathrm{AO}} = -G^{\mathrm{home}}$ to
-> $4\times10^{-14}$ relative; and the dropped part falls from
+> $4\times10^{-14}$ relative; and $\Delta$ falls from
 > $4.3\times10^{-3}$ to $1.2\times10^{-4}$ as the grid goes from 384 to 3072
 > points.
 >
@@ -450,13 +489,13 @@ that level.
 > | Negative control | the script drops $G^{\mathrm{ker}}$ and uses $\rho_i(\beta + \tfrac12 f_i)$ in the weight term (each misses by more than $10^{-3}$); the runner halves $G^{\mathrm{ker}}$ and uses $\rho_i(\beta + \tfrac12 f_i)$ (claim full fails) |
 > | Runner | `crates/ferric-python/tests/test_derivation_scripts.py` |
 > | Code | `ferric-dft/src/gradient.rs::vv10_gradient_from_density` |
+> | Code test | `vv10_gradient_matches_central_difference_rks_water` in `crates/ferric-scf/tests/vv10_gradient_moving_grid.rs` |
 >
-> <!-- verified: id=ks.grad.vv10.dropped; script=scripts/dft_vv10_gradient_sympy.py; claim=full; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/gradient.rs::vv10_gradient_from_density; registry=vv10-gradient -->
+> <!-- verified: id=ks.grad.vv10.full; script=scripts/dft_vv10_gradient_sympy.py; claim=full; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-dft/src/gradient.rs::vv10_gradient_from_density; rust_test=ferric-scf/tests/vv10_gradient_moving_grid.rs::vv10_gradient_matches_central_difference_rks_water; registry=vv10-gradient -->
 
-The proof covers the derivation on a model grid. It does not run ferric's
-Becke partition or its NLC grid; the water numbers above are the measurement
-of $\Delta$ on those. Nothing in ferric computes $G^{\mathrm{home}}$,
-$G^{\mathrm{ker}}$ or $G^{\mathrm{wt}}$ for VV10.
+The proof covers the derivation on a model grid. The Rust tests above check
+the same identities (finite differences, translational invariance, the
+one-atom limit) on ferric's Becke partition and NLC grid.
 
 ## The Becke weight derivative {#xc-gradient-becke-weight-derivative}
 
@@ -588,7 +627,7 @@ script's control is exactly that mistake.
 | LDA, GGA, meta-GGA | $v_\sigma = v_\tau = 0$ for LDA, $v_\tau = 0$ for GGA; one code path with fewer terms |
 | UKS, ROKS | the same per spin with $D\to D^\sigma$ and $\mathbf G^\sigma$ of section @sec:xc-gradient-terms in place of $2v_\sigma\nabla\rho$ |
 | hybrid, range-separated hybrid | exact exchange scaled by $c_K$, or split into erfc and erf pieces, through the routes of section @sec:df-jk-gradient |
-| VV10 | only the AO term of the nonlocal energy; the NLC grid's point-motion, pair-distance and weight terms are dropped, a grid error of about 5e-6 Ha/Bohr on water (section @sec:xc-gradient-vv10) |
+| VV10 | the nonlocal energy's AO, point-motion, pair-distance and weight terms on the NLC grid; a second $O(N^2)$ pair sum (section @sec:xc-gradient-vv10) |
 | grid | the gradient differentiates the grid the SCF ran on: `ferric-scf/src/ks_gradient.rs::KsGradGrids` carries it. A default-grid gradient paired with an SCF on another grid misses |
 | meta-GGAs that need the density Laplacian (for example `MGGA_X_SCANL`, `MGGA_X_BR89`) | refused in `ferric-dft/src/libxc.rs::xc_def_from_name` (test `laplacian_metagga_rejected_by_flag`); the $\tau$-only functionals run |
 
@@ -618,7 +657,7 @@ costs, and it is at least 2000 times the finite-difference agreement of
 |---|---|
 | sections @sec:xc-gradient-terms and @sec:grids-becke-partition | equations, tests |
 | `scripts/dft_mgga_tau_gradient_sympy.py`, `scripts/dft_becke_weight_grad_sympy.py` | verified equations @eq:ks-grad-ao-derivative to @eq:ks-grad-becke-weights |
-| `scripts/dft_vv10_gradient_sympy.py` | section @sec:xc-gradient-vv10, verified equations @eq:ks-grad-vv10-ao and @eq:ks-grad-vv10-dropped |
+| `scripts/dft_vv10_gradient_sympy.py` | section @sec:xc-gradient-vv10, verified equations @eq:ks-grad-vv10-ao and @eq:ks-grad-vv10-full |
 | `crates/ferric-dft/src/gradient.rs`, `crates/ferric-dft/src/gradient/screened.rs` | the algorithm and reproducibility rules |
 | `crates/ferric-scf/tests/ks_gradient_scf_grid.rs` | what the custom-grid row tests |
 | `site/src/reference/validation.md` | the anchor rows |

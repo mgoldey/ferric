@@ -19,10 +19,11 @@
 //!   exchange is always fitted), `ScfResult::df_jk` records the builders and
 //!   the 2e term differentiates the FITTED energy instead
 //!   (`crate::df_gradient::routed_two_electron_gradient`).
-//! - `∇E_xc` is the semilocal XC AO-basis-derivative contribution. Grid-weight
-//!   derivatives ("grid response") are NOT included — this introduces an
-//!   error of ~1e-5 Ha/Bohr at (75, 110) grids, suitable for geometry
-//!   optimization but not high-accuracy gradient calculations.
+//! - `∇E_xc` is the XC derivative on the moving grid: the AO term plus the
+//!   grid response (points ride their home atom, Becke weights move), PySCF's
+//!   `grid_response=True` convention. The VV10 nonlocal term adds the pair
+//!   distance term of its double sum, so the gradient is the derivative of the
+//!   energy the SCF computes.
 //!
 //! Supports LDA, GGA, plain hybrid-GGA (B3LYP), range-separated hybrid-GGA
 //! (wB97X-family), and meta-GGA (SCAN / r2SCAN) — semilocal piece + scaled

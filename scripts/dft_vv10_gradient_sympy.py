@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""VV10 nuclear gradient: what ferric computes, and what it drops.
+"""VV10 nuclear gradient: the four terms ferric computes.
 
 Derivation: `book/src/14-derivatives/03-xc-gradient.md#xc-gradient-vv10`
 (energy and potentials: `book/src/09-kohn-sham/05-vv10.md#vv10-energy-potentials`).
 Code: crates/ferric-dft/src/gradient.rs::vv10_gradient_from_density (per-point
-v_rho, v_sigma from crates/ferric-dft/src/vv10.rs::compute_vv10_potentials, then
-the GGA AO-derivative assembly gga_gradient_from_potentials), called from
+v_rho, v_sigma, dE/dW and df/dr from
+crates/ferric-dft/src/vv10.rs::compute_vv10_gradient_pieces; the AO term through
+the GGA assembly gga_gradient_from_potentials, the home and weight terms through
+the semilocal grid-response helpers add_gga_home_response and
+add_weight_response), called from
 crates/ferric-scf/src/ks_gradient.rs::add_xc_gradient on the total density.
 
 The VV10 energy on an atom-centred grid is a double sum
@@ -21,8 +24,9 @@ parts:
   G_ker  sum_{i,p} W_i rho_i W_p rho_p dPhi_ip/d(R^2) (r_i - r_p)_alpha
          (delta_{home(i)A} - delta_{home(p)A})   (the pair distance changes);
   G_wt   sum_i rho_i (beta + f_i) dW_i/dR_{A,alpha}   (partition weights).
-ferric computes G_AO only. G_home + G_ker + G_wt is the derivative of the
-quadrature rule at a frozen integrand; it vanishes when the rule is exact.
+ferric computes all four. G_home + G_ker + G_wt is the derivative of the
+quadrature rule at a frozen integrand; it vanishes when the rule is exact, and
+it is the grid error a gradient with G_AO alone would carry.
 
 Model: a two-atom 3-D density from five real Gaussians (s, s, p_z on A; s, s on
 B), D = 2 (c1 c1^T + c2 c2^T) with c1 > 0 on the s functions so rho > 0
@@ -48,8 +52,8 @@ invariance, anchor, limit; the book boxes cite claims code and full):
   G4  negative controls: dropping G_ker, or using rho (beta + f/2) in G_wt,
       misses G2 by far more than G2's agreement.
   G5  anchor: on one atom the moving-grid energy does not depend on R_A, so
-      G_AO = -G_home exactly (the dropped part is the whole code gradient).
-  G6  the dropped part shrinks under grid refinement, G_AO converges, and
+      G_AO = -G_home exactly (G_AO alone would be pure grid error).
+  G6  the grid-motion part shrinks under grid refinement, G_AO converges, and
       the net force sum_A G_AO goes to zero (exact-quadrature limit).
 
 Mutations (each turns the script red; exact one-occurrence substitutions):

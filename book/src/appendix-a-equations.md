@@ -133,7 +133,7 @@ The Claim column is the one claim of the script that the box binds and the check
 | `ks.grad.becke-weights` | 14.3 | `scripts/dft_becke_weight_grad_sympy.py` | assembly | ks-gradient |
 | `ks.grad.grid-response` | 14.3 | `scripts/dft_mgga_tau_gradient_sympy.py` | 5 | ks-gradient |
 | `ks.grad.vv10.ao` | 14.3 | `scripts/dft_vv10_gradient_sympy.py` | code | vv10-gradient |
-| `ks.grad.vv10.dropped` | 14.3 | `scripts/dft_vv10_gradient_sympy.py` | full | vv10-gradient |
+| `ks.grad.vv10.full` | 14.3 | `scripts/dft_vv10_gradient_sympy.py` | full | vv10-gradient |
 | `scf.hess.assembled` | 14.4 | `scripts/hf_hessian_sympy.py` | H1 | hf-hessian |
 | `scf.hess.factored-k` | 14.4 | `scripts/hessian_factored_k_sympy.py` | F1 | hf-hessian |
 | `scf.hess.fitted-jk-assembled` | 14.4 | `scripts/df_jk_hessian_sympy.py` | H1 | hf-hessian |

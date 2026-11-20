@@ -4690,9 +4690,9 @@ def run_uks(
     The SCF settings are run_dft's: RI-J and RI-K through def2-universal-jkfit
     unless df_j_aux / df_k_aux say "" or "none" (exact), the production
     Becke-Lebedev grid unless grid_* say otherwise, run_rhf's convergence
-    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); for a
-    VV10 functional (wB97X-V) the gradient agrees with finite differences of the
-    energy to 6e-6 Ha/Bohr (NH2/6-31G), against ~1e-7 for the others.
+    defaults. Range-separated hybrids and meta-GGAs run (energy and gradient); the
+    gradient, VV10 (wB97X-V) included, agrees with finite differences of the
+    energy to ~2e-7 Ha/Bohr (NH2/6-31G).
     dm0 is a pair (D_alpha, D_beta) with run_uhf's checks; guess is
     "minao" (default) or "hcore". run_dft raises for multiplicity > 1.
 

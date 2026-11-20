@@ -497,19 +497,41 @@ impl FarCells {
     }
 }
 
-/// Compute the per-grid-point VV10 energy density ε_nl(g) = β + ½ · f(g)
-/// alongside the potentials. Needed by the gradient path that wants weight
-/// response Σ_g w1[g, B, α] · ε_nl(g) · ρ(g).
-pub fn compute_vv10_full(
+/// Per-point pieces of the VV10 nuclear gradient on one grid (the
+/// point-motion and weight terms of
+/// `book/src/14-derivatives/03-xc-gradient.md#xc-gradient-vv10`).
+#[derive(Debug, Clone)]
+pub struct Vv10GradPieces {
+    /// `v_ρ(g)`, as [`compute_vv10_potentials`].
+    pub vrho: Vec<f64>,
+    /// `v_σ(g)`, as [`compute_vv10_potentials`].
+    pub vsig: Vec<f64>,
+    /// `∂E_nl/∂W_g = ρ_g (β + f_g)`, the factor of the weight derivative.
+    pub de_dw: Vec<f64>,
+    /// `∂f_g/∂r_g` (`npts × 3`): the derivative of the pair sum
+    /// `f_g = Σ_p W_p ρ_p Φ_gp` with respect to the point's own position
+    /// ([`vv10_egrad`] with the grid as its own partner set).
+    pub df_dr: Array2<f64>,
+}
+
+/// Everything the VV10 nuclear gradient needs from the pair sums: the
+/// potentials and `∂E/∂W` from the energy pair sum, and `∂f/∂r` from a
+/// second pair sum of the same shape (same cutoff and cell list, so the
+/// pair set is the one the energy summed). Both pair sums run in parallel
+/// over rows; memory is O(npts).
+pub fn compute_vv10_gradient_pieces(
     grid: &[GridPoint],
     dens: &DensityGrid,
     params: &Vv10Params,
-) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
-    // ε(g) is a byproduct of the same pair sum that yields the potentials, so
-    // a single traversal covers everything (no second O(npts²) pair sum is
-    // needed to recover ε).
+) -> Vv10GradPieces {
     let out = vv10_internal(grid, dens, params);
-    (out.vrho, out.vsig, out.exc)
+    let df_dr = vv10_egrad(grid, dens, grid, dens, params);
+    Vv10GradPieces {
+        vrho: out.vrho,
+        vsig: out.vsig,
+        de_dw: out.de_dw,
+        df_dr,
+    }
 }
 
 /// Per-grid-point VV10 egrad `F[g, axis] = -3 · Σ_p RpW_p · Q[g,p] · DR[g,p]`
@@ -805,8 +827,10 @@ struct Vv10Internal {
     e_nl: f64,
     vrho: Vec<f64>,
     vsig: Vec<f64>,
-    /// Per-grid-point energy density ε_nl(g) = β + ½ · f(g); 0.0 on inactive points.
-    exc: Vec<f64>,
+    /// Per-grid-point weight derivative ∂E_nl/∂W_g = ρ_g (β + f_g); 0.0 on
+    /// inactive points. Not the energy density β + ½ f_g: W_g is also the
+    /// partner weight in every f_p, which doubles the pair part.
+    de_dw: Vec<f64>,
     active: Vec<bool>,
     /// Exact point-point kernel evaluations in the pair sum.
     pairs_near: u64,
@@ -814,7 +838,7 @@ struct Vv10Internal {
     pairs_far: u64,
 }
 
-/// Internal: compute (E_nl, vrho, vsig, ε_nl, active) on a single grid, using
+/// Internal: compute (E_nl, vrho, vsig, ∂E/∂W, active) on a single grid, using
 /// the production distance cutoff (`NLC_CUTOFF_BOHR`) for large grids.
 fn vv10_internal(grid: &[GridPoint], dens: &DensityGrid, params: &Vv10Params) -> Vv10Internal {
     vv10_internal_cutoff(grid, dens, params, Some(NLC_CUTOFF_BOHR), Vv10Damping::None)
@@ -1069,7 +1093,7 @@ fn vv10_internal_screened(
     // parallel — no win to buy with that risk.
     let mut vrho = vec![0.0_f64; npts];
     let mut vsig = vec![0.0_f64; npts];
-    let mut exc = vec![0.0_f64; npts];
+    let mut de_dw = vec![0.0_f64; npts];
     let mut e_nl = 0.0_f64;
     let mut pairs_near = 0u64;
     let mut pairs_far = 0u64;
@@ -1081,7 +1105,7 @@ fn vv10_internal_screened(
         pairs_near += nn;
         pairs_far += nf;
         let exc_g = beta + 0.5 * f_g;
-        exc[g] = exc_g;
+        de_dw[g] = rho[g] * (beta + f_g);
         vrho[g] = beta + f_g + 1.5 * (u_g * dk_dr[g] + w_g * dw0_dr[g]);
         vsig[g] = 1.5 * w_g * dw0_dg[g];
         e_nl += grid[g].weight * rho[g] * exc_g;
@@ -1090,7 +1114,7 @@ fn vv10_internal_screened(
         e_nl,
         vrho,
         vsig,
-        exc,
+        de_dw,
         active,
         pairs_near,
         pairs_far,
