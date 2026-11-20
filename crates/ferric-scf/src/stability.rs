@@ -1114,6 +1114,25 @@ pub enum StabilitySkip {
     /// prevent — so a KS reference is refused here. The INTERNAL (singlet)
     /// verdict is unaffected and is still computed.
     TripletXcKernel,
+    /// The SCF ran in a responsive environment: PCM or COSMO implicit
+    /// solvent, or polarizable embedding. Each adds a density-dependent
+    /// reaction-field term to the converged Fock, and neither orbital
+    /// Hessian here has the matching response term. A verdict would describe
+    /// the vacuum Hessian at the solvated density, and a descent would follow
+    /// it, so both are skipped.
+    Solvent,
+}
+
+/// `Err(StabilitySkip::Solvent)` when `config` puts the SCF in a responsive
+/// environment (PCM, COSMO or polarizable embedding). The one gate shared by
+/// the RHF and UHF/UKS stability checks; static point charges have no
+/// response and are not refused.
+pub fn environment_is_analysable(config: &crate::rhf::RhfConfig) -> Result<(), StabilitySkip> {
+    if config.pcm.is_some() || config.cosmo.is_some() || config.polarizable.is_some() {
+        Err(StabilitySkip::Solvent)
+    } else {
+        Ok(())
+    }
 }
 
 impl StabilitySkip {
@@ -1143,6 +1162,12 @@ impl StabilitySkip {
                  needs the XC response kernel f_aa - f_ab, while the closed-shell FxcResponse \
                  in this workspace supplies the singlet combination f_aa + f_ab; the external \
                  check is refused rather than analysing the HF triplet Hessian at a KS density"
+            }
+            StabilitySkip::Solvent => {
+                "the SCF ran with PCM/COSMO implicit solvent or polarizable embedding, whose \
+                 reaction-field response the orbital Hessian does not include, so the verdict \
+                 (and any descent from it) would belong to the vacuum Hessian, not to the \
+                 solvated solution"
             }
         }
     }
