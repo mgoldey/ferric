@@ -612,9 +612,11 @@ plain integral mask the estimate is 0.91–0.96 of the true error and the
 upper bound 1.09–1.92 of it. With the Fock screen (the default) the
 remaining error is smaller and less concentrated near the threshold, so the
 estimate drops to 0.19–0.65 of the error and the upper bound rises to 4–8×.
-The certificate costs about 0.1 s on these molecules. The derivation and
-the octane and naphthalene tables are in the theory book
-(§lmp2-mask-certificate).
+The certificate costs about 0.1 s on these molecules. On octane and
+naphthalene (ε = 1e-3 to 1e-7) every bound encloses the error, the upper
+bound is 1.25–9.3× the error, and the certificate costs 0.45–1.5× the
+masked solve: plan for it to roughly double the solve time. The derivation
+and the full tables are in the theory book (§lmp2-mask-certificate).
 
 ### Local VV-HV build
 
