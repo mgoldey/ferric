@@ -14,10 +14,11 @@ LIB_BAR = 5e-13 (the round trip moves these energies by ~5e-14), far below
 the sibling distances (>= 6e-5 Ha: PBE for SCAN, SCAN for r2SCAN, UKS for
 ROKS, dense for RS-GDF).
 
-The force and stress of these routes stay refused by name (the k-point ROKS
-meta-GGA derivatives are library work in progress, #586; the Gamma open-shell
-meta-GGA ones do not exist; the UKS RS-GDF ones are not wired):
-test_pbc_open_shell_mgga_rsh.py, test_pbc_kpoint_open_shell_and_stress.py.
+The k-point ROKS SCAN / r2SCAN force and stress (dense-AFT J/K) are wired:
+test_pbc_kroks_mgga_derivs.py. The other derivatives of these routes stay
+refused by name (the Gamma open-shell meta-GGA ones do not exist; the UKS
+RS-GDF ones are not wired): test_pbc_open_shell_mgga_rsh.py,
+test_pbc_kpoint_open_shell_and_stress.py.
 """
 
 from __future__ import annotations

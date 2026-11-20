@@ -6005,7 +6005,7 @@
   },
   "crates/ferric-cli/src/config_doc_tests.rs::accepted_keys_by_section": {
     "cc": 1.0,
-    "mi": 80.15697445000772
+    "mi": 75.1
   },
   "crates/ferric-cli/src/config_doc_tests.rs::cli_readme_lists_the_dispatched_kinds_and_tasks": {
     "cc": 6.0,

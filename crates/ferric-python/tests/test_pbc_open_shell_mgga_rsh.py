@@ -227,10 +227,12 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
         r"force and stress are validated for HSE06 / CAM-B3LYP",
     ):
         _uks(H3_SCAN_ATOMS, lat, basis, wb, (1, 1, 2), with_stress=True)
+    # The k-point ROKS SCAN force runs on the dense J/K (#498,
+    # test_pbc_kroks_mgga_derivs.py); on RS-GDF the energy gate refuses it.
     with pytest.raises(
         ValueError,
-        match=r"^run_roks_kpts: with_gradient: .*SCAN: the k-point ROKS meta-GGA "
-        r"force and stress",
+        match=r'^run_roks_kpts: functional "SCAN": the k-point ROKS SCAN / r2SCAN '
+        r"energy is validated on the dense-AFT J/K only",
     ):
         ferric.run_roks_kpts(
             _mol(H3_SCAN_ATOMS, 2),
@@ -240,6 +242,8 @@ def test_derivatives_roks_and_gamma_meta_gga_stay_refused(basis):
             (1, 1, 2),
             omega=OMEGA,
             with_gradient=True,
+            jk="rsgdf",
+            auxbasis="cc-pvdz-ri",
         )
     with pytest.raises(ValueError, match="validated for HSE06 / CAM-B3LYP"):
         ferric.run_uks_gamma(
