@@ -61,7 +61,11 @@ _WIDTHS = {
 @pytest.mark.parametrize("widths", list(_WIDTHS), ids=list(_WIDTHS))
 @pytest.mark.parametrize(
     "basis, operator, omega",
-    [("cc-pvdz", "coulomb", None), ("cc-pvdz", "erfc", 0.4), ("cc-pvtz", "coulomb", None)],
+    [
+        ("cc-pvdz", "coulomb", None),
+        ("cc-pvdz", "erfc", 0.4),
+        ("cc-pvtz", "coulomb", None),
+    ],
     ids=["ccpvdz-coulomb", "ccpvdz-erfc", "ccpvtz-coulomb"],
 )
 def test_ao2mo_matches_dense_eri_contraction(basis, operator, omega, widths):
