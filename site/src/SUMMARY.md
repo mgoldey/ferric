@@ -21,6 +21,7 @@
 - [Training data for ML potentials](./using/mlip.md)
 - [QCSchema input and output](./using/qcschema.md)
 - [End-to-end applications](./using/applications.md)
+- [The stack: ferric, smeltery, attestation](./stack.md)
 - [For automated agents](./using/agents.md)
 
 # Methods
