@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The DIIS error vector F D S - S D F, its stationarity, and the DIIS system.
 
-Derivation: `book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation`. Code: crates/ferric-scf/src/diis.rs (Diis), called from the
+Derivation: `book/src/08-convergence/01-diis.md#diis-error-vector-extrapolation`
+and `#diis-variants` (energy-DIIS interpolant). Code: crates/ferric-scf/src/diis.rs (Diis), called from the
 SCF loops of rhf.rs, uhf.rs and rohf.rs.
 
 Conventions: closed shell D = 2 C_o C_o^T, F = h + J[D] - K[D]/2,
@@ -38,11 +39,30 @@ n = 6, 2 doubly occupied orbitals):
       virtual eigenvalues by mu and leaves the density unchanged.
   F1  Fermi-Dirac smearing (smearing.rs): the bisected Fermi level holds
       N/2 orbital pairs at several sigma; sigma -> 0 gives aufbau occupations.
-  E1  EDIIS interpolant: for idempotent occupation-2 D_i and F_i = F(D_i),
+  E3  EDIIS interpolant, matrix form: for idempotent occupation-2 D_i and F_i = F(D_i),
       E(sum_i c_i D_i) = g^T c + 1/4 c^T H c on sum_i c_i = 1, with g_i = E_i
       and H_ij = -<D_i - D_j, F_i - F_j>; the occupation-1 form P_i = D_i/2
-      carries 1/2; the factor 1/2 on the occupation-2 H (diis.rs
-      EnergyDiis today) does not reproduce E.
+      carries 1/2; 1/2 on the occupation-2 H (the factor diis.rs used
+      before the -1/4 fix) does not reproduce E.
+Energy-DIIS interpolant (diis.rs EnergyDiis, book section diis-variants):
+  S4  For E(D) = <h, D> + <D, G D>/2 with G linear and symmetric and
+      F = dE/dD, and sum_i c_i = 1 (3 points, symbolic):
+      E(sum c_i D_i) = sum c_i E_i - 1/4 sum_ij c_i c_j <D_i - D_j, F_i - F_j>.
+      The pairing <dD, dF> is invariant under D -> lambda D with F -> F /
+      lambda, so the -1/4 holds for any normalization of D provided F is
+      the gradient with respect to that D; Kudin-Scuseria-Cances' -1/2 is the
+      same identity written with a Fock matrix that is HALF the gradient
+      (per-spin closed-shell P = D/2 has dE/dP = 2F).
+  S5  ADIIS (Hu-Yang) about the newest point n: E(sum c_i D_i) = E_n +
+      <dD, F_n> + 1/2 sum_ij c_i c_j <D_i - D_n, F_j - F_n>; diis.rs stores
+      twice this (g_i = 2<D_i - D_n, F_n>), which does not move the minimizer.
+  E1  Toy RHF (total density, F = h + J - K/2): the diis.rs EDIIS model
+      g = E, H_ij = -1/2 <D_i - D_j, F_i - F_j>, f = g.c + c.H.c/2, equals
+      energy_rhf(sum c_i D_i) to 1e-10 at random convex c over 4 densities
+      along a DIIS trajectory; the ADIIS model satisfies E_n + f/2 = E.
+  E2  Toy UHF: with per-spin D_s, F_s = dE/dD_s and <., .> summed over
+      spins the same -1/4 holds (EDIIS is RHF-only in ferric; this records
+      what an open-shell port must use).
 
 B_ij is the elementwise (Frobenius) product of the AO error matrices, as in
 diis.rs; UHF stacks the two spins in one Gram matrix and applies one
@@ -54,8 +74,9 @@ one-occurrence substitutions):
   diis_solve: border column +1 -> -1                 (N3 fails)
   uhf_error: per-spin D_s -> total D                 (N5 fails)
   mo_gradient: 4 f_ai -> 2 f_ai                      (N1 fails)
-  ediis: EDIIS_QUAD 0.25 -> 0.5                      (E1 fails)
+  ediis: EDIIS_QUAD 0.25 -> 0.5                      (E3 fails)
   fermi_level: bisection branch > -> <               (F1 fails)
+  ediis_objective: H factor -1/2 -> -1               (E1 fails)
 Exits nonzero if any check fails; prints "FAIL [<claim>] ...".
 """
 
@@ -174,6 +195,57 @@ def symbolic_checks():
         for x in (c0, c1, c2)
     )
     check("[S3] bordered DIIS system gives the constrained minimum, lam = -c^T B c", ok)
+
+    # S4/S5: a quadratic functional on a 2-dimensional "density" space.
+    gm = sym("G", 2)
+    hv = sp.Matrix(sp.symbols("h0 h1", real=True))
+    pts = [sp.Matrix(sp.symbols(f"x{i}0 x{i}1", real=True)) for i in range(3)]
+
+    def e_q(x):
+        return (hv.T * x)[0] + (x.T * gm * x)[0] / 2
+
+    def f_q(x):  # dE/dx
+        return hv + gm * x
+
+    c2 = 1 - c0 - c1
+    cs3 = [c0, c1, c2]
+    xc = sum((ci * xi for ci, xi in zip(cs3, pts)), sp.zeros(2, 1))
+    lin = sum(ci * e_q(xi) for ci, xi in zip(cs3, pts))
+    quad = sum(
+        cs3[i] * cs3[j] * ((pts[i] - pts[j]).T * (f_q(pts[i]) - f_q(pts[j])))[0]
+        for i in range(3)
+        for j in range(3)
+    )
+    check(
+        "[S4] E(sum c D) = sum c E - 1/4 sum cc <dD, dF>",
+        sp.expand(e_q(xc) - lin + quad / 4) == 0,
+    )
+    # Same identity in the rescaled variable P = D/2 with "Fock" F = (dE/dP)/2:
+    # <dP, dF> = <dD, dE/dD>/4 ... i.e. the -1/2 of Kudin-Scuseria-Cances.
+    quad_p = sum(
+        cs3[i] * cs3[j] * ((pts[i] - pts[j]).T / 2 * (f_q(pts[i]) - f_q(pts[j])))[0]
+        for i in range(3)
+        for j in range(3)
+    )
+    check(
+        "[S4] per-spin P = D/2, F = grad/2: the factor is -1/2",
+        sp.expand(e_q(xc) - lin + quad_p / 2) == 0,
+    )
+    n = pts[2]
+    adiis = (
+        e_q(n)
+        + ((xc - n).T * f_q(n))[0]
+        + sum(
+            cs3[i] * cs3[j] * ((pts[i] - n).T * (f_q(pts[j]) - f_q(n)))[0]
+            for i in range(3)
+            for j in range(3)
+        )
+        / 2
+    )
+    check(
+        "[S5] ADIIS Taylor model about the newest point is exact",
+        sp.expand(e_q(xc) - adiis) == 0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -436,13 +508,104 @@ def numerical_checks():
             ]
         )
         ok = ok and abs(g @ c + 0.5 * c @ hp @ c - exact) < 1e-10
-        # diis.rs puts 1/2 on the occupation-2 H: it misses by 1/4 c^T H c
+        # 1/2 on the occupation-2 H (the pre-fix diis.rs) misses by 1/4 c^T H c
         ok = ok and abs(g @ c + 0.5 * c @ h @ c - exact) > 1e-6
-    check("[E1] EDIIS: E(sum c D) = g.c + 1/4 c^T H c (occupation-2 D)", ok)
+    check("[E3] EDIIS: E(sum c D) = g.c + 1/4 c^T H c (occupation-2 D)", ok)
+
+
+def ediis_objective(es, ds, fs):
+    """diis.rs EnergyDiis (EDIIS): g_i = E_i, H_ij = -1/2 <D_i - D_j, F_i - F_j>."""
+    m = len(es)
+    h = np.zeros((m, m))
+    for i in range(m):
+        for j in range(m):
+            h[i, j] = -0.5 * np.sum((ds[i] - ds[j]) * (fs[i] - fs[j]))
+    return np.array(es), h
+
+
+def adiis_objective(ds, fs):
+    """diis.rs EnergyDiis (ADIIS), newest point last."""
+    dn, fn = ds[-1], fs[-1]
+    g = np.array([2.0 * np.sum((d - dn) * fn) for d in ds])
+    h = np.array([[2.0 * np.sum((di - dn) * (fj - fn)) for fj in fs] for di in ds])
+    return g, h
+
+
+def simplex_objective(g, h, c):
+    return g @ c + 0.5 * c @ h @ c
+
+
+def energy_diis_checks():
+    r = np.random.default_rng(7)
+    # A DIIS-free Roothaan trajectory from the core guess: 4 idempotent densities.
+    ds, fs, es = [], [], []
+    d = density(diag(H)[1])
+    for _ in range(4):
+        f = fock_rhf(d)
+        ds.append(d)
+        fs.append(f)
+        es.append(energy_rhf(d))
+        d = density(diag(f)[1])
+    g, h = ediis_objective(es, ds, fs)
+    ga, ha = adiis_objective(ds, fs)
+    worst, worst_a, spread = 0.0, 0.0, 0.0
+    for _ in range(6):
+        c = r.random(4) + 0.05
+        c /= c.sum()
+        exact = energy_rhf(sum(ci * di for ci, di in zip(c, ds)))
+        worst = max(worst, abs(simplex_objective(g, h, c) - exact))
+        worst_a = max(worst_a, abs(es[-1] + 0.5 * simplex_objective(ga, ha, c) - exact))
+        spread = max(spread, abs(exact - c @ np.array(es)))
+    check(
+        "[E1] EDIIS model == E_RHF(sum c D); ADIIS E_n + f/2 == E",
+        worst < 1e-10 and worst_a < 1e-10 and spread > 1e-3,
+        f"edis {worst:.2e} adiis {worst_a:.2e} quad part {spread:.2e}",
+    )
+
+    def fock_uhf(da, db):
+        j = jk(da + db)[0]
+        ka, kb = jk(da)[1], jk(db)[1]
+        return H + j - ka, H + j - kb
+
+    def energy_uhf(da, db):
+        fa, fb = fock_uhf(da, db)
+        return 0.5 * (np.sum(da * (H + fa)) + np.sum(db * (H + fb)))
+
+    pts = []
+    for _ in range(4):
+        da = r.normal(size=(N, N)) * 0.2
+        db = r.normal(size=(N, N)) * 0.2
+        da, db = da + da.T, db + db.T
+        fa, fb = fock_uhf(da, db)
+        pts.append((da, db, fa, fb, energy_uhf(da, db)))
+    c = r.random(4) + 0.05
+    c /= c.sum()
+    dca = sum(ci * p[0] for ci, p in zip(c, pts))
+    dcb = sum(ci * p[1] for ci, p in zip(c, pts))
+    quad = sum(
+        c[i]
+        * c[j]
+        * (
+            np.sum((pts[i][0] - pts[j][0]) * (pts[i][2] - pts[j][2]))
+            + np.sum((pts[i][1] - pts[j][1]) * (pts[i][3] - pts[j][3]))
+        )
+        for i in range(4)
+        for j in range(4)
+    )
+    model = c @ np.array([p[4] for p in pts]) - 0.25 * quad
+    exact = energy_uhf(dca, dcb)
+    err = abs(model - exact)
+    spread = abs(exact - c @ np.array([p[4] for p in pts]))
+    check(
+        "[E2] UHF per-spin: the factor is also -1/4",
+        err < 1e-10 * max(1.0, abs(exact)) and spread > 1e-3,
+        f"{err:.2e} (quad part {spread:.2e})",
+    )
 
 
 symbolic_checks()
 numerical_checks()
+energy_diis_checks()
 if failures:
     print(f"{len(failures)} check(s) failed")
     sys.exit(1)

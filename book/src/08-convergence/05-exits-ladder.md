@@ -94,7 +94,10 @@ its own guard, the swap witness behind `NotCertified`.
 The energy-DIIS veto exists because the energy model of section
 @sec:diis-variants can settle the density far from a stationary point: the
 simplex minimum stops moving while the commutator is still large (issue
-#422). Pulay alone has no veto bound, so the default path is untouched. The
+#422). With the exact EDIIS model none of 72 EDIIS runs and 24 ADIIS runs
+of water, CH3Br and benzene in point-charge fields stalls; the veto is kept
+as a guard and tested directly (unit test on `veto_stalled_energy_diis`). Pulay
+alone has no veto bound, so the default path is untouched. The
 doc comment of `DiisDriver::commutator_veto_bound` records the price at a
 user switch at or below the density-fitting commutator floor (about
 $10^{-6}$): the veto can fire on a converged run and cost 3 extra Pulay

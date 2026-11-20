@@ -272,29 +272,30 @@ $c_i \ge 0$, $\sum_ic_i = 1$:
 
 | Flavor | $g_i$ | $H_{ij}$ |
 |---|---|---|
-| EDIIS | $E_i$ | $-\langle D_i - D_j, F_i - F_j\rangle$ |
+| EDIIS | $E_i$ | $-\tfrac12\langle D_i - D_j, F_i - F_j\rangle$ |
 | ADIIS | $2\langle D_i - D_n, F_n\rangle$ | $2\langle D_i - D_n, F_j - F_n\rangle$ |
 
-For idempotent densities with occupation 2 (ferric's $D = 2C_oC_o^{\mathsf T}$)
-and $F_i = F(D_i)$, the energy of the mixed density is exactly quadratic in
-$c$. Write $E(D) = \operatorname{tr}[Dh] + \tfrac12\operatorname{tr}[DG(D)]$
-with $G$ linear and $F = h + G(D)$; on $\sum_ic_i = 1$,
+For Hartree–Fock the EDIIS model is exact. Write
+$E(D) = \operatorname{tr}[Dh] + \tfrac12\operatorname{tr}[DG(D)]$ with $G$
+linear and $F = \partial E/\partial D = h + G(D)$, where $D$ is the total
+(occupation-2) density of this book. On $\sum_ic_i = 1$,
 
-$$ E\Big(\sum_ic_iD_i\Big) = \sum_ic_iE_i - \tfrac14\sum_{ij}c_ic_j\langle D_i - D_j, F_i - F_j\rangle = g^{\mathsf T}c + \tfrac14c^{\mathsf T}Hc $$
+$$ E\Big(\sum_ic_iD_i\Big) = \sum_ic_iE_i - \tfrac14\sum_{ij}c_ic_j\langle D_i - D_j, F_i - F_j\rangle = g^{\mathsf T}c + \tfrac12c^{\mathsf T}Hc $$
 
-with the EDIIS $g$ and $H$ of the table. The literature form, with
-$-\tfrac12$ in front of the double sum, is the same identity written for
-occupation-1 densities $P_i = D_i/2$. `EnergyDiis` minimizes
-$g^{\mathsf T}c + \tfrac12c^{\mathsf T}Hc$ with the occupation-2 $H$, so its
-model counts the density-spread term twice. That moves the minimizer on the
-simplex, not the converged energy: the model only steers the iterations until
-$\max\lvert e\rvert$ falls below `diis_switch_thresh`, and Pulay finishes.
-Claim E1 of
-`scripts/scf_diis_sympy.py` checks the $\tfrac14$ form against
-$E(\sum_ic_iD_i)$ to $10^{-10}$ on random idempotent densities, the
-occupation-1 form with $\tfrac12$, and that $\tfrac12$ on the occupation-2 $H$
-misses. For ADIIS the factor 2 in $g$ and $H$ multiplies the whole model and
-does not move its minimizer.
+with the EDIIS $g$ and $H$ of the table. The pairing
+$\langle\Delta D, \Delta F\rangle$ does not change when $D$ is rescaled, as
+long as $F$ is the gradient with respect to that $D$. Kudin, Scuseria and
+Cancès write the factor as $-\tfrac12$ because their Fock matrix is half the
+gradient of their density variable. For Kohn–Sham the Coulomb and
+exact-exchange part stays exact, and $\langle\Delta D, \Delta V_{xc}\rangle$
+is a secant estimate of the curvature of $E_{xc}$ along each chord. ADIIS
+stores twice its second-order model about the newest point, which is exact
+for Hartree–Fock; the factor 2 multiplies the whole model and does not move
+its minimizer. The anchors are
+`diis::tests::ediis_model_equals_hf_energy_of_the_interpolated_density`
+(water/6-31G, six convex points, below $10^{-9}$ Ha) and claims S4, S5, E1
+and E2 of `scripts/scf_diis_sympy.py`; E2 shows the same $-\tfrac14$ for
+per-spin UHF densities, which an open-shell EDIIS would need.
 
 Here $n$ is the newest entry. The code removes the inequality constraints by
 the substitution $c_i = t_i^2/\sum_kt_k^2$, which satisfies both for any real
@@ -340,7 +341,7 @@ that the stability descent of section @sec:stability then reaches.
 
 | Source | Used for |
 |---|---|
-| `scripts/scf_diis_sympy.py` | verified equations @eq:scf-diis-error and @eq:scf-diis-system; claim E1 for the EDIIS interpolant |
+| `scripts/scf_diis_sympy.py` | verified equations @eq:scf-diis-error and @eq:scf-diis-system; claims S4, S5, E1–E3 for the EDIIS and ADIIS models |
 | `crates/ferric-scf/src/diis.rs` | the system and its shrink rule |
 | `site/src/reference/validation.md` | the ladder anchor |
 | P. Pulay, Chem. Phys. Lett. 73, 393 (1980); P. Pulay, J. Comput. Chem. 3, 556 (1982) | DIIS |

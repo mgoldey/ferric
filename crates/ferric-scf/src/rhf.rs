@@ -5811,6 +5811,37 @@ mod tests {
     const D_CONV: f64 = 1e-6;
 
     /// The bound is sqrt(dconv) above the ROHF F6 floor and the floor below it.
+    /// The #422 veto at function level (its end-to-end witness, a stalled
+    /// EDIIS in a point-charge field, disappeared with the corrected EDIIS
+    /// curvature in 2026-11): a `Converged` exit with the commutator at or above
+    /// the crossover is refused, recorded and the driver falls back to Pulay; a
+    /// smaller commutator, a non-converged exit and pure Pulay pass through.
+    #[test]
+    fn veto_refuses_a_converged_exit_above_the_energy_diis_crossover() {
+        use crate::diis::{DiisDriver, DiisFlavor};
+        let mut e = DiisDriver::new(DiisFlavor::Ediis, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut e, 0.5, 5, DiisFlavor::Ediis);
+        assert_eq!(exit, None);
+        let fb = fb.expect("the refusal is recorded");
+        assert_eq!((fb.iteration, fb.flavor, fb.bound), (5, "EDIIS", 1e-1));
+        assert_eq!(fb.err_max, 0.5);
+        assert!(!e.uses_energy_history(), "the driver fell back to Pulay");
+
+        let mut e = DiisDriver::new(DiisFlavor::Adiis, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut e, 0.05, 5, DiisFlavor::Adiis);
+        assert_eq!((exit, fb.is_none()), (Some(ScfExit::Converged), true));
+        let (exit, fb) = veto_stalled_energy_diis(None, &mut e, 0.5, 5, DiisFlavor::Adiis);
+        assert_eq!((exit, fb.is_none()), (None, true));
+        assert!(e.uses_energy_history());
+
+        let mut p = DiisDriver::new(DiisFlavor::Pulay, 8, 1e-1);
+        let (exit, fb) =
+            veto_stalled_energy_diis(Some(ScfExit::Converged), &mut p, 0.5, 5, DiisFlavor::Pulay);
+        assert_eq!((exit, fb.is_none()), (Some(ScfExit::Converged), true));
+    }
+
     #[test]
     fn gradient_veto_bound_is_sqrt_dconv_floored_at_1e_minus_3() {
         assert_eq!(gradient_veto_bound(1e-4), 1e-2);

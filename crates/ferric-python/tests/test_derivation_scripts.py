@@ -2341,11 +2341,16 @@ CASES = [
                 "return f + mu * scv @ scv.T @ s",
                 "FAIL [L1]",
             ),
-            ("EDIIS_QUAD = 0.25", "EDIIS_QUAD = 0.5", "FAIL [E1]"),
+            ("EDIIS_QUAD = 0.25", "EDIIS_QUAD = 0.5", "FAIL [E3]"),
             (
                 "if fermi_dirac(eps, mid, sigma).sum() > n_pairs:",
                 "if fermi_dirac(eps, mid, sigma).sum() < n_pairs:",
                 "FAIL [F1]",
+            ),
+            (
+                "h[i, j] = -0.5 * np.sum((ds[i] - ds[j]) * (fs[i] - fs[j]))",
+                "h[i, j] = -1.0 * np.sum((ds[i] - ds[j]) * (fs[i] - fs[j]))",
+                "FAIL [E1]",
             ),
         ],
     ),
