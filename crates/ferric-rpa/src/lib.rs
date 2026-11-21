@@ -101,7 +101,8 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
+use ferric_mp2::omega_ri::RiFit;
+use ferric_mp2::rimp2::{compute_rpa_intermediates_fitted, RiMp2Config};
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 
@@ -583,6 +584,49 @@ pub fn run_pdep_rpa(
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
+    run_pdep_rpa_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// Refuse the [`PdepRpaConfig`] options that rebuild Coulomb-fitted
+/// 3-index quantities outside the dressed `b_ov` (the Boys-screened chi0
+/// recomputes its own fit), so a non-Coulomb fit can never be silently
+/// mixed with a Coulomb one.
+fn check_fit_supported(
+    fit: &RiFit,
+    config: &PdepRpaConfig,
+    natoms: usize,
+    who: &str,
+) -> Result<(), FerricError> {
+    if fit.is_coulomb() {
+        return Ok(());
+    }
+    if !matches!(config.chi0_sparsity.resolve(natoms), Chi0Sparsity::Dense) {
+        return Err(FerricError::General(format!(
+            "{who}: the {} fit supports chi0_sparsity = dense only (the Boys-screened chi0 \
+             builds its own Coulomb-fitted 3-index tensor)",
+            fit.label()
+        )));
+    }
+    Ok(())
+}
+
+/// [`run_pdep_rpa`] with an explicit RI fitting metric. `RiFit::OmegaRi`
+/// is omega-RI RPA (Luenser, Schurkus, Ochsenfeld, JCTC 13, 1647 (2017)):
+/// the 3-index integrals are erfc(omega r)/r-attenuated and the fit is
+/// dressed by `V~^-1 V V~^-1` ([`ferric_mp2::omega_ri::fit_dressing`]), so
+/// everything after `b_ov` is the unchanged full-rank PDEP-RPA. `omega = 0`
+/// is the Coulomb fit.
+#[allow(clippy::too_many_arguments)]
+pub fn run_pdep_rpa_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+    fit: &RiFit,
+) -> Result<PdepRpaResult, FerricError> {
+    check_fit_supported(fit, config, mol.atoms.len(), "PDEP-RPA")?;
     // Bound at FUNCTION scope: the planes stay resident through
     // `compute_rpa_intermediates` and the whole
     // `run_pdep_rpa_from_intermediates` solve below.
@@ -603,7 +647,7 @@ pub fn run_pdep_rpa(
         ..Default::default()
     };
     let _t_setup = crate::timing::Stage::start("pdep:rpa_intermediates(ERI3+metric+MOtransform)");
-    let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let inter = compute_rpa_intermediates_fitted(mol, obs, dfbs, op, rhf, &mp2_cfg, fit)?;
     _t_setup.end();
     run_pdep_rpa_from_intermediates(&inter, mol, obs, dfbs, op, rhf, config)
 }
@@ -1434,8 +1478,24 @@ pub fn run_u_pdep_rpa(
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
-    use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+    run_u_pdep_rpa_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`run_u_pdep_rpa`] with an explicit RI fitting metric (see
+/// [`run_pdep_rpa_fitted`]).
+#[allow(clippy::too_many_arguments)]
+pub fn run_u_pdep_rpa_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+    fit: &RiFit,
+) -> Result<PdepRpaResult, FerricError> {
+    use ferric_mp2::rimp2::compute_rpa_intermediates_spin_fitted;
     use ferric_scf::Spin;
+    check_fit_supported(fit, config, mol.atoms.len(), "U-PDEP-RPA")?;
 
     if matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -1524,8 +1584,10 @@ pub fn run_u_pdep_rpa(
         memory_budget_bytes: config.memory_budget_bytes,
         ..Default::default()
     };
-    let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
-    let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
+    let inter_a =
+        compute_rpa_intermediates_spin_fitted(mol, obs, dfbs, op, rhf, &mp2_cfg, true, fit)?;
+    let inter_b =
+        compute_rpa_intermediates_spin_fitted(mol, obs, dfbs, op, rhf, &mp2_cfg, false, fit)?;
     debug_assert_eq!(inter_a.naux, inter_b.naux);
     u_pdep_rpa_from_intermediates(&inter_a, &inter_b, rhf, config)
 }
