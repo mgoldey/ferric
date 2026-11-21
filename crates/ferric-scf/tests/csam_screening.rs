@@ -605,6 +605,10 @@ fn csam_screening_computes_fewer_quartets_than_schwarz_on_default_path() {
         integral_thresh: 1e-9,
         density_conv: 1e-7,
         k_builder: None, // the DEFAULT path — DirectJK, not LinK.
+        // Integral-direct: the in-core route (`EriMode::Auto`, default since
+        // 2026-11-15) stores this system's ERIs once and never consults the
+        // screening table or `integral_thresh`, so it would compare nothing.
+        eri: ferric_scf::incore_jk::EriMode::Direct,
         ..Default::default()
     };
 
@@ -659,6 +663,10 @@ fn csam_screening_rhf_energy_matches_schwarz_on_default_path() {
         density_conv: 1e-9,
         integral_thresh: 1e-14,
         k_builder: None, // the DEFAULT path.
+        // Integral-direct: the in-core route (`EriMode::Auto`, default since
+        // 2026-11-15) stores this system's ERIs once and never consults the
+        // screening table or `integral_thresh`, so it would compare nothing.
+        eri: ferric_scf::incore_jk::EriMode::Direct,
         ..Default::default()
     };
 
@@ -718,7 +726,13 @@ fn schwarz_screening_default_path_is_byte_identical_to_pre_csam_behavior() {
         "compute_for_screening(.., Schwarz) must produce the identical q table as compute()"
     );
 
-    let config = RhfConfig::default();
+    let config = RhfConfig {
+        // Integral-direct: the in-core route (`EriMode::Auto`, default since
+        // 2026-11-15) stores this system's ERIs once and never consults the
+        // screening table or `integral_thresh`, so it would compare nothing.
+        eri: ferric_scf::incore_jk::EriMode::Direct,
+        ..Default::default()
+    };
     let res_plain = solve_rhf(&ctx, &mol, &prep, op, &bounds_plain, &config)
         .expect("RHF (plain SchwarzBounds::compute) solve");
     let res_via_kind = solve_rhf(&ctx, &mol, &prep, op, &bounds_via_kind, &config)
@@ -887,6 +901,10 @@ fn csam_energy_error_shrinks_with_the_screening_threshold() {
             integral_thresh: thresh,
             density_conv: 1e-10,
             k_builder: None, // DEFAULT path
+            // Integral-direct: the in-core route (`EriMode::Auto`, default since
+            // 2026-11-15) stores this system's ERIs once and never consults the
+            // screening table or `integral_thresh`, so it would compare nothing.
+            eri: ferric_scf::incore_jk::EriMode::Direct,
             ..Default::default()
         };
         let b_schwarz = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz)
