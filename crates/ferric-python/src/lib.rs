@@ -43,7 +43,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::RohfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
-use ferric_scf::{PreparedAux, PreparedSystem};
+use ferric_scf::{EcpMolecule, PrepareOptions, PreparedAux, PreparedSystem};
 // NOTE: the spin-orbital `ferric_cc::ccsd::ccsd` is deliberately NOT imported
 // here. A closed-shell `run_ccsd` / `run_ccsd_t` takes the spin-adapted
 // solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
