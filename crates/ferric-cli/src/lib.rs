@@ -2777,8 +2777,7 @@ fn run_rimp2(
         ..Default::default()
     };
     let mp2_result =
-        ferric_mp2::rimp2::ri_mp2_fitted(mol, prep, &dfbs, op, result, &mp2_config, &fit)
-            .or_exit();
+        ferric_mp2::rimp2::ri_mp2_fitted(mol, prep, &dfbs, op, result, &mp2_config, &fit).or_exit();
     println!("{}", model_label("RI-MP2", None));
     if !fit.is_coulomb() {
         println!("  RI fit     = {}", fit.label());
@@ -5387,7 +5386,11 @@ fn run_omega_ri_cdd(
     println!("  {r}");
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
-            if sos { "laplace-sos-mp2" } else { "laplace-mp2" },
+            if sos {
+                "laplace-sos-mp2"
+            } else {
+                "laplace-mp2"
+            },
             r.total_energy,
             serde_json::json!({
                 "e_corr": r.e_corr,
@@ -5671,10 +5674,10 @@ fn run_pdep_rpa_arm(
             &rpa_cfg,
             &cfg.ri_fit().or_exit(),
         )
-            .unwrap_or_else(|e| {
-                eprintln!("error (U-PDEP-RPA): {e}");
-                std::process::exit(1);
-            });
+        .unwrap_or_else(|e| {
+            eprintln!("error (U-PDEP-RPA): {e}");
+            std::process::exit(1);
+        });
         let reference = ferric_scf::certificate::with_scf_envelope(
             scf_certificate_stamped(mol, &uhf_result, &uhf_cfg, None),
             mol,

@@ -59,7 +59,9 @@ struct Sys {
 }
 
 fn setup(system: &str) -> Sys {
-    let xyz = root().join("testdata/molecules/validation").join(format!("{system}.xyz"));
+    let xyz = root()
+        .join("testdata/molecules/validation")
+        .join(format!("{system}.xyz"));
     let mol = Molecule::load_xyz(xyz.to_str().unwrap()).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
@@ -73,7 +75,12 @@ fn setup(system: &str) -> Sys {
     };
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged);
-    Sys { mol, obs, dfbs, rhf }
+    Sys {
+        mol,
+        obs,
+        dfbs,
+        rhf,
+    }
 }
 
 fn canonical(s: &Sys, fit: RiFit) -> (f64, f64) {
@@ -164,7 +171,10 @@ fn untruncated_cdd_equals_mo_laplace_at_omega_zero() {
                 ..Default::default()
             },
         );
-        eprintln!("n_quad={n_quad}: CDD {:.12} MO-Laplace {e_mo:.12}", r.e_corr);
+        eprintln!(
+            "n_quad={n_quad}: CDD {:.12} MO-Laplace {e_mo:.12}",
+            r.e_corr
+        );
         assert!((r.e_corr - e_mo).abs() < 1e-10, "{} vs {e_mo}", r.e_corr);
         let sos = laplace_sos_mp2(
             &s.mol,
@@ -256,7 +266,10 @@ fn screening_and_truncation_are_exact_at_zero_and_act_when_set() {
         rt.mean_rank_vir,
         rt.nvir
     );
-    assert!(rt.mean_rank_vir < rt.nvir as f64, "cdd_tol did not truncate");
+    assert!(
+        rt.mean_rank_vir < rt.nvir as f64,
+        "cdd_tol did not truncate"
+    );
     assert!((rt.e_corr - r0.e_corr).abs() < 1e-5);
     assert!((rs.e_corr - r0.e_corr).abs() < 1e-6);
 }

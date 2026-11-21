@@ -1048,8 +1048,7 @@ pub fn ri_mp2_spin_components_fitted(
 ) -> Result<(SpinComponents, Array2<f64>), FerricError> {
     if !fit.is_coulomb() && config.metric_op.is_some() {
         return Err(FerricError::General(
-            "RI-MP2: the omega-RI fit and RiMp2Config::metric_op are mutually exclusive"
-                .into(),
+            "RI-MP2: the omega-RI fit and RiMp2Config::metric_op are mutually exclusive".into(),
         ));
     }
     let nbas = obs.nbasis();

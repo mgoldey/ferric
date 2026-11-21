@@ -91,9 +91,17 @@ fn cfg() -> PdepRpaConfig {
 }
 
 fn e(s: &Sys, fit: RiFit) -> f64 {
-    run_pdep_rpa_fitted(&s.mol, &s.obs, &s.dfbs, Operator::coulomb(), &s.rhf, &cfg(), &fit)
-        .unwrap()
-        .e_rpa
+    run_pdep_rpa_fitted(
+        &s.mol,
+        &s.obs,
+        &s.dfbs,
+        Operator::coulomb(),
+        &s.rhf,
+        &cfg(),
+        &fit,
+    )
+    .unwrap()
+    .e_rpa
 }
 
 #[test]
@@ -141,9 +149,17 @@ fn open_shell_fitted_path_equals_closed_shell_for_a_closed_shell_molecule() {
     let u = setup("h2o", true);
     let fit = RiFit::omega_ri(0.1).unwrap();
     let e_r = e(&r, fit);
-    let e_u = run_u_pdep_rpa_fitted(&u.mol, &u.obs, &u.dfbs, Operator::coulomb(), &u.rhf, &cfg(), &fit)
-        .unwrap()
-        .e_rpa;
+    let e_u = run_u_pdep_rpa_fitted(
+        &u.mol,
+        &u.obs,
+        &u.dfbs,
+        Operator::coulomb(),
+        &u.rhf,
+        &cfg(),
+        &fit,
+    )
+    .unwrap()
+    .e_rpa;
     let e_uc = run_u_pdep_rpa_fitted(
         &u.mol,
         &u.obs,

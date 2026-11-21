@@ -5667,9 +5667,7 @@ impl Config {
             ("cdd_pair_thresh", self.mp2.cdd_pair_thresh),
         ]
         .into_iter()
-        .filter_map(|(k, v)| {
-            v.map(|_| k)
-        })
+        .filter_map(|(k, v)| v.map(|_| k))
         .collect();
         if !cdd_keys.is_empty() && !lap {
             return Err(format!(

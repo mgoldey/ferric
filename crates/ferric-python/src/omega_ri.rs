@@ -87,7 +87,9 @@ pub(crate) fn run_omega_ri(
     let cdd = matches!(method, "cdd-mp2" | "cdd-sos-mp2");
     refuse(
         !matches!(method, "rimp2" | "cdd-mp2" | "cdd-sos-mp2" | "rpa"),
-        &format!("method = {method:?}; expected \"rimp2\", \"cdd-mp2\", \"cdd-sos-mp2\" or \"rpa\""),
+        &format!(
+            "method = {method:?}; expected \"rimp2\", \"cdd-mp2\", \"cdd-sos-mp2\" or \"rpa\""
+        ),
     )?;
     refuse(
         !cdd && (n_quad.is_some() || cdd_tol.is_some()),

@@ -78,7 +78,10 @@ impl RiFit {
     /// `omega_bohr > 0` (the papers' recommendation is 0.1; there is no
     /// silent default, because the right value is an accuracy choice). An
     /// `omega_bohr` with the Coulomb metric is an error, not an ignored knob.
-    pub fn parse_config(metric: Option<&str>, omega_bohr: Option<f64>) -> Result<Self, FerricError> {
+    pub fn parse_config(
+        metric: Option<&str>,
+        omega_bohr: Option<f64>,
+    ) -> Result<Self, FerricError> {
         match metric {
             None | Some("coulomb") => {
                 if let Some(w) = omega_bohr {
@@ -166,7 +169,9 @@ impl RiFit {
 /// Bytes [`fit_dressing`] holds at its peak for an omega-RI fit: `V`, `V~`,
 /// the Cholesky factor of `V~`, and the solve's output, all `naux x naux`.
 pub fn omega_ri_dressing_peak_bytes(naux: usize) -> usize {
-    naux.saturating_mul(naux).saturating_mul(8).saturating_mul(5)
+    naux.saturating_mul(naux)
+        .saturating_mul(8)
+        .saturating_mul(5)
 }
 
 /// The 3-index operator and the dressing `D` for a fit, so that the dressed
@@ -235,7 +240,9 @@ mod tests {
         let mut s = seed;
         let mut a = Array2::<f64>::zeros((n, n));
         for v in a.iter_mut() {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *v = ((s >> 11) as f64 / (1u64 << 53) as f64) - 0.5;
         }
         let mut m = a.t().dot(&a);

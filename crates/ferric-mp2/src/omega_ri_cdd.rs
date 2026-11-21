@@ -192,10 +192,11 @@ pub fn pivoted_cholesky_factored(g: &Array2<f64>, tol: f64) -> (Vec<usize>, Arra
     let mut cols: Vec<ndarray::Array1<f64>> = Vec::with_capacity(m);
     let mut pivots = Vec::with_capacity(m);
     for _ in 0..m {
-        let (p, &dp) = d
-            .iter()
-            .enumerate()
-            .fold((0, &f64::NEG_INFINITY), |b, x| if x.1 > b.1 { x } else { b });
+        let (p, &dp) =
+            d.iter().enumerate().fold(
+                (0, &f64::NEG_INFINITY),
+                |b, x| if x.1 > b.1 { x } else { b },
+            );
         if !(dp > floor) {
             break;
         }
@@ -335,7 +336,9 @@ pub fn screened_exchange(
                 }
                 acc.1 += 1;
                 let smax = sa.iter().cloned().fold(0.0f64, f64::max);
-                let keep: Vec<usize> = (0..nv).filter(|&a| sa[a] * smax >= schwarz_thresh).collect();
+                let keep: Vec<usize> = (0..nv)
+                    .filter(|&a| sa[a] * smax >= schwarz_thresh)
+                    .collect();
                 acc.3 += keep.len();
                 if keep.is_empty() {
                     continue;
@@ -427,8 +430,15 @@ pub fn omega_ri_cdd_mp2(
     // Memory preflight: B_ov, one transformed B(t), and the exchange's
     // per-occupied slab copy, all (naux, nocc*nvir) at most.
     let budget = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
-    let nov_bytes = naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(8);
-    let planes = if matches!(config.energy, CddEnergy::Mp2) { 3 } else { 2 };
+    let nov_bytes = naux
+        .saturating_mul(nocc)
+        .saturating_mul(nvir)
+        .saturating_mul(8);
+    let planes = if matches!(config.energy, CddEnergy::Mp2) {
+        3
+    } else {
+        2
+    };
     ferric_core::memory::check_alloc(
         &format!(
             "omega-RI-CDD (naux={naux}, nocc={nocc}, nvir={nvir}; {planes} (naux, nocc*nvir) planes)"
@@ -457,7 +467,15 @@ pub fn omega_ri_cdd_mp2(
     let (mut ro_sum, mut rv_sum) = (0usize, 0usize);
     let (mut pk, mut pt, mut vk, mut vt) = (0usize, 0usize, 0usize, 0usize);
     for (&t, &w) in quad.points.iter().zip(&quad.weights) {
-        let f = cdd_factors(&c_occ, &c_vir, &eps_occ, &eps_vir, eps_f, t, config.orbitals);
+        let f = cdd_factors(
+            &c_occ,
+            &c_vir,
+            &eps_occ,
+            &eps_vir,
+            eps_f,
+            t,
+            config.orbitals,
+        );
         let (ro, rv) = (f.x_occ.ncols(), f.x_vir.ncols());
         ro_sum += ro;
         rv_sum += rv;
@@ -558,7 +576,10 @@ mod tests {
         let b = rand_mat(naux, no * nv, 9);
         let (k, pk, pt, vk, vt) = screened_exchange(&b, no, nv, 0.0, 0.0);
         let want = crate::laplace::laplace_exchange_energy(&b, naux, no, nv, 1 << 20);
-        assert!((k - want).abs() < 1e-12 * want.abs().max(1.0), "{k} vs {want}");
+        assert!(
+            (k - want).abs() < 1e-12 * want.abs().max(1.0),
+            "{k} vs {want}"
+        );
         assert_eq!((pk, vk), (pt, vt));
         // a positive pair threshold drops something
         let (_, pk2, _, _, _) = screened_exchange(&b, no, nv, 0.0, 1e6);

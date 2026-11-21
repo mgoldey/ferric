@@ -1319,7 +1319,8 @@ fn jk_storage_places_the_tensor_without_changing_the_energy() {
 
 // ─── [ri] (omega-RI fit) ────────────────────────────────────────────────────
 
-const OMEGA_RI: &str = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n";
+const OMEGA_RI: &str =
+    "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n";
 
 fn omega_ri_lib() -> (Lib, ScfResult, PreparedBasis) {
     let l = lib("water.xyz", 1, "cc-pvdz");
@@ -1340,7 +1341,10 @@ fn omega_ri_rimp2_and_cdd_shifts_match_the_library() {
     let fit = RiFit::omega_ri(0.1).unwrap();
     let plain = format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\n");
     let cli = |tag: &str, kind: &str, extra: &str, label: &str| {
-        value(&run_ok(tag, &body("water.xyz", 1, "cc-pvdz", kind, extra)), label)
+        value(
+            &run_ok(tag, &body("water.xyz", 1, "cc-pvdz", kind, extra)),
+            label,
+        )
     };
     let mp2 = |f: &RiFit| {
         ferric_mp2::rimp2::ri_mp2_fitted(
@@ -1357,8 +1361,12 @@ fn omega_ri_rimp2_and_cdd_shifts_match_the_library() {
     };
     let lib_shift = mp2(&fit) - mp2(&RiFit::Coulomb);
     assert!(lib_shift.abs() > 1e-6);
-    let cli_shift = cli("omega_ri_rimp2", "rimp2", &format!("{TIGHT}{OMEGA_RI}"), "MP2 corr")
-        - cli("omega_ri_rimp2_c", "rimp2", &plain, "MP2 corr");
+    let cli_shift = cli(
+        "omega_ri_rimp2",
+        "rimp2",
+        &format!("{TIGHT}{OMEGA_RI}"),
+        "MP2 corr",
+    ) - cli("omega_ri_rimp2_c", "rimp2", &plain, "MP2 corr");
     assert_close("omega-RI rimp2 shift", cli_shift, lib_shift, 1e-9);
 
     let cdd = ferric_mp2::omega_ri_cdd::omega_ri_cdd_mp2(
@@ -1376,9 +1384,19 @@ fn omega_ri_rimp2_and_cdd_shifts_match_the_library() {
     let lap = ferric_mp2::laplace::LaplaceMp2::new(7)
         .compute_mo(&l.mol, &l.prep, &dfbs, Operator::coulomb(), &r, 0)
         .unwrap();
-    let cli_cdd = cli("omega_ri_cdd", "laplace-mp2", &format!("{TIGHT}{OMEGA_RI}"), "omega-RI-CDD total");
+    let cli_cdd = cli(
+        "omega_ri_cdd",
+        "laplace-mp2",
+        &format!("{TIGHT}{OMEGA_RI}"),
+        "omega-RI-CDD total",
+    );
     let cli_lap = cli("omega_ri_lap_c", "laplace-mp2", &plain, "Total");
-    assert_close("omega-RI-CDD shift", cli_cdd - cli_lap, cdd.e_corr - lap, 1e-9);
+    assert_close(
+        "omega-RI-CDD shift",
+        cli_cdd - cli_lap,
+        cdd.e_corr - lap,
+        1e-9,
+    );
 }
 
 /// `[ri]` on `pdep-rpa` moves the energy by the library's omega-RI shift
@@ -1388,9 +1406,24 @@ fn omega_ri_pdep_rpa_shift_matches_the_library() {
     use ferric_mp2::omega_ri::RiFit;
     let (l, r, dfbs) = omega_ri_lib();
     let base = format!("{TIGHT}[mp2]\nauxbasis = \"cc-pvdz-ri\"\n");
-    let e_c = value(&run_ok("omega_ri_rpa_c", &body("water.xyz", 1, "cc-pvdz", "pdep-rpa", &base)), "RPA correlation");
+    let e_c = value(
+        &run_ok(
+            "omega_ri_rpa_c",
+            &body("water.xyz", 1, "cc-pvdz", "pdep-rpa", &base),
+        ),
+        "RPA correlation",
+    );
     let e_w = value(
-        &run_ok("omega_ri_rpa_w", &body("water.xyz", 1, "cc-pvdz", "pdep-rpa", &format!("{TIGHT}{OMEGA_RI}"))),
+        &run_ok(
+            "omega_ri_rpa_w",
+            &body(
+                "water.xyz",
+                1,
+                "cc-pvdz",
+                "pdep-rpa",
+                &format!("{TIGHT}{OMEGA_RI}"),
+            ),
+        ),
         "RPA correlation",
     );
     let cfg = ferric_rpa::config::PdepRpaConfig::default();
@@ -1400,7 +1433,10 @@ fn omega_ri_pdep_rpa_shift_matches_the_library() {
             .e_rpa
     };
     let shift = e(&RiFit::omega_ri(0.1).unwrap()) - e(&RiFit::Coulomb);
-    assert!(shift.abs() > 1e-7, "negative control: the fit must move the energy");
+    assert!(
+        shift.abs() > 1e-7,
+        "negative control: the fit must move the energy"
+    );
     assert_close("omega-RI RPA shift", e_w - e_c, shift, 1e-9);
 }
 
