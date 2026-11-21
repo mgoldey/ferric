@@ -2400,29 +2400,15 @@ fn compute_mp2_intermediates_impl(
 /// L^{-1} V L^{-T} = I, i.e., L^{-1} acts as V^{-1/2}.
 pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // One-time (naux, naux) setup factorization, called once per RI-MP2/RPA/GW
-    // intermediates build, outside any rayon region. Opt-in BLAS raise via
-    // FERRIC_BLAS_THREADS (default: the rayon pool size; 1 on a rayon worker);
-    // opt_in_blas_threads()'s rayon-worker self-guard also covers any caller
-    // reached from inside a rayon pool. The forward-substitution triangular
-    // solve below stays untouched (scalar, deliberately serial — see
-    // docs/parallelism-gaps-2026-07-09.md's "deliberately serial" list).
-    let l = with_blas_threads(opt_in_blas_threads(), || v.cholesky(UPLO::Lower))
-        .map_err(|e| FerricError::Lapack(format!("Cholesky on (P|Q): {e}")))?;
-    let n = l.nrows();
-    // Forward-substitution to invert lower-triangular L
-    let mut l_inv = Array2::zeros((n, n));
-    for i in 0..n {
-        l_inv[(i, i)] = 1.0 / l[(i, i)];
-        for j in (0..i).rev() {
-            let mut sum = 0.0;
-            for k in j..i {
-                sum += l[(i, k)] * l_inv[(k, j)];
-            }
-            l_inv[(i, j)] = -sum / l[(i, i)];
-        }
-    }
-    // V^{-1/2} = L^{-1} (so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb))
-    Ok(l_inv)
+    // intermediates build, outside any rayon region. LAPACK dpotrf + dtrtri
+    // (ferric_core::linalg::cholesky_inverse_lower) under the opt-in BLAS raise
+    // (FERRIC_BLAS_THREADS, default the rayon pool size; 1 on a rayon worker,
+    // which also covers a caller reached from inside a rayon pool).
+    //
+    // V^{-1/2} = L^{-1}, so that B = L^{-1} (Q|ia) and B^T B = (ia|P) V^{-1} (Q|jb).
+    with_blas_threads(opt_in_blas_threads(), || {
+        ferric_core::linalg::cholesky_inverse_lower(v)
+    })
 }
 
 /// Compute a SYMMETRIC V^{-1/2} via regularized eigendecomposition with canonical
