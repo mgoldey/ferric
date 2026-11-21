@@ -55,7 +55,8 @@
 //! # Cost
 //!
 //! With `T = {(i,a): a ∈ V_i}`, the per-point Gram is one `naux × |T| × naux`
-//! GEMM and the whitening is one `naux × naux × |T|` GEMM. `|T| = Σ_i |V_i|`
+//! GEMM and the whitening is one `naux × naux × |T|` triangular solve
+//! (Cholesky of the metric, then BLAS3 `trsm`). `|T| = Σ_i |V_i|`
 //! grows linearly with system size at fixed radius, against `no·nv` (MO path)
 //! or `nao²` (AO paths). The `naux²` factor stays: with the Coulomb metric the
 //! aux Gram is dense (1/R tails), and removing it needs a local metric or
@@ -556,11 +557,8 @@ pub fn sos_local_energy(
 
     let t2 = Instant::now();
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
-    let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
+    let h_hat = crate::rimp2::cholesky_whiten(&v2c, h)?;
     drop(v2c);
-    let h_hat = v_inv_sqrt.dot(&h);
-    drop(h);
-    drop(v_inv_sqrt);
     st.t_whiten = t2.elapsed().as_secs_f64();
 
     st.t_size_geom = st.t_size;

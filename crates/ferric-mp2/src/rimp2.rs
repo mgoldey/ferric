@@ -2411,6 +2411,22 @@ pub fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError
     })
 }
 
+/// `L⁻¹ H` for the RI metric `V = L Lᵀ`, by one LAPACK Cholesky and one BLAS3
+/// triangular solve, with no explicit inverse: half the flops of forming
+/// [`cholesky_inverse_sqrt`] and then a GEMM. `h` is consumed and overwritten
+/// in place. Same opt-in BLAS raise as [`cholesky_inverse_sqrt`]; call it
+/// outside rayon regions.
+pub fn cholesky_whiten(v: &Array2<f64>, h: Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::{Diag, SolveTriangularInto};
+    with_blas_threads(opt_in_blas_threads(), || {
+        let l = v
+            .cholesky(UPLO::Lower)
+            .map_err(|e| FerricError::Lapack(format!("Cholesky on (P|Q): {e}")))?;
+        l.solve_triangular_into(UPLO::Lower, Diag::NonUnit, h)
+            .map_err(|e| FerricError::Lapack(format!("whitening L X = H: {e}")))
+    })
+}
+
 /// Compute a SYMMETRIC V^{-1/2} via regularized eigendecomposition with canonical
 /// orthogonalization (drop modes with λ < `LINDEP_THRESH`).
 ///
