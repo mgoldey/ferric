@@ -52,7 +52,7 @@ mod ffi {
         pub fn xc_functional_get_number(name: *const c_char) -> c_int;
 
         /// Override a functional's built-in external parameters. Signature from
-        /// libxc 5.2.3 `src/xc.h`:
+        /// libxc `xc.h` (identical in 5.2.3 and the pinned 7.0.0):
         /// ```c
         /// void xc_func_set_ext_params(xc_func_type *p, const double *ext_params);
         /// ```
@@ -80,7 +80,7 @@ mod ffi {
             number: c_int,
         ) -> f64;
 
-        // `np` is `size_t` in the libxc 5.x C header; `usize` has identical
+        // `np` is `size_t` in the libxc C header (5.x through 7.0); `usize` has identical
         // size and alignment on all supported targets (LP64 Linux x86_64 / aarch64).
         /// LDA energy density and first derivative (exc, vrho) at `np` grid points.
         pub fn xc_lda_exc_vxc(
@@ -103,7 +103,7 @@ mod ffi {
         );
 
         /// Meta-GGA exc + first derivatives. Signature verified against the
-        /// libxc 5.2.3 `/usr/include/xc.h` this crate links:
+        /// `xc.h` of libxc 7.0.0 (the pin) and 5.2.3 (identical):
         /// ```c
         /// void xc_mgga_exc_vxc(const xc_func_type *p, size_t np,
         ///      const double *rho, const double *sigma,
@@ -155,7 +155,7 @@ mod ffi {
         );
 
         /// Second functional derivatives of a meta-GGA. Signature verified
-        /// against the libxc 5.2.3 `/usr/include/xc.h` this crate links:
+        /// against the `xc.h` of libxc 7.0.0 (the pin) and 5.2.3 (identical):
         /// ```c
         /// void xc_mgga_fxc(const xc_func_type *p, size_t np,
         ///      const double *rho, const double *sigma, const double *lapl, const double *tau,
@@ -204,7 +204,18 @@ mod ffi {
         /// values written are zero (per libxc convention) and the caller
         /// should treat (0, 0) as "no VV10".
         pub fn xc_nlc_coef(p: *const XcFuncOpaque, nlc_b: *mut f64, nlc_c: *mut f64);
+
+        /// Version of the libxc library loaded at run time (not the header).
+        pub fn xc_version(major: *mut c_int, minor: *mut c_int, micro: *mut c_int);
     }
+}
+
+/// `(major, minor, micro)` of the libxc library loaded at run time.
+pub fn libxc_version() -> (i32, i32, i32) {
+    let (mut major, mut minor, mut micro) = (0, 0, 0);
+    // SAFETY: xc_version only writes the three ints it is given.
+    unsafe { ffi::xc_version(&mut major, &mut minor, &mut micro) };
+    (major, minor, micro)
 }
 
 // ---------------------------------------------------------------------------
@@ -442,7 +453,7 @@ impl std::fmt::Debug for XcFunctional {
 }
 
 /// Global mutex serializing libxc's non-thread-safe init/destroy operations.
-/// libxc 5.x is documented as thread-safe for *evaluation* (xc_*_exc_vxc) but
+/// libxc (5.x-7.x) is documented as thread-safe for *evaluation* (xc_*_exc_vxc) but
 /// NOT for initialization — xc_func_alloc and xc_func_init mutate shared
 /// internal tables. Without serialization, concurrent `XcFunctional::new`
 /// calls SIGSEGV.
@@ -455,7 +466,7 @@ impl XcFunctional {
 
         // Serialize all libxc state-mutating calls (lookup + alloc + init) so
         // concurrent test threads cannot trample each other. Evaluation calls
-        // (xc_lda_exc_vxc / xc_gga_exc_vxc) are not under this lock — libxc 5.x
+        // (xc_lda_exc_vxc / xc_gga_exc_vxc) are not under this lock — libxc
         // documents those as thread-safe on initialized handles.
         //
         // NOTE: everything from the lookup through `alloc_and_init_unlocked`
@@ -887,7 +898,7 @@ impl XcFunctional {
     ///   `rho[2g+0]   = ρ_α`,  `rho[2g+1]   = ρ_β`
     ///   `sigma[3g+0] = σ_αα`, `sigma[3g+1] = σ_αβ`, `sigma[3g+2] = σ_ββ`
     ///
-    /// Outputs (libxc symmetric-pack ordering; the linked libxc 5.2.3 reports
+    /// Outputs (libxc symmetric-pack ordering; libxc 5.2.3 and 7.0.0 report
     /// 3 / 6 / 6 components per point in `xc_func_type::dim` for a polarized
     /// GGA, and PySCF `dft/libxc.py` documents the same layout):
     ///   `v2rho2[3g+0]      = ∂²E/∂ρ_α∂ρ_α`
@@ -1476,7 +1487,7 @@ const FRIENDLY_NAMES: &[FriendlyEntry] = &[
     (&["TPSSH"], &["HYB_MGGA_XC_TPSSH"]),
     (&["M062X"], &["HYB_MGGA_X_M06_2X", "MGGA_C_M06_2X"]),
     (&["SCAN0"], &["HYB_MGGA_X_SCAN0", "MGGA_C_SCAN"]),
-    // libxc >= 6 only (an older libxc reports an unknown name).
+    // libxc >= 6.1 (ferric pins 7.0.0; an older libxc reports an unknown name).
     (&["R2SCAN0"], &["HYB_MGGA_XC_R2SCAN0"]),
     (&["WB97MV"], &["HYB_MGGA_XC_WB97M_V"]),
     // --- hybrid / RSH (single combined identifier) ---
@@ -1495,7 +1506,7 @@ const FRIENDLY_NAMES: &[FriendlyEntry] = &[
 /// Recognized friendly names: `LDA`/`SVWN`, `PBE`, `PBEsol`, `BLYP`, `BP86`,
 /// `PBE0`, `B3LYP`, `HSE06`, `wB97X-V`, the pure meta-GGAs `SCAN`, `r2SCAN`,
 /// `TPSS`, and the hybrid meta-GGAs `TPSSh`, `M06-2X`, `SCAN0`, `r2SCAN0`
-/// (libxc >= 6) and `wB97M-V` (case/separator-insensitive). Any other name is
+/// (libxc >= 6.1) and `wB97M-V` (case/separator-insensitive). Any other name is
 /// passed to libxc verbatim, so canonical identifiers (e.g. `HYB_GGA_XC_PBEH`,
 /// `HYB_MGGA_XC_TPSSH`) also work. Meta-GGAs (raw or friendly) take their
 /// exact-exchange fraction and range separation from libxc and are refused
@@ -1976,6 +1987,23 @@ fn family_from_component_id(id: &str) -> FunctionalFamily {
 mod tests {
     use super::*;
 
+    /// The libxc loaded at run time is the pinned major (7;
+    /// `scripts/wheels/native-pins.env`). An older libxc still links, since
+    /// every entry point ferric calls has kept its signature since 5.x, but
+    /// it lacks the r2SCAN hybrids (libxc 6.1) and runs different kernels
+    /// from the ones the PySCF reference JSONs were generated with (PySCF
+    /// 2.13 bundles libxc 7.0.0). This catches a stale system libxc picked
+    /// up by the linker.
+    #[test]
+    fn linked_libxc_is_the_pinned_major() {
+        let v = libxc_version();
+        assert_eq!(
+            v.0, 7,
+            "linked libxc is {v:?}, expected 7.x: build it with scripts/install-libxc.sh \
+             and set LIBXC_PREFIX (crates/ferric-dft/build.rs)"
+        );
+    }
+
     /// PBE0 is libxc HYB_GGA_XC_PBEH, not HYB_GGA_XC_PBE0 (which does not
     /// exist). The friendly name "PBE0" must resolve and be a plain hybrid
     /// with ~25% exact exchange.
@@ -2088,7 +2116,7 @@ mod tests {
 
     /// Hybrid meta-GGAs read their exact-exchange fraction from libxc: TPSSh
     /// 0.10 (one combined component), M06-2X 0.54 (on the exchange component of
-    /// an X + C pair), SCAN0 0.25. Every component is tagged MetaGga (τ path)
+    /// an X + C pair), SCAN0 and r2SCAN0 0.25. Every component is tagged MetaGga (τ path)
     /// and none is range-separated.
     #[test]
     fn hybrid_metagga_reads_exact_exchange_from_libxc() {
@@ -2097,6 +2125,7 @@ mod tests {
             ("M06-2X", 2, 0.54),
             ("m062x", 2, 0.54),
             ("SCAN0", 2, 0.25),
+            ("r2SCAN0", 1, 0.25),
             ("HYB_MGGA_XC_TPSSH", 1, 0.10),
         ] {
             for nspin in [1, 2] {

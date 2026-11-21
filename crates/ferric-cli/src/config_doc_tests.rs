@@ -84,43 +84,51 @@ pub(super) fn fields_of<T: DeserializeOwned>() -> BTreeSet<&'static str> {
         .collect()
 }
 
-/// The accepted keys of every TOML table the input reference documents,
-/// keyed by the table name as written in a heading (`scf.ladder` for the
-/// `[[scf.ladder]]` array of tables).
+/// Every TOML table the input reference documents, with the config struct
+/// whose serde fields are its accepted keys. Keyed by the table name as
+/// written in a heading (`scf.ladder` for the `[[scf.ladder]]` array of
+/// tables). A new `[section]` is one row here.
+const SECTION_FIELDS: &[(&str, fn() -> BTreeSet<&'static str>)] = &[
+    ("molecule", fields_of::<MoleculeCfg>),
+    ("basis", fields_of::<BasisCfg>),
+    ("method", fields_of::<MethodCfg>),
+    ("scf", fields_of::<ScfCfg>),
+    ("scf.ladder", fields_of::<LadderRungCfg>),
+    ("dft", fields_of::<DftCfg>),
+    ("mp2", fields_of::<Mp2Cfg>),
+    ("cc", fields_of::<CcCfg>),
+    ("eom", fields_of::<EomCfg>),
+    ("cas", fields_of::<CasCfg>),
+    ("cas.ci", fields_of::<CasCiCfg>),
+    ("opmp3", fields_of::<crate::opmp3::Opmp3Cfg>),
+    ("cdft", fields_of::<CdftCfg>),
+    ("cdft.constraint", fields_of::<CdftConstraintCfg>),
+    ("local", fields_of::<LocalCfg>),
+    ("ri", fields_of::<RiCfg>),
+    ("rpa", fields_of::<RpaCfg>),
+    ("gw", fields_of::<GwCfg>),
+    ("tddft", fields_of::<TddftCfg>),
+    ("optimize", fields_of::<OptimizeCfg>),
+    ("frequencies", fields_of::<FrequenciesCfg>),
+    ("md", fields_of::<MdCfg>),
+    ("memory", fields_of::<MemoryCfg>),
+    ("parallel", fields_of::<ParallelCfg>),
+    ("gpu", fields_of::<GpuCfg>),
+    ("precision", fields_of::<PrecisionCfg>),
+    ("output", fields_of::<OutputCfg>),
+    ("qmmm", fields_of::<QmmmCfg>),
+    ("cosmo", fields_of::<ferric_scf::cosmo::CosmoConfig>),
+    ("pcm", fields_of::<PcmCfg>),
+    ("external_potential", fields_of::<ExternalPotentialCfg>),
+    ("cell", fields_of::<CellCfg>),
+];
+
+/// The accepted keys of every table in [`SECTION_FIELDS`].
 fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> {
-    BTreeMap::from([
-        ("molecule", fields_of::<MoleculeCfg>()),
-        ("basis", fields_of::<BasisCfg>()),
-        ("method", fields_of::<MethodCfg>()),
-        ("scf", fields_of::<ScfCfg>()),
-        ("scf.ladder", fields_of::<LadderRungCfg>()),
-        ("dft", fields_of::<DftCfg>()),
-        ("mp2", fields_of::<Mp2Cfg>()),
-        ("cc", fields_of::<CcCfg>()),
-        ("eom", fields_of::<EomCfg>()),
-        ("cas", fields_of::<CasCfg>()),
-        ("cas.ci", fields_of::<CasCiCfg>()),
-        ("opmp3", fields_of::<crate::opmp3::Opmp3Cfg>()),
-        ("cdft", fields_of::<CdftCfg>()),
-        ("cdft.constraint", fields_of::<CdftConstraintCfg>()),
-        ("local", fields_of::<LocalCfg>()),
-        ("rpa", fields_of::<RpaCfg>()),
-        ("gw", fields_of::<GwCfg>()),
-        ("tddft", fields_of::<TddftCfg>()),
-        ("optimize", fields_of::<OptimizeCfg>()),
-        ("frequencies", fields_of::<FrequenciesCfg>()),
-        ("md", fields_of::<MdCfg>()),
-        ("memory", fields_of::<MemoryCfg>()),
-        ("parallel", fields_of::<ParallelCfg>()),
-        ("gpu", fields_of::<GpuCfg>()),
-        ("precision", fields_of::<PrecisionCfg>()),
-        ("output", fields_of::<OutputCfg>()),
-        ("qmmm", fields_of::<QmmmCfg>()),
-        ("cosmo", fields_of::<ferric_scf::cosmo::CosmoConfig>()),
-        ("pcm", fields_of::<PcmCfg>()),
-        ("external_potential", fields_of::<ExternalPotentialCfg>()),
-        ("cell", fields_of::<CellCfg>()),
-    ])
+    SECTION_FIELDS
+        .iter()
+        .map(|&(table, fields)| (table, fields()))
+        .collect()
 }
 
 /// `#[serde(alias = ...)]` names, per table. serde lists aliases among a
@@ -231,7 +239,7 @@ fn input_reference_documents_exactly_the_accepted_keys() {
         let Some(keys) = accepted.get(sec.table.as_str()) else {
             problems.push(format!(
                 "input.md documents [{}], which this test does not map to a config struct; \
-                 add it to accepted_keys_by_section()",
+                 add it to SECTION_FIELDS",
                 sec.table
             ));
             continue;

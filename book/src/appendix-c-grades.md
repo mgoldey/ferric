@@ -28,16 +28,16 @@ The Energy column is the kind's grade. `task = "optimize"` and `task = "frequenc
 | `uhf` | [7](07-hartree-fock/index.md), [8](08-convergence/index.md), [22](22-implicit-solvation/index.md) | `run_uhf`, `run_frequencies(reference="uhf", xc=..., dispersion=...)` | Proven | Proven | Proven |
 | `rohf` | [7](07-hartree-fock/index.md), [8](08-convergence/index.md), [22](22-implicit-solvation/index.md) | `run_rohf`, `run_frequencies(reference="rohf", xc=..., dispersion=...)` | Proven | Proven | Proven |
 | `ksdft` | [9](09-kohn-sham/index.md), [22](22-implicit-solvation/index.md), [25](25-dispersion/index.md) | `run_dft` / `run_ksdft`, `run_frequencies(xc=..., dispersion=...)` | Proven | Proven | Proven |
-| `rimp2` | [10](10-mp2/index.md), [13](13-local-mp2/index.md) | `run_rimp2` (UHF + UMP2 when multiplicity > 1), `run_optimize(method="rimp2")`, `run_frequencies(method="rimp2")` (RHF, or UHF when multiplicity > 1) | Proven | Proven | Proven (narrow) |
+| `rimp2` | [6](06-density-fitting/index.md), [10](10-mp2/index.md), [13](13-local-mp2/index.md) | `run_rimp2` (UHF + UMP2 when multiplicity > 1), `run_optimize(method="rimp2")`, `run_frequencies(method="rimp2")` (RHF, or UHF when multiplicity > 1) | Proven | Proven | Proven (narrow) |
 | `mp3` | [10](10-mp2/index.md) | `run_mp3` | Proven | not graded | not graded |
 | `oo-rimp2` | MP2 | `run_oo_rimp2` (closed shell only), `run_optimize(method="oo-rimp2")`, `run_frequencies(method="oo-rimp2")` (closed shell) | Proven (narrow) | Proven (narrow) | not graded |
 | `att-rimp2` | [4](04-operators/index.md), [10](10-mp2/index.md), [13](13-local-mp2/index.md), [15](15-correlated-gradients/index.md) | `run_attenuated_rimp2`, `run_optimize(method="att-rimp2")`, `run_frequencies(method="att-rimp2")` (RHF or UHF) | Proven | Proven (narrow) | not graded |
 | `mp2-v` | [9](09-kohn-sham/index.md), [10](10-mp2/index.md) | `run_mp2_v` (closed shell only) | Proven (narrow) | not graded | not graded |
 | `scs-mp2` | [10](10-mp2/index.md) | `run_scs_mp2`, `run_optimize(method="scs-mp2")`, `run_frequencies(method="scs-mp2")` (closed shell) | Proven | Proven (narrow) | not graded |
 | `scs-mp2-2terfc` | [10](10-mp2/index.md), [15](15-correlated-gradients/index.md) | `run_scs_mp2_2terfc`, `run_optimize(method="scs-mp2-2terfc")`, `run_frequencies(method="scs-mp2-2terfc")` (RHF or UHF) | Proven (narrow) | Proven (narrow) | not graded |
-| `laplace-mp2` | MP2 | `run_laplace_mp2` | Proven | not graded | not graded |
-| `laplace-sos-mp2` | MP2 | `run_laplace_sos_mp2` | Proven | not graded | not graded |
-| `pdep-rpa` | [18](18-rpa/index.md), [21](21-polarizabilities/index.md), [22](22-implicit-solvation/index.md), [25](25-dispersion/index.md) | `run_pdep_rpa` (closed shell only; open-shell U-PDEP-RPA is CLI-only; `with_gradient=True` returns the analytic gradient), `run_optimize(method="pdep-rpa")`, `run_frequencies(method="pdep-rpa")` | Proven | Proven | Proven (narrow) |
+| `laplace-mp2` | [6](06-density-fitting/index.md) | `run_laplace_mp2` | Proven | not graded | not graded |
+| `laplace-sos-mp2` | [6](06-density-fitting/index.md) | `run_laplace_sos_mp2` | Proven | not graded | not graded |
+| `pdep-rpa` | [6](06-density-fitting/index.md), [18](18-rpa/index.md), [21](21-polarizabilities/index.md), [22](22-implicit-solvation/index.md), [25](25-dispersion/index.md) | `run_pdep_rpa` (closed shell only; open-shell U-PDEP-RPA is CLI-only; `with_gradient=True` returns the analytic gradient), `run_optimize(method="pdep-rpa")`, `run_frequencies(method="pdep-rpa")` | Proven | Proven | Proven (narrow) |
 | `rs-mp2-rpa` | [6](06-density-fitting/index.md), [26](26-rs-mp2-rpa/index.md) | `run_rs_mp2_rpa` | Proven | not graded | not graded |
 | `gw` | [18](18-rpa/index.md), [20](20-gw-bse/index.md) | `run_gw`, `run_u_gw` | Proven (narrow) | not graded | not graded |
 | `bse-tda` | [19](19-tddft/index.md), [20](20-gw-bse/index.md) | `run_bse_tda` | Smoke | not graded | not graded |

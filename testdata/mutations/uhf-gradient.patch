@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/gradient.rs b/crates/ferric-scf/src/gradient.rs
+index e887cdf6e..9bbec1567 100644
+--- a/crates/ferric-scf/src/gradient.rs
++++ b/crates/ferric-scf/src/gradient.rs
+@@ -2066,7 +2066,7 @@ pub(crate) fn gamma_uhf(
+     sg: usize,
+ ) -> f64 {
+     0.5 * d[(mu, nu)] * d[(la, sg)]
+-        - 0.5 * (da[(mu, la)] * da[(nu, sg)] + db[(mu, la)] * db[(nu, sg)])
++        - 0.5 * (da[(mu, la)] * da[(nu, sg)] + da[(mu, la)] * db[(nu, sg)])
+ }
+ 
+ /// Build the UHF energy-weighted density `W = W_α + W_β`, with

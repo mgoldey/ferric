@@ -92,7 +92,7 @@ jobs:
           persist-credentials: false
 
       # NATIVE DEPS: the release wheels' own from-source builds (libint2 2.7.2
-      # small export, static; OpenBLAS with a fixed TARGET; libxc 6.2.2; Eigen
+      # small export, static; OpenBLAS with a fixed TARGET; libxc 7.0.0; Eigen
       # 3.4.0), restored from the actions/cache entries
       # .github/workflows/native-deps-macwin.yml saves (keys from
       # scripts/wheels/native-cache-key.sh, the one definition both use).
@@ -268,7 +268,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       # NATIVE DEPS: the release wheels' own from-source builds (libint2 2.7.2
-      # small export, static; OpenBLAS with a fixed TARGET; libxc 6.2.2; Eigen
+      # small export, static; OpenBLAS with a fixed TARGET; libxc 7.0.0; Eigen
       # 3.4.0), restored from the actions/cache entries
       # .github/workflows/native-deps-macwin.yml saves (keys from
       # scripts/wheels/native-cache-key.sh, the one definition both use).

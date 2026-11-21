@@ -1,0 +1,18 @@
+# Canonical RI-MP2 with the omega-RI (erfc-attenuated) fitting metric
+# (Glasbrenner, Graf, Ochsenfeld, JCTC 16, 6856 (2020)). omega -> 0 is the
+# Coulomb fit; at 0.1 Bohr^-1 the fit error is ~2e-6 Eh for water.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+
+[ri]
+metric = "erfc"
+omega_bohr = 0.1

@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-dft/src/gradient/screened.rs b/crates/ferric-dft/src/gradient/screened.rs
+index c474fe336..9714dbea0 100644
+--- a/crates/ferric-dft/src/gradient/screened.rs
++++ b/crates/ferric-dft/src/gradient/screened.rs
+@@ -776,7 +776,7 @@ fn closed_batch(
+     for g in 0..nb {
+         if crate::vxc::above_density_floor(rho[g], floor) {
+             t_rho[g] = bp.weights[g] * vrho_total[g];
+-            t_sig[g] = bp.weights[g] * 2.0 * vsigma_total[g];
++            t_sig[g] = bp.weights[g] * vsigma_total[g];
+             t_tau[g] = bp.weights[g] * vtau_total[g];
+         }
+     }

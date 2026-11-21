@@ -78,6 +78,7 @@ mod gw;
 mod integrals;
 mod md;
 mod mp2;
+mod omega_ri;
 mod opmp3;
 mod pbc;
 mod pdep_properties;
@@ -97,6 +98,7 @@ use gw::*;
 use integrals::*;
 use md::*;
 use mp2::*;
+use omega_ri::*;
 use opmp3::*;
 use properties::*;
 use qmmm::*;
@@ -1876,6 +1878,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyScsMp2Result>()?;
     m.add_class::<PyMp2VResult>()?;
     m.add_class::<PyLaplaceMp2Result>()?;
+    m.add_class::<PyOmegaRiResult>()?;
     m.add_class::<PySosMp2Result>()?;
     m.add_class::<PyDftResult>()?;
     m.add_class::<PyPdepRpaResult>()?;
@@ -1968,6 +1971,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_double_hybrid, m)?)?;
 
     m.add_function(wrap_pyfunction!(run_laplace_mp2, m)?)?;
+    m.add_function(wrap_pyfunction!(run_omega_ri, m)?)?;
     m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
     m.add_function(wrap_pyfunction!(cosx_grid_point_count, m)?)?;

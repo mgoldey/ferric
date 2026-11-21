@@ -1,0 +1,167 @@
+{
+  "row": "omega-RI MP2 / RPA",
+  "system": "nh3",
+  "basis": "cc-pvdz",
+  "aux": "cc-pvdz-ri",
+  "nao": 29,
+  "naux": 98,
+  "nelectron": 10,
+  "nuclear_repulsion": 11.904528974062835,
+  "like_for_like": {
+    "nao": 29,
+    "replica_self_overlap_max_dev": 2.220446049250313e-16,
+    "pyscf_diag_max_dev": 4.440892098500626e-16,
+    "diag_checked": 29,
+    "diag_skipped_cartesian": 0
+  },
+  "rhf": {
+    "energy": -56.19548575944362
+  },
+  "nw": 40,
+  "x0": 0.5,
+  "coulomb": {
+    "mp2": {
+      "e_os": -0.14585467210266478,
+      "e_ss": -0.0433945487212193,
+      "e_corr": -0.18924922082388407
+    },
+    "mp2_pyscf_dfmp2": -0.18924922082388446,
+    "rpa_e_corr": -0.22518931491766372,
+    "rpa_pyscf": -0.225189314917138,
+    "charge_leak": {
+      "ov_max_abs": 0.0049571327910349705,
+      "ov_rms": 0.0007489790755006999,
+      "ii_max_abs_minus_1": 0.0006198498747840286
+    }
+  },
+  "omega_ri": [
+    {
+      "omega_bohr_inv": 0.05,
+      "mp2": {
+        "e_os": -0.14585510194379753,
+        "e_ss": -0.04339435757930547,
+        "e_corr": -0.18924945952310301
+      },
+      "mp2_minus_coulomb": -2.386992189462589e-07,
+      "rpa_e_corr": -0.22519002020630804,
+      "rpa_minus_coulomb": -7.05288644320401e-07,
+      "charge_leak": {
+        "ov_max_abs": 0.006356694104135852,
+        "ov_rms": 0.0009605640133236578,
+        "ii_max_abs_minus_1": 0.0007951912626618096
+      }
+    },
+    {
+      "omega_bohr_inv": 0.1,
+      "mp2": {
+        "e_os": -0.1458572119629221,
+        "e_ss": -0.043393170021858905,
+        "e_corr": -0.189250381984781
+      },
+      "mp2_minus_coulomb": -1.161160896934188e-06,
+      "rpa_e_corr": -0.22519365382315387,
+      "rpa_minus_coulomb": -4.338905490147704e-06,
+      "charge_leak": {
+        "ov_max_abs": 0.008026697941868237,
+        "ov_rms": 0.0012138522106802487,
+        "ii_max_abs_minus_1": 0.0010068609235167614
+      }
+    },
+    {
+      "omega_bohr_inv": 0.2,
+      "mp2": {
+        "e_os": -0.1458717816575386,
+        "e_ss": -0.04338922884626066,
+        "e_corr": -0.1892610105037993
+      },
+      "mp2_minus_coulomb": -1.1789679915219509e-05,
+      "rpa_e_corr": -0.22521709821244523,
+      "rpa_minus_coulomb": -2.7783294781508205e-05,
+      "charge_leak": {
+        "ov_max_abs": 0.011066498589865794,
+        "ov_rms": 0.001679577924005832,
+        "ii_max_abs_minus_1": 0.001409811980405351
+      }
+    },
+    {
+      "omega_bohr_inv": 0.5,
+      "mp2": {
+        "e_os": -0.14597288541033124,
+        "e_ss": -0.04340770966114642,
+        "e_corr": -0.18938059507147764
+      },
+      "mp2_minus_coulomb": -0.0001313742475935742,
+      "rpa_e_corr": -0.2253659676516782,
+      "rpa_minus_coulomb": -0.00017665273401448744,
+      "charge_leak": {
+        "ov_max_abs": 0.0173448857869316,
+        "ov_rms": 0.0026749159907431506,
+        "ii_max_abs_minus_1": 0.0029197388849655503
+      }
+    }
+  ],
+  "checks": {
+    "numpy_vs_pyscf_dfmp2_abs": 3.885780586188048e-16,
+    "numpy_vs_pyscf_rpa_abs": 5.257183577356273e-13,
+    "omega_1e-6_vs_coulomb_matrix_rel": 4.569996088080525e-10
+  },
+  "generator_seconds": 0.23077153996564448,
+  "provenance": {
+    "code": "PySCF (integrals, RHF, DFMP2 and RPA Coulomb anchors) + numpy (omega-RI assembly)",
+    "version": "2.13.1",
+    "keywords": {
+      "rhf": "scf.RHF, exact 4-index J/K, conv_tol 1e-11",
+      "fit": "(ia|jb) = A^T V~^-1 V V~^-1 A, A = (P|erfc(w r)/r|ia), np.linalg.solve",
+      "operator": "Mole.with_range_coulomb(-w) on mol and auxmol (erfc)",
+      "rpa": "closed-shell dRPA, eigh Gram factor of the explicit matrix, GL grid",
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "4c2f450a81a8545e4df9e24a313111642cf70d5f7213fc8e879ef9dacab5da2f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh3.xyz",
+    "geometry_xyz_sha256": "d63ecd59e33333106ad03c7f09a5cdb5215dac105e971698ab807dd1dddb7e51",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.22013230652445948
+      ],
+      [
+        "H",
+        0.0,
+        1.7758342207636502,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ],
+      [
+        "H",
+        -1.5379177016809087,
+        -0.8879161655187627,
+        -0.5136426784657803
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_omega_ri.py",
+    "git_head": "75d846fac3d4197cc531c0b98d5d4b270cd238ef",
+    "generated_utc": "2026-11-21T14:01:55+00:00",
+    "aux_basis_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+  }
+}

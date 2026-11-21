@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-rpa/src/gradient_analytic.rs b/crates/ferric-rpa/src/gradient_analytic.rs
+index 705fe42fb..c868429c3 100644
+--- a/crates/ferric-rpa/src/gradient_analytic.rs
++++ b/crates/ferric-rpa/src/gradient_analytic.rs
+@@ -127,7 +127,7 @@ pub fn rpa_ri_densities(
+             &qb_by_vir,
+             &gaps,
+             omega,
+-            -ps,
++            ps,
+             no,
+             nv,
+         );
