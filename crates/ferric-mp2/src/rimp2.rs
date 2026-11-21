@@ -8,6 +8,7 @@
 //! auxiliary basis sets.
 
 use crate::mo_transform::transform_3center_ov;
+pub use crate::omega_ri::RiFit;
 use ferric_core::mol::Molecule;
 use ferric_core::orbitals::OrbitalSpace;
 use ferric_core::timing::PhaseAccumulator;
@@ -1024,6 +1025,33 @@ pub fn ri_mp2_spin_components(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<(SpinComponents, Array2<f64>), FerricError> {
+    ri_mp2_spin_components_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`ri_mp2_spin_components`] with an explicit fitting metric.
+///
+/// `RiFit::Coulomb` is byte-identical to [`ri_mp2_spin_components`].
+/// `RiFit::OmegaRi { omega }` is canonical omega-RI-MP2: the 3-index integrals
+/// are `(P|ia)_w` under erfc(ω r)/r and the dressing is `Lᵀ V~^-1`
+/// ([`crate::omega_ri::fit_dressing`]), so `(ia|jb) ~ (ia|P)_w C~ (Q|jb)_w`
+/// with `C~ = V~^-1 V V~^-1`. Requires `op` = Coulomb and
+/// `config.metric_op = None` (the older naive decoupled-metric knob is a
+/// different, non-PSD approximation and the two are not combined).
+pub fn ri_mp2_spin_components_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<(SpinComponents, Array2<f64>), FerricError> {
+    if !fit.is_coulomb() && config.metric_op.is_some() {
+        return Err(FerricError::General(
+            "RI-MP2: the omega-RI fit and RiMp2Config::metric_op are mutually exclusive"
+                .into(),
+        ));
+    }
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -1053,8 +1081,20 @@ pub fn ri_mp2_spin_components(
     // than being silently regularized into a quietly-wrong number.
     let met_op = config.metric_op.unwrap_or(op);
     let tok = acc.begin("metric V^-1/2");
-    let v2c = threeindex::coulomb_metric_2c(met_op, dfbs)?;
-    let v2c_inv_sqrt = metric_inverse_sqrt(&v2c, met_op)?;
+    // `src_op` is the operator of the raw 3-index integrals: `op` for the
+    // standard fit, erfc(ω) for omega-RI (whose dressing is Lᵀ V~^-1).
+    let (src_op, v2c_inv_sqrt) = match fit {
+        RiFit::Coulomb => {
+            let v2c = threeindex::coulomb_metric_2c(met_op, dfbs)?;
+            (op, metric_inverse_sqrt(&v2c, met_op)?)
+        }
+        RiFit::OmegaRi { .. } => crate::omega_ri::fit_dressing(
+            fit,
+            op,
+            dfbs,
+            ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+        )?,
+    };
     acc.stop(tok);
 
     // Stream raw (P|mu nu) aux-blocks from a budgeted ThreeIndexSource and
@@ -1076,7 +1116,9 @@ pub fn ri_mp2_spin_components(
     // source for its whole lifetime, which is what keeps a rebuilt block
     // bit-identical to the original (see eri3_block_screened's purity note).
     let qqr_bounds = match config.eri3_screen_thresh {
-        Some(t) if t > 0.0 => Some(ferric_integrals::qqr3::QqrBounds3::new(op, mol, obs, dfbs)?),
+        Some(t) if t > 0.0 => Some(ferric_integrals::qqr3::QqrBounds3::new(
+            src_op, mol, obs, dfbs,
+        )?),
         _ => None,
     };
     let screen = qqr_bounds
@@ -1084,8 +1126,15 @@ pub fn ri_mp2_spin_components(
         .map(|b| (b, config.eri3_screen_thresh.unwrap_or(0.0)));
     let naux_all = dfbs.nbasis();
     let tok = acc.begin("3c AO (P|mn)");
-    let mut src =
-        ThreeIndexSource::build_band_screened(op, obs, dfbs, budget_bytes, 0, naux_all, screen)?;
+    let mut src = ThreeIndexSource::build_band_screened(
+        src_op,
+        obs,
+        dfbs,
+        budget_bytes,
+        0,
+        naux_all,
+        screen,
+    )?;
     acc.stop(tok);
     // DEBIT the shared pool for b_flat, AFTER `src` has taken its own charge
     // and WHILE it is still outstanding. That ordering is the whole point:
@@ -1200,7 +1249,8 @@ pub fn ri_mp2_spin_components(
     // The mixed-precision error map covers the Coulomb, erfc and terfc energies
     // (`mixed_energy_operator`); any other operator or a kappa-regularised run
     // keeps the device in f64.
-    let mixed_ok = config.kappa.is_none() && mixed_energy_operator(op);
+    // omega-RI has no measured mixed-precision error map: keep it in f64.
+    let mixed_ok = config.kappa.is_none() && fit.is_coulomb() && mixed_energy_operator(op);
     let dims = (nocc, nvir, first_occ, nocc_total);
     let sc = acc.time("pair energies", || {
         dispatch_spin_components(&b_flat, eps, dims, config.kappa, mixed_ok)
@@ -1544,8 +1594,22 @@ pub fn ri_mp2(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
+    ri_mp2_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`ri_mp2`] with an explicit fitting metric; `RiFit::OmegaRi` is canonical
+/// omega-RI-MP2 (see [`ri_mp2_spin_components_fitted`]).
+pub fn ri_mp2_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<RiMp2Result, FerricError> {
     let probe = ferric_core::gpu::provenance::PrecisionProbe::start();
-    let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, config)?;
+    let (sc, _) = ri_mp2_spin_components_fitted(mol, obs, dfbs, op, rhf, config, fit)?;
     Ok(RiMp2Result {
         mp2_corr: sc.e_total,
         total_energy: rhf.energy + sc.e_total,
@@ -1975,6 +2039,34 @@ pub fn compute_rpa_intermediates_spin(
     config: &RiMp2Config,
     is_alpha: bool,
 ) -> Result<RpaIntermediates, FerricError> {
+    compute_rpa_intermediates_spin_fitted(
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        config,
+        is_alpha,
+        &RiFit::Coulomb,
+    )
+}
+
+/// [`compute_rpa_intermediates_spin`] with an explicit fitting metric. For
+/// `RiFit::OmegaRi` the returned `v_inv_sqrt` is the omega-RI dressing
+/// `Lᵀ V~^-1`, which maps the ERFC 3-index rows (not the Coulomb ones): no
+/// energy reads it, and the eigenpotential back-transform is not defined for
+/// this fit.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_rpa_intermediates_spin_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    is_alpha: bool,
+    fit: &RiFit,
+) -> Result<RpaIntermediates, FerricError> {
     use ferric_scf::Spin;
     if matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -2008,10 +2100,11 @@ pub fn compute_rpa_intermediates_spin(
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
 
-    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     // erf metric loses rank numerically in a Coulomb aux basis → regularized
-    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused.
-    let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused. The
+    // omega-RI fit swaps in erfc 3-index integrals and the Lᵀ V~^-1 dressing.
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let (src_op, v_inv_sqrt) = crate::omega_ri::fit_dressing(fit, op, dfbs, budget_bytes)?;
 
     let c_occ = c_full
         .slice(ndarray::s![.., first_occ..first_occ + nocc])
@@ -2026,8 +2119,7 @@ pub fn compute_rpa_intermediates_spin(
     // ri_mp2_spin_components's identical migration. Exactness: same
     // contraction, reordered per aux-block, not approximated — see
     // stream_dressed_mo_band's doc.
-    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
-    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let mut src = ThreeIndexSource::build(src_op, obs, dfbs, budget_bytes)?;
     let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {
@@ -2077,6 +2169,21 @@ pub fn compute_rpa_intermediates(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RpaIntermediates, FerricError> {
+    compute_rpa_intermediates_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`compute_rpa_intermediates`] with an explicit fitting metric (see
+/// [`compute_rpa_intermediates_spin_fitted`] for what `v_inv_sqrt` holds under
+/// the omega-RI fit).
+pub fn compute_rpa_intermediates_fitted(
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<RpaIntermediates, FerricError> {
     let nbas = obs.nbasis();
     let nelec = mol.nelec() as usize;
     let nocc_total = nelec / 2;
@@ -2086,10 +2193,11 @@ pub fn compute_rpa_intermediates(
     let naux = dfbs.nbasis();
     let c = rhf.mos_r();
 
-    let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     // erf metric loses rank numerically in a Coulomb aux basis → regularized
-    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused.
-    let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
+    // eigh V^{-1/2}; Cholesky for Coulomb/erfc/terfc; terf is refused. The
+    // omega-RI fit swaps in erfc 3-index integrals and the Lᵀ V~^-1 dressing.
+    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    let (src_op, v_inv_sqrt) = crate::omega_ri::fit_dressing(fit, op, dfbs, budget_bytes)?;
 
     let c_occ = c
         .slice(ndarray::s![.., first_occ..first_occ + nocc])
@@ -2098,8 +2206,7 @@ pub fn compute_rpa_intermediates(
 
     // Stream + dress on the fly (see compute_rpa_intermediates_spin's doc for
     // why this replaces eri3_mo_ov_blocked + a separate dressing GEMM).
-    let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
-    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    let mut src = ThreeIndexSource::build(src_op, obs, dfbs, budget_bytes)?;
     let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {

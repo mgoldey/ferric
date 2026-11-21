@@ -481,7 +481,7 @@ impl std::fmt::Display for SosMp2Result {
 ///
 /// The contraction `Σ Y[Pi,Qj]·Y[Pj,Qi]` swaps the occupied indices *within*
 /// each `(P,Q)` block, so it is evaluated per `nocc×nocc` sub-block of `Y`.
-fn laplace_exchange_energy(
+pub(crate) fn laplace_exchange_energy(
     b_t: &Array2<f64>,
     naux: usize,
     nocc: usize,
@@ -685,7 +685,7 @@ const SOS_J_COL_BLOCK: usize = 128;
 /// tile skipped) and the block sums are folded in block order, so the result
 /// does not depend on the pool size. The blocks are a nested rayon fan-out: the
 /// caller's quadrature points are fewer than the pool's threads.
-fn sos_j_square_trace(b: &Array2<f64>) -> f64 {
+pub(crate) fn sos_j_square_trace(b: &Array2<f64>) -> f64 {
     let naux = b.nrows();
     let starts: Vec<usize> = (0..naux).step_by(SOS_J_COL_BLOCK).collect();
     let block_sums: Vec<f64> = starts
