@@ -40,7 +40,7 @@ pub struct PrepareOptions {
     /// ([`SchwarzBounds::compute_for_screening`]): `Schwarz` leaves both
     /// refinement tables unset, `Csb` / `Csam` attach theirs. A solver whose
     /// `RhfConfig::screening` should agree reads it back through
-    /// [`PreparedSystem::screening`].
+    /// [`PreparedSystem::screening`], which derives it from the bounds.
     pub screening: ScreeningKind,
     /// The parallel execution context the system's solvers run in.
     pub ctx: ParallelContext,
@@ -78,6 +78,12 @@ impl<'b> EcpMolecule<'b> {
         &self.mol
     }
 
+    /// The basis set whose ECP was applied and that [`Self::prepare`]
+    /// prepares.
+    pub fn basis_set(&self) -> &'b BasisSet {
+        self.basis
+    }
+
     /// Prepare the basis set on [`Self::mol`] and compute its Coulomb
     /// Schwarz bounds with `options.screening`
     /// ([`SchwarzBounds::compute_for_screening`]; `Schwarz` is
@@ -95,7 +101,6 @@ impl<'b> EcpMolecule<'b> {
             mol: self.mol,
             basis,
             bounds,
-            screening,
             ctx,
         })
     }
@@ -112,7 +117,6 @@ pub struct PreparedSystem {
     mol: Molecule,
     basis: PreparedBasis,
     bounds: SchwarzBounds,
-    screening: ScreeningKind,
     ctx: ParallelContext,
 }
 
@@ -156,9 +160,21 @@ impl PreparedSystem {
     }
 
     /// The screening the bounds were built with
-    /// ([`PrepareOptions::screening`]).
+    /// ([`PrepareOptions::screening`]), read from the bounds themselves:
+    /// [`SchwarzBounds::compute_for_screening`] attaches the CSB table for
+    /// `Csb`, the CSAM table for `Csam` and neither for `Schwarz`.
     pub fn screening(&self) -> ScreeningKind {
-        self.screening
+        match (&self.bounds.csb_m, &self.bounds.csam_x) {
+            (Some(_), _) => ScreeningKind::Csb,
+            (None, Some(_)) => ScreeningKind::Csam,
+            (None, None) => ScreeningKind::Schwarz,
+        }
+    }
+
+    /// The molecule (with its ECP core counts applied), consuming the
+    /// system: for a result that keeps the molecule after the solve.
+    pub fn into_mol(self) -> Molecule {
+        self.mol
     }
 
     /// The parallel execution context.
@@ -229,6 +245,12 @@ impl PreparedSystem {
 /// orbital basis and molecule from it rather than pairing the aux with a
 /// system of its own. It dereferences to the [`PreparedBasis`] that the
 /// fitting kernels take.
+///
+/// The fitting basis takes its nuclear charges from its own basis set's ECP
+/// table ([`PreparedBasis::new`]), so on an ECP atom an aux set without ECP
+/// data carries the all-electron charge `Z`. Only a fitting kernel that read
+/// the aux basis's charges would see that; the orbital basis is the one that
+/// carries `Z - n_core` and `V_ECP`.
 pub struct PreparedAux<'s> {
     system: &'s PreparedSystem,
     basis: PreparedBasis,
@@ -325,9 +347,11 @@ mod tests {
         let bs = basis::bundled("def2-svp").unwrap();
         let ecp = EcpMolecule::new(hi(), &bs);
         assert_eq!(ecp.mol().nelec(), 26);
+        assert!(std::ptr::eq(ecp.basis_set(), &bs));
         let sys = ecp.prepare(PrepareOptions::default()).unwrap();
         assert_eq!(sys.mol().nelec(), 26);
         assert_eq!(sys.screening(), ScreeningKind::Schwarz);
+        assert_eq!(sys.into_mol().nelec(), 26);
     }
 
     #[test]
@@ -362,10 +386,9 @@ mod tests {
         let sys = PreparedSystem::new(hi(), &bs).unwrap();
         let aux = sys.prepare_aux(&aux_bs).unwrap();
         assert!(std::ptr::eq(aux.system(), &sys));
-        assert_eq!(aux.nbasis(), aux.basis().nbasis());
-        let mut applied = hi();
-        applied.apply_ecp(&bs);
-        let by_hand = PreparedBasis::new(&applied, &aux_bs).unwrap();
+        // The fitting basis, not the orbital one.
+        let by_hand = PreparedBasis::new(&hi(), &aux_bs).unwrap();
         assert_eq!(aux.nbasis(), by_hand.nbasis());
+        assert_ne!(aux.nbasis(), sys.basis().nbasis());
     }
 }
