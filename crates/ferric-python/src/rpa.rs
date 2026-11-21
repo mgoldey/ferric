@@ -232,7 +232,8 @@ pub(crate) fn run_rs_mp2_rpa(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys.solve_reference(&cfg_rhf).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
@@ -915,7 +916,9 @@ pub(crate) fn run_pdep_rpa(
 
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
 
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
     // The reference SCF must see the ENVIRONMENT, or the dielectric response
     // computed from it is that of an isolated molecule. Screening a

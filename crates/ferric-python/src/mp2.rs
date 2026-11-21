@@ -779,15 +779,13 @@ pub(crate) fn prepare(mol: &PyMolecule, basis: &PyBasisSet) -> PyResult<Prepared
     PreparedSystem::new(mol.inner.clone(), &basis.inner).map_err(make_err)
 }
 
-/// [`prepare`] plus the fitting basis `aux` on the same molecule.
-pub(crate) fn prepare_with_aux(
-    mol: &PyMolecule,
-    basis: &PyBasisSet,
+/// `PreparedSystem::prepare_aux` of the fitting basis `aux` on `sys`'s
+/// molecule, for a binding returning `PyResult`.
+pub(crate) fn prepare_aux<'s>(
+    sys: &'s PreparedSystem,
     aux: &PyBasisSet,
-) -> PyResult<(PreparedSystem, PreparedBasis)> {
-    let sys = prepare(mol, basis)?;
-    let aux = sys.prepare_aux(&aux.inner).map_err(make_err)?;
-    Ok((sys, aux))
+) -> PyResult<PreparedAux<'s>> {
+    sys.prepare_aux(&aux.inner).map_err(make_err)
 }
 
 /// `cfg` turned into the KS reference config of the GW/TDHF/TDDFT entry
@@ -877,7 +875,8 @@ pub(crate) fn run_rimp2_local(
         )));
     }
     let op = local_correlation_operator(att_keys, model, &basis_set.inner.name)?;
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1123,7 +1122,7 @@ pub(crate) fn run_drpa(
             )));
         }
     }
-    let dfbs = sys.prepare_aux(&auxbasis.inner).map_err(make_err)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = local_rhf_reference(
         &sys,
         k_builder,
@@ -1236,7 +1235,8 @@ pub(crate) fn run_drpa_scan(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1358,7 +1358,8 @@ pub(crate) fn run_linlccd(
             mol.inner.multiplicity
         )));
     }
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let rhf = local_rhf_reference(
         &sys,
@@ -1741,7 +1742,8 @@ pub(crate) fn run_oo_rimp2(
     } else {
         rhf_config
     };
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let rhf = sys
         .solve_rhf(&rhf_config)
@@ -1886,7 +1888,8 @@ pub(crate) fn run_mp3(
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2000,7 +2003,8 @@ pub(crate) fn run_laplace_mp2(
     )?;
     let op = Operator::coulomb();
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2165,7 +2169,8 @@ pub(crate) fn run_laplace_sos_mp2(
         scf_ri_j_precision,
     )?;
     let op = Operator::coulomb();
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2302,7 +2307,8 @@ pub(crate) fn run_attenuated_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
@@ -2382,7 +2388,8 @@ pub(crate) fn run_terfc_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     // r0 supplied in Å; convert to Bohr for the operator.
@@ -2545,7 +2552,8 @@ pub(crate) fn run_scs_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = ScsMp2Config {
@@ -2610,7 +2618,8 @@ pub(crate) fn run_scs_mp2_2terfc(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
@@ -2759,7 +2768,8 @@ pub(crate) fn run_mp2_v(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2889,7 +2899,8 @@ pub(crate) fn run_mp2_v_scan(
             )));
         }
     }
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let mut rcfg = rhf_config_conv(
         k_builder,

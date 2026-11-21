@@ -369,7 +369,9 @@ pub(crate) fn run_double_hybrid(
     };
     let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
 
     let cfg = rhf_config_conv(
