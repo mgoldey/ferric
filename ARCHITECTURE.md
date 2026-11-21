@@ -125,7 +125,7 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
   first instance.
 - **Owners establish invariants once.** `ferric_scf::PreparedSystem`
   (molecule with the basis set's ECP applied, prepared basis, Coulomb
-  Schwarz bounds, screening kind, context) is built by a single
+  Schwarz bounds, context) is built by a single
   constructor (`EcpMolecule::new` applies the ECP, `EcpMolecule::prepare`
   takes `PrepareOptions` and builds the basis and bounds) and only
   borrowed afterwards. The ferric-python SCF entry points and correlated
@@ -201,7 +201,8 @@ Done:
    `solve_rhf`/`solve_uhf`/`solve_rohf`/`solve_rhf_ladder` and
    `solve_reference` (UHF iff multiplicity > 1, converged via
    `ScfResult::into_converged`) run on the borrowed system. In
-   ferric-python, `prepare` (and, since 8b, `prepare_aux`) build it for every driver in
+   ferric-python, `prepare` builds it (and, since 8b, `prepare_aux` builds
+   the fitting basis on it) for every driver in
    `mp2.rs`, `cc.rs`, `gw.rs`, `rpa.rs`, `tddft.rs`, `opmp3.rs`, the double
    hybrid in `dft.rs` and `ci.rs`; `response_modes` applies the ECP to its
    molecule without the system (it needs no bounds).
@@ -249,13 +250,19 @@ Done:
       the ECP molecule before any integral (the CLI's frozen core, the CAS
       core count, `run_uks`/`run_roks`' spin check).
       `PreparedSystem::new` is that pair with `PrepareOptions::default()`;
-      `PreparedSystem::screening()` reports the kind the bounds carry.
+      `PreparedSystem::screening()` reads the kind back from the bounds
+      (which table `compute_for_screening` attached), and
+      `PreparedSystem::into_mol` hands the molecule to a result that keeps
+      it (`run_dft`).
     - The CLI's molecular path (`ferric-cli/src/lib.rs`, via
       `prepare_system`, which keeps the old error order: basis, then
       `[scf] screening`, then bounds), `cas.rs` and `opmp3.rs` build the
       system; `periodic.rs` keeps its own `apply_ecp`, because its molecule
-      is moved into a `Cell` and its integrals are lattice sums with no
-      molecular Coulomb Schwarz bounds.
+      is moved into a `Cell` and its integrals are lattice sums (the
+      molecular Schwarz bounds it builds are never read: only
+      `solve_rhf_injected`'s signature asks for them). The Python periodic
+      bindings (`pbc.rs`, through `gamma.rs`'s ECP helper) stay out for the
+      same reason.
     - `run_rhf`, `run_uhf`, `run_rohf` (`OpenShellEntry` now holds the
       system), `run_dft`, `run_uks` and `run_roks` build the system; the
       ferric-python SCF helpers they share (`solve_rhf_outcome`,
@@ -264,11 +271,21 @@ Done:
       `&PreparedSystem` instead of loose `(ctx, mol, prep, op, bounds)`.
     - `ferric_ci::driver::rhf_start` is gone; the CLI, the ferric-ci
       examples and `cas_kinds.rs` use `rhf_start_prepared`.
+    - Side effects: the CLI's CAS and OP-MP3 runs build the Schwarz bounds
+      when they prepare the basis, so before the fitting basis and the
+      run-log header rather than after (a bad `auxbasis` pays for a bounds
+      pass before it is reported, and the bounds time falls outside the
+      run-log window; messages are unchanged).
+      `crates/ferric-ci/examples/casscf_ah_bench.rs` now applies the ECP
+      for an ECP basis (a fix; on such a basis it is not bitwise identical
+      to before).
     - `PreparedSystem::prepare_aux` returns a `PreparedAux<'s>` (derefs to
       `PreparedBasis`) that borrows its system and names it
       (`PreparedAux::system`): it cannot outlive the system, and only a
       system makes one. It does not stop `&*aux` being passed to a loose
-      kernel next to another system's basis; that needs item 8c.
+      kernel next to another system's basis; that needs item 8c. As before,
+      an aux set without ECP data carries the all-electron charge on an ECP
+      atom (it matters only to a kernel that reads the aux basis's charges).
 -  COSX for `run_uks`/`run_roks`: they now apply
    `df_k_aux_or_default`. Before, they applied the RI-K default even under
    COSX, so a COSX call with HF exchange or a global hybrid (the functionals
@@ -286,14 +303,24 @@ Next, each as its own PR following the patterns above:
     `local_opmp3_on_reference`, `run_casscf`, `nevpt2_on_rhf`), the
     ferric-scf solvers, and the CLI's per-method `run_*` functions in
     `ferric-cli/src/lib.rs`, which still take `(mol, prep, op, bounds)`
-    and prepare their fitting bases with `PreparedBasis::new(mol, ..)`
-    (`correlation_aux`); (b) the other ferric-python bindings that apply
+    and prepare their fitting bases inline with `PreparedBasis::new(mol, ..)`
+    (about 14 `run_*` sites plus `correlation_aux`). Once kernels take
+    `&PreparedAux` / `&PreparedSystem` and read the molecule and orbital
+    basis from `aux.system()`, `PreparedAux`'s `Deref` goes; (b) the other ferric-python bindings that apply
     the ECP by hand (`md.rs`, `integrals.rs`, `blocks.rs`'s
     `AoIntegrals`, `properties.rs`, `cdft.rs`, `qmmm.rs`, `geometry.rs`,
     `gamma.rs`, two sites in `lib.rs`, `response_modes.rs`); (c)
     `run_uks`/`run_roks` share the open-shell tail of `run_uhf`/`run_rohf`
     in substance but not in code (they skip the pre-SCF noise-floor
-    warning, so merging them is a behaviour change).
+    warning, so merging them is a behaviour change); (d) the system should
+    own screening: `PreparedSystem::solve_rhf(&config)` does not check
+    `config.screening == sys.screening()`, so a mismatch would screen
+    direct J/K with one kind and LinK with another, and a future Python
+    `screening=` keyword must go through `PrepareOptions`; (e)
+    `FockResponse` builds non-Coulomb bounds the system cannot own; (f)
+    the Python bindings still prepare the basis and bounds with the GIL
+    held; (g) with `rhf_start` gone, `rhf_start_prepared` can take its
+    name back.
 9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
    declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.
