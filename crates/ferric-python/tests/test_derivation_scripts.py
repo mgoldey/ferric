@@ -31,6 +31,21 @@ SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
 # (script, typical-runtime budget in s (the subprocess gets 4x, at least 120 s), [(old source text, mutated text, failing-check marker)])
 CASES = [
     (
+        "omega_ri_sympy.py",
+        10,
+        [
+            ("KERNEL = sp.erfc(w * r) / r", "KERNEL = sp.erf(w * r) / r", "FAIL [C1]"),
+            ("GALERKIN_COULOMB = True", "GALERKIN_COULOMB = False", "FAIL [C4-coulomb-order]"),
+            (
+                "wmat = sla.cho_solve(sla.cho_factor(v_w, lower=True), l_)",
+                "wmat = sla.cho_solve(sla.cho_factor(v_w, lower=True), np.eye(l_.shape[0]))",
+                "FAIL [C5]",
+            ),
+            ("EXCHANGE_OFFDIAG = 2.0", "EXCHANGE_OFFDIAG = 1.0", "FAIL [C6]"),
+            ("FERMI_SIGN_VIR = -1.0", "FERMI_SIGN_VIR = 1.0", "FAIL [C6]"),
+        ],
+    ),
+    (
         "rpa_drpa_pdep_sympy.py",
         30,
         [

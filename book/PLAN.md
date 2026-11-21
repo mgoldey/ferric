@@ -133,6 +133,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `three-index-sources` | Three-index sources: in core, packed, spilled, recomputed | none; `site/src/reference/input.md` (`jk_storage`) | `ferric-integrals/src/three_index_source.rs::{ThreeIndexSource,build_band_screened,build_dressed,for_each_block}` | edit |
 | `robust-fit` | Mixed metrics and robust (Dunlap) fitting | none | `ferric-mp2/src/rimp2.rs::{ri_mp2_robust_attenuated_metric,robust_fit_coulomb_parts}` | ready |
 | `cabs` | Complementary auxiliary basis (CABS) | S `mp2_variant_identities.py` claim 7 | `ferric-mp2/src/f12.rs::build_cabs`, `ferric-integrals/src/cabs.rs::cross_overlap` | edit |
+| `omega-ri-fit` | The omega-RI fit: an attenuated metric | S `omega_ri_sympy.py` claims 1, 4, 5 | `ferric-mp2/src/omega_ri.rs::{fit_dressing,omega_ri_dressing_from_metrics}` | verify |
 
 ### Part III. Self-consistent field
 
@@ -211,6 +212,7 @@ Code references are `crate/src/file.rs::item` under `crates/`.
 | `unrestricted-oo-rimp2` | Unrestricted OO-RI-MP2 | R u-oo-rimp2 *gap* | `ferric-mp2/src/u_oo_rimp2.rs::u_oo_ri_mp2`, `ferric-mp2/src/u_rimp2.rs::compute_u_mp2_orbital_gradient` | verify |
 | `laplace-mp2` | Laplace-transform MP2 and SOS-MP2 | S `mp2_variant_identities.py` claim 3; R laplace-mp2, laplace-sos-mp2; W §11 | `ferric-mp2/src/laplace.rs::{laplace_ri_mp2,laplace_sos_mp2,build_pseudo_density_occ,build_pseudo_density_vir}`, `ferric-quadrature/src/minimax.rs::select_minimax_points` | ready |
 | `local-laplace-sos` | Local Laplace SOS-MP2 | M mp2 "Laplace formulations" | `ferric-mp2/src/laplace_local.rs::sos_local_energy`, `ferric-mp2/src/boys.rs::boys_localize` | gap |
+| `omega-ri-cdd-mp2` | omega-RI-CDD-MP2 | S `omega_ri_sympy.py` claim 6 | `ferric-mp2/src/omega_ri_cdd.rs::{omega_ri_cdd_mp2,cdd_factors}` | verify |
 
 **Local MP2** (chapter `local-mp2`)
 
@@ -448,10 +450,10 @@ registry row and are the largest block of `gap` sections.
 |---|---|---|---|---|---|
 | 0. Front matter | 1 | 1 | 0 | 0 | 2 |
 | I. Foundations | 0 | 7 | 0 | 0 | 7 |
-| II. Integrals, screening and density fitting | 1 | 15 | 1 | 0 | 17 |
+| II. Integrals, screening and density fitting | 1 | 15 | 1 | 1 | 18 |
 | III. Self-consistent field | 8 | 3 | 0 | 0 | 11 |
 | IV. Density functional theory | 7 | 0 | 0 | 0 | 7 |
-| V. The MP2 family | 20 | 3 | 1 | 5 | 29 |
+| V. The MP2 family | 20 | 3 | 1 | 6 | 30 |
 | VI. Derivatives | 12 | 3 | 0 | 0 | 15 |
 | VII. Coupled cluster | 7 | 1 | 0 | 0 | 8 |
 | VIII. Multireference | 6 | 0 | 0 | 0 | 6 |
@@ -464,9 +466,9 @@ registry row and are the largest block of `gap` sections.
 | XV. Interfaces | 1 | 5 | 1 | 0 | 7 |
 | XVI. Dynamics | 0 | 1 | 0 | 0 | 1 |
 | Appendices | 3 | 0 | 1 | 0 | 4 |
-| **Total** | **101** | **51** | **8** | **6** | **166** |
+| **Total** | **101** | **51** | **8** | **8** | **168** |
 
-166 sections: 61% `ready`, 31% `edit`, 5% `gap` and 4% `verify`.
+168 sections: 60% `ready`, 30% `edit`, 5% `gap` and 5% `verify`.
 <!-- status-table:end -->
 
 ## 5. Gaps, ranked by how much rests on them

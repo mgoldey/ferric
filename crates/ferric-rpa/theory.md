@@ -7,6 +7,7 @@ The derivations, proofs and measurements for `ferric-rpa` are in the ferric book
 | Section | Label | Page | Proof scripts | Verified boxes |
 |---|---|---|---|---|
 | The factorization, the metric, Cholesky and eigendecomposition factors | `factorization-and-metric` | [`book/src/06-density-fitting/01-factorization-and-metric.md`](../../book/src/06-density-fitting/01-factorization-and-metric.md) | `scripts/rpa_terf_signed_fit_sympy.py` | `df.signed-factor` |
+| The omega-RI fit: an attenuated metric | `omega-ri-fit` | [`book/src/06-density-fitting/05-omega-ri.md`](../../book/src/06-density-fitting/05-omega-ri.md) | — | — |
 | Lagrangians and the Z-vector equation | `lagrangian-zvector` | [`book/src/15-correlated-gradients/01-lagrangian-zvector.md`](../../book/src/15-correlated-gradients/01-lagrangian-zvector.md) | — | — |
 | Kohn–Sham Z-vector for post-SCF corrections | `ks-zvector` | [`book/src/15-correlated-gradients/04-ks-zvector.md`](../../book/src/15-correlated-gradients/04-ks-zvector.md) | `scripts/ks_zvector_sympy.py` | `ks.zvector`, `ks.zvector.contraction`, `ks.zvector.open-shell` |
 | RI-dRPA gradient | `rpa-gradient` | [`book/src/15-correlated-gradients/05-rpa-gradient.md`](../../book/src/15-correlated-gradients/05-rpa-gradient.md) | `scripts/rpa_gradient_sympy.py` | `rpa.grad.densities` |

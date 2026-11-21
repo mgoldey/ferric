@@ -47,9 +47,9 @@ equation.
 
 "Active occupied" excludes frozen core orbitals. In code the active occupied
 block starts at `first_occ = frozen_core`, and virtual orbitals start at
-`nocc_total`. From `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components`:
+`nocc_total`. From `ferric-mp2/src/rimp2.rs::ri_mp2_spin_components_fitted`:
 
-<!-- excerpt: ferric-mp2/src/rimp2.rs::ri_mp2_spin_components -->
+<!-- excerpt: ferric-mp2/src/rimp2.rs::ri_mp2_spin_components_fitted -->
 ```rust
 let nocc_total = nelec / 2;                              // all occupied orbitals
 let nocc = active_occ(nocc_total, config.frozen_core)?;  // n_o, the active ones

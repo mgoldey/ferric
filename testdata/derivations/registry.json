@@ -58,11 +58,15 @@
       "cosmo"
     ],
     "cli:laplace-mp2": [
-      "laplace-mp2"
+      "laplace-mp2",
+      "omega-ri",
+      "omega-ri-cdd-mp2"
     ],
     "cli:laplace-sos-mp2": [
       "laplace-sos-mp2",
-      "laplace-sos-mp2-local"
+      "laplace-sos-mp2-local",
+      "omega-ri",
+      "omega-ri-cdd-mp2"
     ],
     "cli:linlccd": [
       "linlccd"
@@ -85,7 +89,8 @@
       "u-pdep-rpa",
       "pcm",
       "rpa-polarizability-c6",
-      "atomic-charges"
+      "atomic-charges",
+      "omega-ri"
     ],
     "cli:rhf": [
       "rhf",
@@ -96,7 +101,8 @@
       "ri-mp2",
       "kappa-mp2",
       "u-ri-mp2",
-      "local-mp2"
+      "local-mp2",
+      "omega-ri"
     ],
     "cli:rohf": [
       "rohf",
@@ -908,6 +914,10 @@
     ],
     "py:mbd_rsscs_energy": [
       "mbd"
+    ],
+    "py:run_omega_ri": [
+      "omega-ri",
+      "omega-ri-cdd-mp2"
     ]
   },
   "methods": {
@@ -1804,6 +1814,23 @@
       "scripts": [
         "scripts/pbc_force_sympy.py",
         "scripts/pbc_ewald_pairft_stress_sympy.py"
+      ]
+    },
+    "omega-ri": {
+      "book": [
+        "book/src/06-density-fitting/05-omega-ri.md#omega-ri-fit"
+      ],
+      "scripts": [
+        "scripts/omega_ri_sympy.py"
+      ]
+    },
+    "omega-ri-cdd-mp2": {
+      "book": [
+        "book/src/12-oo-laplace/05-omega-ri-cdd-mp2.md#omega-ri-cdd-mp2",
+        "book/src/06-density-fitting/05-omega-ri.md#omega-ri-fit"
+      ],
+      "scripts": [
+        "scripts/omega_ri_sympy.py"
       ]
     }
   },
