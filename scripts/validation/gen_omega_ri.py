@@ -88,7 +88,12 @@ def mp2_from_matrix(g, mf):
     e = mf.mo_energy
     nvir = e.size - nocc
     t = g.reshape(nocc, nvir, nocc, nvir)
-    d = e[:nocc, None, None, None] - e[None, nocc:, None, None] + e[None, None, :nocc, None] - e[None, None, None, nocc:]
+    d = (
+        e[:nocc, None, None, None]
+        - e[None, nocc:, None, None]
+        + e[None, None, :nocc, None]
+        - e[None, None, None, nocc:]
+    )
     e_os = float(np.einsum("iajb,iajb->", t, t / d))
     e_ss = float(np.einsum("iajb,iajb->", t - t.transpose(0, 3, 2, 1), t / d))
     return e_os, e_ss
@@ -110,7 +115,12 @@ def aux_charges(auxmol):
     from pyscf import gto
 
     eps = 1e-9
-    one = gto.M(atom=[["Ghost", (0.0, 0.0, 0.0)]], basis={"Ghost": [[0, [eps, 1.0]]]}, unit="Bohr", verbose=0)
+    one = gto.M(
+        atom=[["Ghost", (0.0, 0.0, 0.0)]],
+        basis={"Ghost": [[0, [eps, 1.0]]]},
+        unit="Bohr",
+        verbose=0,
+    )
     s = gto.intor_cross("int1e_ovlp", auxmol, one)[:, 0]
     norm = (2.0 * eps / np.pi) ** 0.75
     return s / norm
@@ -122,7 +132,9 @@ def charge_leak(mf, mol, auxmol, w, n_p):
     v3w, v2w = gar.ints(mol, auxmol, -w if w > 0 else 0.0)
     nocc = int(np.count_nonzero(mf.mo_occ > 0))
     c = mf.mo_coeff
-    a_ov = np.einsum("mnP,mi,na->Pia", v3w, c[:, :nocc], c[:, nocc:], optimize=True).reshape(v3w.shape[2], -1)
+    a_ov = np.einsum(
+        "mnP,mi,na->Pia", v3w, c[:, :nocc], c[:, nocc:], optimize=True
+    ).reshape(v3w.shape[2], -1)
     a_ii = np.einsum("mnP,mi,ni->Pi", v3w, c[:, :nocc], c[:, :nocc], optimize=True)
     q_ov = n_p @ np.linalg.solve(v2w, a_ov)
     q_ii = n_p @ np.linalg.solve(v2w, a_ii)
@@ -147,7 +159,13 @@ def gen_case(key):
     mol = common.build_pyscf_mol(xyz, basis_name)
     ll = common.check_basis_like_for_like(mol, basis_name, symbols)
     aux = gen_urpa.aux_dict(aux_name, symbols)
-    auxmol = gto.M(atom=common.pyscf_atom_bohr(symbols, coords), unit="Bohr", basis=aux, cart=False, verbose=0)
+    auxmol = gto.M(
+        atom=common.pyscf_atom_bohr(symbols, coords),
+        unit="Bohr",
+        basis=aux,
+        cart=False,
+        verbose=0,
+    )
     naux = int(auxmol.nao_nr())
     assert naux == common.ferric_nao(aux_name, symbols), "aux count differs from ferric"
 
@@ -247,10 +265,14 @@ def gen_case(key):
         scf_conv={"conv_tol": gar.CONV_TOL, "conv_tol_grad": gar.CONV_TOL_GRAD},
         stability=None,
         generator="scripts/validation/gen_omega_ri.py",
-        extra={"aux_basis_sha256": common.sha256_file(common.basis_json_path(aux_name))},
+        extra={
+            "aux_basis_sha256": common.sha256_file(common.basis_json_path(aux_name))
+        },
     )
     path = common.write_reference(ROW, system, basis_name, payload)
-    print(f"{key}: Coulomb leak {leak0} -> {path.relative_to(common.ROOT)} ({payload['generator_seconds']:.1f} s)")
+    print(
+        f"{key}: Coulomb leak {leak0} -> {path.relative_to(common.ROOT)} ({payload['generator_seconds']:.1f} s)"
+    )
 
 
 def main(argv):

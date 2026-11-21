@@ -96,12 +96,17 @@ uses the plain form (@eq:omega-ri-four-index), and so does this code.
 
 The fitted charge is a symptom of the same fact. Neither fit conserves the
 charge of a pair density: for water/cc-pVDZ with cc-pVDZ-RI the largest fitted
-occupied-virtual pair charge (true value 0) is $4.96\times10^{-3}$ with the
-Coulomb metric and $7.74\times10^{-3}$ with $\omega = 0.1$ Bohr⁻¹. The Coulomb
+occupied-virtual pair charge (true value 0) is $4.94\times10^{-3}$ with the
+Coulomb metric and $7.71\times10^{-3}$ with $\omega = 0.1$ Bohr⁻¹
+(PySCF, `scripts/validation/gen_omega_ri.py`, recorded in
+`testdata/reference/validation/omega_ri/h2o_cc-pvdz.json`). The Coulomb
 fit's leaked monopole sits inside $\delta$, which is Coulomb-orthogonal to the
 auxiliary set, so it reaches the energy only through $(\delta|\delta)$. The
-erfc fit's residual is not: $|(\delta|P)|/|(ia|P)|$ is $1.5\times10^{-15}$ for
-the Coulomb fit and $8.9\times10^{-3}$ for the erfc fit at $\omega = 0.1$.
+erfc fit's residual is not. Claim 7 of `scripts/omega_ri_sympy.py` checks this
+on a closed-form model (zero-charge pair densities of s Gaussians fitted in a
+smaller s-Gaussian auxiliary set): $|(\delta|P)|/|(ia|P)|$ is
+$2.8\times10^{-16}$ for the Coulomb fit and $6.2\times10^{-3}$ for the erfc fit
+at $\omega = 0.1$.
 
 > **Verified equation {#eq:omega-ri-error-order}** · the omega-RI fit error order
 >
@@ -180,9 +185,14 @@ integrals offer is not exploited.
 >
 > <!-- verified: id=df.omega-ri.kernel; script=scripts/omega_ri_sympy.py; claim=1; runner=crates/ferric-python/tests/test_derivation_scripts.py; code=ferric-mp2/src/omega_ri.rs::fit_dressing -->
 
-The script also checks both limits on PySCF integrals for water (at
-$\omega = 10^{-5}$ the energy equals the Coulomb fit to $2.6\times10^{-11}$
-Eh; the error against the overlap-metric fit falls as $\omega^{-2}$). The
+The script also checks both limits on the same closed-form model: as
+$\omega \to 0$ the energy approaches the Coulomb fit linearly in $\omega$
+(a factor 10.0 per decade, $3.3\times10^{-9}$ Eh at $\omega = 10^{-5}$; the
+first-order term is the leaked pair charge times the constant $2\omega/\sqrt\pi$
+of the kernel), and the error against the overlap-metric fit falls as
+$\omega^{-2}$ (ratios 3.99 and 4.00 per doubling). On PySCF water the
+$\omega = 10^{-6}$ fitted matrix equals the Coulomb one to
+$3.5\times10^{-10}$ relative (`gen_omega_ri.py`). The
 Rust anchors (`crates/ferric-mp2/tests/omega_ri_anchors.rs`,
 `crates/ferric-rpa/tests/omega_ri_rpa.rs`) compare the shift
 $E(\omega) - E(\text{Coulomb})$ for MP2 and RPA against a numpy assembly of

@@ -21,7 +21,9 @@ ferric = pytest.importorskip("ferric")
 ROOT = Path(__file__).resolve().parents[3]
 H2O = str(ROOT / "testdata" / "molecules" / "validation" / "h2o.xyz")
 REF = json.loads(
-    (ROOT / "testdata" / "reference" / "validation" / "omega_ri" / "h2o_cc-pvdz.json").read_text()
+    (
+        ROOT / "testdata" / "reference" / "validation" / "omega_ri" / "h2o_cc-pvdz.json"
+    ).read_text()
 )
 
 
@@ -44,7 +46,9 @@ def test_omega_zero_is_the_coulomb_fit(sys):
     assert c0.pair_fraction == 1.0
 
 
-@pytest.mark.parametrize("method,key", [("rimp2", "mp2_minus_coulomb"), ("rpa", "rpa_minus_coulomb")])
+@pytest.mark.parametrize(
+    "method,key", [("rimp2", "mp2_minus_coulomb"), ("rpa", "rpa_minus_coulomb")]
+)
 def test_omega_ri_shift_matches_pyscf(sys, method, key):
     e0 = ferric.run_omega_ri(*sys, 0.0, method=method).e_corr
     for blk in REF["omega_ri"]:
@@ -52,14 +56,21 @@ def test_omega_ri_shift_matches_pyscf(sys, method, key):
         r = ferric.run_omega_ri(*sys, w, method=method)
         assert r.fit.startswith("erfc")
         shift = r.e_corr - e0
-        assert abs(shift - blk[key]) < 2e-9 + 1e-4 * abs(blk[key]), (method, w, shift, blk[key])
+        assert abs(shift - blk[key]) < 2e-9 + 1e-4 * abs(blk[key]), (
+            method,
+            w,
+            shift,
+            blk[key],
+        )
 
 
 def test_cdd_sos_and_screens(sys):
     sos = ferric.run_omega_ri(*sys, 0.1, method="cdd-sos-mp2", c_os=1.0)
     assert sos.e_ss is None and abs(sos.e_corr - sos.e_os) < 1e-14
     full = ferric.run_omega_ri(*sys, 0.1, method="cdd-mp2")
-    scr = ferric.run_omega_ri(*sys, 0.1, method="cdd-mp2", cdd_schwarz_thresh=1e-9, cdd_pair_thresh=1e-6)
+    scr = ferric.run_omega_ri(
+        *sys, 0.1, method="cdd-mp2", cdd_schwarz_thresh=1e-9, cdd_pair_thresh=1e-6
+    )
     assert scr.pair_fraction < 1.0 and abs(scr.e_corr - full.e_corr) < 1e-6
 
 

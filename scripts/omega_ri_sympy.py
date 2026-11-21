@@ -20,14 +20,15 @@ X_occ (n_occ x r) with G^T-space factor; B_cdd = (X_occ (x) X_vir)^T B_ov.
 Checks:
   C1  FT[erfc(wr)/r] = 4 pi/k^2 (1 - exp(-k^2/4w^2)) > 0: V~ is positive definite
       for every w > 0 (symbolic + quadrature).
-  C2  w -> 0: (V - eps W)^-1 V (V - eps W)^-1 -> V^-1 (symbolic); PySCF water
-      w = 1e-5 equals the Coulomb fit (numeric).
+  C2  w -> 0: (V - eps W)^-1 V (V - eps W)^-1 -> V^-1 (symbolic); on the
+      Gaussian-charge model the energy reaches the Coulomb fit, first order in
+      w because the fit leaks pair charge (numeric).
   C3  w -> oo: int erfc(wr)/r d^3r = pi/w^2, the w^-2 delta weight cancels in
-      the metric product, giving the overlap-metric fit; PySCF water error
+      the metric product, giving the overlap-metric fit; the model's error
       against the overlap-metric fit falls as w^-2.
   C4  robustness order: the Coulomb fit is Galerkin, error second order in the
       fit residual; the erfc fit is first order; the robust 3-term form is
-      second order (symbolic, random Gram model slopes, PySCF identities).
+      second order (symbolic, random Gram model slopes, model identity).
   C5  the coded dressing: D^T D = V~^-1 V V~^-1; D(w=0) = L^-1; the fitted
       4-index matrix is PSD (numeric, random SPD pair).
   C6  CDD per-t identity: with untruncated pivoted Cholesky (factored form,
@@ -39,8 +40,15 @@ Checks:
       residual delta satisfies (delta|P) = 0 for every P, so its leaked
       monopole q_delta enters the energy only at second order; the erfc fit's
       residual has (delta|P)_w = 0 but (delta|P) != 0, so the first-order term
-      (delta_ia|rho~_jb) is nonzero. PySCF water: fitted pair charges of both
-      fits, and |(delta|P)| for each.
+      (delta_ia|rho~_jb) is nonzero. Model: fitted pair charges of both fits,
+      and |(delta|P)| for each.
+
+The numerical model for C2, C3, C4 and C7 is closed form (numpy + mpmath, no
+quantum chemistry package): zero-charge occupied-virtual pair densities built
+from normalized s Gaussians, fitted in a smaller s-Gaussian auxiliary set, with
+the Coulomb, erfc and overlap integrals of Gaussian charge densities. The
+water/cc-pVDZ numbers in the book come from scripts/validation/gen_omega_ri.py
+(PySCF) and its committed reference JSON.
 
 Mutations (each recorded in crates/ferric-python/tests/test_derivation_scripts.py):
   * KERNEL erfc -> erf                         -> FAIL [C1]
@@ -48,6 +56,7 @@ Mutations (each recorded in crates/ferric-python/tests/test_derivation_scripts.p
   * dressing uses V~^-1 only (no L^T)          -> FAIL [C5]
   * CDD exchange without the off-diagonal 2    -> FAIL [C6]
   * Fermi shift sign flipped in the virtuals   -> FAIL [C6]
+  * model erfc kernel replaced by erf         -> FAIL [C3-model]
 Exit status: 0 iff every check passes.
 """
 
@@ -74,14 +83,18 @@ GALERKIN_COULOMB = True
 
 # ------------------------------------------------------------------ C1
 def claim1():
-    ft = sp.simplify(sp.integrate(4 * sp.pi * r**2 * KERNEL * sp.sin(k * r) / (k * r), (r, 0, sp.oo)))
+    ft = sp.simplify(
+        sp.integrate(4 * sp.pi * r**2 * KERNEL * sp.sin(k * r) / (k * r), (r, 0, sp.oo))
+    )
     target = 4 * sp.pi / k**2 * (1 - sp.exp(-(k**2) / (4 * w**2)))
     ok_sym = sp.simplify(ft - target) == 0
     from scipy.integrate import quad
     from scipy.special import erfc
 
     def num(kv, wv):
-        f = lambda x: 4 * np.pi * x**2 * (erfc(wv * x) / x) * np.sin(kv * x) / (kv * x)
+        def f(x):
+            return 4 * np.pi * x**2 * (erfc(wv * x) / x) * np.sin(kv * x) / (kv * x)
+
         return quad(f, 0, 60 / wv, limit=400)[0]
 
     ok_num = all(
@@ -89,8 +102,16 @@ def claim1():
         for kv in (0.2, 1.0, 3.0)
         for wv in (0.1, 0.5)
     )
-    ok_pos = all(float(target.subs({k: kv, w: wv})) > 0 for kv in (0.01, 0.3, 3, 30) for wv in (0.05, 1))
-    check("C1", ok_sym and ok_num and ok_pos, f"symbolic {ok_sym} quad {ok_num} positive {ok_pos}")
+    ok_pos = all(
+        float(target.subs({k: kv, w: wv})) > 0
+        for kv in (0.01, 0.3, 3, 30)
+        for wv in (0.05, 1)
+    )
+    check(
+        "C1",
+        ok_sym and ok_num and ok_pos,
+        f"symbolic {ok_sym} quad {ok_num} positive {ok_pos}",
+    )
 
 
 # ------------------------------------------------------------------ C2 / C3 symbolic
@@ -107,7 +128,11 @@ def claim2_symbolic():
 def claim3_symbolic():
     m0 = sp.simplify(sp.integrate(4 * sp.pi * r**2 * KERNEL, (r, 0, sp.oo)))
     m2 = sp.simplify(sp.integrate(4 * sp.pi * r**4 * KERNEL, (r, 0, sp.oo)))
-    check("C3-symbolic", sp.simplify(m0 - sp.pi / w**2) == 0 and sp.simplify(m2 * w**4).is_number, f"m0 = {m0}")
+    check(
+        "C3-symbolic",
+        sp.simplify(m0 - sp.pi / w**2) == 0 and sp.simplify(m2 * w**4).is_number,
+        f"m0 = {m0}",
+    )
 
 
 # ------------------------------------------------------------------ C4
@@ -152,7 +177,9 @@ def claim4():
     sl = {kk: np.log10(e1[kk] / e2[kk]) for kk in e1}
     check(
         "C4-gram-slopes",
-        abs(sl["coul"] - 2) < 0.1 and abs(sl["omega"] - 1) < 0.1 and abs(sl["robust"] - 2) < 0.1,
+        abs(sl["coul"] - 2) < 0.1
+        and abs(sl["omega"] - 1) < 0.1
+        and abs(sl["robust"] - 2) < 0.1,
         str({kk: round(v, 3) for kk, v in sl.items()}),
     )
 
@@ -183,7 +210,11 @@ def claim5():
     e2 = np.abs(d0 - np.linalg.inv(np.linalg.cholesky(v))).max()
     a_ = rng.standard_normal((n, 30))
     lam = np.linalg.eigvalsh(a_.T @ gram @ a_)
-    check("C5", e1 < 1e-12 and e2 < 1e-12 and lam.min() > -1e-10 * lam.max(), f"DtD {e1:.1e} D(0) {e2:.1e}")
+    check(
+        "C5",
+        e1 < 1e-12 and e2 < 1e-12 and lam.min() > -1e-10 * lam.max(),
+        f"DtD {e1:.1e} D(0) {e2:.1e}",
+    )
 
 
 # ------------------------------------------------------------------ C6 (CDD per-t identity)
@@ -222,7 +253,7 @@ def cdd_energies(b, eo, ev, tval, c_o, c_v):
     xv = np.linalg.lstsq(c_v, lv, rcond=None)[0]
     b3 = b.reshape(-1, no, nv)
     bc = np.einsum("Pia,ik,al->Pkl", b3, xo, xv)
-    ro, rv = bc.shape[1], bc.shape[2]
+    ro = bc.shape[1]
     bm = bc.reshape(bc.shape[0], -1)
     e_c = -2.0 * np.sum((bm.T @ bm) ** 2)
     e_x = 0.0
@@ -243,7 +274,12 @@ def claim6():
     ev = np.sort(rng.uniform(0.3, 3.0, nv))
     b = rng.standard_normal((naux, no * nv)) * 0.3
     g4 = (b.T @ b).reshape(no, nv, no, nv)
-    dlt = -eo[:, None, None, None] + ev[None, :, None, None] - eo[None, None, :, None] + ev[None, None, None, :]
+    dlt = (
+        -eo[:, None, None, None]
+        + ev[None, :, None, None]
+        - eo[None, None, :, None]
+        + ev[None, None, None, :]
+    )
     worst = 0.0
     for tval in (0.05, 0.7, 3.0):
         e_c, e_x = cdd_energies(b, eo, ev, tval, c_o, c_v)
@@ -263,75 +299,132 @@ def claim6():
     ref_os = -np.sum(g4**2 / dlt)
     ref_ss = -np.sum(g4 * (g4 - g4.transpose(0, 3, 2, 1)) / dlt)
     d_q = max(abs(e_os - ref_os) / abs(ref_os), abs(e_ss - ref_ss) / abs(ref_ss))
-    check("C6", worst < 1e-12 and d_q < 1e-6, f"per-t {worst:.1e}, quadrature {d_q:.1e}")
+    check(
+        "C6", worst < 1e-12 and d_q < 1e-6, f"per-t {worst:.1e}, quadrature {d_q:.1e}"
+    )
 
 
-# ------------------------------------------------------------------ PySCF water (C2, C3, C4, C7)
-def molecule():
-    from pyscf import df, gto, scf
-    from pyscf.df import addons
+# ------------------------------------------------------------------ Gaussian-charge model (C2, C3, C4, C7)
+# Every integral below is closed form: for two normalized s-Gaussian charge
+# densities with exponents a, b a distance R apart, c = ab/(a+b),
+#   Coulomb  (a|b)   = erf(sqrt(c) R)/R,
+#   erf(wr)/r        = erf(sqrt(c_w) R)/R,   1/c_w = 1/c + 1/w^2,
+#   erfc(wr)/r       = Coulomb - erf,
+#   overlap  (a|b)_S = (c/pi)^(3/2) exp(-c R^2).
+# mpmath at 40 digits removes the Coulomb - erf cancellation at large w. The
+# occupied-virtual pair densities are zero-charge combinations of a pair
+# basis; the auxiliary set is a different, smaller s set, so the fit is
+# inexact and leaks charge, as a real auxiliary basis does.
+GAUSS_CENTRES = [(0.0, 0.0, 0.0), (1.8, 0.3, 0.0), (3.5, -0.2, 0.4)]
+PAIR_EXPONENTS = (0.25, 0.9, 3.2)
+AUX_EXPONENTS = (0.4, 1.6, 6.0)
 
-    mol = gto.M(atom="O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692", basis="cc-pvdz", verbose=0)
-    mf = scf.RHF(mol)
-    mf.conv_tol = 1e-12
-    mf.kernel()
-    aux = addons.make_auxmol(mol, "cc-pvdz-ri")
-    no = mol.nelectron // 2
-    co, cv = mf.mo_coeff[:, :no], mf.mo_coeff[:, no:]
-    eo, ev = mf.mo_energy[:no], mf.mo_energy[no:]
 
-    def ints(wv):
-        with mol.with_range_coulomb(-wv), aux.with_range_coulomb(-wv):
-            v3 = df.incore.aux_e2(mol, aux, intor="int3c2e", aosym="s1")
-            v2 = aux.intor("int2c2e")
-        return np.einsum("mnP,mi,na->Pia", v3, co, cv, optimize=True).reshape(v3.shape[2], -1), v2
+def gauss_kernel(kind, a, b, rr, wv=None):
+    import mpmath as mp
+
+    mp.mp.dps = 40
+    a, b, rr = mp.mpf(a), mp.mpf(b), mp.mpf(rr)
+    c = a * b / (a + b)
+    if kind == "ovlp":
+        return float((c / mp.pi) ** 1.5 * mp.exp(-c * rr**2))
+
+    def coul(cc):
+        return 2 * mp.sqrt(cc / mp.pi) if rr == 0 else mp.erf(mp.sqrt(cc) * rr) / rr
+
+    if kind == "coul":
+        return float(coul(c))
+    return float(coul(c) - coul(1 / (1 / c + 1 / mp.mpf(wv) ** 2)))
+
+
+def gauss_matrix(kind, fa, fb, wv=None):
+    return np.array(
+        [
+            [
+                gauss_kernel(kind, ea, eb, np.linalg.norm(np.subtract(ra, rb)), wv)
+                for eb, rb in fb
+            ]
+            for ea, ra in fa
+        ]
+    )
+
+
+def model_system():
+    pairb = [(e, r) for r in GAUSS_CENTRES for e in PAIR_EXPONENTS]
+    auxb = [(e, r) for r in GAUSS_CENTRES for e in AUX_EXPONENTS]
+    rng = np.random.default_rng(5)
+    no, nv = 2, 4
+    cpair = rng.standard_normal((len(pairb), no * nv))
+    cpair = 0.2 * (cpair - cpair.mean(axis=0))  # each ov pair density carries no charge
+    eo = np.array([-1.1, -0.6])
+    ev = np.array([0.3, 0.7, 1.2, 2.0])
 
     def mp2(g):
-        t4 = g.reshape(no, ev.size, no, ev.size)
-        dl = eo[:, None, None, None] - ev[None, :, None, None] + eo[None, None, :, None] - ev[None, None, None, :]
-        return float(np.einsum("iajb,iajb->", 2 * t4 - t4.transpose(0, 3, 2, 1), t4 / dl))
+        t4 = g.reshape(no, nv, no, nv)
+        dl = (
+            eo[:, None, None, None]
+            - ev[None, :, None, None]
+            + eo[None, None, :, None]
+            - ev[None, None, None, :]
+        )
+        return float(
+            np.einsum("iajb,iajb->", 2 * t4 - t4.transpose(0, 3, 2, 1), t4 / dl)
+        )
 
-    a0, v = ints(0.0)
+    v = gauss_matrix("coul", auxb, auxb)
+    a0 = gauss_matrix("coul", auxb, pairb) @ cpair
     c0 = np.linalg.solve(v, a0)
     g0 = a0.T @ c0
     e0 = mp2(g0)
 
     def fit(wv):
-        aw, vw = ints(wv)
+        vw = gauss_matrix("erfc", auxb, auxb, wv)
+        aw = gauss_matrix("erfc", auxb, pairb, wv) @ cpair
         cw = np.linalg.solve(vw, aw)
         return cw, cw.T @ v @ cw
 
-    # C2
-    _, g5 = fit(1e-5)
-    check("C2-numeric", abs(mp2(g5) - e0) < 1e-9, f"{abs(mp2(g5) - e0):.1e}")
-    # C3: overlap-metric fit c = S^-1 (P|ia)_S
-    s2 = aux.intor("int1e_ovlp")
-    pmol = mol + aux
-    s3 = pmol.intor("int3c1e", shls_slice=(0, mol.nbas, 0, mol.nbas, mol.nbas, pmol.nbas))
-    s3 = np.einsum("mnP,mi,na->Pia", s3, co, cv, optimize=True).reshape(s3.shape[2], -1)
-    cs = np.linalg.solve(s2, s3)
+    # C2: w -> 0 reaches the Coulomb fit. The leaked pair charge makes the
+    # approach first order in w (erfc = Coulomb - 2w/sqrt(pi) + O(w^3)).
+    d2 = {wv: abs(mp2(fit(wv)[1]) - e0) for wv in (1e-3, 1e-4, 1e-5)}
+    r1, r2 = d2[1e-3] / d2[1e-4], d2[1e-4] / d2[1e-5]
+    check(
+        "C2-model",
+        9.0 < r1 < 11.0 and 9.0 < r2 < 11.0 and d2[1e-5] < 1e-7 * abs(e0),
+        f"|dE| {d2[1e-5]:.1e} at w=1e-5, ratios per decade {r1:.2f} {r2:.2f}",
+    )
+    # C3: w -> oo reaches the overlap-metric fit c = S^-1 (P|ia)_S, error ~ w^-2
+    cs = np.linalg.solve(
+        gauss_matrix("ovlp", auxb, auxb), gauss_matrix("ovlp", auxb, pairb) @ cpair
+    )
     e_ovl = mp2(cs.T @ v @ cs)
     dd = {wv: abs(mp2(fit(wv)[1]) - e_ovl) for wv in (32.0, 64.0, 128.0)}
     r1, r2 = dd[32.0] / dd[64.0], dd[64.0] / dd[128.0]
-    check("C3-numeric", 3.5 < r1 < 4.5 and 3.5 < r2 < 4.5, f"ratios {r1:.2f} {r2:.2f}")
-    # C4 molecule identity: plain - CoulRI = linear + quadratic in D = c0 - cw
+    check("C3-model", 3.5 < r1 < 4.5 and 3.5 < r2 < 4.5, f"ratios {r1:.2f} {r2:.2f}")
+    # C4 identity: plain - CoulRI = linear + quadratic in D = c0 - cw
     cw, gw = fit(0.1)
     dmat = c0 - cw
     lin = -(dmat.T @ v @ c0) - (c0.T @ v @ dmat)
     quad = dmat.T @ v @ dmat
     ident = np.abs(gw - g0 - lin - quad).max()
-    check("C4-molecule", ident < 1e-12 and np.abs(lin).max() > 5 * np.abs(quad).max(), f"identity {ident:.1e}")
-    # C7 charge leak and the Galerkin condition
-    eps = 1e-9
-    one = gto.M(atom=[["Ghost", (0.0, 0.0, 0.0)]], basis={"Ghost": [[0, [eps, 1.0]]]}, unit="Bohr", verbose=0)
-    n_p = gto.intor_cross("int1e_ovlp", aux, one)[:, 0] / (2.0 * eps / np.pi) ** 0.75
-    q0, qw = n_p @ c0, n_p @ cw
-    # (delta|P) for the Coulomb fit = A0 - V c0 = 0 (Galerkin); for the erfc fit A0 - V cw != 0
+    check(
+        "C4-model",
+        ident < 1e-12 * np.abs(g0).max() and np.abs(lin).max() > 5 * np.abs(quad).max(),
+        f"identity {ident:.1e}",
+    )
+    # C7 charge leak and the Galerkin condition. Each normalized aux Gaussian
+    # carries unit charge, so the fitted pair charge is the column sum of c.
+    q0, qw = c0.sum(axis=0), cw.sum(axis=0)
     gal0 = np.abs(a0 - v @ c0).max() / np.abs(a0).max()
     galw = np.abs(a0 - v @ cw).max() / np.abs(a0).max()
-    print(f"     fitted ov pair charges: Coulomb max {np.abs(q0).max():.2e}, erfc(0.1) max {np.abs(qw).max():.2e}")
+    print(
+        f"     fitted ov pair charges: Coulomb max {np.abs(q0).max():.2e}, erfc(0.1) max {np.abs(qw).max():.2e}"
+    )
     print(f"     |(delta|P)|/|(ia|P)|: Coulomb {gal0:.1e}, erfc(0.1) {galw:.1e}")
-    check("C7", gal0 < 1e-10 and galw > 1e-4, f"Galerkin Coulomb {gal0:.1e}, erfc {galw:.1e}")
+    check(
+        "C7",
+        gal0 < 1e-10 and galw > 1e-4,
+        f"Galerkin Coulomb {gal0:.1e}, erfc {galw:.1e}",
+    )
 
 
 def main():
@@ -341,7 +434,7 @@ def main():
     claim4()
     claim5()
     claim6()
-    molecule()
+    model_system()
     if failures:
         print(f"{len(failures)} check(s) failed: {failures}")
         sys.exit(1)

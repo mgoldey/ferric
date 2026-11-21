@@ -35,7 +35,11 @@ CASES = [
         10,
         [
             ("KERNEL = sp.erfc(w * r) / r", "KERNEL = sp.erf(w * r) / r", "FAIL [C1]"),
-            ("GALERKIN_COULOMB = True", "GALERKIN_COULOMB = False", "FAIL [C4-coulomb-order]"),
+            (
+                "GALERKIN_COULOMB = True",
+                "GALERKIN_COULOMB = False",
+                "FAIL [C4-coulomb-order]",
+            ),
             (
                 "wmat = sla.cho_solve(sla.cho_factor(v_w, lower=True), l_)",
                 "wmat = sla.cho_solve(sla.cho_factor(v_w, lower=True), np.eye(l_.shape[0]))",
@@ -43,6 +47,11 @@ CASES = [
             ),
             ("EXCHANGE_OFFDIAG = 2.0", "EXCHANGE_OFFDIAG = 1.0", "FAIL [C6]"),
             ("FERMI_SIGN_VIR = -1.0", "FERMI_SIGN_VIR = 1.0", "FAIL [C6]"),
+            (
+                "return float(coul(c) - coul(1 / (1 / c + 1 / mp.mpf(wv) ** 2)))",
+                "return float(coul(1 / (1 / c + 1 / mp.mpf(wv) ** 2)))",
+                "FAIL [C3-model]",
+            ),
         ],
     ),
     (
