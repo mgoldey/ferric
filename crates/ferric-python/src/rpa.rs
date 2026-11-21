@@ -917,7 +917,6 @@ pub(crate) fn run_pdep_rpa(
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
 
     let sys = prepare(mol, basis_set)?;
-
     let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
     // The reference SCF must see the ENVIRONMENT, or the dielectric response

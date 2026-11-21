@@ -370,7 +370,6 @@ pub(crate) fn run_double_hybrid(
     let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
     let sys = prepare(mol, basis_set)?;
-
     let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
 
@@ -804,7 +803,7 @@ pub(crate) fn run_dft(
         dispersion_model,
         volume_ratios,
         converged: rhf.converged,
-        xc_mol: emol.clone(),
+        xc_mol: sys.into_mol(),
         xc_basis: basis_set.inner.clone(),
         xc_cache: std::sync::OnceLock::new(),
         xc_lock: std::sync::Mutex::new(()),

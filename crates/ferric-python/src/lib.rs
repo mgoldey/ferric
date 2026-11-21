@@ -86,6 +86,7 @@ mod qmmm;
 mod response_modes;
 mod rpa;
 mod scf;
+mod system;
 mod tddft;
 
 use cdft::*;
@@ -102,6 +103,7 @@ use properties::*;
 use qmmm::*;
 use rpa::*;
 use scf::*;
+use system::*;
 use tddft::*;
 
 // ── Molecule ──

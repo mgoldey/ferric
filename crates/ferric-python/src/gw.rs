@@ -234,7 +234,6 @@ pub(crate) fn run_gw(
     let gw_method = parse_gw_method(method)?;
 
     let sys = prepare(mol, basis_set)?;
-
     let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
@@ -521,7 +520,6 @@ pub(crate) fn run_u_gw(
     };
 
     let sys = prepare(mol, basis_set)?;
-
     let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
@@ -956,7 +954,6 @@ pub(crate) fn run_tdhf_static_polarizability(
     use ferric_gw::bse::run_rpax_static_polarizability;
 
     let sys = prepare(mol, basis_set)?;
-
     let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 

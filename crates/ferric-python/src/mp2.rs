@@ -759,34 +759,7 @@ pub(crate) fn mp2_exact_default_config(
     )
 }
 
-// ── Reference-SCF preamble of the correlated drivers ──
-//
-// The correlated `run_*` entry points of this crate solve their reference the
-// same way: one `ferric_scf::PreparedSystem` (molecule with the basis set's
-// ECP applied, prepared orbital basis, Coulomb Schwarz bounds, parallel
-// context) built by its single constructor, any fitting basis prepared on the
-// same molecule (`PreparedSystem::prepare_aux`), the reference solved on the
-// borrowed system (`solve_rhf` / `solve_uhf` / `solve_reference`), and a
-// non-converged SCF refused (`ScfResult::into_converged`). Every later use of
-// the molecule reads `sys.mol()`, so the kernels see the valence electron
-// count the reference was solved for. (Kernels that cannot handle ECP atoms
-// refuse them themselves: the amplitude-threshold local MP2, dRPA and
-// LinLCCD in `ferric_mp2::lmp2_amplitude`.)
-
-/// `PreparedSystem::new` on a copy of `mol`, for a binding returning
-/// `PyResult`.
-pub(crate) fn prepare(mol: &PyMolecule, basis: &PyBasisSet) -> PyResult<PreparedSystem> {
-    PreparedSystem::new(mol.inner.clone(), &basis.inner).map_err(make_err)
-}
-
-/// `PreparedSystem::prepare_aux` of the fitting basis `aux` on `sys`'s
-/// molecule, for a binding returning `PyResult`.
-pub(crate) fn prepare_aux<'s>(
-    sys: &'s PreparedSystem,
-    aux: &PyBasisSet,
-) -> PyResult<PreparedAux<'s>> {
-    sys.prepare_aux(&aux.inner).map_err(make_err)
-}
+// ── Reference-SCF preamble: see `system.rs` (`prepare`, `prepare_aux`) ──
 
 /// `cfg` turned into the KS reference config of the GW/TDHF/TDDFT entry
 /// points: functional `xc` with RI-J/RI-K on def2-universal-jkfit (as
