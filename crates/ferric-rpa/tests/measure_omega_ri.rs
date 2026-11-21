@@ -56,6 +56,11 @@ fn measure_omega_ri_alkanes() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);
+    let lap_max: usize = std::env::var("FERRIC_OMEGA_RI_LAPMO_MAX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24);
+    let rijk = std::env::var("FERRIC_OMEGA_RI_RIJK").is_ok_and(|v| v == "1");
     let op = Operator::coulomb();
     for n in sizes {
         let xyz = root.join(format!("testdata/molecules/alkane_{n}.xyz"));
@@ -74,6 +79,10 @@ fn measure_omega_ri_alkanes() {
                     energy_conv: 1e-10,
                     density_conv: 1e-8,
                     max_iter: 200,
+                    // FERRIC_OMEGA_RI_RIJK=1: RI-JK SCF (def2-universal-jkfit) to reach
+                    // larger sizes; every method then reads the same orbitals.
+                    df_j_aux: rijk.then(|| "def2-universal-jkfit".to_string()),
+                    df_k_aux: rijk.then(|| "def2-universal-jkfit".to_string()),
                     ..Default::default()
                 },
             )
@@ -86,7 +95,7 @@ fn measure_omega_ri_alkanes() {
             ..Default::default()
         };
         let mut row = serde_json::json!({
-            "n_carbon": n, "nbf": obs.nbasis(), "naux": dfbs.nbasis(), "t_scf": t_scf,
+            "n_carbon": n, "nbf": obs.nbasis(), "naux": dfbs.nbasis(), "t_scf": t_scf, "scf_rijk": rijk,
         });
         let (rc, t) = timed(|| {
             ri_mp2_fitted(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg, &RiFit::Coulomb).unwrap()
@@ -98,12 +107,14 @@ fn measure_omega_ri_alkanes() {
                 timed(|| ri_mp2_fitted(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg, &fit).unwrap());
             row[format!("rimp2_omega_{w}")] = serde_json::json!({"e": r.mp2_corr, "t": t});
         }
-        let (lap, t) = timed(|| {
-            LaplaceMp2::new(7)
-                .compute_mo(&mol, &obs, &dfbs, op, &rhf, fc)
-                .unwrap()
-        });
-        row["laplace_mo_coulomb"] = serde_json::json!({"e": lap, "t": t});
+        if n <= lap_max {
+            let (lap, t) = timed(|| {
+                LaplaceMp2::new(7)
+                    .compute_mo(&mol, &obs, &dfbs, op, &rhf, fc)
+                    .unwrap()
+            });
+            row["laplace_mo_coulomb"] = serde_json::json!({"e": lap, "t": t});
+        }
         let base = OmegaRiCddConfig {
             fit: RiFit::omega_ri(0.1).unwrap(),
             frozen_core: fc,
