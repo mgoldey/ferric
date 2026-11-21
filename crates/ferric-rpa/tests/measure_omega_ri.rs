@@ -15,6 +15,10 @@
 //! * `run_pdep_rpa` (Coulomb) and `run_pdep_rpa_fitted` at omega = 0.1
 //!   (skipped above `FERRIC_OMEGA_RI_RPA_MAX` carbons, default 16).
 //!
+//! `FERRIC_OMEGA_RI_PROFILE=1`: only `ri_mp2` (Coulomb) and the unscreened /
+//! paper-screened CDD. Every CDD row carries its stage wall times (`stages`)
+//! and the exchange GEMM work fractions (`kept_work`, `range_work`).
+//!
 //! Artifact hypothesis for the screening-error growth: if the growth were a
 //! construction error in the screen (wrong index set), the pair-only and
 //! virtual-only errors would not add up to the combined one and the error
@@ -61,6 +65,7 @@ fn measure_omega_ri_alkanes() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(24);
     let rijk = std::env::var("FERRIC_OMEGA_RI_RIJK").is_ok_and(|v| v == "1");
+    let profile = std::env::var("FERRIC_OMEGA_RI_PROFILE").is_ok_and(|v| v == "1");
     let op = Operator::coulomb();
     for n in sizes {
         let xyz = root.join(format!("testdata/molecules/alkane_{n}.xyz"));
@@ -101,13 +106,14 @@ fn measure_omega_ri_alkanes() {
             ri_mp2_fitted(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg, &RiFit::Coulomb).unwrap()
         });
         row["rimp2_coulomb"] = serde_json::json!({"e": rc.mp2_corr, "t": t});
-        for w in [0.05, 0.1, 0.2] {
+        let omegas: &[f64] = if profile { &[] } else { &[0.05, 0.1, 0.2] };
+        for &w in omegas {
             let fit = RiFit::omega_ri(w).unwrap();
             let (r, t) =
                 timed(|| ri_mp2_fitted(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg, &fit).unwrap());
             row[format!("rimp2_omega_{w}")] = serde_json::json!({"e": r.mp2_corr, "t": t});
         }
-        if n <= lap_max {
+        if n <= lap_max && !profile {
             let (lap, t) = timed(|| {
                 LaplaceMp2::new(7)
                     .compute_mo(&mol, &obs, &dfbs, op, &rhf, fc)
@@ -152,15 +158,20 @@ fn measure_omega_ri_alkanes() {
                 },
             ),
         ];
-        for (tag, cfg) in variants {
+        let keep = |tag: &str| !profile || tag == "cdd_unscreened" || tag == "cdd_paper_screens";
+        for (tag, cfg) in variants.into_iter().filter(|(t, _)| keep(t)) {
             let (r, t) = timed(|| omega_ri_cdd_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap());
+            let tm = r.timings;
             row[tag] = serde_json::json!({
                 "e": r.e_corr, "t": t, "e_x": r.e_exchange, "pairs": r.pair_fraction,
                 "virt": r.virtual_fraction, "rank_occ": r.mean_rank_occ, "rank_vir": r.mean_rank_vir,
                 "nocc": r.nocc, "nvir": r.nvir,
+                "kept_work": r.exchange_kept_work, "range_work": r.exchange_range_work,
+                "stages": {"dress": tm.dress, "b_ov": tm.b_ov, "cholesky": tm.cholesky,
+                    "transform": tm.transform, "coulomb": tm.coulomb, "exchange": tm.exchange},
             });
         }
-        if n <= rpa_max {
+        if n <= rpa_max && !profile {
             let cfg = PdepRpaConfig {
                 frozen_core: fc,
                 ..Default::default()

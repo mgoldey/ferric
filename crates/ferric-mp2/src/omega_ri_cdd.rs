@@ -40,10 +40,21 @@
 //! screening of the exchange term (`schwarz_thresh` = ϑ_schwarz, eq 43, and
 //! `pair_thresh` = ϑ_ij, eq 46). Each is exact at 0, which is its default.
 //!
-//! The Cholesky pivots come from the non-orthogonal AO pseudo-density. The
-//! paper orthogonalizes first (for locality of the pseudo-MOs, which this
-//! dense code does not use); that changes the pivot order, and so which
-//! columns a nonzero `cdd_tol` drops, but not the vacuous limit.
+//! # Pseudo-MO construction and order
+//!
+//! The pivoted Cholesky runs on the Löwdin-orthogonalized pseudo-density
+//! `S^{1/2} P S^{1/2}` (the paper's construction, eqs 22-27), and the factor is
+//! carried back with `S^{-1/2}`. In the factored form this is a pivoted
+//! Cholesky of `G = S^{1/2} C e^{±t(ε-ε_F)/2}` ([`lowdin_coefficients`]), which
+//! gives pseudo-MOs centred on their (orthogonalized) AO pivot. They are then
+//! sorted by the position of that pivot along the molecule's principal axis
+//! ([`principal_axis_ao_keys`]), so pseudo-MOs that are near in space are near
+//! in index and the Schwarz-kept virtuals of a pair form a short index range.
+//! The exchange GEMM runs on that contiguous range as a strided view of `B`
+//! ([`screened_exchange`]). Neither choice moves the untruncated energy: any
+//! full-rank pivoted Cholesky factor is an orthogonal rotation of the scaled
+//! MOs, and a permutation is one too. They change which columns a nonzero
+//! `cdd_tol` drops and which entries the Schwarz screens drop.
 
 use crate::omega_ri::RiFit;
 use crate::rimp2::{active_occ, eri3_budget_bytes, stream_dressed_mo_band_budgeted};
@@ -154,6 +165,33 @@ pub struct OmegaRiCddResult {
     pub pair_fraction: f64,
     /// Fraction of `(ij, a)` virtual entries kept by ϑ_schwarz (1 for SOS).
     pub virtual_fraction: f64,
+    /// Exchange GEMM work of the kept entries, `Σ_ij k_ij² / (n_pairs · r_vir²)`
+    /// summed over points (1 unscreened, 0 for SOS): the flop fraction a
+    /// gather of exactly the kept virtuals would do.
+    pub exchange_kept_work: f64,
+    /// Exchange GEMM work actually done on the contiguous index ranges,
+    /// `Σ_ij w_ij² / (n_pairs · r_vir²)` (`w_ij >= k_ij` is the range width).
+    pub exchange_range_work: f64,
+    /// Wall seconds per stage.
+    pub timings: CddTimings,
+}
+
+/// Stage wall times of one [`omega_ri_cdd_mp2`] call, seconds; the per-point
+/// stages are summed over the Laplace points.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CddTimings {
+    /// Fit dressing `D` (metrics, Cholesky, solves).
+    pub dress: f64,
+    /// 3-index integrals and the dressed MO transform to `B_ov`.
+    pub b_ov: f64,
+    /// Pivoted Cholesky pseudo-MO factors and their ordering.
+    pub cholesky: f64,
+    /// `B_ov -> B(t)` pseudo-MO transform.
+    pub transform: f64,
+    /// Coulomb term `tr J²`.
+    pub coulomb: f64,
+    /// Exchange term with its Schwarz screens.
+    pub exchange: f64,
 }
 
 impl std::fmt::Display for OmegaRiCddResult {
@@ -234,9 +272,65 @@ pub struct CddFactors {
     pub x_vir: Array2<f64>,
 }
 
+/// Löwdin MO coefficients `S^{1/2} C` (orthonormal columns: `Cᵀ S C = I`).
+///
+/// The pivoted Cholesky of `S^{1/2} P S^{1/2} = (S^{1/2} G)(S^{1/2} G)ᵀ` is the
+/// paper's orthogonalized CDD. In the factored form only the rows that are
+/// pivoted on change: [`pivoted_cholesky_factored`] of `S^{1/2} G` returns `M`
+/// with `L' = S^{1/2} G M`, and the AO factor is `L = S^{-1/2} L' = G M`, the
+/// same coordinates as before.
+pub fn lowdin_coefficients(s_half: &Array2<f64>, c: &Array2<f64>) -> Array2<f64> {
+    s_half.dot(c)
+}
+
+/// Position of each AO's centre along the principal axis of the atomic
+/// coordinates (the eigenvector of the largest eigenvalue of their covariance;
+/// for a chain, the chain direction). Sorting pseudo-MOs by the key of their
+/// AO pivot lays them out along the molecule. Any key is exact: it only
+/// permutes pseudo-MOs.
+pub fn principal_axis_ao_keys(mol: &Molecule, obs: &PreparedBasis) -> Vec<f64> {
+    let n = mol.atoms.len().max(1) as f64;
+    let xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let mut c = [0.0; 3];
+    for p in &xyz {
+        for k in 0..3 {
+            c[k] += p[k] / n;
+        }
+    }
+    let mut cov = Array2::<f64>::zeros((3, 3));
+    for p in &xyz {
+        for a in 0..3 {
+            for b in 0..3 {
+                cov[(a, b)] += (p[a] - c[a]) * (p[b] - c[b]);
+            }
+        }
+    }
+    let axis = match ferric_core::linalg::eigh_dc(&cov, ferric_core::linalg::Uplo::Upper) {
+        Ok((_, v)) => [v[(0, 2)], v[(1, 2)], v[(2, 2)]],
+        Err(_) => [0.0, 0.0, 1.0],
+    };
+    let centres = obs.shell_centers();
+    let mut keys = vec![0.0; obs.nbasis()];
+    for ((&off, &dim), r) in obs
+        .shell_offsets()
+        .iter()
+        .zip(obs.shell_dims())
+        .zip(&centres)
+    {
+        let k = (0..3).map(|q| (r[q] - c[q]) * axis[q]).sum::<f64>();
+        keys[off..off + dim].fill(k);
+    }
+    keys
+}
+
 /// Build the pseudo-MO coefficients of `P_occ(t) = C_o e^{t(ε_i-ε_F)} C_oᵀ` and
-/// `P_vir(t) = C_v e^{-t(ε_a-ε_F)} C_vᵀ` (shared by omega-RI-CDD-MP2 and the
-/// omega-RI-CDD-RPA τ stack in ferric-rpa).
+/// `P_vir(t) = C_v e^{-t(ε_a-ε_F)} C_vᵀ`.
+///
+/// `c_occ`, `c_vir` are the Löwdin coefficients ([`lowdin_coefficients`]):
+/// the Cholesky pivots on the orthogonalized pseudo-density. The pseudo-MOs
+/// are returned sorted by `ao_key` of their pivot (stable, so ties keep the
+/// pivot order); `ao_key` has one entry per AO row of `c_occ`.
+#[allow(clippy::too_many_arguments)]
 pub fn cdd_factors(
     c_occ: &Array2<f64>,
     c_vir: &Array2<f64>,
@@ -245,6 +339,7 @@ pub fn cdd_factors(
     eps_f: f64,
     t: f64,
     orbitals: PseudoOrbitals,
+    ao_key: &[f64],
 ) -> CddFactors {
     let so: Vec<f64> = eps_occ
         .iter()
@@ -262,7 +357,10 @@ pub fn cdd_factors(
                 for (mut col, &f) in g.axis_iter_mut(Axis(1)).zip(sc) {
                     col *= f;
                 }
-                let (_, mut m) = pivoted_cholesky_factored(&g, tol);
+                let (piv, m) = pivoted_cholesky_factored(&g, tol);
+                let mut order: Vec<usize> = (0..piv.len()).collect();
+                order.sort_by(|&x, &y| ao_key[piv[x]].total_cmp(&ao_key[piv[y]]));
+                let mut m = m.select(Axis(1), &order);
                 for (mut row, &f) in m.axis_iter_mut(Axis(0)).zip(sc) {
                     row *= f;
                 }
@@ -300,10 +398,34 @@ pub fn cdd_transform(b_ov: &Array2<f64>, f: &CddFactors) -> Array2<f64> {
     out
 }
 
+/// Tally of one [`screened_exchange`] call.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ExchangeTally {
+    /// `Σ_ij Σ_ab (ia|jb)(ib|ja)` over the kept entries.
+    pub k: f64,
+    /// `(i<=j)` pairs kept by ϑ_ij / all pairs.
+    pub pairs_kept: usize,
+    /// See [`Self::pairs_kept`].
+    pub pairs_total: usize,
+    /// `(ij, a)` entries kept by ϑ_schwarz / `pairs_total · nv`.
+    pub virt_kept: usize,
+    /// See [`Self::virt_kept`].
+    pub virt_total: usize,
+    /// `Σ_ij k_ij²` over kept pairs (`k_ij` kept virtuals).
+    pub kept_sq: f64,
+    /// `Σ_ij w_ij²` over kept pairs (`w_ij` the kept index range width).
+    pub range_sq: f64,
+}
+
 /// Exchange sum `Σ_ij Σ_ab (ia|jb)(ib|ja)` with the paper's Schwarz screening,
 /// `(ia|jb) = Σ_P B_P,ia B_P,jb`, `b` of shape `(naux, no·nv)`.
 ///
-/// Returns `(K, pairs_kept, pairs_total, virt_kept, virt_total)`. With both
+/// For each kept pair the GEMM `G = B_iᵀ B_j` runs on the contiguous virtual
+/// index range `[min keep, max keep]`, read as a strided view of `b` (no
+/// copy), and the sum is restricted to the kept entries inside it. The result
+/// is the sum over exactly the kept set whatever the order of the virtuals;
+/// the order only decides how much of the range is wasted (pseudo-MOs sorted
+/// along the molecule make the range close to the kept set). With both
 /// thresholds 0 nothing is dropped and the sum is exact.
 pub fn screened_exchange(
     b: &Array2<f64>,
@@ -311,63 +433,80 @@ pub fn screened_exchange(
     nv: usize,
     schwarz_thresh: f64,
     pair_thresh: f64,
-) -> (f64, usize, usize, usize, usize) {
+) -> ExchangeTally {
     // Q_ia = sqrt((ia|ia)) = |B_:,ia|
-    let q: Vec<f64> = (0..no * nv)
-        .map(|c| b.column(c).iter().map(|x| x * x).sum::<f64>().sqrt())
-        .collect();
-    // Per-occupied contiguous slabs (naux, nv).
-    let slabs: Vec<Array2<f64>> = (0..no)
-        .map(|i| b.slice(s![.., i * nv..(i + 1) * nv]).to_owned())
-        .collect();
-    let per_i: Vec<(f64, usize, usize, usize, usize)> = (0..no)
+    let mut q = vec![0.0f64; no * nv];
+    for row in b.rows() {
+        for (qc, &x) in q.iter_mut().zip(row) {
+            *qc += x * x;
+        }
+    }
+    q.iter_mut().for_each(|x| *x = x.sqrt());
+    let per_i: Vec<ExchangeTally> = (0..no)
         .into_par_iter()
         .map(|i| {
-            let mut acc = (0.0, 0usize, 0usize, 0usize, 0usize);
+            let mut acc = ExchangeTally::default();
             let qi = &q[i * nv..(i + 1) * nv];
+            let mut mask = vec![false; nv];
             for j in i..no {
-                acc.2 += 1;
+                acc.pairs_total += 1;
+                acc.virt_total += nv;
                 let qj = &q[j * nv..(j + 1) * nv];
                 let sa: Vec<f64> = qi.iter().zip(qj).map(|(x, y)| x * y).collect();
                 let a_ij: f64 = sa.iter().sum();
-                acc.4 += nv;
                 if a_ij * a_ij < pair_thresh {
                     continue;
                 }
-                acc.1 += 1;
+                acc.pairs_kept += 1;
                 let smax = sa.iter().cloned().fold(0.0f64, f64::max);
-                let keep: Vec<usize> = (0..nv)
-                    .filter(|&a| sa[a] * smax >= schwarz_thresh)
-                    .collect();
-                acc.3 += keep.len();
-                if keep.is_empty() {
-                    continue;
-                }
-                let (bi, bj) = if keep.len() == nv {
-                    (slabs[i].clone(), slabs[j].clone())
-                } else {
-                    (
-                        slabs[i].select(Axis(1), &keep),
-                        slabs[j].select(Axis(1), &keep),
-                    )
-                };
-                // G[a,b] = (ia|jb); K_ij = Σ_ab G[a,b] G[b,a]
-                let g = bi.t().dot(&bj);
-                let k = keep.len();
-                let mut kij = 0.0;
-                for a in 0..k {
-                    for bb in 0..k {
-                        kij += g[(a, bb)] * g[(bb, a)];
+                let (mut lo, mut hi, mut k) = (nv, 0usize, 0usize);
+                for (a, m) in mask.iter_mut().enumerate() {
+                    *m = sa[a] * smax >= schwarz_thresh;
+                    if *m {
+                        lo = lo.min(a);
+                        hi = a + 1;
+                        k += 1;
                     }
                 }
-                acc.0 += if i == j { kij } else { 2.0 * kij };
+                acc.virt_kept += k;
+                if k == 0 {
+                    continue;
+                }
+                let w = hi - lo;
+                acc.kept_sq += (k * k) as f64;
+                acc.range_sq += (w * w) as f64;
+                let bi = b.slice(s![.., i * nv + lo..i * nv + hi]);
+                let bj = b.slice(s![.., j * nv + lo..j * nv + hi]);
+                // G[a,b] = (ia|jb) on the range; K_ij = Σ_{a,b kept} G[a,b] G[b,a]
+                let g = bi.t().dot(&bj);
+                let m = &mask[lo..hi];
+                let mut kij = 0.0;
+                for a in 0..w {
+                    if !m[a] {
+                        continue;
+                    }
+                    for bb in 0..w {
+                        if m[bb] {
+                            kij += g[(a, bb)] * g[(bb, a)];
+                        }
+                    }
+                }
+                acc.k += if i == j { kij } else { 2.0 * kij };
             }
             acc
         })
         .collect();
-    per_i.iter().fold((0.0, 0, 0, 0, 0), |a, x| {
-        (a.0 + x.0, a.1 + x.1, a.2 + x.2, a.3 + x.3, a.4 + x.4)
-    })
+    per_i
+        .iter()
+        .fold(ExchangeTally::default(), |a, x| ExchangeTally {
+            k: a.k + x.k,
+            pairs_kept: a.pairs_kept + x.pairs_kept,
+            pairs_total: a.pairs_total + x.pairs_total,
+            virt_kept: a.virt_kept + x.virt_kept,
+            virt_total: a.virt_total + x.virt_total,
+            kept_sq: a.kept_sq + x.kept_sq,
+            range_sq: a.range_sq + x.range_sq,
+        })
 }
 
 /// omega-RI-CDD-MP2 / -SOS-MP2 correlation energy (closed-shell RHF reference).
@@ -427,18 +566,14 @@ pub fn omega_ri_cdd_mp2(
     let eps_occ: Vec<f64> = eps[fc..nocc_total].to_vec();
     let eps_vir: Vec<f64> = eps[nocc_total..].to_vec();
 
-    // Memory preflight: B_ov, one transformed B(t), and the exchange's
-    // per-occupied slab copy, all (naux, nocc*nvir) at most.
+    // Memory preflight: B_ov and one transformed B(t), both (naux, nocc*nvir)
+    // at most (the exchange reads strided views of B(t), no copy).
     let budget = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
     let nov_bytes = naux
         .saturating_mul(nocc)
         .saturating_mul(nvir)
         .saturating_mul(8);
-    let planes = if matches!(config.energy, CddEnergy::Mp2) {
-        3
-    } else {
-        2
-    };
+    let planes = 2;
     ferric_core::memory::check_alloc(
         &format!(
             "omega-RI-CDD (naux={naux}, nocc={nocc}, nvir={nvir}; {planes} (naux, nocc*nvir) planes)"
@@ -448,13 +583,29 @@ pub fn omega_ri_cdd_mp2(
     )?;
 
     // Fitted MO tensor, built once: B = D (P|ia)_w.
+    let mut tm = CddTimings::default();
+    let clock = std::time::Instant::now;
     let eri_budget = eri3_budget_bytes(config.memory_budget_bytes);
+    let t0 = clock();
     let (src_op, dress) = crate::omega_ri::fit_dressing(&config.fit, op, dfbs, budget)?;
+    tm.dress = t0.elapsed().as_secs_f64();
+    let t0 = clock();
     let b_ov = {
         let mut src = ThreeIndexSource::build(src_op, obs, dfbs, eri_budget)?;
         stream_dressed_mo_band_budgeted(&mut src, &dress, &c_occ, &c_vir, None, Some(eri_budget))?
     };
     drop(dress);
+    tm.b_ov = t0.elapsed().as_secs_f64();
+
+    // Löwdin coefficients for the orthogonalized pivoted Cholesky, and the
+    // principal-axis AO keys that order the pseudo-MOs along the molecule.
+    let t0 = clock();
+    let s_half = ferric_core::linalg::symmetric_sqrt(&ferric_integrals::oneelectron::overlap(obs))?;
+    let lc_occ = lowdin_coefficients(&s_half, &c_occ);
+    let lc_vir = lowdin_coefficients(&s_half, &c_vir);
+    drop(s_half);
+    let ao_key = principal_axis_ao_keys(mol, obs);
+    tm.cholesky = t0.elapsed().as_secs_f64();
 
     // Laplace grid: the same range LaplaceMp2::compute_mo fits.
     let ymin = 2.0 * (eps[nocc_total] - eps[nocc_total - 1]);
@@ -466,29 +617,41 @@ pub fn omega_ri_cdd_mp2(
     let mut e_x = 0.0;
     let (mut ro_sum, mut rv_sum) = (0usize, 0usize);
     let (mut pk, mut pt, mut vk, mut vt) = (0usize, 0usize, 0usize, 0usize);
+    let (mut kept_work, mut range_work, mut full_work) = (0.0f64, 0.0f64, 0.0f64);
     for (&t, &w) in quad.points.iter().zip(&quad.weights) {
+        let t0 = clock();
         let f = cdd_factors(
-            &c_occ,
-            &c_vir,
+            &lc_occ,
+            &lc_vir,
             &eps_occ,
             &eps_vir,
             eps_f,
             t,
             config.orbitals,
+            &ao_key,
         );
+        tm.cholesky += t0.elapsed().as_secs_f64();
         let (ro, rv) = (f.x_occ.ncols(), f.x_vir.ncols());
         ro_sum += ro;
         rv_sum += rv;
+        let t0 = clock();
         let bt = cdd_transform(&b_ov, &f);
+        tm.transform += t0.elapsed().as_secs_f64();
+        let t0 = clock();
         e_c += -2.0 * w * crate::laplace::sos_j_square_trace(&bt);
+        tm.coulomb += t0.elapsed().as_secs_f64();
         if matches!(config.energy, CddEnergy::Mp2) {
-            let (k, a, b, cc, d) =
-                screened_exchange(&bt, ro, rv, config.schwarz_thresh, config.pair_thresh);
-            e_x += w * k;
-            pk += a;
-            pt += b;
-            vk += cc;
-            vt += d;
+            let t0 = clock();
+            let x = screened_exchange(&bt, ro, rv, config.schwarz_thresh, config.pair_thresh);
+            tm.exchange += t0.elapsed().as_secs_f64();
+            e_x += w * x.k;
+            pk += x.pairs_kept;
+            pt += x.pairs_total;
+            vk += x.virt_kept;
+            vt += x.virt_total;
+            kept_work += x.kept_sq;
+            range_work += x.range_sq;
+            full_work += (x.pairs_total * rv * rv) as f64;
         }
     }
     let nq = quad.points.len() as f64;
@@ -513,6 +676,17 @@ pub fn omega_ri_cdd_mp2(
         nvir,
         pair_fraction: frac(pk, pt),
         virtual_fraction: frac(vk, vt),
+        exchange_kept_work: if full_work > 0.0 {
+            kept_work / full_work
+        } else {
+            0.0
+        },
+        exchange_range_work: if full_work > 0.0 {
+            range_work / full_work
+        } else {
+            0.0
+        },
+        timings: tm,
     })
 }
 
@@ -574,15 +748,154 @@ mod tests {
     fn unscreened_pair_exchange_matches_the_blocked_gemm_exchange() {
         let (naux, no, nv) = (11, 4, 5);
         let b = rand_mat(naux, no * nv, 9);
-        let (k, pk, pt, vk, vt) = screened_exchange(&b, no, nv, 0.0, 0.0);
+        let x = screened_exchange(&b, no, nv, 0.0, 0.0);
         let want = crate::laplace::laplace_exchange_energy(&b, naux, no, nv, 1 << 20);
         assert!(
-            (k - want).abs() < 1e-12 * want.abs().max(1.0),
-            "{k} vs {want}"
+            (x.k - want).abs() < 1e-12 * want.abs().max(1.0),
+            "{} vs {want}",
+            x.k
         );
-        assert_eq!((pk, vk), (pt, vt));
+        assert_eq!((x.pairs_kept, x.virt_kept), (x.pairs_total, x.virt_total));
+        assert_eq!(x.kept_sq, x.range_sq);
         // a positive pair threshold drops something
-        let (_, pk2, _, _, _) = screened_exchange(&b, no, nv, 0.0, 1e6);
-        assert!(pk2 < pt);
+        let x2 = screened_exchange(&b, no, nv, 0.0, 1e6);
+        assert!(x2.pairs_kept < x.pairs_total);
+    }
+
+    /// Brute-force screened exchange from the explicit 4-index integrals with
+    /// the paper's keep rule (the oracle for the contiguous-range GEMM).
+    fn screened_exchange_oracle(b: &Array2<f64>, no: usize, nv: usize, ts: f64, tp: f64) -> f64 {
+        let g = b.t().dot(b); // (ia|jb), ia = i*nv + a
+        let q: Vec<f64> = (0..no * nv).map(|c| g[(c, c)].sqrt()).collect();
+        let mut e = 0.0;
+        for i in 0..no {
+            for j in i..no {
+                let sa: Vec<f64> = (0..nv).map(|a| q[i * nv + a] * q[j * nv + a]).collect();
+                if sa.iter().sum::<f64>().powi(2) < tp {
+                    continue;
+                }
+                let smax = sa.iter().cloned().fold(0.0f64, f64::max);
+                let keep: Vec<usize> = (0..nv).filter(|&a| sa[a] * smax >= ts).collect();
+                let mut kij = 0.0;
+                for &a in &keep {
+                    for &bb in &keep {
+                        kij += g[(i * nv + a, j * nv + bb)] * g[(i * nv + bb, j * nv + a)];
+                    }
+                }
+                e += if i == j { kij } else { 2.0 * kij };
+            }
+        }
+        e
+    }
+
+    /// The contiguous-range exchange sums exactly the kept set: it equals the
+    /// brute-force oracle at thresholds that drop scattered entries, and it is
+    /// unchanged when the virtuals and occupieds are permuted.
+    #[test]
+    fn range_exchange_equals_the_kept_set_oracle_under_any_order() {
+        let (naux, no, nv) = (13, 5, 9);
+        let mut b = rand_mat(naux, no * nv, 21);
+        // spread the column norms over decades so the screens bite unevenly
+        for c in 0..no * nv {
+            let f = 10f64.powf(-3.0 * ((c * 7) % (no * nv)) as f64 / (no * nv) as f64);
+            b.column_mut(c).mapv_inplace(|x| x * f);
+        }
+        let (ts, tp) = (1e-4, 1e-7);
+        let x = screened_exchange(&b, no, nv, ts, tp);
+        let want = screened_exchange_oracle(&b, no, nv, ts, tp);
+        assert!(
+            x.virt_kept < x.virt_total && x.range_sq > x.kept_sq,
+            "screen did not bite"
+        );
+        assert!((x.k - want).abs() < 1e-13 * want.abs(), "{} vs {want}", x.k);
+        // permute occupieds and virtuals (one permutation for every occupied)
+        let po: Vec<usize> = vec![3, 0, 4, 2, 1];
+        let pv: Vec<usize> = vec![5, 2, 8, 0, 7, 1, 6, 3, 4];
+        let cols: Vec<usize> = po
+            .iter()
+            .flat_map(|&i| pv.iter().map(move |&a| i * nv + a))
+            .collect();
+        let bp = b.select(Axis(1), &cols);
+        let xp = screened_exchange(&bp, no, nv, ts, tp);
+        assert!(
+            (xp.k - x.k).abs() < 1e-13 * x.k.abs(),
+            "{} vs {}",
+            xp.k,
+            x.k
+        );
+        assert_eq!((xp.pairs_kept, xp.virt_kept), (x.pairs_kept, x.virt_kept));
+    }
+
+    /// The orthogonalized pivoted Cholesky: pivoting the factored form on
+    /// `S^{1/2} G` gives the pivots of a textbook pivoted Cholesky of the
+    /// explicit `S^{1/2} P S^{1/2}`, which differ from the AO pivots for this
+    /// `S`; `G M` reproduces `P`; the pseudo-MOs come out sorted by key.
+    #[test]
+    fn lowdin_pivots_match_the_explicit_orthogonalized_density() {
+        let (n, m) = (8, 4);
+        let a = rand_mat(n, n, 4);
+        let s_ao = a.dot(&a.t()) * 0.3 + Array2::<f64>::eye(n);
+        let s_half = ferric_core::linalg::symmetric_sqrt(&s_ao).unwrap();
+        let g = rand_mat(n, m, 17);
+        let gl = lowdin_coefficients(&s_half, &g);
+        let (piv, mm) = pivoted_cholesky_factored(&gl, 0.0);
+        let textbook = |p: &Array2<f64>| -> Vec<usize> {
+            let mut r = p.clone();
+            let mut want = vec![];
+            for _ in 0..m {
+                let (k, _) = (0..n).fold((0, f64::MIN), |b, i| {
+                    if r[(i, i)] > b.1 {
+                        (i, r[(i, i)])
+                    } else {
+                        b
+                    }
+                });
+                want.push(k);
+                let col = r.column(k).to_owned() / r[(k, k)].sqrt();
+                for i in 0..n {
+                    for j in 0..n {
+                        r[(i, j)] -= col[i] * col[j];
+                    }
+                }
+            }
+            want
+        };
+        let p_ao = g.dot(&g.t());
+        let p_orth = s_half.dot(&p_ao).dot(&s_half);
+        assert_eq!(piv, textbook(&p_orth));
+        assert_ne!(piv, textbook(&p_ao), "S does not move the pivots: vacuous");
+        let l = g.dot(&mm);
+        let err = (&l.dot(&l.t()) - &p_ao)
+            .iter()
+            .fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(err < 1e-12, "G M (G M)^T != P: {err:e}");
+        // cdd_factors sorts the pseudo-MOs by the key of their pivot
+        let key: Vec<f64> = (0..n).map(|i| ((i * 5) % n) as f64).collect();
+        let eps_o = vec![-1.0, -0.7, -0.5, -0.2];
+        let f = cdd_factors(
+            &gl,
+            &gl,
+            &eps_o,
+            &eps_o,
+            0.0,
+            0.0,
+            PseudoOrbitals::Cholesky { tol: 0.0 },
+            &key,
+        );
+        let sorted: Vec<f64> = {
+            let mut k: Vec<f64> = piv.iter().map(|&p| key[p]).collect();
+            k.sort_by(f64::total_cmp);
+            k
+        };
+        // at t = 0 the factor is mm itself up to the column order
+        for (c, &kk) in sorted.iter().enumerate() {
+            let col = f.x_occ.column(c);
+            let src = (0..m)
+                .find(|&q| {
+                    key[piv[q]] == kk && (&mm.column(q) - &col).iter().all(|x| x.abs() < 1e-14)
+                })
+                .expect("column is a permuted pivot column");
+            assert_eq!(key[piv[src]], kk);
+        }
     }
 }

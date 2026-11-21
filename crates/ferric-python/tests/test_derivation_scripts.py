@@ -52,6 +52,12 @@ CASES = [
                 "return float(coul(1 / (1 / c + 1 / mp.mpf(wv) ** 2)))",
                 "FAIL [C3-model]",
             ),
+            (
+                "lo_orth, piv = pivoted_cholesky_factored(s_half @ (c * scale), 0.0)",
+                "lo_orth, piv = pivoted_cholesky_factored(c * scale, 0.0)",
+                "FAIL [C6-lowdin-pivots]",
+            ),
+            ("lo = s_mhalf @ lo_orth", "lo = lo_orth", "FAIL [C6]"),
         ],
     ),
     (

@@ -31,11 +31,16 @@ Checks:
       second order (symbolic, random Gram model slopes, model identity).
   C5  the coded dressing: D^T D = V~^-1 V V~^-1; D(w=0) = L^-1; the fitted
       4-index matrix is PSD (numeric, random SPD pair).
-  C6  CDD per-t identity: with untruncated pivoted Cholesky (factored form,
-      as coded) E_C(t), E_X(t) equal the canonical
+  C6  CDD per-t identity: with untruncated pivoted Cholesky of the Löwdin
+      pseudo-density S^1/2 P S^1/2 (factored form, carried back with S^-1/2,
+      pseudo-MOs sorted by the key of their AO pivot, as coded) in a
+      non-orthogonal AO basis, E_C(t), E_X(t) equal the canonical
       sum (ia|jb)^2 e^{-t Delta} and sum (ia|jb)(ib|ja) e^{-t Delta} to
       rounding, and sum_t w_t over an exact quadrature of 1/Delta reproduces
-      E_OS, E_SS (independent route: explicit 4-index loop).
+      E_OS, E_SS (independent route: explicit 4-index loop). The Löwdin
+      pivots equal those of a textbook pivoted Cholesky of the explicit
+      S^1/2 P S^1/2 and differ from the AO-density pivots (the energy cannot
+      tell them apart: any full-rank factor is a rotation).
   C7  charge leak (recorded, Galerkin argument asserted): the Coulomb fit's
       residual delta satisfies (delta|P) = 0 for every P, so its leaked
       monopole q_delta enters the energy only at second order; the erfc fit's
@@ -57,6 +62,8 @@ Mutations (each recorded in crates/ferric-python/tests/test_derivation_scripts.p
   * CDD exchange without the off-diagonal 2    -> FAIL [C6]
   * Fermi shift sign flipped in the virtuals   -> FAIL [C6]
   * model erfc kernel replaced by erf         -> FAIL [C3-model]
+  * CDD pivots on the AO density, not Löwdin   -> FAIL [C6-lowdin-pivots]
+  * Löwdin factor not carried back by S^-1/2   -> FAIL [C6]
 Exit status: 0 iff every check passes.
 """
 
@@ -220,11 +227,11 @@ def claim5():
 # ------------------------------------------------------------------ C6 (CDD per-t identity)
 def pivoted_cholesky_factored(g, tol):
     """ferric pivoted_cholesky_factored: pivoted Cholesky of P = G G^T without
-    forming P; returns the factor L (nrows x r) with L L^T = P."""
+    forming P; returns the factor L (nrows x r) with L L^T = P, and the pivots."""
     m = g.shape[0]
     d = np.einsum("ij,ij->i", g, g).copy()
     d0 = d.max()
-    cols = []
+    cols, piv = [], []
     for _ in range(m):
         p = int(np.argmax(d))
         if d[p] <= max(tol, m * np.finfo(float).eps * d0):
@@ -232,25 +239,43 @@ def pivoted_cholesky_factored(g, tol):
         col = g @ g[p] - sum(c * c[p] for c in cols) if cols else g @ g[p]
         col = col / np.sqrt(d[p])
         cols.append(col)
+        piv.append(p)
         d = d - col**2
-    return np.array(cols).T
+    return np.array(cols).T, piv
+
+
+def sym_power(s_, pw):
+    lam, u = np.linalg.eigh(s_)
+    return (u * lam**pw) @ u.T
+
+
+def lowdin_cdd_factor(c, scale, s_ao, s_half, s_mhalf, key):
+    """omega_ri_cdd.rs cdd_factors as coded: pivoted Cholesky of the Löwdin
+    pseudo-density S^1/2 P S^1/2 (P = G G^T, G = C diag(scale)), carried back
+    with S^-1/2, columns sorted by the principal-axis key of their AO pivot.
+    Returns X in the MO basis (L = C X, C^T S C = I so X = C^T S L) and the pivots."""
+    lo_orth, piv = pivoted_cholesky_factored(s_half @ (c * scale), 0.0)
+    lo = s_mhalf @ lo_orth
+    order = sorted(range(len(piv)), key=lambda q: key[piv[q]])
+    lo = lo[:, order]
+    return c.T @ s_ao @ lo, piv
 
 
 FERMI_SIGN_VIR = -1.0
 EXCHANGE_OFFDIAG = 2.0
 
 
-def cdd_energies(b, eo, ev, tval, c_o, c_v):
+def cdd_energies(b, eo, ev, tval, c_o, c_v, s_ao, key):
     """omega_ri_cdd.rs at one Laplace point: B (naux, no*nv) in MO; returns E_C, E_X."""
     no, nv = eo.size, ev.size
     ef = 0.5 * (eo.max() + ev.min())
-    go = c_o * np.exp(0.5 * tval * (eo - ef))
-    gv = c_v * np.exp(FERMI_SIGN_VIR * 0.5 * tval * (ev - ef))
-    lo = pivoted_cholesky_factored(go, 0.0)
-    lv = pivoted_cholesky_factored(gv, 0.0)
-    # X in the MO basis: the AO-space factor L = C X with C orthonormal columns
-    xo = np.linalg.lstsq(c_o, lo, rcond=None)[0]
-    xv = np.linalg.lstsq(c_v, lv, rcond=None)[0]
+    s_half, s_mhalf = sym_power(s_ao, 0.5), sym_power(s_ao, -0.5)
+    xo = lowdin_cdd_factor(
+        c_o, np.exp(0.5 * tval * (eo - ef)), s_ao, s_half, s_mhalf, key
+    )[0]
+    xv = lowdin_cdd_factor(
+        c_v, np.exp(FERMI_SIGN_VIR * 0.5 * tval * (ev - ef)), s_ao, s_half, s_mhalf, key
+    )[0]
     b3 = b.reshape(-1, no, nv)
     bc = np.einsum("Pia,ik,al->Pkl", b3, xo, xv)
     ro = bc.shape[1]
@@ -268,10 +293,35 @@ def cdd_energies(b, eo, ev, tval, c_o, c_v):
 def claim6():
     rng = np.random.default_rng(11)
     nao, no, nv, naux = 12, 3, 6, 10
+    # non-orthogonal AO basis: S random SPD, MOs C = S^-1/2 Q (C^T S C = I)
+    a_ = rng.standard_normal((nao, nao))
+    s_ao = 0.2 * a_ @ a_.T + np.eye(nao)
     q, _ = np.linalg.qr(rng.standard_normal((nao, no + nv)))
-    c_o, c_v = q[:, :no], q[:, no:]
+    c_all = sym_power(s_ao, -0.5) @ q
+    c_o, c_v = c_all[:, :no], c_all[:, no:]
+    key = rng.permutation(nao).astype(float)  # principal-axis key per AO
     eo = np.sort(rng.uniform(-2.0, -0.4, no))
     ev = np.sort(rng.uniform(0.3, 3.0, nv))
+    # The Löwdin pivots are those of a textbook pivoted Cholesky of the
+    # explicit S^1/2 P S^1/2, and differ from the AO-density pivots for this S
+    # (else the construction would be invisible to this check).
+    sh = sym_power(s_ao, 0.5)
+    sc_o = np.exp(0.35 * (eo - eo.max()))
+    go = c_o * sc_o
+    piv_l = lowdin_cdd_factor(c_o, sc_o, s_ao, sh, sym_power(s_ao, -0.5), key)[1]
+    piv_ao = pivoted_cholesky_factored(go, 0.0)[1]
+    r_ = sh @ go @ go.T @ sh
+    textbook = []
+    for _ in range(no):
+        kk = int(np.argmax(np.diag(r_)))
+        textbook.append(kk)
+        col = r_[:, kk] / np.sqrt(r_[kk, kk])
+        r_ = r_ - np.outer(col, col)
+    check(
+        "C6-lowdin-pivots",
+        piv_l == textbook and piv_l != piv_ao,
+        f"Löwdin {piv_l}, AO {piv_ao}",
+    )
     b = rng.standard_normal((naux, no * nv)) * 0.3
     g4 = (b.T @ b).reshape(no, nv, no, nv)
     dlt = (
@@ -282,7 +332,7 @@ def claim6():
     )
     worst = 0.0
     for tval in (0.05, 0.7, 3.0):
-        e_c, e_x = cdd_energies(b, eo, ev, tval, c_o, c_v)
+        e_c, e_x = cdd_energies(b, eo, ev, tval, c_o, c_v, s_ao, key)
         ref_c = -2.0 * np.sum(g4**2 * np.exp(-tval * dlt))
         ref_x = np.sum(g4 * g4.transpose(0, 3, 2, 1) * np.exp(-tval * dlt))
         worst = max(worst, abs(e_c - ref_c) / abs(ref_c), abs(e_x - ref_x) / abs(ref_x))
@@ -293,7 +343,7 @@ def claim6():
     for x_, w_ in zip(xs, ws):
         tval = x_ / s
         wt = w_ * np.exp(x_) / s
-        e_c, e_x = cdd_energies(b, eo, ev, tval, c_o, c_v)
+        e_c, e_x = cdd_energies(b, eo, ev, tval, c_o, c_v, s_ao, key)
         e_os += 0.5 * wt * e_c
         e_ss += 0.5 * wt * e_c + wt * e_x
     ref_os = -np.sum(g4**2 / dlt)

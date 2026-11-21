@@ -219,7 +219,9 @@ fn untruncated_cdd_equals_canonical_pseudo_orbitals_at_omega() {
         },
     );
     eprintln!("{chol}\n{canon}");
-    assert!((chol.e_corr - canon.e_corr).abs() < 1e-10);
+    let d_canon = chol.e_corr - canon.e_corr;
+    eprintln!("Lowdin-Cholesky - canonical pseudo-MOs = {d_canon:.2e}");
+    assert!(d_canon.abs() < 1e-12, "{d_canon:e}");
     // tol = 0 stops at roundoff: a pseudo-MO whose weight e^{t(ε-ε_F)} is
     // below m·ε_mach of the largest (the O 1s at large t) is dropped, with no
     // energy effect at all (the equality above is to 1e-10).

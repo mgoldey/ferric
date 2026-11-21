@@ -534,6 +534,27 @@ pub fn cholesky_inverse_lower(v: &Array2<f64>) -> Result<Array2<f64>, FerricErro
     Ok(out)
 }
 
+/// `A^{1/2} = U diag(√λ) Uᵀ` for a symmetric positive definite `A` (the
+/// overlap `S^{1/2}` of Löwdin orthogonalization), through [`eigh_dc`]. A
+/// symmetric matrix function, so the degenerate-subspace freedom of the
+/// eigensolver does not reach the result. An eigenvalue `<= 0` is an error
+/// (linear dependence), not a NaN.
+pub fn symmetric_sqrt(a: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let (evals, evecs) = eigh_dc(a, Uplo::Upper)?;
+    if let Some(&lmin) = evals.first() {
+        if lmin <= 0.0 {
+            return Err(FerricError::Lapack(format!(
+                "symmetric_sqrt: eigenvalue {lmin:e} <= 0 (linear dependence)"
+            )));
+        }
+    }
+    let mut us = evecs.clone();
+    for (mut col, &l) in us.axis_iter_mut(Axis(1)).zip(&evals) {
+        col *= l.sqrt();
+    }
+    Ok(us.dot(&evecs.t()))
+}
+
 #[cfg(test)]
 mod cholesky_inverse_tests {
     use super::*;
@@ -590,6 +611,18 @@ mod cholesky_inverse_tests {
         }
         let d = (&li - &want).iter().fold(0.0f64, |a, x| a.max(x.abs()));
         assert!(d < 1e-13, "LAPACK vs scalar L^-1: {d:e}");
+    }
+
+    #[test]
+    fn symmetric_sqrt_squares_back() {
+        let v = spd(23, 9);
+        let h = symmetric_sqrt(&v).unwrap();
+        let e = (&h.dot(&h) - &v).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        let asym = (&h - &h.t()).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(e < 1e-11 && asym < 1e-12, "{e:e} {asym:e}");
+        let mut bad = v.clone();
+        bad[[0, 0]] = -1e3;
+        assert!(symmetric_sqrt(&bad).is_err());
     }
 
     #[test]
