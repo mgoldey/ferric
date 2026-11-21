@@ -213,6 +213,9 @@ read nothing else from it (plus `linlccd_variant` for `linlccd`); any other
 | `oo_grad_conv` | float | `1e-4` | > 0 | `oo-rimp2` only. Convergence threshold on the orbital-gradient norm. |
 | `oo_level_shift` | float | `0.1` | Hartree, ≥ 0 | `oo-rimp2` only. Level shift on the approximate diagonal orbital Hessian. |
 | `oo_diis_size` | integer | `6` | ≥ 1 | `oo-rimp2` only. DIIS subspace for the orbital rotations. The four `oo_*` keys match Python `run_oo_rimp2(oo_max_iter=, grad_conv=, level_shift=, diis_size=)`; on any other kind they are an error. |
+| `cdd_tol` | float | `0` | ≥ 0 | `laplace-mp2` / `laplace-sos-mp2`. Setting it (or `[ri] metric = "erfc"`) selects the omega-RI-CDD route: Laplace MP2 in pivoted-Cholesky pseudo-MOs. `0` keeps every pseudo-MO above roundoff and gives the MO Laplace energy; a positive value drops pseudo-MOs below it. |
+| `cdd_schwarz_thresh` | float | `0` | ≥ 0 | `laplace-mp2` CDD route only (an error on `laplace-sos-mp2`, which has no exchange term). The virtual Schwarz screen of the exchange term; the paper value is `1e-9`. `0` screens nothing. |
+| `cdd_pair_thresh` | float | `0` | ≥ 0 | `laplace-mp2` CDD route only. The occupied-pair prescreen of the exchange term; the paper value is `1e-6`. `0` keeps every pair. |
 
 ## `[cc]`
 
@@ -302,6 +305,29 @@ only. Every model is printed as `E_HF[ρ] + E_NBS + E_c`, and the run-log
 | `integrals` | string | `"exact"` | `exact` `ri` | Integrals of the amplitude stage; the reference Fock is always exact. Python: `auxbasis=None` is `exact`. |
 | `auxbasis` | string | none | a bundled auxiliary basis, e.g. `cc-pvdz-ri` | Required by `integrals = "ri"` and an error with `exact`. Python `auxbasis`. |
 | `frozen_core` | integer | `0` | ≥ 0 | Lowest occupied orbitals of each spin left out of the correlation and of the singles energy. Python `frozen_core`. |
+
+## `[ri]`
+
+The fitting metric of the RI factorization of the correlation step, read by
+`rimp2`, `laplace-mp2`, `laplace-sos-mp2` and `pdep-rpa`. Without it the fit
+uses the Coulomb metric, as before. `metric = "erfc"` is the omega-RI fit of
+Glasbrenner, Graf and Ochsenfeld (JCTC 16, 6856 (2020)) and Lünser, Schurkus
+and Ochsenfeld (JCTC 13, 1647 (2017)): erfc(ωr)/r three-index integrals with
+the metric Ṽ⁻¹VṼ⁻¹. It shifts the energy by a fit error of order 1e-6 Eh for
+water at ω = 0.1 Bohr⁻¹. The algebra in ferric stays dense, so the fit has no
+cost advantage here. On `laplace-mp2` and `laplace-sos-mp2`, `metric = "erfc"`
+selects the omega-RI-CDD route (see `[mp2] cdd_*`).
+
+`metric = "erfc"` is energy-only (`task = "energy"`) and closed-shell on
+`rimp2` and the Laplace kinds; `pdep-rpa` also accepts UHF and ROHF
+references. It cannot be combined with an `amplitude-threshold` `[local]`
+scheme, a Boys-screened `chi0_sparsity`, or the `pdep-rpa` property exports.
+On a kind outside the four above the section is an error.
+
+| Key | Type | Default | Values | Notes |
+|---|---|---|---|---|
+| `metric` | string | `"coulomb"` | `coulomb` `erfc` | Any other value is an error. |
+| `omega_bohr` | float | none | Bohr⁻¹, > 0 | Required by `erfc` and refused with `coulomb`. The papers recommend `0.1`. ω → 0 recovers the Coulomb fit. |
 
 ## `[local]`
 

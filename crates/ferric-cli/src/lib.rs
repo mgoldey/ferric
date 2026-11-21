@@ -46,7 +46,7 @@ use ferric_mp2::laplace::{
 };
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
-use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
+use ferric_mp2::rimp2::RiMp2Config;
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
@@ -2754,7 +2754,12 @@ fn run_rimp2(
     }
     // An open-shell molecule arrives with a UHF reference (see
     // `solve_open_shell_reference`) and takes the unrestricted RI-MP2.
+    let fit = cfg.ri_fit().or_exit();
     if result.spin != ferric_scf::result::Spin::Restricted {
+        if !fit.is_coulomb() {
+            eprintln!("error: [ri] on rimp2 is closed-shell (RHF reference) only");
+            std::process::exit(1);
+        }
         run_u_rimp2(cfg, mol, bs, prep, op, result, budget_bytes, scf_cert);
         return;
     }
@@ -2771,8 +2776,13 @@ fn run_rimp2(
         kappa: cfg.mp2.kappa,
         ..Default::default()
     };
-    let mp2_result = ri_mp2(mol, prep, &dfbs, op, result, &mp2_config).or_exit();
+    let mp2_result =
+        ferric_mp2::rimp2::ri_mp2_fitted(mol, prep, &dfbs, op, result, &mp2_config, &fit)
+            .or_exit();
     println!("{}", model_label("RI-MP2", None));
+    if !fit.is_coulomb() {
+        println!("  RI fit     = {}", fit.label());
+    }
     println!(
         "RI-MP2/{} (aux: {}) on {}",
         bs.name, aux_name, cfg.molecule.xyz
@@ -2801,13 +2811,20 @@ fn run_rimp2(
     println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
     let cert = print_certificate(&ferric_mp2::certificate::with_rimp2_envelope(
-        ferric_mp2::certificate::rimp2_certificate(
-            scf_cert,
-            aux_name,
-            &mp2_config,
-            &op,
-            &mp2_result.precision,
-        ),
+        {
+            let c = ferric_mp2::certificate::rimp2_certificate(
+                scf_cert,
+                aux_name,
+                &mp2_config,
+                &op,
+                &mp2_result.precision,
+            );
+            if fit.is_coulomb() {
+                c
+            } else {
+                c.with_approximation("omega-ri-fit", fit.label())
+            }
+        },
         scf_cert,
         mol,
         bs,
@@ -5316,6 +5333,80 @@ fn double_hybrid_notices(method: &str, d3bj: bool, open_shell: bool) -> Vec<Stri
     )]
 }
 
+/// The omega-RI-CDD route of `laplace-mp2` (`sos = false`) and
+/// `laplace-sos-mp2` (`sos = true`): selected by an `[ri]` section or any
+/// `[mp2] cdd_*` key (`Config::uses_cdd_route`), validated by
+/// `Config::validate_ri`.
+#[allow(clippy::too_many_arguments)]
+fn run_omega_ri_cdd(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+    sos: bool,
+) {
+    use ferric_mp2::omega_ri_cdd::{omega_ri_cdd_mp2, CddEnergy, OmegaRiCddConfig, PseudoOrbitals};
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).or_exit();
+    let dfbs = PreparedBasis::new(mol, &aux_bs).or_exit();
+    let cdd_cfg = OmegaRiCddConfig {
+        fit: cfg.ri_fit().or_exit(),
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        n_quad: cfg.mp2.n_quad.unwrap_or(7),
+        orbitals: PseudoOrbitals::Cholesky {
+            tol: cfg.mp2.cdd_tol.unwrap_or(0.0),
+        },
+        energy: if sos {
+            CddEnergy::Sos {
+                c_os: cfg.mp2.c_os.unwrap_or(1.3),
+            }
+        } else {
+            CddEnergy::Mp2
+        },
+        schwarz_thresh: cfg.mp2.cdd_schwarz_thresh.unwrap_or(0.0),
+        pair_thresh: cfg.mp2.cdd_pair_thresh.unwrap_or(0.0),
+        memory_budget_bytes: budget_bytes,
+    };
+    let r = omega_ri_cdd_mp2(mol, prep, &dfbs, op, result, &cdd_cfg).or_exit();
+    println!(
+        "omega-RI-CDD-{}/{} (aux: {}) on {}",
+        if sos { "SOS-MP2" } else { "MP2" },
+        bs.name,
+        aux_name,
+        cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  {r}");
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            if sos { "laplace-sos-mp2" } else { "laplace-mp2" },
+            r.total_energy,
+            serde_json::json!({
+                "e_corr": r.e_corr,
+                "e_os": r.e_os,
+                "e_ss": r.e_ss,
+                "fit": r.fit,
+                "n_quad": r.n_quad,
+                "cdd_tol": cfg.mp2.cdd_tol.unwrap_or(0.0),
+                "mean_rank_occ": r.mean_rank_occ,
+                "mean_rank_vir": r.mean_rank_vir,
+                "pair_fraction": r.pair_fraction,
+                "virtual_fraction": r.virtual_fraction,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
+}
+
 /// `method.kind = "laplace-mp2"`. Extracted verbatim from the former
 /// `main()` `"laplace-mp2" => { ... }` match arm.
 fn run_laplace_mp2(
@@ -5328,6 +5419,10 @@ fn run_laplace_mp2(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
+    if cfg.uses_cdd_route() {
+        run_omega_ri_cdd(cfg, mol, bs, prep, op, result, budget_bytes, false);
+        return;
+    }
     let aux_name = cfg
         .mp2
         .auxbasis
@@ -5401,6 +5496,10 @@ fn run_laplace_sos_mp2(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
+    if cfg.uses_cdd_route() {
+        run_omega_ri_cdd(cfg, mol, bs, prep, op, result, budget_bytes, true);
+        return;
+    }
     let aux_name = cfg
         .mp2
         .auxbasis
@@ -5563,7 +5662,15 @@ fn run_pdep_rpa_arm(
             eprintln!("error (UHF): {e}");
             std::process::exit(1);
         });
-        let rr = ferric_rpa::run_u_pdep_rpa(mol, prep, &dfbs, op, &uhf_result, &rpa_cfg)
+        let rr = ferric_rpa::run_u_pdep_rpa_fitted(
+            mol,
+            prep,
+            &dfbs,
+            op,
+            &uhf_result,
+            &rpa_cfg,
+            &cfg.ri_fit().or_exit(),
+        )
             .unwrap_or_else(|e| {
                 eprintln!("error (U-PDEP-RPA): {e}");
                 std::process::exit(1);
@@ -5581,7 +5688,10 @@ fn run_pdep_rpa_arm(
         // energy-only run lets the library skip the eigensolve when
         // `trunc_thresh = 0` (`ferric_rpa::energy_route`).
         let exports = cfg.rpa.export_eigpot_prefix.is_some() || cfg.rpa.export_npz.is_some();
-        let rr = if exports {
+        let fit = cfg.ri_fit().or_exit();
+        let rr = if !fit.is_coulomb() {
+            ferric_rpa::run_pdep_rpa_fitted(mol, prep, &dfbs, op, &result, &rpa_cfg, &fit)
+        } else if exports {
             run_pdep_rpa(mol, prep, &dfbs, op, &result, &rpa_cfg)
         } else {
             ferric_rpa::run_pdep_rpa_energy(mol, prep, &dfbs, op, &result, &rpa_cfg)
@@ -5594,6 +5704,11 @@ fn run_pdep_rpa_arm(
             "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \
                  eigenvalues_static/eigenpotentials below are not verified to residual tolerance)"
         );
+    }
+    if let Ok(f) = cfg.ri_fit() {
+        if !f.is_coulomb() {
+            println!("RI fit: {} (omega-RI RPA, energy only)", f.label());
+        }
     }
     println!(
         "PDEP-RPA/{} (aux: {}) on {}",

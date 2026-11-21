@@ -89,6 +89,10 @@ pub struct Config {
     /// `method.kind` is computed exactly.
     #[serde(default)]
     pub local: Option<LocalCfg>,
+    /// Optional `[ri]` section: the RI fitting metric (see [`RiCfg`]).
+    /// Absent means the Coulomb-metric fit, byte-identical to before.
+    #[serde(default)]
+    pub ri: Option<RiCfg>,
     /// Optional `[qmmm]` section: QM/MM embedding. Absent means no QM/MM --
     /// byte-identical to the plain single-region run, the same convention
     /// `[cosmo]` and `[external_potential]` follow.
@@ -1411,6 +1415,39 @@ impl<'de> Deserialize<'de> for FrozenCore {
 /// The `method.kind`s whose correlation can be run under a local
 /// approximation (`[local]`). The kind names the METHOD; `[local]` says
 /// whether and how its amplitudes are truncated.
+/// The kinds that read an `[ri]` section.
+pub const RI_KINDS: &[&str] = &["rimp2", "laplace-mp2", "laplace-sos-mp2", "pdep-rpa"];
+
+/// Optional `[ri]` section: the fitting metric of the RI (density-fitting)
+/// factorization of the correlation step.
+///
+/// Absent, or `metric = "coulomb"`, is the Coulomb-metric fit every RI
+/// method uses. `metric = "erfc"` is the omega-RI fit of Glasbrenner, Graf,
+/// Ochsenfeld (JCTC 16, 6856 (2020)) and Luenser, Schurkus, Ochsenfeld (JCTC
+/// 13, 1647 (2017)): erfc(omega r)/r three-index integrals with the
+/// `V~^-1 V V~^-1` metric. It changes the energy (first order in the fit
+/// error; ~1e-6 Eh for water at omega = 0.1) and buys nothing in this code:
+/// the algebra stays dense. On `laplace-mp2` / `laplace-sos-mp2`
+/// `metric = "erfc"` selects the omega-RI-CDD route (see `[mp2] cdd_*`).
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RiCfg {
+    /// `"coulomb"` (default) or `"erfc"`. Anything else is an error.
+    pub metric: Option<String>,
+    /// The attenuation omega in **Bohr⁻¹** (the papers' unit; their
+    /// recommended value is 0.1). Required by `metric = "erfc"` (no
+    /// default) and refused with `"coulomb"`. Must be finite and > 0.
+    pub omega_bohr: Option<f64>,
+}
+
+impl RiCfg {
+    /// The library fit this section names (strict).
+    pub fn fit(&self) -> Result<ferric_mp2::omega_ri::RiFit, String> {
+        ferric_mp2::omega_ri::RiFit::parse_config(self.metric.as_deref(), self.omega_bohr)
+            .map_err(|e| format!("[ri] {e}"))
+    }
+}
+
 pub const LOCAL_KINDS: &[&str] = &["rimp2", "att-rimp2", "drpa", "linlccd", "opmp3"];
 
 /// `[local] scheme`: the local approximation applied to the method's
@@ -2241,6 +2278,21 @@ pub struct Mp2Cfg {
     /// setting measured sparser integrals at r₀ω = 4. Must be finite and
     /// > 0; an error with the erfc operator (use `omega` there).
     pub att_omega: Option<f64>,
+    /// Pivoted-Cholesky truncation of the Laplace pseudo-densities for the
+    /// omega-RI-CDD route of `laplace-mp2` / `laplace-sos-mp2` (setting it,
+    /// or `[ri] metric = "erfc"`, selects that route). `0` (the value
+    /// when only `[ri]` is written) keeps every pseudo-MO above roundoff
+    /// and equals the MO Laplace energy. Must be finite and >= 0.
+    pub cdd_tol: Option<f64>,
+    /// Schwarz-type virtual screen of the omega-RI-CDD exchange term
+    /// (Glasbrenner, Graf, Ochsenfeld JCTC 16, 6856 (2020): theta_schwarz,
+    /// paper value 1e-9). `laplace-mp2` only (SOS-MP2 has no exchange
+    /// term). Omitted = 0 = nothing screened. Must be finite and >= 0.
+    pub cdd_schwarz_thresh: Option<f64>,
+    /// Occupied-pair prescreen of the omega-RI-CDD exchange term (the
+    /// paper's theta_ij, value 1e-6). `laplace-mp2` only. Omitted = 0 =
+    /// every pair kept. Must be finite and >= 0.
+    pub cdd_pair_thresh: Option<f64>,
 }
 
 /// The short-range operator `method.kind = "att-rimp2"` attenuates the MP2
@@ -5471,6 +5523,7 @@ impl Config {
         }
 
         self.validate_local()?;
+        self.validate_ri(kind, mult)?;
         self.validate_cc_section(kind, mult)?;
         self.validate_eom_section(kind)?;
 
@@ -5574,6 +5627,139 @@ impl Config {
                     "[qmmm] thole_a must be finite and >= 0 (0.0 disables damping), got {a}"
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// The fit selected by `[ri]` (`Coulomb` when the section is absent).
+    pub fn ri_fit(&self) -> Result<ferric_mp2::omega_ri::RiFit, String> {
+        match &self.ri {
+            None => Ok(ferric_mp2::omega_ri::RiFit::Coulomb),
+            Some(r) => r.fit(),
+        }
+    }
+
+    /// Whether `laplace-mp2` / `laplace-sos-mp2` take the omega-RI-CDD route:
+    /// a non-Coulomb `[ri]` fit or any `[mp2] cdd_*` key selects it (an
+    /// `[ri]` section that names the Coulomb fit leaves the plain path).
+    pub fn uses_cdd_route(&self) -> bool {
+        self.ri_fit().map(|f| !f.is_coulomb()).unwrap_or(false)
+            || self.mp2.cdd_tol.is_some()
+            || self.mp2.cdd_schwarz_thresh.is_some()
+            || self.mp2.cdd_pair_thresh.is_some()
+    }
+
+    /// The rules of `[ri]` and `[mp2] cdd_*`. Each refusal is a key a run
+    /// would otherwise silently ignore, or a combination no code path
+    /// implements: `[ri]` outside [`RI_KINDS`]; and, for the erfc fit,
+    /// `task != "energy"` (no omega-RI gradient), a local `[local]` scheme,
+    /// open-shell `rimp2` /
+    /// `laplace-*` (closed-shell drivers only), or on `pdep-rpa` with an NPZ
+    /// / eigenpotential export (the property paths build their own Coulomb
+    /// fit); `cdd_*` on any kind but `laplace-mp2` / `laplace-sos-mp2`; the
+    /// exchange screens on `laplace-sos-mp2`; and `sos_formulation` /
+    /// `domain_cutoff_bohr` on the CDD route.
+    pub fn validate_ri(&self, kind: &str, mult: usize) -> Result<(), String> {
+        let lap = matches!(kind, "laplace-mp2" | "laplace-sos-mp2");
+        let cdd_keys: Vec<&str> = [
+            ("cdd_tol", self.mp2.cdd_tol),
+            ("cdd_schwarz_thresh", self.mp2.cdd_schwarz_thresh),
+            ("cdd_pair_thresh", self.mp2.cdd_pair_thresh),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| {
+            v.map(|_| k)
+        })
+        .collect();
+        if !cdd_keys.is_empty() && !lap {
+            return Err(format!(
+                "[mp2] {} {} read by method.kind = \"laplace-mp2\" / \"laplace-sos-mp2\" \
+                 only; kind = \"{kind}\" would silently ignore it",
+                cdd_keys.join(", "),
+                if cdd_keys.len() == 1 { "is" } else { "are" }
+            ));
+        }
+        for (k, v) in [
+            ("cdd_tol", self.mp2.cdd_tol),
+            ("cdd_schwarz_thresh", self.mp2.cdd_schwarz_thresh),
+            ("cdd_pair_thresh", self.mp2.cdd_pair_thresh),
+        ] {
+            if let Some(x) = v {
+                if !(x.is_finite() && x >= 0.0) {
+                    return Err(format!("[mp2] {k} must be finite and >= 0 (got {x})"));
+                }
+            }
+        }
+        if kind == "laplace-sos-mp2"
+            && (self.mp2.cdd_schwarz_thresh.is_some() || self.mp2.cdd_pair_thresh.is_some())
+        {
+            return Err(
+                "[mp2] cdd_schwarz_thresh / cdd_pair_thresh screen the exchange term, which \
+                 SOS-MP2 does not have; remove them for laplace-sos-mp2"
+                    .to_string(),
+            );
+        }
+        if lap && self.uses_cdd_route() {
+            if self.mp2.sos_formulation.is_some() || self.mp2.domain_cutoff_bohr.is_some() {
+                return Err(
+                    "[mp2] sos_formulation / domain_cutoff_bohr select the plain Laplace \
+                     SOS-MP2 algebra; the omega-RI-CDD route ([ri] or [mp2] cdd_*) has its \
+                     own. Remove one or the other."
+                        .to_string(),
+                );
+            }
+            if mult != 1 {
+                return Err(format!(
+                    "the omega-RI-CDD route of {kind} is closed-shell only (multiplicity = {mult})"
+                ));
+            }
+        }
+        let Some(ri) = &self.ri else {
+            return Ok(());
+        };
+        if !RI_KINDS.contains(&kind) {
+            return Err(format!(
+                "[ri] applies to method.kind = {} only; kind = \"{kind}\" would silently \
+                 ignore it. Remove [ri].",
+                RI_KINDS
+                    .iter()
+                    .map(|k| format!("\"{k}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if ri.fit()?.is_coulomb() {
+            // The Coulomb fit is what every path computes without [ri].
+            return Ok(());
+        }
+        if self.method.task != "energy" {
+            return Err(format!(
+                "[ri] is energy-only: there is no omega-RI gradient (task = \"{}\")",
+                self.method.task
+            ));
+        }
+        if matches!(self.local_model(), Ok(Some(_))) {
+            return Err(
+                "[ri] metric = \"erfc\" and a local [local] scheme cannot be combined: the local correlation paths build \
+                 their own Coulomb-metric fits"
+                    .to_string(),
+            );
+        }
+        if kind == "rimp2" && mult != 1 {
+            return Err(format!(
+                "[ri] on rimp2 is closed-shell only (multiplicity = {mult}); the open-shell \
+                 RI-MP2 has no omega-RI fit"
+            ));
+        }
+        if kind == "pdep-rpa"
+            && (self.rpa.export_npz.is_some() || self.rpa.export_eigpot_prefix.is_some())
+        {
+            return Err(
+                "[ri] on pdep-rpa is energy-only: the NPZ / eigenpotential property exports \
+                 build their own Coulomb-metric fit. Remove [rpa] export_npz / \
+                 export_eigpot_prefix or [ri]."
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -14228,6 +14414,64 @@ mod cli_wired_keys_tests {
             &cfg("rimp2", "energy", 1, "[mp2]\natt_omega = 1.0\n"),
             "\"att-rimp2\" only",
         );
+    }
+
+    #[test]
+    fn ri_section_and_cdd_keys_are_strict() {
+        let erfc = "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n";
+        for kind in ["rimp2", "laplace-mp2", "laplace-sos-mp2", "pdep-rpa"] {
+            let c = cfg(kind, "energy", 1, erfc);
+            c.validate_cli_wired_keys().unwrap();
+            assert!(!c.ri_fit().unwrap().is_coulomb());
+        }
+        // absent section: Coulomb, and no CDD route
+        let c = cfg("laplace-mp2", "energy", 1, "");
+        assert!(c.ri_fit().unwrap().is_coulomb() && !c.uses_cdd_route());
+        assert!(cfg("laplace-mp2", "energy", 1, "[mp2]\ncdd_tol = 1e-6\n").uses_cdd_route());
+        for (kind, task, mult, body, needle) in [
+            ("ccsd", "energy", 1, erfc, "[ri] applies to"),
+            ("rimp2", "optimize", 1, erfc, "energy-only"),
+            ("rimp2", "energy", 3, erfc, "closed-shell"),
+            ("laplace-mp2", "energy", 3, erfc, "closed-shell"),
+            ("rimp2", "energy", 1, "[ri]\nmetric = \"erf\"\nomega_bohr = 0.1\n", "[ri]"),
+            ("rimp2", "energy", 1, "[ri]\nmetric = \"erfc\"\n", "[ri]"),
+            ("rimp2", "energy", 1, "[ri]\nomega_bohr = 0.1\n", "[ri]"),
+            ("rimp2", "energy", 1, "[mp2]\ncdd_tol = 1e-6\n", "laplace-mp2"),
+            ("laplace-mp2", "energy", 1, "[mp2]\ncdd_tol = -1.0\n", "finite and >= 0"),
+            (
+                "laplace-sos-mp2",
+                "energy",
+                1,
+                "[mp2]\ncdd_pair_thresh = 1e-6\n",
+                "SOS-MP2 does not have",
+            ),
+            (
+                "laplace-sos-mp2",
+                "energy",
+                1,
+                "[mp2]\ncdd_tol = 1e-6\nsos_formulation = \"ao\"\n",
+                "sos_formulation",
+            ),
+            (
+                "pdep-rpa",
+                "energy",
+                1,
+                "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n[rpa]\nexport_npz = \"x.npz\"\n",
+                "energy-only",
+            ),
+            (
+                "rimp2",
+                "energy",
+                1,
+                "[ri]\nmetric = \"erfc\"\nomega_bohr = 0.1\n[local]\nscheme = \"amplitude-threshold\"\neps = 1e-3\n",
+                "[local]",
+            ),
+        ] {
+            refused(&cfg(kind, task, mult, body), needle);
+        }
+        // a typo'd key in [ri] fails to parse at all (deny_unknown_fields)
+        let bad = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rimp2\"\n[ri]\nomega = 0.1\n";
+        assert!(toml::from_str::<Config>(bad).is_err());
     }
 
     #[test]

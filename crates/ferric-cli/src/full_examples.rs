@@ -360,6 +360,12 @@ fn keys() -> Vec<Key> {
         key!("mp2", "att_operator", "erfc | terfc", |c| if c.is(&["att-rimp2"]) { s("erfc") } else { Off("att-rimp2 only") }),
         key!("mp2", "att_r0", "terfc r0, Angstrom", |_| Off("att-rimp2 with att_operator = \"terfc\" only")),
         key!("mp2", "att_omega", "terfc sharpness, Angstrom^-1", |_| Off("att-rimp2 with att_operator = \"terfc\" only")),
+        key!("mp2", "cdd_tol", "omega-RI-CDD pseudo-MO Cholesky truncation", |_| Off("laplace-mp2 / laplace-sos-mp2; setting it selects the omega-RI-CDD route")),
+        key!("mp2", "cdd_schwarz_thresh", "omega-RI-CDD exchange virtual screen", |_| Off("laplace-mp2 omega-RI-CDD route only")),
+        key!("mp2", "cdd_pair_thresh", "omega-RI-CDD exchange pair prescreen", |_| Off("laplace-mp2 omega-RI-CDD route only")),
+        // ---- [ri]
+        key!("ri", "metric", "coulomb | erfc", |_| s("coulomb")),
+        key!("ri", "omega_bohr", "omega-RI attenuation, Bohr^-1", |_| Off("only with metric = \"erfc\", where it is required")),
         // ---- [local]
         key!("local", "scheme", "none | amplitude-threshold", |_| s("none")),
         key!("local", "eps", "amplitude threshold (required with amplitude-threshold; no default)", |_| Off("only with scheme = \"amplitude-threshold\", where it is required")),
@@ -556,6 +562,9 @@ fn sections(c: &Ctx) -> Vec<&'static str> {
     if c.is(LOCAL_KINDS) && c.energy() {
         out.push("local");
     }
+    if c.is(RI_KINDS) && c.energy() {
+        out.push("ri");
+    }
     if c.is(&["ccsd", "ccsd(t)", "eom-ccsd"]) {
         out.push("cc");
     }
@@ -603,6 +612,7 @@ fn serde_fields(section: &str) -> BTreeSet<&'static str> {
         "cas.ci" => fields_of::<CasCiCfg>(),
         "opmp3" => fields_of::<crate::opmp3::Opmp3Cfg>(),
         "local" => fields_of::<LocalCfg>(),
+        "ri" => fields_of::<RiCfg>(),
         "rpa" => fields_of::<RpaCfg>(),
         "gw" => fields_of::<GwCfg>(),
         "tddft" => fields_of::<TddftCfg>(),

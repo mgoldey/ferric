@@ -116,6 +116,9 @@ See [The MP2 family](../methods/mp2.md).
 | `water-scs-mp2.toml` | H2O / cc-pVDZ | `scs-mp2` | — | Grimme coefficients (defaults). |
 | `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | aTZ-fit r0 = 0.75/1.05 Å set explicitly (cc-pVDZ has no fit of its own). Needs the terf tables. |
 | `water-laplace-rimp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | |
+| `water-omega-ri-mp2.toml` | H2O / cc-pVDZ | `rimp2` | — | omega-RI fit, `[ri] metric = "erfc"`, ω = 0.1 Bohr⁻¹ |
+| `water-omega-ri-cdd-mp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | omega-RI-CDD-MP2 with the paper's screens |
+| `water-omega-ri-rpa.toml` | H2O / cc-pVDZ | `pdep-rpa` | — | omega-RI RPA, energy only |
 | `water-laplace-sos-mp2.toml` | H2O / cc-pVDZ | `laplace-sos-mp2` | — | |
 | `water-mp2v.toml` | H2O / aug-cc-pVDZ | `mp2-v` | — | The header warns that aDZ is outside the fitted basis. Needs the terf tables. |
 | `water-rs-mp2-rpa.toml` | H2O / aug-cc-pVDZ | `rs-mp2-rpa` | — | Proven grade; prints a notice that the ω choice is unbenchmarked. |

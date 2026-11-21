@@ -104,6 +104,7 @@ const SECTION_FIELDS: &[(&str, fn() -> BTreeSet<&'static str>)] = &[
     ("cdft", fields_of::<CdftCfg>),
     ("cdft.constraint", fields_of::<CdftConstraintCfg>),
     ("local", fields_of::<LocalCfg>),
+    ("ri", fields_of::<RiCfg>),
     ("rpa", fields_of::<RpaCfg>),
     ("gw", fields_of::<GwCfg>),
     ("tddft", fields_of::<TddftCfg>),
