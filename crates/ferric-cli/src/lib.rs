@@ -925,7 +925,7 @@ pub fn run(args: Vec<String>) {
     //     separate LinK path.
     // Parsing it twice would risk the two silently disagreeing after a future
     // edit touched only one site.
-    let sys = prepare_system(&cfg, ecp, &bs, ctx);
+    let sys = prepare_system(&cfg, ecp, ctx);
     let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let screening_kind = sys.screening();
     refuse_tddft_xc_without_kernel(&cfg, method);
@@ -1494,21 +1494,12 @@ pub fn run(args: Vec<String>) {
     }
 }
 
-/// The whole-run precision provenance record: every [`MixedKernel`] call
-/// since `run()` started `probe`, whoever made it.
-///
-/// [`MixedKernel`]: ferric_core::gpu::MixedKernel
 /// The prepared system of a molecular run: `ecp` with its basis prepared
 /// and its Coulomb Schwarz bounds built for `[scf] screening`, in `ctx`.
 /// Exits (`error: ...`, status 1) on a basis error, then on a bad
 /// `screening` value (`error: [scf] screening: ...`), then on a bounds
 /// error: the order in which the run reported them before the system existed.
-fn prepare_system(
-    cfg: &Config,
-    ecp: EcpMolecule<'_>,
-    bs: &BasisSet,
-    ctx: ParallelContext,
-) -> PreparedSystem {
+fn prepare_system(cfg: &Config, ecp: EcpMolecule<'_>, ctx: ParallelContext) -> PreparedSystem {
     use ferric_scf::screening::ScreeningKind;
     let screening = cfg.scf.screening.as_deref().map_or(
         Ok(ScreeningKind::default()),
@@ -1518,12 +1509,16 @@ fn prepare_system(
         Ok(screening) => ecp.prepare(PrepareOptions { screening, ctx }).or_exit(),
         Err(e) => {
             // Prepared (and dropped) only so a basis error is reported first.
-            let _prepared = PreparedBasis::new(ecp.mol(), bs).or_exit();
+            let _prepared = PreparedBasis::new(ecp.mol(), ecp.basis_set()).or_exit();
             die(format!("[scf] screening: {e}"))
         }
     }
 }
 
+/// The whole-run precision provenance record: every [`MixedKernel`] call
+/// since `run()` started `probe`, whoever made it.
+///
+/// [`MixedKernel`]: ferric_core::gpu::MixedKernel
 fn run_precision_json(probe: &ferric_core::gpu::provenance::PrecisionProbe) -> serde_json::Value {
     probe.finish(&ferric_core::gpu::MixedKernel::ALL).to_json()
 }
