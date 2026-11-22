@@ -18,9 +18,7 @@ pytest.importorskip("ferric")
 
 _ROOT = pathlib.Path(__file__).resolve().parents[3]
 _WATER = _ROOT / "testdata" / "molecules" / "water.xyz"
-_SYNOPSIS = (
-    "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
-)
+_SYNOPSIS = "usage: ferric [--verbose|-v] [--json <path>|--no-json] [--gpu <preset>] <input.toml>"
 
 
 def _cli(*args, cwd=None):
@@ -71,7 +69,9 @@ def test_bad_gpu_preset_is_a_usage_error():
 def test_missing_input_exits_one_without_traceback(tmp_path):
     r = _cli(str(tmp_path / "nope.toml"))
     assert r.returncode == 1
-    assert r.stderr.startswith(f'error: cannot read config file "{tmp_path / "nope.toml"}": ')
+    assert r.stderr.startswith(
+        f'error: cannot read config file "{tmp_path / "nope.toml"}": '
+    )
     assert r.stderr.count("\n") == 1
     assert r.stdout == ""
 
