@@ -68,28 +68,30 @@ pub(crate) struct PyGammaRhfResult {
     pub(crate) stress_data: Option<Array2<f64>>,
 }
 
+periodic_method_result!(PyGammaRhfResult, |r| capability: "rhf-gamma", mesh: None);
+
 #[pymethods]
 impl PyGammaRhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate (see `GammaOpenShellResult.certificate`):
     /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc::pbc_certificate_dict(
-            py,
-            "rhf-gamma",
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        )
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
+    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
+    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
+    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
+    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
+    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
     }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order); `None` unless `with_gradient=True`.
@@ -105,16 +107,6 @@ impl PyGammaRhfResult {
         self.stress_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
-    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
-    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
-    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
-    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
-    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        pbc::timings_dict(py, &self.timings_data)
     }
     /// MO energies (Hartree), ascending, 1D numpy array.
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {

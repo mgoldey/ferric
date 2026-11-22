@@ -187,14 +187,15 @@ pub(crate) struct PyCdftResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyCdftResult, total_energy: energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyCdftResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
+    #[doc = alias_doc!(energy)]
     #[getter]
     fn total_energy(&self) -> f64 {
-        self.energy
+        crate::method_result::total_energy_getter(self)
     }
-
     /// Validation certificate of this result (dict form of
     /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
     /// `capability` is `"cdft:uhf"` or `"cdft:uks"` and the grade is
@@ -205,7 +206,7 @@ impl PyCdftResult {
     /// approximations; an unconverged inner SCF or constraint is a warning.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
@@ -680,7 +681,7 @@ impl PyCdftCouplingResult {
     /// an approximation.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         format!(

@@ -443,7 +443,7 @@ impl PyQmmmResult {
     /// approximations; a run that did not converge is a warning.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     /// `dE/dR` on the QM molecule as solved: real QM atoms then link
     /// hydrogens, `(n_qm + n_link, 3)`.
@@ -899,7 +899,7 @@ impl PyQmmmOptimizeResult {
     /// approximations; a run that did not converge is a warning.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     /// The partition at the final (optimized) geometry.
     fn system(&self) -> PyQmmmSystem {

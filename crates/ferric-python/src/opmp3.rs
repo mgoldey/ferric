@@ -42,6 +42,11 @@ fn channels_dict<'py>(py: Python<'py>, w: &WChannels) -> PyResult<Bound<'py, pyo
 
 #[pymethods]
 impl PyOpmp3Result {
+    /// Validation certificate (see `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// The reference SCF energy as converged (the KS energy for DFT).
     #[getter]
     fn e_scf(&self) -> f64 {
@@ -100,11 +105,6 @@ impl PyOpmp3Result {
     #[getter]
     fn max_ov(&self) -> (f64, f64) {
         (self.inner.max_ov[0], self.inner.max_ov[1])
-    }
-    /// Validation certificate (see `RhfResult.certificate`).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// `None` for the exact method; for `local="amplitude-threshold"` a dict
     /// with `scheme`, `eps`, `keep_fraction`, `integral_direct` (False),

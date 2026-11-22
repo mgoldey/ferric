@@ -54,12 +54,14 @@ pub(crate) struct PyRsMp2RpaResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyRsMp2RpaResult, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyRsMp2RpaResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -454,8 +456,15 @@ macro_rules! prop_array {
     };
 }
 
+stored_method_result!(PyPdepRpaResult, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyPdepRpaResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Analytic nuclear gradient of `total_energy` (RHF + RI-dRPA) as an
     /// (natoms, 3) array in Hartree/Bohr, rows in the Molecule's atom order;
     /// `None` unless the result came from `run_pdep_rpa(..., with_gradient=True)`.
@@ -463,11 +472,6 @@ impl PyPdepRpaResult {
         self.gradient_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// Static dielectric eigenvalues λ_α(0), length M (sorted descending).
     /// Plot `λ - 1` vs α on a log scale for a scree plot of the PDEP basis.

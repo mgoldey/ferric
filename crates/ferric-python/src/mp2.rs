@@ -49,16 +49,10 @@ pub(crate) struct PyRiMp2Result {
     pub(crate) gradient_data: Option<Array2<f64>>,
 }
 
+stored_method_result!(PyRiMp2Result, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyRiMp2Result {
-    /// Analytic nuclear gradient of `total_energy` as an (natoms, 3) array in
-    /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
-    /// result came from `run_rimp2(..., with_gradient=True)`.
-    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
-        self.gradient_data
-            .as_ref()
-            .map(|g| PyArray2::from_array(py, g))
-    }
     /// Validation certificate of this result (see `RhfResult.certificate`):
     /// capability `"rimp2"` (`"att-rimp2"` for `run_terfc_rimp2`), the grade
     /// capped by the reference SCF's, the auxiliary basis, frozen core and
@@ -66,7 +60,15 @@ impl PyRiMp2Result {
     /// and for a local run the local-scheme cap and warnings.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Analytic nuclear gradient of `total_energy` as an (natoms, 3) array in
+    /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
+    /// result came from `run_rimp2(..., with_gradient=True)`.
+    fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
+        self.gradient_data
+            .as_ref()
+            .map(|g| PyArray2::from_array(py, g))
     }
     /// Precision provenance of the MP2 correlation energy (the
     /// `rimp2-energy` kernel): `{"precision": "f64", "counter_scope": "process", "kernels": []}` for an
@@ -1598,8 +1600,15 @@ pub(crate) struct PyOoRiMp2Result {
     pub(crate) gradient_data: Option<Array2<f64>>,
 }
 
+stored_method_result!(PyOoRiMp2Result, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyOoRiMp2Result {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Analytic nuclear gradient of `total_energy` as an (natoms, 3) array in
     /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
     /// result came from `run_oo_rimp2(..., with_gradient=True)`.
@@ -1607,11 +1616,6 @@ impl PyOoRiMp2Result {
         self.gradient_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -1813,12 +1817,14 @@ pub(crate) struct PyMp3Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyMp3Result, total_energy: e_total, certificate: certificate_data);
+
 #[pymethods]
 impl PyMp3Result {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -1919,12 +1925,14 @@ pub(crate) struct PyLaplaceMp2Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyLaplaceMp2Result, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyLaplaceMp2Result {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -2056,12 +2064,14 @@ pub(crate) struct PySosMp2Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PySosMp2Result, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PySosMp2Result {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -2225,12 +2235,14 @@ pub(crate) struct PyAttenuatedMp2Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyAttenuatedMp2Result, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyAttenuatedMp2Result {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -2469,12 +2481,14 @@ impl PyScsMp2Result {
     }
 }
 
+stored_method_result!(PyScsMp2Result, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyScsMp2Result {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -2668,12 +2682,14 @@ pub(crate) struct PyMp2VResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyMp2VResult, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyMp2VResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(

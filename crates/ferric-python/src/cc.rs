@@ -125,7 +125,7 @@ impl PyCcResult {
     #[doc = method_certificate_doc!()]
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         match self.t_correction {
@@ -414,7 +414,7 @@ impl PyEomCcsdResult {
     /// `"eom-ccsd"`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     /// Singlet excitation energies ω (Hartree), ascending.
     #[getter]
