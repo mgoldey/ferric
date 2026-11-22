@@ -8,7 +8,7 @@ use super::*;
 // (see `run_cis_tda`/`run_bse_c6`/`run_bse_c6_ks`'s still-open note there) —
 // see docs/open-work-triage-2026-07-14-open.md #54.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GwResult")]
 pub(crate) struct PyGwResult {
     #[pyo3(get)]
@@ -347,7 +347,7 @@ pub(crate) fn run_gw(
 // BSE-TDA (`run_bse_tda`) is closed-shell only and wired further down
 // (see the "── BSE-TDA ──" section) — see docs/open-work-triage-2026-07-14-open.md #54.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "UGwResult")]
 pub(crate) struct PyUGwResult {
     #[pyo3(get)]
@@ -660,7 +660,7 @@ pub(crate) fn run_u_gw(
 // its own doc comment in `ferric_gw::bse`); the C6/dispersion variants are
 // lower-priority per the G9 task brief and still open.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "BseResult")]
 pub(crate) struct PyBseResult {
     /// Number of occupied / virtual orbitals in the BSE (ia) window
@@ -845,7 +845,7 @@ pub(crate) fn run_bse_tda(
 // worse than ferric's production dRPA/PDEP C6 pipeline. Only the STATIC
 // (omega=0) polarizability is exposed as a production entry point.
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "TdhfStaticPolarizabilityResult")]
 pub(crate) struct PyTdhfStaticPolarizabilityResult {
     #[pyo3(get)]

@@ -150,7 +150,7 @@ pub(crate) fn scf_stationarity_tol(r: &ScfResult) -> Option<f64> {
 }
 
 /// Result of a closed-shell RHF (or `run_ksdft` KS-DFT) calculation.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "RhfResult")]
 pub(crate) struct PyRhfResult {
     /// Total SCF energy in Hartree (electronic + nuclear repulsion).
@@ -166,12 +166,14 @@ pub(crate) struct PyRhfResult {
     /// (reflects Schwarz/QQR screening; lower than the naive N^4 count).
     #[pyo3(get)]
     pub(crate) computed_quartets: usize,
-    pub(crate) density_data: Array2<f64>,
-    pub(crate) orbital_energies_data: Vec<f64>,
-    pub(crate) scf_data: ScfResult,
+    /// The solve, shared (`Arc`): a function that takes this result as a
+    /// reference and releases the GIL clones the `Arc`, not the arrays
+    /// (ARCHITECTURE.md roadmap item 13). `density()` and
+    /// `orbital_energies()` read its `density_total` and `eps_alpha`.
+    pub(crate) scf_data: Arc<ScfResult>,
     /// The SCF settings this result was solved with. `hirshfeld_charges`
     /// solves its free-atom proatoms with the same settings, as ferric-cli does.
-    pub(crate) scf_config: RhfConfig,
+    pub(crate) scf_config: Arc<RhfConfig>,
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
     /// `dE/dR` (natoms x 3, Hartree/Bohr) when solved with `with_gradient=True`.
     pub(crate) gradient_data: Option<Array2<f64>>,
@@ -209,11 +211,11 @@ impl PyRhfResult {
     }
     /// The converged AO-basis density matrix as a 2D numpy array (n_bf × n_bf).
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_data)
+        PyArray2::from_array(py, &self.scf_data.density_total)
     }
     /// Molecular orbital energies (Hartree) as a 1D numpy array, ascending order.
     fn orbital_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        PyArray1::from_vec(py, self.orbital_energies_data.clone())
+        PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
     }
     /// MO coefficient matrix C (n_bf × n_mo), column k = MO k in ascending
     /// energy order — the same matrix the Rust post-HF drivers consume.
@@ -1100,10 +1102,8 @@ impl PyRhfResult {
             converged: r.converged,
             iterations: r.iterations,
             computed_quartets: r.computed_quartets,
-            density_data: r.density_total.clone(),
-            orbital_energies_data: r.eps_alpha.clone(),
-            scf_data: r,
-            scf_config: config,
+            scf_data: Arc::new(r),
+            scf_config: Arc::new(config),
             certificate_data,
             gradient_data: None,
         }
@@ -1127,7 +1127,7 @@ pub(crate) fn add_rhf_result_classes(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// raise instead of returning matrices that look like input-frame data, and
 /// no function that takes an `RhfResult` (gradients, post-HF, Hirshfeld,
 /// properties) accepts this object.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "SymmetricRhfResult")]
 pub(crate) struct PySymmetricRhfResult {
     /// Total SCF energy (Hartree) of the symmetrized geometry.
@@ -1160,28 +1160,38 @@ impl PySymmetricRhfResult {
     fn from_solution(sym: ferric_scf::symmetric::SymmetricRhf) -> Self {
         let mol = sym.molecule();
         let (rotation, origin_bohr) = sym.frame_transform();
-        let scf = sym.scf_in_frame();
+        let symbols = mol.atoms.iter().map(|a| a.symbol.clone()).collect();
+        let coords_angstrom = mol
+            .atoms
+            .iter()
+            .map(|a| {
+                (
+                    a.x / ANGSTROM_TO_BOHR,
+                    a.y / ANGSTROM_TO_BOHR,
+                    a.zpos / ANGSTROM_TO_BOHR,
+                )
+            })
+            .collect();
+        let energy = sym.energy();
+        let point_group = sym.group().to_string();
+        let orbital_irreps = sym.orbital_irreps().to_vec();
+        let max_symmetrization_shift = sym.max_symmetrization_shift();
+        let irrep_occupations = sym.irrep_occupations();
+        // The class keeps no `ScfResult` (its AO matrices are in the rotated
+        // frame and are never returned), so the orbital energies are its only
+        // copy: moved out of the solve, not cloned.
+        let scf = sym.into_scf_in_frame();
         PySymmetricRhfResult {
-            energy: sym.energy(),
+            energy,
             converged: scf.converged,
             iterations: scf.iterations,
-            point_group: sym.group().to_string(),
-            orbital_irreps: sym.orbital_irreps().to_vec(),
-            max_symmetrization_shift: sym.max_symmetrization_shift(),
-            orbital_energies_data: scf.eps_alpha.clone(),
-            irrep_occupations: sym.irrep_occupations(),
-            symbols: mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
-            coords_angstrom: mol
-                .atoms
-                .iter()
-                .map(|a| {
-                    (
-                        a.x / ANGSTROM_TO_BOHR,
-                        a.y / ANGSTROM_TO_BOHR,
-                        a.zpos / ANGSTROM_TO_BOHR,
-                    )
-                })
-                .collect(),
+            point_group,
+            orbital_irreps,
+            max_symmetrization_shift,
+            orbital_energies_data: scf.eps_alpha,
+            irrep_occupations,
+            symbols,
+            coords_angstrom,
             rotation,
             origin_angstrom: origin_bohr.map(|x| x / ANGSTROM_TO_BOHR),
         }
@@ -1250,7 +1260,7 @@ impl PySymmetricRhfResult {
 
 // ── UHF (open-shell) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "UhfResult")]
 pub(crate) struct PyUhfResult {
     #[pyo3(get)]

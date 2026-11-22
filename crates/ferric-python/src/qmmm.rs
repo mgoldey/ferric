@@ -408,7 +408,7 @@ impl PyQmmmSystem {
 /// views. All gradients are `dE/dR` in Hartree/Bohr except `mm_forces()`,
 /// which is the FORCE (`−dE/dR`) on each embedding charge, because that is
 /// what an MM integrator consumes.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "QmmmResult")]
 pub(crate) struct PyQmmmResult {
     #[pyo3(get)]
@@ -871,7 +871,7 @@ pub(crate) fn run_qmmm(
 
 /// Result of `run_optimize_qmmm`: the relaxed partition plus its energy
 /// trajectory.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "QmmmOptimizeResult")]
 pub(crate) struct PyQmmmOptimizeResult {
     #[pyo3(get)]

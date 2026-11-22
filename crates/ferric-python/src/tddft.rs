@@ -4,7 +4,7 @@ use super::*;
 
 // ── TDDFT (closed-shell linear response) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "TddftResult")]
 pub(crate) struct PyTddftResult {
     #[pyo3(get)]

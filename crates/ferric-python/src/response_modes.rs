@@ -12,7 +12,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::prelude::*;
 
 /// Leading eigenmodes of the RPA dielectric at one imaginary frequency.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "ResponseModes")]
 pub(crate) struct PyResponseModes {
     inner: ferric_rpa::response_modes::ResponseModes,

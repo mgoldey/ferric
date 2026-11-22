@@ -9,7 +9,7 @@ use super::*;
 /// Energies are per unit cell, Hartree. `energy` includes `e_nuc` (Ewald,
 /// neutralising-background convention = PySCF `Cell.energy_nuc()`) and, for
 /// `exxdiv="ewald"`, the Madelung exchange shift `-madelung * N_e / 2`.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaRhfResult")]
 pub(crate) struct PyGammaRhfResult {
     /// Total energy per cell (Hartree).

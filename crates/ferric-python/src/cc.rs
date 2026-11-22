@@ -4,7 +4,7 @@ use super::*;
 
 // ── CC (stub) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CcResult")]
 pub(crate) struct PyCcResult {
     #[pyo3(get)]
@@ -402,7 +402,7 @@ pub(crate) fn run_ccsd_t(
     run_ccsd_level(py, args, CcLevel::CcsdT)
 }
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "EomCcsdResult")]
 pub(crate) struct PyEomCcsdResult {
     #[pyo3(get)]

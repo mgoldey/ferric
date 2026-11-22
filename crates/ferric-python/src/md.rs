@@ -15,7 +15,7 @@ use ferric_md::{
 
 /// Result of `run_aimd` / `run_ffmd`: one entry per recorded frame (step 0
 /// and every `stride`-th step).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "MdResult")]
 pub(crate) struct PyMdResult {
     md: ferric_md::MdResult,
