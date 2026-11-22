@@ -1,12 +1,13 @@
-"""The getters `result_getters!` generates read the right source.
+"""The shared result getters read the right source.
 
 `certificate`, `timings` and the `energy`/`total_energy` alias of the result
-classes come from one macro (`crates/ferric-python/src/method_result.rs`,
-roadmap item 9b). These cases pin that each generated getter is wired to its
-class's own value: the alias equals the class's total-energy attribute, the
-certificate is the class's (its capability names the method, and a DFT
-dispersion correction appears in it exactly when one was requested), and a
-periodic result's `timings` has the documented shape.
+classes are one-line getters over shared helpers
+(`crates/ferric-python/src/method_result.rs`, roadmap item 9b). These cases
+pin that each getter is wired to its class's own value: the alias equals the
+class's total-energy attribute, the certificate is the class's (its capability
+names the method, and a DFT dispersion correction appears in it exactly when
+one was requested), and a periodic result's `timings` has the documented
+shape.
 """
 
 from __future__ import annotations

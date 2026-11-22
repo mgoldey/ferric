@@ -70,24 +70,29 @@ pub(crate) struct PyGammaRhfResult {
 
 periodic_method_result!(PyGammaRhfResult, |r| capability: "rhf-gamma", mesh: None);
 
-result_getters! {
-    PyGammaRhfResult {
-        total_energy: via trait;
-        /// Validation certificate (see `GammaOpenShellResult.certificate`):
-        /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
-        certificate: via trait;
-        /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
-        /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
-        /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
-        /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
-        /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
-        /// "cpu_s", "calls"}}, "counters": {name: int}}`.
-        timings: from field timings_data;
-    }
-}
-
 #[pymethods]
 impl PyGammaRhfResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate (see `GammaOpenShellResult.certificate`):
+    /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
+    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
+    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
+    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
+    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
+    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order); `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {

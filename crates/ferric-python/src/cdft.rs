@@ -189,23 +189,25 @@ pub(crate) struct PyCdftResult {
 
 stored_method_result!(PyCdftResult, total_energy: energy, certificate: certificate_data);
 
-result_getters! {
-    PyCdftResult {
-        total_energy: via trait;
-        /// Validation certificate of this result (dict form of
-        /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-        /// `capability` is `"cdft:uhf"` or `"cdft:uks"` and the grade is
-        /// `"ungraded"`: the validation page does not grade `run_cdft`. The
-        /// UHF/UKS certificate at the constrained density is folded in as the
-        /// reference; each constraint (fragment, kind, target, multiplier,
-        /// population), the Becke weight grid and the outer-loop settings are
-        /// approximations; an unconverged inner SCF or constraint is a warning.
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyCdftResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"cdft:uhf"` or `"cdft:uks"` and the grade is
+    /// `"ungraded"`: the validation page does not grade `run_cdft`. The
+    /// UHF/UKS certificate at the constrained density is folded in as the
+    /// reference; each constraint (fragment, kind, target, multiplier,
+    /// population), the Becke weight grid and the outer-loop settings are
+    /// approximations; an unconverged inner SCF or constraint is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     fn density_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         PyArray2::from_array(py, &self.density_alpha_data)
     }
@@ -669,20 +671,18 @@ pub(crate) struct PyCdftCouplingResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PyCdftCouplingResult {
-        /// Validation certificate of this coupling (dict form of
-        /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-        /// `capability` is `"cdft-coupling"` and the grade is `"ungraded"`. State
-        /// A's certificate is the reference; state B's approximations and warnings
-        /// carry the prefix `state B`; the Wu-Van Voorhis formula is recorded as
-        /// an approximation.
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyCdftCouplingResult {
+    /// Validation certificate of this coupling (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"cdft-coupling"` and the grade is `"ungraded"`. State
+    /// A's certificate is the reference; state B's approximations and warnings
+    /// carry the prefix `state B`; the Wu-Van Voorhis formula is recorded as
+    /// an approximation.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "CdftCouplingResult(h_ab={:.10}, s_ab={:.6e}, e_a={:.10}, e_b={:.10})",

@@ -43,15 +43,13 @@ pub(crate) struct PyGwResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PyGwResult {
-        #[doc = method_certificate_doc!()]
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyGwResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     #[getter]
     fn eps_mf<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.eps_mf)
@@ -392,15 +390,13 @@ pub(crate) struct PyUGwResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PyUGwResult {
-        #[doc = method_certificate_doc!()]
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyUGwResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     #[getter]
     fn eps_mf_a<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.eps_mf_a)
@@ -691,15 +687,13 @@ pub(crate) struct PyBseResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PyBseResult {
-        #[doc = method_certificate_doc!()]
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyBseResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     #[getter]
     fn omega<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.omega)
@@ -864,15 +858,13 @@ pub(crate) struct PyTdhfStaticPolarizabilityResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PyTdhfStaticPolarizabilityResult {
-        #[doc = method_certificate_doc!()]
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyTdhfStaticPolarizabilityResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// Cartesian alpha_ij(0) tensor (3x3, a.u.), i,j in {x,y,z}.
     #[getter]
     fn tensor<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {

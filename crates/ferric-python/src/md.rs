@@ -40,19 +40,17 @@ impl PyMdResult {
     }
 }
 
-result_getters! {
-    PyMdResult {
-        /// Validation certificate (dict form of
-        /// `ferric_core::certificate::Certificate`). Always `not graded`, with
-        /// capability `"md:<label>"`; the integrator, thermostat, time step and
-        /// seed are recorded as approximations. For `run_aimd` the SCF at the
-        /// final geometry is folded in as the reference.
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyMdResult {
+    /// Validation certificate (dict form of
+    /// `ferric_core::certificate::Certificate`). Always `not graded`, with
+    /// capability `"md:<label>"`; the integrator, thermostat, time step and
+    /// seed are recorded as approximations. For `run_aimd` the SCF at the
+    /// final geometry is folded in as the reference.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// Step index of each recorded frame.
     #[getter]
     fn steps(&self) -> Vec<usize> {

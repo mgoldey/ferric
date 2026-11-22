@@ -1313,20 +1313,25 @@ struct PyGammaOpenShellResult {
 
 periodic_method_result!(PyGammaOpenShellResult, |r| capability: format!("{}-gamma", r.method), mesh: None);
 
-result_getters! {
-    PyGammaOpenShellResult {
-        total_energy: via trait;
-        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate: via trait;
-        /// Stage timings and counters (see `timings_dict`).
-        timings: from field timings_data;
-    }
-}
-
 #[pymethods]
 impl PyGammaOpenShellResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell, rows in the Molecule's atom order) of the final SCF stage;
     /// `None` unless `with_gradient=True`.
@@ -2075,20 +2080,25 @@ struct PyGammaRksResult {
 
 periodic_method_result!(PyGammaRksResult, |r| capability: "rks-gamma", mesh: None);
 
-result_getters! {
-    PyGammaRksResult {
-        total_energy: via trait;
-        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate: via trait;
-        /// Stage timings and counters (see `timings_dict`).
-        timings: from field timings_data;
-    }
-}
-
 #[pymethods]
 impl PyGammaRksResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell); `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
@@ -2355,20 +2365,21 @@ struct PyGammaCorrelationResult {
 
 periodic_method_result!(PyGammaCorrelationResult, |r| capability: format!("{}-gamma", r.method), mesh: None);
 
-result_getters! {
-    PyGammaCorrelationResult {
-        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate: via trait;
-        /// Stage timings and counters (see `timings_dict`); the correlation
-        /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
-        timings: from field timings_data;
-    }
-}
-
 #[pymethods]
 impl PyGammaCorrelationResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters (see `timings_dict`); the correlation
+    /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "GammaCorrelationResult(method={:?}, correlation_energy={:.10}, energy={:.10}, \
@@ -2746,21 +2757,26 @@ struct PyKpointScfResult {
 
 periodic_method_result!(PyKpointScfResult, |r| capability: format!("{}-kpts", r.method), mesh: Some((r.mesh, r.centring.as_str())));
 
-result_getters! {
-    PyKpointScfResult {
-        total_energy: via trait;
-        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate: via trait;
-        /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
-        /// the RS-GDF counters (see `timings_dict`).
-        timings: from field timings_data;
-    }
-}
-
 #[pymethods]
 impl PyKpointScfResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
+    /// the RS-GDF counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
+    }
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order; the force on ONE copy of each atom
     /// in the supercell of the mesh) of the converged SCF (UHF: the final
@@ -3409,20 +3425,25 @@ struct PyKpointRksResult {
 
 periodic_method_result!(PyKpointRksResult, |r| capability: "rks-kpts", mesh: Some((r.mesh, r.centring.as_str())));
 
-result_getters! {
-    PyKpointRksResult {
-        total_energy: via trait;
-        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate: via trait;
-        /// Stage timings and counters (see `timings_dict`).
-        timings: from field timings_data;
-    }
-}
-
 #[pymethods]
 impl PyKpointRksResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Stage timings and counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
+    }
     /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
     /// of the lattice rows AND the atoms, fixed fractional coordinates;
     /// pressure = -tr(σ)/3), the XC term on the energy's own grid. Not
@@ -4097,21 +4118,22 @@ struct PyKpointCorrelationResult {
 
 periodic_method_result!(PyKpointCorrelationResult, |r| capability: format!("{}-kpts", r.method), mesh: Some((r.mesh, r.centring.as_str())));
 
-result_getters! {
-    PyKpointCorrelationResult {
-        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate: via trait;
-        /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
-        /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
-        /// and the RS-GDF counters (see `timings_dict`).
-        timings: from field timings_data;
-    }
-}
-
 #[pymethods]
 impl PyKpointCorrelationResult {
+    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
+    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
+    /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
+    /// and the RS-GDF counters (see `timings_dict`).
+    #[getter]
+    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
+        crate::pbc::timings_dict(py, &self.timings_data)
+    }
     fn __repr__(&self) -> String {
         format!(
             "KpointCorrelationResult(method={:?}, correlation_energy={:.10}, mesh={:?}, \

@@ -110,18 +110,20 @@ impl MethodResult for PyDftResult {
     }
 }
 
-result_getters! {
-    PyDftResult {
-        energy: via trait;
-        /// Validation certificate of this result (see `RhfResult.certificate`),
-        /// with a `dispersion` approximation when a correction was added to
-        /// `total_energy`.
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyDftResult {
+    #[doc = alias_doc!(total_energy)]
+    #[getter]
+    fn energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate of this result (see `RhfResult.certificate`),
+    /// with a `dispersion` approximation when a correction was added to
+    /// `total_energy`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Precision provenance of this KS-DFT SCF (see `RhfResult.precision`;
     /// the `xc-vxc` kernel carries a `ladder` record).
     #[getter]
@@ -289,21 +291,19 @@ pub(crate) struct PyDoubleHybridResult {
 
 stored_method_result!(PyDoubleHybridResult, total_energy: total_energy, certificate: certificate_data);
 
-result_getters! {
-    PyDoubleHybridResult {
-        /// Validation certificate (see `RhfResult.certificate`): capability
-        /// `"b2plyp"` or `"dsd-pbep86"`, `grade` `"proven"` (both are compared with
-        /// PySCF built from the definition) capped by the Kohn-Sham reference's,
-        /// `measured_error` the kind's anchor only inside the evidence's settings
-        /// (flat (75, 110) grid, f64 RI-J), `approximations`
-        /// `scf ...` (the reference's), `ri`, `frozen-core` and
-        /// `spin-component-scaling`.
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyDoubleHybridResult {
+    /// Validation certificate (see `RhfResult.certificate`): capability
+    /// `"b2plyp"` or `"dsd-pbep86"`, `grade` `"proven"` (both are compared with
+    /// PySCF built from the definition) capped by the Kohn-Sham reference's,
+    /// `measured_error` the kind's anchor only inside the evidence's settings
+    /// (flat (75, 110) grid, f64 RI-J), `approximations`
+    /// `scf ...` (the reference's), `ri`, `frozen-core` and
+    /// `spin-component-scaling`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     fn __repr__(&self) -> String {
         format!(
             "DoubleHybridResult(total_energy={:.10}, e_ks={:.10}, e_corr={:.10})",

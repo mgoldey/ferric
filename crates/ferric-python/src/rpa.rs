@@ -56,15 +56,13 @@ pub(crate) struct PyRsMp2RpaResult {
 
 stored_method_result!(PyRsMp2RpaResult, total_energy: total_energy, certificate: certificate_data);
 
-result_getters! {
-    PyRsMp2RpaResult {
-        #[doc = method_certificate_doc!()]
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyRsMp2RpaResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     fn __repr__(&self) -> String {
         format!(
             "RsMp2RpaResult(total_energy={:.10}, e_corr={:.10})",
@@ -460,15 +458,13 @@ macro_rules! prop_array {
 
 stored_method_result!(PyPdepRpaResult, total_energy: total_energy, certificate: certificate_data);
 
-result_getters! {
-    PyPdepRpaResult {
-        #[doc = method_certificate_doc!()]
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyPdepRpaResult {
+    #[doc = method_certificate_doc!()]
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Analytic nuclear gradient of `total_energy` (RHF + RI-dRPA) as an
     /// (natoms, 3) array in Hartree/Bohr, rows in the Molecule's atom order;
     /// `None` unless the result came from `run_pdep_rpa(..., with_gradient=True)`.

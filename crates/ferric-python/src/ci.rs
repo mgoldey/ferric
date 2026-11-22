@@ -56,15 +56,13 @@ struct PyCasCiResult {
 
 stored_method_result!(PyCasCiResult, total_energy: e_total, certificate: certificate_data);
 
-result_getters! {
-    PyCasCiResult {
-        /// Validation certificate (schema of `RhfResult.certificate`).
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyCasCiResult {
+    /// Validation certificate (schema of `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// CI coefficients, shape `(n_alpha_strings, n_beta_strings)`; strings in
     /// ascending bitmask order (bit `p` = active orbital `p` occupied).
     #[getter]
@@ -257,15 +255,13 @@ struct PyCasScfResult {
 
 stored_method_result!(PyCasScfResult, total_energy: e_total, certificate: certificate_data);
 
-result_getters! {
-    PyCasScfResult {
-        /// Validation certificate (schema of `RhfResult.certificate`).
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyCasScfResult {
+    /// Validation certificate (schema of `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// CI coefficients, shape `(n_alpha_strings, n_beta_strings)`, in the
     /// optimized active orbitals.
     #[getter]
@@ -488,15 +484,13 @@ fn classes_dict<'py>(
 
 stored_method_result!(PyNevpt2Result, total_energy: e_total, certificate: certificate_data);
 
-result_getters! {
-    PyNevpt2Result {
-        /// Validation certificate (schema of `RhfResult.certificate`).
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyNevpt2Result {
+    /// Validation certificate (schema of `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Class energies (Ha), keyed by PySCF's names `Sr`, `Si`, `Sijrs`,
     /// `Sijr`, `Srsi`, `Srs`, `Sij`, `Sir`.
     #[getter]

@@ -1,18 +1,21 @@
-//! [`MethodResult`] and the macros that build the shared Python result
-//! getters from it.
+//! [`MethodResult`] and the helpers behind the shared Python result getters.
 //!
 //! The trait lives here, not in ferric-core, because every implementer is a
 //! ferric-python result class and nothing consumes it generically yet: its
-//! only caller is `result_getters!`. It moves to ferric-core when a kernel
-//! or CLI result implements it, or when generic code needs it (ARCHITECTURE.md,
-//! roadmap item 9b).
+//! only callers are the getter helpers below. It moves to ferric-core when a
+//! kernel or CLI result implements it, or when generic code needs it
+//! (ARCHITECTURE.md, roadmap item 9b).
 //!
 //! * [`MethodResult`]: one total energy and the certificate that grades it.
 //! * `stored_method_result!` implements it for a class that stores both.
 //! * `periodic_method_result!` implements it for a periodic class, whose
 //!   certificate is built on demand by `pbc::pbc_certificate_stamped`.
-//! * `result_getters!` declares a class's shared Python getters
-//!   (`certificate`, `timings`, the `energy`/`total_energy` alias) once.
+//! * Each result class declares its shared getters (`certificate`, the
+//!   `energy`/`total_energy` alias) as one-line `#[getter]`s in its own
+//!   `#[pymethods]` block, calling [`certificate_getter`] /
+//!   [`total_energy_getter`], with the alias docstring from `alias_doc!`.
+//!   pyo3 0.23 rejects a macro item inside `#[pymethods]`, so the getters
+//!   are written out rather than generated.
 
 use std::borrow::Cow;
 
@@ -85,105 +88,28 @@ macro_rules! periodic_method_result {
     };
 }
 
-/// The Python getters the result classes share, declared once per class as
-/// a second `#[pymethods]` block (pyo3's `multiple-pymethods`: a macro item
-/// inside a `#[pymethods]` impl is a hard error). Entries, in any order,
-/// each ending in `;`, the getter's doc comments above it:
-///
-/// * `total_energy: via trait;` / `energy: via trait;`: the alias getter
-///   (#676) with its fixed docstring ("Alias of `energy` ..." /
-///   "Alias of `total_energy` ..."), returning
-///   `MethodResult::total_energy`;
-/// * `total_energy: from field <name>;`: the same `total_energy` alias, read
-///   from a field, for a class that is not a `MethodResult`;
-/// * `certificate: via trait;`: the dict form of
-///   `MethodResult::certificate`;
-/// * `certificate: from field <name>;`: the same from a stored
-///   `Certificate` field, for a class that is not a `MethodResult`;
-/// * `timings: from field <name>;`: `pbc::timings_dict` of a `PbcTimings`
-///   field.
-///
-/// Anything else is a compile error naming these forms. Each getter keeps
-/// the name, return type, value, docstring and errors of the hand-written
-/// one it replaced.
-macro_rules! result_getters {
-    ($ty:ident { $($body:tt)* }) => {
-        result_getters!(@munch $ty [] $($body)*);
+/// The fixed docstring of the `energy`/`total_energy` alias getters (#676):
+/// `#[doc = alias_doc!(energy)]` on `total_energy`, `#[doc =
+/// alias_doc!(total_energy)]` on `energy`.
+macro_rules! alias_doc {
+    (energy) => {
+        "Alias of `energy` (the same value), so callers can read either spelling."
     };
-    (@munch $ty:ident [$($acc:tt)*]) => {
-        #[::pyo3::pymethods]
-        impl $ty {
-            $($acc)*
-        }
+    (total_energy) => {
+        "Alias of `total_energy` (the same value), so callers can read either spelling."
     };
-    (@munch $ty:ident [$($acc:tt)*] total_energy: via trait; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            /// Alias of `energy` (the same value), so callers can read either spelling.
-            #[getter]
-            fn total_energy(&self) -> f64 {
-                $crate::method_result::MethodResult::total_energy(self)
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] total_energy: from field $f:ident; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            /// Alias of `energy` (the same value), so callers can read either spelling.
-            #[getter]
-            fn total_energy(&self) -> f64 {
-                self.$f
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] energy: via trait; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            /// Alias of `total_energy` (the same value), so callers can read either spelling.
-            #[getter]
-            fn energy(&self) -> f64 {
-                $crate::method_result::MethodResult::total_energy(self)
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] $(#[$($doc:tt)*])* certificate: via trait; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            $(#[$($doc)*])*
-            #[getter]
-            fn certificate(&self, py: ::pyo3::Python<'_>) -> ::pyo3::PyResult<::pyo3::PyObject> {
-                $crate::certificate_dict(
-                    py,
-                    &$crate::method_result::MethodResult::certificate(self),
-                )
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] $(#[$($doc:tt)*])* certificate: from field $f:ident; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            $(#[$($doc)*])*
-            #[getter]
-            fn certificate(&self, py: ::pyo3::Python<'_>) -> ::pyo3::PyResult<::pyo3::PyObject> {
-                $crate::certificate_dict(py, &self.$f)
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] $(#[$($doc:tt)*])* timings: from field $f:ident; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            $(#[$($doc)*])*
-            #[getter]
-            fn timings(
-                &self,
-                py: ::pyo3::Python<'_>,
-            ) -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyDict>> {
-                $crate::pbc::timings_dict(py, &self.$f)
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] $($bad:tt)+) => {
-        ::core::compile_error!(concat!(
-            "result_getters!(", stringify!($ty), "): unrecognised entry `",
-            stringify!($($bad)+),
-            "`; the entries are `total_energy: via trait;`, `energy: via trait;`, ",
-            "`total_energy: from field <name>;`, `certificate: via trait;`, ",
-            "`certificate: from field <name>;` and `timings: from field <name>;`, ",
-            "each optionally preceded by doc comments"
-        ));
-    };
+}
+
+/// Body of a `total_energy` (or `energy`) alias getter of a `MethodResult`.
+pub(crate) fn total_energy_getter<R: MethodResult>(r: &R) -> f64 {
+    r.total_energy()
+}
+
+/// Body of the `certificate` getter of a `MethodResult`: the dict form of its
+/// certificate (`crate::certificate_dict`).
+pub(crate) fn certificate_getter<R: MethodResult>(
+    py: pyo3::Python<'_>,
+    r: &R,
+) -> pyo3::PyResult<pyo3::PyObject> {
+    crate::certificate_dict(py, &r.certificate())
 }

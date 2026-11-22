@@ -432,21 +432,19 @@ pub(crate) struct PyQmmmResult {
     pub(crate) induced_dipoles_data: Option<Array2<f64>>,
 }
 
-result_getters! {
-    PyQmmmResult {
-        /// Validation certificate of this result (dict form of
-        /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-        /// `capability` is `"qmmm:<method>"` and the grade is `"ungraded"`: the validation
-        /// page does not grade the QM/MM entry points. The QM-region SCF
-        /// certificate is folded in as the reference; the partition, the embedding
-        /// (MM charges, boundary scheme, link atoms, polarizable sites) and the MM force field are
-        /// approximations; a run that did not converge is a warning.
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyQmmmResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"qmmm:<method>"` and the grade is `"ungraded"`: the validation
+    /// page does not grade the QM/MM entry points. The QM-region SCF
+    /// certificate is folded in as the reference; the partition, the embedding
+    /// (MM charges, boundary scheme, link atoms, polarizable sites) and the MM force field are
+    /// approximations; a run that did not converge is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// `dE/dR` on the QM molecule as solved: real QM atoms then link
     /// hydrogens, `(n_qm + n_link, 3)`.
     fn qm_gradient<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
@@ -890,21 +888,19 @@ pub(crate) struct PyQmmmOptimizeResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PyQmmmOptimizeResult {
-        /// Validation certificate of this result (dict form of
-        /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-        /// `capability` is `"qmmm-optimize:<method>"` and the grade is `"ungraded"`: the validation
-        /// page does not grade the QM/MM entry points. The QM-region SCF
-        /// certificate is folded in as the reference; the partition, the embedding
-        /// (MM charges, boundary scheme, link atoms, polarizable sites), the MM atoms that moved and the optimizer settings are
-        /// approximations; a run that did not converge is a warning.
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyQmmmOptimizeResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"qmmm-optimize:<method>"` and the grade is `"ungraded"`: the validation
+    /// page does not grade the QM/MM entry points. The QM-region SCF
+    /// certificate is folded in as the reference; the partition, the embedding
+    /// (MM charges, boundary scheme, link atoms, polarizable sites), the MM atoms that moved and the optimizer settings are
+    /// approximations; a run that did not converge is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// The partition at the final (optimized) geometry.
     fn system(&self) -> PyQmmmSystem {
         PyQmmmSystem {

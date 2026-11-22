@@ -40,15 +40,13 @@ fn channels_dict<'py>(py: Python<'py>, w: &WChannels) -> PyResult<Bound<'py, pyo
     Ok(d)
 }
 
-result_getters! {
-    PyOpmp3Result {
-        /// Validation certificate (see `RhfResult.certificate`).
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyOpmp3Result {
+    /// Validation certificate (see `RhfResult.certificate`).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// The reference SCF energy as converged (the KS energy for DFT).
     #[getter]
     fn e_scf(&self) -> f64 {

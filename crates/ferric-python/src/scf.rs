@@ -179,24 +179,26 @@ pub(crate) struct PyRhfResult {
 
 stored_method_result!(PyRhfResult, total_energy: energy, certificate: certificate_data);
 
-result_getters! {
-    PyRhfResult {
-        total_energy: via trait;
-        /// Validation certificate of this result (the dict form of
-        /// `ferric_core::certificate::Certificate`): `capability`, `build`,
-        /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
-        /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
-        /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
-        /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
-        /// grid, level shift, ECP, embedding, solvation), `precision` and
-        /// `warnings` (one per element, basis or functional outside the solver's
-        /// energy anchor among them; those do not change the grade).
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyRhfResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate of this result (the dict form of
+    /// `ferric_core::certificate::Certificate`): `capability`, `build`,
+    /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
+    /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
+    /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
+    /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
+    /// grid, level shift, ECP, embedding, solvation), `precision` and
+    /// `warnings` (one per element, basis or functional outside the solver's
+    /// energy anchor among them; those do not change the grade).
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Analytic nuclear gradient `dE/dR` as an (natoms, 3) array in
     /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
     /// result came from `run_rhf(..., with_gradient=True)`.
@@ -1149,14 +1151,13 @@ pub(crate) const SYMMETRIC_FRAME_MSG: &str =
 reoriented, symmetrized frame (see frame_transform()), not the input frame. Run with \
 symmetry=False for density/MO coefficients/gradients.";
 
-result_getters! {
-    PySymmetricRhfResult {
-        total_energy: from field energy;
-    }
-}
-
 #[pymethods]
 impl PySymmetricRhfResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
     /// Orbital energies (Hartree) in MO-column order, aligned with
     /// `orbital_irreps`. Occupied columns come first (energy-ordered), then
     /// the virtuals, so with `irrep_nelec` the list need not be globally
@@ -1300,18 +1301,20 @@ impl PyUhfResult {
 
 stored_method_result!(PyUhfResult, total_energy: energy, certificate: certificate_data);
 
-result_getters! {
-    PyUhfResult {
-        total_energy: via trait;
-        /// Validation certificate of this result (see `RhfResult.certificate`).
-        /// A UHF/UKS result solved without `stability_descent=True` carries the
-        /// "internal stability not checked" warning.
-        certificate: via trait;
-    }
-}
-
 #[pymethods]
 impl PyUhfResult {
+    #[doc = alias_doc!(energy)]
+    #[getter]
+    fn total_energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate of this result (see `RhfResult.certificate`).
+    /// A UHF/UKS result solved without `stability_descent=True` carries the
+    /// "internal stability not checked" warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
     #[getter]
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {

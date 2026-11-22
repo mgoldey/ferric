@@ -286,16 +286,17 @@ Done:
       kernel next to another system's basis; that needs item 8c. As before,
       an aux set without ECP data carries the all-electron charge on an ECP
       atom (it matters only to a kernel that reads the aux basis's charges).
-9b. `MethodResult` (`total_energy`, `certificate` as a `Cow<Certificate>`)
-    and `result_getters!`, both `pub(crate)` in
-    `ferric-python/src/method_result.rs`. The macro declares each result
-    class's shared getters (`certificate`, `timings`, the
-    `energy`/`total_energy` alias) once, with explicit sources
-    (`certificate: via trait;`, `certificate: from field <name>;`, ...);
-    names, docstrings, values and certificate keys are unchanged, and
+9b. `MethodResult` (`total_energy`, `certificate` as a `Cow<Certificate>`),
+    `pub(crate)` in `ferric-python/src/method_result.rs`, with the helpers
+    `total_energy_getter` and `certificate_getter`. Each result class's
+    shared getters (`certificate`, `timings`, the `energy`/`total_energy`
+    alias, whose docstring comes from `alias_doc!`) are one-line `#[getter]`s
+    in its own `#[pymethods]` block over those helpers (or over
+    `certificate_dict` / `pbc::timings_dict` of a field). Names, docstrings,
+    values and certificate keys are unchanged, and
     `tests/test_result_getters.py` pins the wiring.
-    - Its only consumer is that macro. It lives in ferric-python because
-      every implementer is a ferric-python result class (see the
+    - Its only consumers are those helpers. It lives in ferric-python
+      because every implementer is a ferric-python result class (see the
       `stored_method_result!`, `periodic_method_result!` and hand-written
       `impl MethodResult` items); it moves to ferric-core when a kernel or
       CLI result implements it or generic code consumes it. No kernel result
@@ -306,14 +307,16 @@ Done:
       (optimize, saddle, frequencies, QM/MM optimize), which have a total
       energy and a certificate but grade the task, not a method; QM/MM,
       whose `energy` is the embedded QM energy; `SymmetricRhfResult`, which
-      has no certificate. These take `certificate: from field ...`.
+      has no certificate. These read a stored certificate field.
       `timings` is not in the trait: only periodic results carry it.
-    - The second `#[pymethods]` block needs pyo3's `multiple-pymethods`
-      feature (pyo3 rejects a macro item inside a `#[pymethods]` impl),
-      which adds the `inventory` crate. The alternative without a new
-      dependency is a generic helper plus a one-line hand-written getter
-      per class; the macro was preferred so a class names each shared
-      getter once.
+    - Not a generating macro: pyo3 0.23 rejects a macro item inside a
+      `#[pymethods]` impl, so a macro could only emit a second
+      `#[pymethods]` block, which needs pyo3's `multiple-pymethods` feature
+      (the `inventory` crate). That was tried and dropped: inventory's
+      link-section constructors keep every `#[pymethods]` block alive, so
+      the ferric-python lib test binary needs libpython symbols that
+      dead-stripping used to remove, and an extension-module build does not
+      link libpython; `cargo test -p ferric-python` failed to link.
     - It does not provide the explicit serialize schema item 13 needs: that
       schema is Python-side.
 -  COSX for `run_uks`/`run_roks`: they now apply

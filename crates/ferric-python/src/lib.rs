@@ -1297,21 +1297,19 @@ struct PySaddleResult {
     certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PySaddleResult {
-        /// Validation certificate of this result (dict form of
-        /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-        /// `capability` is `"saddle:<kind>"` and the grade is `"ungraded"`: the
-        /// validation page does not grade `run_saddle`. The SCF at the returned
-        /// geometry (re-solved) is folded in as the reference; the P-RFO settings
-        /// and the Hessian construction are approximations; a gradient that did not
-        /// converge, or a result that is not a first-order saddle, is a warning.
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PySaddleResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"saddle:<kind>"` and the grade is `"ungraded"`: the
+    /// validation page does not grade `run_saddle`. The SCF at the returned
+    /// geometry (re-solved) is folded in as the reference; the P-RFO settings
+    /// and the Hessian construction are approximations; a gradient that did not
+    /// converge, or a result that is not a first-order saddle, is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// A first-order transition state: gradient converged AND exactly one
     /// imaginary frequency. Both halves are required.
     fn is_transition_state(&self) -> bool {

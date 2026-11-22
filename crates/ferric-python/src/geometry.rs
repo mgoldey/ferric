@@ -24,20 +24,18 @@ pub(crate) struct PyOptimizeResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
-result_getters! {
-    PyOptimizeResult {
-        /// Validation certificate of this result (dict form of
-        /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-        /// `capability` is `"optimize:<kind>"`; the final-point SCF (re-solved at
-        /// the returned geometry) is the reference whose grade, approximations and
-        /// warnings it inherits, `gradient` and `optimizer` are recorded as
-        /// approximations, and a run with `converged = False` is `not graded`.
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyOptimizeResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"optimize:<kind>"`; the final-point SCF (re-solved at
+    /// the returned geometry) is the reference whose grade, approximations and
+    /// warnings it inherits, `gradient` and `optimizer` are recorded as
+    /// approximations, and a run with `converged = False` is `not graded`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// The optimized geometry as a new `Molecule`.
     fn mol(&self) -> PyMolecule {
         PyMolecule {
@@ -1721,20 +1719,18 @@ pub(crate) struct IrSource {
     pub(crate) normal_modes: ndarray::Array2<f64>,
 }
 
-result_getters! {
-    PyFrequencyResult {
-        /// Validation certificate of this result (dict form of
-        /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-        /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
-        /// is the reference whose grade, approximations and warnings it inherits,
-        /// the Hessian construction is recorded as the `hessian` approximation,
-        /// and each imaginary frequency count is a warning.
-        certificate: from field certificate_data;
-    }
-}
-
 #[pymethods]
 impl PyFrequencyResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
+    /// is the reference whose grade, approximations and warnings it inherits,
+    /// the Hessian construction is recorded as the `hessian` approximation,
+    /// and each imaginary frequency count is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// RRHO thermochemistry (dict; see the .pyi). Imaginary modes are left
     /// out with a `RuntimeWarning`.
     #[pyo3(signature = (temperature=298.15, pressure=101325.0, symmetry_number=1))]
