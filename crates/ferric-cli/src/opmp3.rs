@@ -206,13 +206,13 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
     );
     eprintln!("[ferric] {}", resolution.audit_line());
     let sys = PreparedSystem::new(mol, &bs).unwrap_or_else(|e| die(e));
-    let (ctx, mol, prep, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.bounds());
+    let (mol, prep) = (sys.mol(), sys.basis());
     let aux = plan.auxbasis.as_deref().map(|name| {
         let a = basis::bundled(name).unwrap_or_else(|e| die(e));
         sys.prepare_aux(&a).unwrap_or_else(|e| die(e))
     });
     let integrals = aux
-        .as_deref()
+        .as_ref()
         .map_or(Opmp3Integrals::Exact, Opmp3Integrals::Ri);
     let x_ss = config.resolved_x_ss().unwrap_or_else(|e| die(e));
     if let Some(rl) = ferric_scf::runlog::log() {
@@ -241,15 +241,12 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
-    let scf = opmp3_scf(ctx, mol, prep, bounds, config).unwrap_or_else(|e| die(e));
-    let canonical = || {
-        opmp3_on_reference(ctx, mol, prep, bounds, &scf, integrals, config)
-            .unwrap_or_else(|e| die(e))
-    };
+    let scf = opmp3_scf(&sys, config).unwrap_or_else(|e| die(e));
+    let canonical = || opmp3_on_reference(&sys, &scf, integrals, config).unwrap_or_else(|e| die(e));
     let (r, local) = match (&plan.local, aux.as_ref()) {
         (Some((lcfg, with_reference)), Some(aux)) => {
-            let lr = local_opmp3_on_reference(ctx, mol, prep, &bs, bounds, &scf, aux, config, lcfg)
-                .unwrap_or_else(|e| die(e));
+            let lr =
+                local_opmp3_on_reference(&bs, &scf, aux, config, lcfg).unwrap_or_else(|e| die(e));
             let reference = with_reference.then(canonical);
             (lr.opmp3.clone(), Some((lr, reference)))
         }

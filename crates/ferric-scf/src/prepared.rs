@@ -315,6 +315,29 @@ impl<'s> PreparedAux<'s> {
     pub fn basis(&self) -> &PreparedBasis {
         &self.basis
     }
+
+    /// The prepared fitting basis, for a kernel that also holds `sys`: an
+    /// error unless this basis was prepared on `sys` (the same system, not an
+    /// equal one), so a kernel taking both cannot pair the fitting basis of
+    /// one system with the orbital basis of another.
+    pub fn basis_for(&self, sys: &PreparedSystem) -> Result<&PreparedBasis, FerricError> {
+        if std::ptr::eq(self.system, sys) {
+            Ok(&self.basis)
+        } else {
+            Err(FerricError::General(
+                "a fitting basis was paired with a system it was not prepared on".to_string(),
+            ))
+        }
+    }
+}
+
+/// The fitting basis only: the system it borrows is not printed.
+impl std::fmt::Debug for PreparedAux<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedAux")
+            .field("basis", &self.basis)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Deref for PreparedAux<'_> {
@@ -484,6 +507,9 @@ mod tests {
         let sys = PreparedSystem::new(hi(), &bs).unwrap();
         let aux = sys.prepare_aux(&aux_bs).unwrap();
         assert!(std::ptr::eq(aux.system(), &sys));
+        assert!(std::ptr::eq(aux.basis_for(&sys).unwrap(), aux.basis()));
+        let other = PreparedSystem::new(hi(), &bs).unwrap();
+        assert!(aux.basis_for(&other).is_err());
         // The fitting basis, not the orbital one.
         let by_hand = PreparedBasis::new(&hi(), &aux_bs).unwrap();
         assert_eq!(aux.nbasis(), by_hand.nbasis());

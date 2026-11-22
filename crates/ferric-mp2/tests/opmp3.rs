@@ -82,7 +82,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedSystem, ScfResult};
 use ndarray::{Array2, Array4};
 use ndarray_linalg::Solve;
 use serde_json::Value;
@@ -417,21 +417,14 @@ fn molecule(atoms: &str, shift: f64) -> Molecule {
 }
 
 fn hf_models(mol: &Molecule) -> (f64, Opmp3Models) {
-    let obs = PreparedBasis::new(mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let sys = PreparedSystem::new(mol.clone(), &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let cfg = Opmp3Config {
         scf_energy_conv: Some(1e-12),
         scf_density_conv: Some(1e-10),
         scf_max_iter: Some(400),
         ..Opmp3Config::new(Opmp3RefKind::Hf)
     };
-    let r = run_opmp3(
-        &ParallelContext::default(),
-        mol,
-        &obs,
-        Opmp3Integrals::Exact,
-        &cfg,
-    )
-    .expect("opmp3");
+    let r = run_opmp3(&sys, Opmp3Integrals::Exact, &cfg).expect("opmp3");
     (r.e_hf + r.e_nbs, r.models)
 }
 
@@ -514,11 +507,10 @@ fn reference_path_rebuilds_e_hf_and_e_nbs_and_matches_pyscf_rohf() {
         }
     }
     let oh = system("oh", "rohf");
+    // The same molecule and basis as `oh` (no ECP), so the same bounds.
+    let oh_sys = PreparedSystem::new(oh.mol.clone(), &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let res = opmp3_on_reference(
-        &ctx,
-        &oh.mol,
-        &oh.obs,
-        &oh.bounds,
+        &oh_sys,
         &oh.scf,
         Opmp3Integrals::Exact,
         &Opmp3Config::new(Opmp3RefKind::Hf),

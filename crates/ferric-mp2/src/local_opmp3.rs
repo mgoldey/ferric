@@ -51,13 +51,9 @@ use crate::u_mp3::{
 use crate::u_mp3_eri::SpinOrbitals;
 use crate::u_mp3_residual::mp3_residual;
 use ferric_core::basis::BasisSet;
-use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::{ScfResult, Spin};
+use ferric_scf::{PreparedAux, ScfResult, Spin};
 use ndarray::{s, Array2, Array4};
 
 /// Relative CG residual of both pattern solves when the caller sets none.
@@ -241,20 +237,21 @@ fn solve(
 }
 
 /// Local OP-MP3 on an existing converged closed-shell reference `scf` (RHF
-/// or RKS), RI integrals over `aux`. `config` gives the OP-MP3 settings
-/// (`x_ss`, frozen core), `local` the pattern (see `check_local_config`).
-#[allow(clippy::too_many_arguments)]
+/// or RKS) of `aux`'s system ([`PreparedAux::system`]: molecule, orbital
+/// basis, bounds and context), RI integrals over `aux`. `obs_bs` is the
+/// basis set the system's orbital basis was prepared from. `config` gives
+/// the OP-MP3 settings (`x_ss`, frozen core), `local` the pattern (see
+/// `check_local_config`).
 pub fn local_opmp3_on_reference(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    obs: &PreparedBasis,
     obs_bs: &BasisSet,
-    bounds: &SchwarzBounds,
     scf: &ScfResult,
-    aux: &PreparedBasis,
+    aux: &PreparedAux<'_>,
     config: &Opmp3Config,
     local: &AmplitudeLmp2Config,
 ) -> Result<LocalOpmp3Result, FerricError> {
+    let sys = aux.system();
+    let (ctx, mol, obs, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.bounds());
+    let aux = aux.basis();
     let x_ss = config.resolved_x_ss()?;
     check_local_config(local, config)?;
     if mol.multiplicity != 1 || !matches!(scf.spin, Spin::Restricted) {
@@ -380,21 +377,16 @@ pub fn local_opmp3_on_reference(
     })
 }
 
-/// The whole run: the OP-MP3 reference SCF ([`crate::opmp3_driver::opmp3_scf`]),
-/// then [`local_opmp3_on_reference`].
-#[allow(clippy::too_many_arguments)]
+/// The whole run on `aux`'s system: the OP-MP3 reference SCF
+/// ([`crate::opmp3_driver::opmp3_scf`]), then [`local_opmp3_on_reference`].
 pub fn run_local_opmp3(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    obs: &PreparedBasis,
     obs_bs: &BasisSet,
-    aux: &PreparedBasis,
+    aux: &PreparedAux<'_>,
     config: &Opmp3Config,
     local: &AmplitudeLmp2Config,
 ) -> Result<LocalOpmp3Result, FerricError> {
     config.resolved_x_ss()?;
     check_local_config(local, config)?;
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), obs)?;
-    let scf = crate::opmp3_driver::opmp3_scf(ctx, mol, obs, &bounds, config)?;
-    local_opmp3_on_reference(ctx, mol, obs, obs_bs, &bounds, &scf, aux, config, local)
+    let scf = crate::opmp3_driver::opmp3_scf(aux.system(), config)?;
+    local_opmp3_on_reference(obs_bs, &scf, aux, config, local)
 }

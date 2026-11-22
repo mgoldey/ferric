@@ -5,21 +5,21 @@
 //! ([`crate::u_mp3`]), `W^(2)`, `W^(3)` and every model ([`crate::opmp3`]).
 //!
 //! Every total is `E_HF[ρ] + E_NBS + E_c(model)` (the paper's definition).
+//!
+//! The drivers take the [`PreparedSystem`] (molecule with the basis set's ECP
+//! applied, prepared basis, Coulomb Schwarz bounds, context) and a fitting
+//! basis prepared on it ([`PreparedAux`]), so the reference, the HF Fock
+//! build and the amplitudes all see one molecule and one basis.
 
 use crate::opmp3::{paper_x_ss, w_matrices, Opmp3Models, WMatrices, PAPER_X_SS};
 use crate::opmp3_reference::{opmp3_reference, Opmp3Reference};
 use crate::u_mp3::{
     u_mp3_from_orbitals, UMp3Channels, UMp3Config, UMp3Dims, UMp3Eri, UMp3SpinReference,
 };
-use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::rohf::solve_rohf;
-use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::ScfResult;
+use ferric_scf::rhf::RhfConfig;
+use ferric_scf::{PreparedAux, PreparedSystem, ScfResult};
 
 /// SCF density-change threshold of the reference when none is given. The
 /// correlation energy moves to first order with the orbitals, so the run's
@@ -69,8 +69,9 @@ impl Opmp3RefKind {
 pub enum Opmp3Integrals<'a> {
     /// Exact four-centre (the paper's choice).
     Exact,
-    /// Coulomb-metric RI with this auxiliary basis.
-    Ri(&'a PreparedBasis),
+    /// Coulomb-metric RI with this auxiliary basis, prepared on the run's
+    /// system ([`PreparedAux::basis_for`] refuses one of another system).
+    Ri(&'a PreparedAux<'a>),
 }
 
 /// Settings of [`run_opmp3`].
@@ -186,21 +187,14 @@ pub fn opmp3_scf_config(config: &Opmp3Config) -> RhfConfig {
     cfg
 }
 
-/// The reference SCF of `config` on `mol` (restricted: RHF/RKS for a
+/// The reference SCF of `config` on `sys` (restricted: RHF/RKS for a
 /// singlet, ROHF/ROKS otherwise), exact J/K. Unconverged is an error.
-pub fn opmp3_scf(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    config: &Opmp3Config,
-) -> Result<ScfResult, FerricError> {
+pub fn opmp3_scf(sys: &PreparedSystem, config: &Opmp3Config) -> Result<ScfResult, FerricError> {
     let cfg = opmp3_scf_config(config);
-    let op = Operator::coulomb();
-    let scf = if mol.multiplicity == 1 {
-        solve_rhf(ctx, mol, prep, op, bounds, &cfg)?
+    let scf = if sys.mol().multiplicity == 1 {
+        sys.solve_rhf(&cfg)?
     } else {
-        solve_rohf(ctx, mol, prep, op, bounds, &cfg)?
+        sys.solve_rohf(&cfg)?
     };
     if !scf.converged {
         return Err(FerricError::ScfConvergence {
@@ -213,25 +207,32 @@ pub fn opmp3_scf(
 
 /// OP-MP3 on an existing converged reference `scf` (any spin type).
 pub fn opmp3_on_reference(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     scf: &ScfResult,
     integrals: Opmp3Integrals<'_>,
     config: &Opmp3Config,
 ) -> Result<Opmp3Result, FerricError> {
     let x_ss = config.resolved_x_ss()?;
-    let r: Opmp3Reference = opmp3_reference(ctx, mol, prep, bounds, OPMP3_FOCK_THRESH, scf)?;
+    let eri = match integrals {
+        Opmp3Integrals::Exact => UMp3Eri::Exact,
+        Opmp3Integrals::Ri(aux) => UMp3Eri::Ri {
+            aux: aux.basis_for(sys)?,
+        },
+    };
+    let prep = sys.basis();
+    let r: Opmp3Reference = opmp3_reference(
+        sys.ctx(),
+        sys.mol(),
+        prep,
+        sys.bounds(),
+        OPMP3_FOCK_THRESH,
+        scf,
+    )?;
     let e_nbs = r.e_nbs(config.frozen_core)?;
     let spin = |s: usize| UMp3SpinReference {
         mos: &r.spins[s].mos,
         eps: &r.spins[s].eps,
         nocc: r.spins[s].nocc,
-    };
-    let eri = match integrals {
-        Opmp3Integrals::Exact => UMp3Eri::Exact,
-        Opmp3Integrals::Ri(aux) => UMp3Eri::Ri { aux },
     };
     let ump3 = u_mp3_from_orbitals(
         prep,
@@ -263,14 +264,11 @@ pub fn opmp3_on_reference(
 
 /// The whole run: [`opmp3_scf`], then [`opmp3_on_reference`].
 pub fn run_opmp3(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
+    sys: &PreparedSystem,
     integrals: Opmp3Integrals<'_>,
     config: &Opmp3Config,
 ) -> Result<Opmp3Result, FerricError> {
     config.resolved_x_ss()?;
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), prep)?;
-    let scf = opmp3_scf(ctx, mol, prep, &bounds, config)?;
-    opmp3_on_reference(ctx, mol, prep, &bounds, &scf, integrals, config)
+    let scf = opmp3_scf(sys, config)?;
+    opmp3_on_reference(sys, &scf, integrals, config)
 }

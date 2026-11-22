@@ -46,9 +46,8 @@ use std::path::{Path, PathBuf};
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_mp2::opmp3_driver::{run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind};
+use ferric_scf::PreparedSystem;
 use serde_json::Value;
 
 fn workspace_root() -> PathBuf {
@@ -112,7 +111,7 @@ fn run_reference(functional: &str) {
     let mut bad = vec![];
     for (name, entry) in data["molecules"].as_object().unwrap() {
         let mol = molecule(entry["xyz"].as_str().unwrap());
-        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let sys = PreparedSystem::new(mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let kind = match functional {
             "hf" => Opmp3RefKind::Hf,
             f => Opmp3RefKind::Dft(f.to_string()),
@@ -123,14 +122,8 @@ fn run_reference(functional: &str) {
             scf_max_iter: Some(400),
             ..Opmp3Config::new(kind)
         };
-        let r = run_opmp3(
-            &ParallelContext::default(),
-            &mol,
-            &obs,
-            Opmp3Integrals::Exact,
-            &cfg,
-        )
-        .unwrap_or_else(|e| panic!("{name} {functional}: {e}"));
+        let r = run_opmp3(&sys, Opmp3Integrals::Exact, &cfg)
+            .unwrap_or_else(|e| panic!("{name} {functional}: {e}"));
         let q = &entry[functional];
         let e_c = (r.models.mp3).abs();
         for (key, got) in ferric_values(&r) {
