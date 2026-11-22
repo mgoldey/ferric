@@ -420,7 +420,7 @@ pub(crate) fn compute_metric_2c<'py>(
 
 /// Entry point for the `ferric` console script (pyproject.toml
 /// `[project.scripts]`) -- calls the SAME CLI logic the standalone
-/// `ferric`/`ferric-cli` Rust binaries call (`ferric_cli::run`), compiled
+/// `ferric`/`ferric-cli` Rust binaries call (`ferric_cli::try_run`), compiled
 /// into THIS `.so` rather than a second binary shipped in the wheel (see the
 /// maturin project's own documented "both binary and library?" guidance:
 /// shipping a second compiled binary would roughly double the wheel, since
@@ -446,23 +446,28 @@ pub(crate) fn compute_metric_2c<'py>(
 /// `args[1..]`), so this only needs to be non-empty and present, not any
 /// particular string.
 ///
-/// On an error `ferric_cli::run` prints it to stderr and calls
-/// `std::process::exit()` with its status (2 for a usage error, 1 otherwise)
-/// -- deliberately NOT converted to a Python exception here, because that IS
-/// this command's correct CLI behavior (a shell script or `subprocess` caller
-/// reads $?/returncode, not a Python traceback). `--help`, `--version` and a
-/// completed run return normally, so the console script exits 0. (The CLI
-/// itself returns its errors from `ferric_cli::try_run`; only `run` exits.)
+/// Runs `ferric_cli::try_run`. On an error it writes the CLI's exact stderr
+/// text (`CliError::eprint`) and raises `SystemExit(status)` (2 for a usage
+/// error, 1 otherwise): the console script then exits with that status and
+/// no traceback, exactly as the native binary does, but through Python's own
+/// shutdown (atexit handlers run, `sys.stdout`/`sys.stderr` are flushed)
+/// instead of `std::process::exit`. A shell script or `subprocess` caller
+/// reads $?/returncode, as before. `--help`, `--version` and a completed run
+/// return normally, so the console script exits 0.
 ///
-/// `init_threading()`/the ctrlc handler already ran at `import ferric` (this
-/// module's own init, above) -- `ferric_cli::run` calls `init_threading()`
-/// again internally, which is idempotent (same reasoning as its own doc
-/// comment: it is safe-by-default, not order-sensitive).
+/// Process init is the caller's job for `try_run` (it does not call
+/// `init_threading()`); here it already ran at `import ferric`, in this
+/// module's own init, together with the ctrlc handler.
 #[pyfunction]
 pub(crate) fn _cli_main(py: Python<'_>) -> PyResult<()> {
     let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
-    ferric_cli::run(argv);
-    Ok(())
+    match ferric_cli::try_run(argv) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            e.eprint();
+            Err(pyo3::exceptions::PySystemExit::new_err(e.exit_code()))
+        }
+    }
 }
 
 /// Which build of ferric is this?
