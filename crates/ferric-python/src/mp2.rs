@@ -5,7 +5,7 @@ use super::*;
 // ── RI-MP2 ──
 
 /// Result of a `run_rimp2` calculation.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "RiMp2Result")]
 pub(crate) struct PyRiMp2Result {
     /// Reference + MP2 correlation energy, Hartree.
@@ -1577,7 +1577,7 @@ pub(crate) fn omega_eval_dict<'py>(
 
 // ── OO-RI-MP2 (orbital-optimized) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "OoRiMp2Result")]
 pub(crate) struct PyOoRiMp2Result {
     #[pyo3(get)]
@@ -1807,7 +1807,7 @@ pub(crate) fn oo_rimp2_gradient(
 
 // ── MP3 (spin-orbital, via einsum!) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Mp3Result")]
 pub(crate) struct PyMp3Result {
     #[pyo3(get)]
@@ -1909,7 +1909,7 @@ pub(crate) fn run_mp3(
 
 // ── Laplace RI-MP2 ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "LaplaceMp2Result")]
 pub(crate) struct PyLaplaceMp2Result {
     #[pyo3(get)]
@@ -2037,7 +2037,7 @@ pub(crate) fn run_laplace_mp2(
 
 // ── Laplace SOS-MP2 ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "SosMp2Result")]
 pub(crate) struct PySosMp2Result {
     #[pyo3(get)]
@@ -2214,7 +2214,7 @@ pub(crate) fn run_laplace_sos_mp2(
 
 // ── Attenuated RI-MP2 ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "AttenuatedMp2Result")]
 pub(crate) struct PyAttenuatedMp2Result {
     #[pyo3(get)]
@@ -2439,7 +2439,7 @@ pub(crate) fn run_terfc_rimp2(
 
 // ── SCS-MP2 ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "ScsMp2Result")]
 pub(crate) struct PyScsMp2Result {
     #[pyo3(get)]
@@ -2671,7 +2671,7 @@ pub(crate) fn run_scs_mp2_2terfc(
 
 // ── MP2-V (attenuated MP2 + Eq.-11-damped VV10, JCTC 11, 4159 (2015)) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Mp2VResult")]
 pub(crate) struct PyMp2VResult {
     /// E_HF + E_c^attMP2 + E_nl^VV10.
