@@ -131,7 +131,7 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
   borrowed afterwards. The ferric-python SCF entry points and correlated
   drivers and the CLI's molecular run functions go through it (roadmap
   items 8, 8b and 8c), and the system owns its screening (its solve
-  methods apply `PreparedSystem::screening` to every config). The
+  methods refuse a config whose screening is not `PreparedSystem::screening`). The
   frontend-facing drivers of the CAS, OP-MP3, RI-MP2, CC, GW, PDEP-RPA and
   TDDFT families take `&PreparedSystem` or `&PreparedAux`; most kernels
   underneath still take a loose `&Molecule` and `&PreparedBasis`, so the
@@ -296,15 +296,17 @@ Done:
    already worked, and pure or range-separated functionals ignore COSX, so
    they never hit the conflict.
 8c. `PreparedSystem` follow-ups, bitwise unchanged results and messages
-    (compared against origin/main on Python calls and CLI inputs, ECP and
-    error cases included):
+    for single-threaded callers (compared against origin/main plus the
+    `run_omega_ri` compile fix of #691, on Python calls and CLI inputs, ECP
+    and error cases included; with several threads the energies vary run to
+    run by about 1e-13 Ha, on main as here):
     - The system owns screening: `PreparedSystem::{solve_rhf, solve_uhf,
-      solve_rohf, solve_reference, solve_rhf_ladder}` run each config (each
-      rung) through `PreparedSystem::screened`, which puts the system's
-      `ScreeningKind` in place of `RhfConfig::screening` (a borrow when they
-      agree, as every caller does; a copy sharing the config's
-      `eri_route`/`raw_handoff` handles otherwise). A Python `screening=`
-      keyword therefore has to go through `PrepareOptions`.
+      solve_rohf, solve_reference, solve_rhf_ladder}` refuse (a
+      `FerricError` naming both kinds) a config, or any rung, whose
+      `RhfConfig::screening` is not `PreparedSystem::screening()`, and the
+      drivers that build their own config (`rhf_start`, `opmp3_scf`) set it
+      from the system. A Python `screening=` keyword therefore has to go
+      through `PrepareOptions`.
     - `ferric_ci::driver::rhf_start_prepared` is `rhf_start` again.
     - Drivers taking the system: `ferric_ci::driver::{nevpt2_on_rhf,
       casscf_on_rhf, casci_on_rhf}` (`&PreparedSystem`);
@@ -318,7 +320,9 @@ Done:
       operator from `PreparedAux::system`). `PreparedAux::basis_for(sys)` is
       the one check that a fitting basis belongs to a system a kernel also
       holds. The Python and CLI callers use them; the loose functions stay
-      as the kernels they wrap.
+      as the kernels they wrap. The library `run_opmp3` / `run_local_opmp3`
+      now use the system's bounds, context and screening (and its ECP)
+      instead of building their own `SchwarzBounds` and context.
     - The CLI's per-method `run_*` functions in `ferric-cli/src/lib.rs`
       (every correlated arm, uhf/rohf/cdft, symmetric RHF, the double
       hybrids, PDEP-RPA, the open-shell/GW reference helpers,
@@ -335,7 +339,7 @@ Done:
       and fitting basis with the GIL released.
     - Also: origin/main did not compile ferric-python (#688's
       `run_omega_ri` called the `prepare_with_aux` helper #690 removed);
-      fixed as `prepare` + `prepare_aux`.
+      fixed as `prepare` + `prepare_aux` (#691).
 
 Next, each as its own PR following the patterns above:
 
@@ -351,9 +355,9 @@ Next, each as its own PR following the patterns above:
     `omega_ri.rs` pass `&aux` to them; (b) the ferric-scf solvers take
     loose arguments, and the CLI arms, the Python block helpers,
     `run_qmmm` and `run_cdft` call them with the system's pieces and a
-    config of their own, so `PreparedSystem::screened` does not cover them
-    (moving them onto the system's methods would change results when a
-    config's screening differs from `[scf] screening`); (c)
+    config of their own, so the system's screening check does not cover
+    them (moving them onto the system's methods would turn a config whose
+    screening differs from `[scf] screening` into an error); (c)
     `run_uks`/`run_roks` share the open-shell tail of `run_uhf`/`run_rohf`
     in substance but not in code (they skip the pre-SCF noise-floor
     warning, so merging them is a behaviour change); (d) `FockResponse`
@@ -363,6 +367,43 @@ Next, each as its own PR following the patterns above:
     their bases; (f) the periodic paths (`ferric-cli/src/periodic.rs`'s
     `apply_ecp`, the Python `pbc.rs` drivers) keep their own preparation,
     their molecule going into a `Cell`.
+    Review follow-ups:
+    - One public entry per kernel: either the loose kernels become
+      `pub(crate)` (their tests move to the `*_on` entries) or the entries
+      take the plain names. Settle one naming convention (`_on` means "on
+      `aux`'s system" in `ri_mp2_on` / `run_gw_on` but "given a reference"
+      in `opmp3_on_reference` / `casscf_on_rhf`; the `run_` prefix is
+      mixed; e.g. add `run_pdep_rpa_fitted_on`), and whether an entry takes
+      an operator (terfc RI-MP2 cannot use them today).
+    - `PreparedSystem` should keep its orbital `BasisSet` (`basis_set()`),
+      closing the loose `obs_bs` of `local_opmp3_on_reference` /
+      `run_local_opmp3` and the `bs` argument of ~40 CLI functions;
+      consider an `ArmCtx` for the CLI arms' shared tail.
+    - An `ScfResult` is not tied to its system: `ri_mp2_on(&a_aux, &b_rhf,
+      ..)` compiles, and with another nbasis it can panic slicing
+      `mos_r()`. The `*_on` / `*_on_rhf` entries should check nbasis and
+      geometry (or results should carry a brand).
+    - The system's solve methods should take a config type without
+      `screening` (parse, don't validate); the refusal then goes.
+    - Exit condition for `PreparedAux: Deref`: `*_on` entries (or
+      `&PreparedAux` parameters) for the kernels listed in (a), then delete
+      `impl Deref` so any remaining `&aux` site fails to compile.
+    - Python sites not covered: the per-geometry loops of `run_saddle` /
+      `run_irc` (lib.rs) and geometry.rs's own `compute_for_screening` from
+      `cfg.screening` (a second home for the screening rule);
+      `hirshfeld_polarizability` (properties.rs) and `blocks.rs`'s
+      `aux_prep`, which pair a loose fitting basis with an orbital basis.
+      integrals.rs's shell info, properties.rs's orbital and second
+      moments and one lib.rs helper prepare on the raw molecule on purpose:
+      they are purely geometric.
+    - ~20 copies in ferric-cli of "section `auxbasis` or
+      `DEFAULT_CORRELATION_AUX`, `bundled`, `sys.prepare_aux`":
+      `correlation_aux` could take the section's `Option<&str>`.
+    - Pre-existing panics (same on main), to be filed separately:
+      `density_second_moment` / `orbital_moments` given a result from
+      another molecule raise `PanicException` (ndarray shape);
+      `hirshfeld_charges(HI, def2-svp, rhf)` panics in `UhfState::new`
+      ("end <= axis_len") in the iodine proatom SCF.
 9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
    declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.
