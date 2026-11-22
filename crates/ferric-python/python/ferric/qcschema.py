@@ -131,6 +131,16 @@ keyword, method, functional or basis, driver refusal of a keyword),
 ``unsupported_error`` (a valid request ferric does not provide),
 ``convergence_error`` (the SCF did not converge) and ``execution_error``
 (any other failure while running).
+
+Failures are classified by ferric's exception classes: ``ferric.UnsupportedError``
+is ``unsupported_error``, ``ferric.ConvergenceError`` is ``convergence_error``,
+``ferric.InputError`` and ``ferric.BasisError`` (also a ``ValueError``) are
+``input_error``, and a plain ``RuntimeError`` or ``ferric.ComputationError`` falls
+back to sniffing its text. Since the hierarchy was added, a basis failure raised
+inside a driver (an unknown auxiliary basis, say) is an ``input_error`` (it was
+``execution_error``) and a refusal a driver raises as ``UnsupportedError`` is an
+``unsupported_error``; the ``error_message`` prefix is the new class name
+(``BasisError: ...``, not ``RuntimeError: ...``).
 """
 
 from __future__ import annotations
@@ -206,9 +216,14 @@ def run(input_data: dict[str, Any]) -> dict[str, Any]:
         return _run(input_data)
     except _QcError as err:
         return _failure(input_data, err.error_type, str(err))
-    except ValueError as err:
+    except ferric.UnsupportedError as err:
+        return _failure(input_data, "unsupported_error", f"{type(err).__name__}: {err}")
+    except ferric.ConvergenceError as err:
+        return _failure(input_data, "convergence_error", f"{type(err).__name__}: {err}")
+    except ValueError as err:  # InputError, BasisError and plain ValueError
         return _failure(input_data, "input_error", f"{type(err).__name__}: {err}")
     except RuntimeError as err:
+        # Untyped failures (ComputationError and plain RuntimeError): sniff.
         text = str(err).lower()
         if "converge" in text:
             kind = "convergence_error"

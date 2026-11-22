@@ -29,7 +29,7 @@ use pyo3::prelude::*;
 use pyo3::sync::GILOnceCell;
 use pyo3::types::{PyDict, PyTuple, PyType};
 
-use ferric_core::FerricError as CoreError;
+use ferric_core::{ErrorCategory, FerricError as CoreError};
 
 /// Which Python class a failure maps to.
 #[derive(Clone, Copy)]
@@ -54,6 +54,19 @@ impl Kind {
         Kind::Input,
         Kind::Basis,
     ];
+
+    /// Position in [`Kind::ALL`] / the created-class table.
+    fn idx(self) -> usize {
+        match self {
+            Kind::Convergence => 0,
+            Kind::Numerical => 1,
+            Kind::MemoryBudget => 2,
+            Kind::Unsupported => 3,
+            Kind::Computation => 4,
+            Kind::Input => 5,
+            Kind::Basis => 6,
+        }
+    }
 
     fn name(self) -> &'static str {
         match self {
@@ -127,7 +140,7 @@ fn classes(py: Python<'_>) -> PyResult<&[Py<PyType>]> {
             ns.set_item("__module__", "ferric")?;
             ns.set_item("__doc__", k.doc())?;
             let bases = if let Kind::Basis = k {
-                let input = made[Kind::Input as usize].bind(py).clone().into_any();
+                let input = made[Kind::Input.idx()].bind(py).clone().into_any();
                 [input, builtins.getattr("RuntimeError")?]
             } else {
                 [root.clone(), builtins.getattr(k.builtin())?]
@@ -149,10 +162,12 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Raise `kind` with `msg` unchanged.
+/// Raise `kind` with `msg` unchanged. Takes the GIL eagerly: every caller is
+/// already on a thread that may hold or acquire it, and the class table is
+/// built once under it.
 pub(crate) fn raise(kind: Kind, msg: String) -> PyErr {
     Python::with_gil(|py| match classes(py) {
-        Ok(cls) => PyErr::from_type(cls[kind as usize].bind(py).clone(), (msg,)),
+        Ok(cls) => PyErr::from_type(cls[kind.idx()].bind(py).clone(), (msg,)),
         // Class creation cannot fail in practice; fall back to the builtin.
         Err(_) => match kind {
             Kind::Unsupported => pyo3::exceptions::PyNotImplementedError::new_err(msg),
@@ -162,15 +177,17 @@ pub(crate) fn raise(kind: Kind, msg: String) -> PyErr {
     })
 }
 
-/// The single `FerricError` -> exception-class decision.
+/// The single `FerricError` -> exception-class decision. The match on
+/// [`ErrorCategory`] is exhaustive; `FerricError::category` is exhaustive in
+/// ferric-core, so a new variant cannot reach here undecided.
 pub(crate) fn kind_of(e: &CoreError) -> Kind {
-    match e {
-        CoreError::ScfConvergence { .. } | CoreError::Convergence(_) => Kind::Convergence,
-        CoreError::Basis(_) => Kind::Basis,
-        CoreError::Lapack(_) => Kind::Numerical,
-        CoreError::MemoryExhausted(_) => Kind::MemoryBudget,
-        CoreError::Unsupported { .. } => Kind::Unsupported,
-        _ => Kind::Computation,
+    match e.category() {
+        ErrorCategory::Convergence => Kind::Convergence,
+        ErrorCategory::Numerical => Kind::Numerical,
+        ErrorCategory::Memory => Kind::MemoryBudget,
+        ErrorCategory::Unsupported => Kind::Unsupported,
+        ErrorCategory::Basis => Kind::Basis,
+        ErrorCategory::Other => Kind::Computation,
     }
 }
 
@@ -179,9 +196,33 @@ pub(crate) fn from_core(e: &CoreError) -> PyErr {
     raise(kind_of(e), e.to_string())
 }
 
+/// [`from_core`] when `e` is a core error, else a `ComputationError` (see [`core_of`]).
+pub(crate) fn core_or_computation<E: std::fmt::Display + 'static>(e: E) -> PyErr {
+    match core_of(&e) {
+        Some(core) => from_core(core),
+        None => computation(e),
+    }
+}
+
 /// Like [`from_core`] for a call site that prefixes the message (`"run_x: {e}"`).
 pub(crate) fn from_core_msg(e: &CoreError, msg: String) -> PyErr {
     raise(kind_of(e), msg)
+}
+
+/// A failure with no typed core variant (a formatted message): a
+/// `ComputationError`, still a `RuntimeError`.
+pub(crate) fn computation(msg: impl std::fmt::Display) -> PyErr {
+    raise(Kind::Computation, msg.to_string())
+}
+
+/// The core error behind `e`, if it is one. `make_err` and `input_err` take
+/// any `Display` (the sites pass a dozen foreign error types, strings and
+/// core errors), so a core error is recognised by a `'static` downcast; a
+/// value borrowed for less than `'static` must be `to_string()`ed first, and
+/// then it is untyped. Prefer [`from_core`] / [`input_err_msg`] where the
+/// type is known.
+fn core_of<E: std::fmt::Display + 'static>(e: &E) -> Option<&CoreError> {
+    (e as &dyn std::any::Any).downcast_ref::<CoreError>()
 }
 
 /// An invalid argument or option value, raised as a `ValueError` before the
@@ -190,36 +231,41 @@ pub(crate) fn from_core_msg(e: &CoreError, msg: String) -> PyErr {
 /// error is an `InputError` whatever its variant, since these sites always
 /// raised `ValueError`.
 pub(crate) fn input_err<E: std::fmt::Display + 'static>(e: E) -> PyErr {
-    match (&e as &dyn std::any::Any).downcast_ref::<CoreError>() {
-        Some(CoreError::Basis(_)) => raise(Kind::Basis, e.to_string()),
-        _ => raise(Kind::Input, e.to_string()),
+    match core_of(&e) {
+        Some(core) => input_err_msg(core, e.to_string()),
+        None => raise(Kind::Input, e.to_string()),
     }
 }
 
-/// Raise the Python exception `FerricError::<variant>` converts to, through
-/// the same [`from_core`] every driver uses. Private, for tests: some
-/// variants (`Unsupported`, `Lapack`, `Io`) have no reachable Python trigger
-/// today, and the mapping table must still be checked class by class.
-/// `variant` is one of `io`, `xyz_parse`, `basis`, `libint`, `scf_convergence`,
-/// `lapack`, `convergence`, `general`, `memory_exhausted`, `unsupported`.
+/// [`input_err`] for a call site that prefixes the message: the core error
+/// still decides `BasisError` vs `InputError`.
+pub(crate) fn input_err_msg(e: &CoreError, msg: String) -> PyErr {
+    match e.category() {
+        ErrorCategory::Basis => raise(Kind::Basis, msg),
+        _ => raise(Kind::Input, msg),
+    }
+}
+
+/// Raise the Python exception a core error converts to, through the same
+/// [`from_core`] every driver uses. Private, for tests: some variants
+/// (`Unsupported`, `Lapack`, `Io`) are reachable from Python only through
+/// refusals no public keyword triggers, and the mapping table must still be
+/// checked class by class. `variant` is a name from [`_core_error_variants`]
+/// (built from `FerricError::samples`, so it covers every variant).
 #[pyfunction]
 pub(crate) fn _raise_core_error(variant: &str, message: &str) -> PyResult<()> {
-    let m = message.to_string();
-    let e = match variant {
-        "io" => CoreError::Io(std::io::Error::other(m)),
-        "xyz_parse" => CoreError::XyzParse(m),
-        "basis" => CoreError::Basis(m),
-        "libint" => CoreError::Libint(m),
-        "scf_convergence" => CoreError::ScfConvergence {
-            iterations: 7,
-            last_energy: -1.5,
-        },
-        "lapack" => CoreError::Lapack(m),
-        "convergence" => CoreError::Convergence(m),
-        "general" => CoreError::General(m),
-        "memory_exhausted" => CoreError::MemoryExhausted(m),
-        "unsupported" => CoreError::unsupported("a feature", m),
-        other => return Err(input_err(format!("unknown core error variant {other:?}"))),
-    };
-    Err(from_core(&e))
+    match CoreError::samples(message)
+        .into_iter()
+        .find(|(n, _)| *n == variant)
+    {
+        Some((_, e)) => Err(from_core(&e)),
+        None => Err(input_err(format!("unknown core error variant {variant:?}"))),
+    }
+}
+
+/// The variant names `_raise_core_error` accepts, one per `FerricError`
+/// variant. Private, for tests.
+#[pyfunction]
+pub(crate) fn _core_error_variants() -> Vec<&'static str> {
+    CoreError::samples("").into_iter().map(|(n, _)| n).collect()
 }

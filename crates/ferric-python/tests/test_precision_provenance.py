@@ -43,7 +43,12 @@ def _refusal(code, exc="ValueError", **extra_env):
     last = err.strip().splitlines()[-1]
     # A failure raised through the ferric hierarchy prints as
     # `ferric.<Subclass>: ...` (the subclass of `exc`, roadmap 10).
-    m = re.match(rf"(?:{exc}|ferric\.\w+Error): ", last)
+    subclasses = {
+        "ValueError": "InputError|BasisError",
+        "RuntimeError": "ComputationError|ConvergenceError|NumericalError|MemoryBudgetError",
+    }.get(exc, "")
+    pattern = rf"(?:{exc}|ferric\.(?:{subclasses})): " if subclasses else rf"{exc}: "
+    m = re.match(pattern, last)
     assert m, last
     return last[m.end() :]
 

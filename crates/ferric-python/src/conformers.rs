@@ -81,7 +81,7 @@ pub(crate) fn molecule_from_coords(
         xyz.push_str(&format!("{} {:?} {:?} {:?}\n", sym, row[0], row[1], row[2]));
     }
     Molecule::parse_xyz(&xyz, charge, multiplicity)
-        .map_err(|e| crate::errors::input_err(format!("conformer {conformer_index}: {e}")))
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("conformer {conformer_index}: {e}")))
 }
 
 /// A weighted mean with its spread. Returned by every ensemble-averaging call.

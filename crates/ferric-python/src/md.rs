@@ -370,7 +370,7 @@ pub(crate) fn run_aimd(
                 &mut writers.observers(),
             )
         })
-        .map_err(make_ferric_err)?;
+        .map_err(crate::make_err)?;
     let reference = stamped_scf_certificate(&r.mol, &r.last_scf, &cfg.for_geometry_task());
     let mut certificate_data = md_certificate(&r.md).with_reference(&reference);
     if let Some(d) = dispersion {
@@ -485,7 +485,7 @@ pub(crate) fn run_ffmd(
         .allow_threads(|| {
             ferric_mm::run_ffmd(top, &system, &method, &config, &mut writers.observers())
         })
-        .map_err(make_ferric_err)?;
+        .map_err(crate::make_err)?;
     let certificate_data = md_certificate(&md);
     Ok(PyMdResult {
         md,

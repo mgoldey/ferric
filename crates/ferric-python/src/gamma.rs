@@ -404,9 +404,10 @@ pub(crate) fn gamma_auxbasis(
     }
     if let Ok(name) = obj.extract::<String>() {
         return basis::bundled(&name).map_err(|e| {
-            crate::errors::input_err(format!(
-                "{fname}: auxbasis {name:?} is not a bundled basis: {e}"
-            ))
+            crate::errors::input_err_msg(
+                &e,
+                format!("{fname}: auxbasis {name:?} is not a bundled basis: {e}"),
+            )
         });
     }
     Err(pyo3::exceptions::PyTypeError::new_err(format!(

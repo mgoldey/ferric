@@ -171,9 +171,9 @@ pub(crate) fn run_tddft(
 ) -> PyResult<PyTddftResult> {
     use ferric_tddft::{ResponseSpin, TddftConfig, TddftMethod, TddftSolver};
     let solver = TddftSolver::parse_config_str(solver)
-        .map_err(|e| crate::errors::input_err(format!("run_tddft: {e}")))?;
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("run_tddft: {e}")))?;
     let spin = ResponseSpin::parse_config_str(spin)
-        .map_err(|e| crate::errors::input_err(format!("run_tddft: {e}")))?;
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("run_tddft: {e}")))?;
 
     let unrestricted = match reference.to_ascii_lowercase().as_str() {
         "auto" => mol.inner.multiplicity > 1,

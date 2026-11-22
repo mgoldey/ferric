@@ -67,7 +67,7 @@ macro_rules! method_certificate_doc {
 }
 
 mod errors;
-use errors::_raise_core_error;
+use errors::{_core_error_variants, _raise_core_error};
 #[macro_use]
 mod method_result;
 
@@ -418,9 +418,10 @@ impl PyBasisSet {
     /// coefficients of NORMALISED primitives. Raises `ValueError` when the
     /// basis has no shells for `z`.
     fn shells(&self, z: i32) -> PyResult<Vec<(i32, bool, Vec<f64>, Vec<f64>)>> {
-        let shells = self.inner.for_element(z).ok_or_else(|| {
-            crate::errors::input_err(format!("{}", self.inner.missing_element_error(z)))
-        })?;
+        let shells = self
+            .inner
+            .for_element(z)
+            .ok_or_else(|| crate::errors::input_err(self.inner.missing_element_error(z)))?;
         Ok(shells
             .iter()
             .map(|s| (s.l, s.pure, s.exponents.clone(), s.coefficients.clone()))
@@ -462,20 +463,12 @@ impl PyBasisSet {
 // ── Helper ──
 
 /// Raise a failure as the `ferric` exception class for it (see `errors`).
-/// A [`ferric_core::FerricError`] is classified by variant; anything else
-/// (a formatted message, another crate's error) is a `ComputationError`.
+/// A [`ferric_core::FerricError`] is classified by variant; text is a
+/// `ComputationError`.
 /// Every class here was a `RuntimeError` (or a `NotImplementedError`, itself a
 /// `RuntimeError`) before the hierarchy existed, and still is.
 fn make_err<E: std::fmt::Display + 'static>(e: E) -> PyErr {
-    match (&e as &dyn std::any::Any).downcast_ref::<ferric_core::FerricError>() {
-        Some(core) => errors::from_core(core),
-        None => errors::raise(errors::Kind::Computation, e.to_string()),
-    }
-}
-
-/// Alias kept for the call sites that name the typed conversion.
-fn make_ferric_err(e: ferric_core::FerricError) -> PyErr {
-    errors::from_core(&e)
+    errors::core_or_computation(e)
 }
 
 /// `?`-friendly conversion of a method-crate `Result` into a `PyResult`
@@ -483,13 +476,13 @@ fn make_ferric_err(e: ferric_core::FerricError) -> PyErr {
 /// `errors`) and the `Display` message. A crate-local extension trait because `From<FerricError> for
 /// PyErr` would break the orphan rule.
 pub(crate) trait IntoPyResult<T> {
-    /// Convert, mapping the error through [`make_ferric_err`].
+    /// Convert, classifying by variant (see `errors::from_core`).
     fn py(self) -> PyResult<T>;
 }
 
 impl<T> IntoPyResult<T> for Result<T, ferric_core::FerricError> {
     fn py(self) -> PyResult<T> {
-        self.map_err(make_ferric_err)
+        self.map_err(|e| errors::from_core(&e))
     }
 }
 
@@ -674,7 +667,7 @@ fn parse_cosx_grid(
         )));
     };
     ferric_scf::cosx_k::grid_from_parts(r, a, p.as_deref())
-        .map_err(|e| crate::errors::input_err(format!("{name}: {e}")))
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("{name}: {e}")))
 }
 
 /// The `cosx_*` kwargs of `run_rhf` / `run_uhf` / `run_dft` (same names and
@@ -887,7 +880,7 @@ fn resolve_dft_grid_with_cut(
     let prune = match grid_prune {
         None => None,
         Some(s) => PruneScheme::parse_config_str(s)
-            .map_err(|e| crate::errors::input_err(format!("grid_prune: {e}")))?,
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("grid_prune: {e}")))?,
     };
     let weight_cut = match grid_weight_cut {
         None => None,
@@ -949,7 +942,7 @@ fn resolve_dft_grid_with_cut(
     }
     if let Some(scheme) = prune {
         validate_xc_scheme(scheme, n_angular)
-            .map_err(|e| crate::errors::input_err(format!("grid_prune: {e}")))?;
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("grid_prune: {e}")))?;
     }
     Ok(Some(ferric_dft::grid::AtomicGridConfig {
         n_radial,
@@ -1940,6 +1933,12 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(_scf_refused, m)?)?;
     m.add_function(wrap_pyfunction!(_raise_core_error, m)?)?;
+    m.add_function(wrap_pyfunction!(_core_error_variants, m)?)?;
+    // Test hooks: reachable as `ferric.ferric._raise_core_error`, not part of the
+    // `ferric` namespace (`from .ferric import *` follows `__all__`).
+    for hook in ["_raise_core_error", "_core_error_variants"] {
+        m.index()?.call_method1("remove", (hook,))?;
+    }
     m.add_function(wrap_pyfunction!(run_rhf_gamma, m)?)?;
     m.add_class::<PyGammaRhfResult>()?;
     pbc::register(m)?;

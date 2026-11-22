@@ -56,13 +56,18 @@ def grad(*_):
 
 
 def raises(call, cls, msg):
+    """`cls` is the builtin class the call raised before roadmap 10; the
+    exception must be exactly the ferric subclass for it (RuntimeError ->
+    ComputationError, ValueError -> InputError, a bad basis -> BasisError)."""
+    exact = {
+        RuntimeError: ferric.ComputationError,
+        ValueError: ferric.InputError,
+    }[cls]
+    if msg.startswith("basis error:"):
+        exact = ferric.BasisError
     with pytest.raises(cls) as e:
         call()
-    # `isinstance`, not `type(...) is cls`: since roadmap 10 the exception is a
-    # `ferric.FerricError` subclass of `cls` (ConvergenceError, InputError, ...),
-    # which every `except cls` handler still catches.
-    assert isinstance(e.value, cls)
-    assert isinstance(e.value, ferric.FerricError)
+    assert type(e.value) is exact
     assert str(e.value) == msg
 
 

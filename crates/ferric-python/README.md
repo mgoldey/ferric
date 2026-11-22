@@ -145,13 +145,21 @@ hierarchy existed, so `except RuntimeError` / `except ValueError` /
 
 | class | also | meaning |
 |---|---|---|
-| `ConvergenceError` | `RuntimeError` | SCF or another iterative solver did not converge |
-| `BasisError` | `ValueError`, `RuntimeError` | unknown or non-covering basis set / ECP |
-| `NumericalError` | `RuntimeError` | a linear-algebra call failed |
-| `MemoryBudgetError` | `RuntimeError` | a memory budget cannot cover the request |
-| `UnsupportedError` | `NotImplementedError` | a valid option combination the method does not implement |
+| `ConvergenceError` | `RuntimeError` | a typed non-convergence (`ScfConvergence`, `Convergence`): SCF, CC, a response solver, the orbital optimisation |
+| `BasisError` | `InputError`, `RuntimeError` | an unknown, unparsable or non-covering basis set / ECP (also a `ValueError`: `BasisSet.bundled` raised that, the `run_*` drivers `RuntimeError`) |
+| `NumericalError` | `RuntimeError` | a typed linear-algebra failure (`Lapack`) |
+| `MemoryBudgetError` | `RuntimeError` | a typed memory refusal (`MemoryExhausted`) |
+| `UnsupportedError` | `NotImplementedError` | a valid option combination the method does not implement (`Unsupported`) |
 | `InputError` | `ValueError` | an invalid argument or option value |
-| `ComputationError` | `RuntimeError` | any other failure (including a few "invalid option" cases that still come from an untyped source, such as an unknown functional) |
+| `ComputationError` | `RuntimeError` | any other failure that carries no type |
+
+The classes follow the *typed* failure the Rust code returns, not the topic. A
+failure still returned as untyped text is a `ComputationError` even when it
+is "really" a convergence or memory problem (the pre-flight memory check in
+`ferric-core` is one, an unknown functional another), so
+`except ferric.ComputationError` is **not** "all runtime failures": catch
+`RuntimeError` for that, or `FerricError` for everything ferric raises on
+purpose.
 
 ```python
 try:
@@ -162,5 +170,32 @@ except ferric.InputError:
     ...  # fix the call
 ```
 
-`TypeError` from argument conversion is unchanged. See `ARCHITECTURE.md`
-("Errors") for the mapping from the Rust `FerricError` variants.
+Things to know when upgrading:
+
+- `type(e).__name__` and the traceback's first token change
+  (`ValueError: ...` is now `ferric.InputError: ...`). The message after it
+  is the same text. Code that compares the class name or parses the
+  traceback line must be updated; `isinstance` and `except` are unaffected.
+- A failure that carries `FerricError::Unsupported` and was raised through a
+  plain `RuntimeError` (the local OP-MP3 refusals in `run_opmp3`, for
+  example) is now an `UnsupportedError`, so `except NotImplementedError`
+  (including the handlers in `ferric.ase`) now catches it. It is still a
+  `RuntimeError`.
+- A bad auxiliary basis from a driver is a `BasisError`, which is also a
+  `ValueError`: `except ValueError` now catches it.
+- `ferric.qcschema.run` classifies by these classes (see its docstring): a
+  driver basis failure is `input_error` (it was `execution_error`).
+
+What stays plain (not in the hierarchy): `TypeError` from argument
+conversion; `configure_gpu` / `configure_precision` and the GPU settings
+helpers, `set_blas_threads` and the libint test hook (plain `ValueError` /
+`RuntimeError`); `Molecule.from_xyz`'s `OSError` for a missing file and the MD
+writers' `OSError`; `NotImplementedError` from the symmetry-frame accessors
+(`density`, `mo_coefficients`, `gradient` of a `symmetry=True` result);
+exceptions raised by pure-Python helpers (`ferric.ase`, `ferric.serialize`,
+...); and Rust panics (`pyo3_runtime.PanicException`). The periodic drivers
+map `General` and `MemoryExhausted` refusals to `InputError`, as they raised
+`ValueError` before.
+
+See `ARCHITECTURE.md` ("Errors") for the mapping from the Rust `FerricError`
+variants and the rule for method authors.

@@ -799,7 +799,7 @@ pub(crate) fn scf_gradient_config(
     };
     if fock_hook.is_some() {
         ferric_scf::rhf::validate_fock_hook(config)
-            .map_err(|e| crate::errors::input_err(format!("{who}: {e}")))?;
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("{who}: {e}")))?;
     }
     if matches!(kind, ScfGradientKind::Rhf) {
         if config.symmetry || config.irrep_nelec.is_some() {
@@ -821,7 +821,7 @@ pub(crate) fn scf_gradient_config(
         ScfGradientKind::Uhf => ferric_scf::gradient::preflight_cosx_unrestricted(config),
         ScfGradientKind::Rohf => ferric_scf::gradient::preflight_cosx_restricted_open(config),
     };
-    preflight.map_err(|e| crate::errors::input_err(format!("{who}: {e}")))?;
+    preflight.map_err(|e| crate::errors::input_err_msg(&e, format!("{who}: {e}")))?;
     // A gradient is a geometry task: an unset RI-J precision resolves to f64
     // (the f32 RI-J energy surface is jagged between nearby geometries), an
     // explicit one is kept.

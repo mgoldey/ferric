@@ -5,9 +5,10 @@ same failure raised before the hierarchy existed, with the message unchanged,
 so existing `except ValueError` / `except RuntimeError` /
 `except NotImplementedError` handlers keep catching what they caught. The
 mapping from `FerricError` variants to classes is one function
-(`errors::from_core`); `ferric._raise_core_error` runs each variant through it,
-because some variants (`Unsupported`, `Lapack`, `Io`) have no Python call that
-reaches them today. The rest are checked with real calls.
+(`errors::from_core`); `ferric.ferric._raise_core_error` runs each variant through it,
+because some variants (`Unsupported`, `Lapack`, `Io`) are reached from Python
+only through refusals no public keyword triggers (for example the local OP-MP3
+assembly options). The rest are checked with real calls.
 """
 
 import pickle
@@ -91,7 +92,7 @@ CORE_TABLE = {
 def test_every_core_variant_maps_to_its_class_and_keeps_its_builtin(variant):
     cls, builtin, message = CORE_TABLE[variant]
     with pytest.raises(builtin) as exc:
-        ferric._raise_core_error(variant, "boom")
+        ferric.ferric._raise_core_error(variant, "boom")
     assert type(exc.value) is cls
     assert isinstance(exc.value, ferric.FerricError)
     assert str(exc.value) == message
@@ -99,8 +100,11 @@ def test_every_core_variant_maps_to_its_class_and_keeps_its_builtin(variant):
 
 
 def test_core_table_names_every_variant():
+    # The names come from `FerricError::samples` (one per variant, in
+    # ferric-core), so a new variant must be added to CORE_TABLE here too.
+    assert sorted(ferric.ferric._core_error_variants()) == sorted(CORE_TABLE)
     with pytest.raises(ValueError, match="unknown core error variant"):
-        ferric._raise_core_error("nope", "x")
+        ferric.ferric._raise_core_error("nope", "x")
     # The class a variant lands in is the only thing that may differ.
     assert {c for c, _, _ in CORE_TABLE.values()} == set(ALL) - {ferric.InputError}
 
@@ -116,7 +120,7 @@ def test_pickle_round_trip(cls):
 
 def test_pickle_of_a_raised_exception():
     with pytest.raises(ferric.FerricError) as exc:
-        ferric._raise_core_error("scf_convergence", "")
+        ferric.ferric._raise_core_error("scf_convergence", "")
     back = pickle.loads(pickle.dumps(exc.value))
     assert type(back) is ferric.ConvergenceError
     assert str(back) == str(exc.value)
@@ -203,3 +207,19 @@ def test_argument_type_errors_stay_plain_type_errors(water):
     with pytest.raises(TypeError) as exc:
         ferric.run_rhf(water, bs, diis=-1)
     assert not isinstance(exc.value, ferric.FerricError)
+
+
+def test_prefixed_basis_failures_are_still_basis_errors():
+    """`BasisSet.shells` and the auxbasis lookup keep the typed variant through
+    a prefixed message."""
+    bs = ferric.BasisSet.bundled("sto-3g")
+    with pytest.raises(ValueError) as exc:
+        bs.shells(92)
+    assert type(exc.value) is ferric.BasisError
+
+
+def test_helper_names_stay_out_of_the_public_surface():
+    for name in ("_raise_core_error", "_core_error_variants"):
+        assert name not in ferric.__all__
+        assert not hasattr(ferric, name)
+        assert hasattr(ferric.ferric, name)

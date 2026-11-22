@@ -104,13 +104,14 @@ ferric-core
 
   | class | also | raised for |
   |---|---|---|
-  | `ConvergenceError` | `RuntimeError` | `ScfConvergence`, `Convergence` |
+  | `ConvergenceError` | `RuntimeError` | `ScfConvergence`, `Convergence` (typed only; also the orbital-optimisation gradient refusal) |
   | `BasisError` | `InputError`, `RuntimeError` | `Basis` (unknown bundled name, unparsable or non-covering basis/ECP); both builtins because `BasisSet.bundled` / `n_functions` raised `ValueError` and the `run_*` drivers `RuntimeError` |
   | `NumericalError` | `RuntimeError` | `Lapack` |
-  | `MemoryBudgetError` | `RuntimeError` | `MemoryExhausted` |
+  | `MemoryBudgetError` | `RuntimeError` | `MemoryExhausted` (typed only: `ferric-core`'s `check_alloc` returns `General`, so it is a `ComputationError`) |
   | `UnsupportedError` | `NotImplementedError` | `Unsupported` |
   | `ComputationError` | `RuntimeError` | every other `FerricError` (`General`, `Io`, `Libint`, `XyzParse`) and binding-level runtime failures |
-  | `InputError` | `ValueError` | binding-level invalid arguments (`errors::input_err`) |
+  | `InputError` | `ValueError` | binding-level invalid arguments (`errors::input_err`); a core error passed to it is a `BasisError` if it is `Basis`, else an `InputError` whatever its variant (these sites raised `ValueError`) |
+  | periodic drivers | `ValueError` | `pbc.rs::refusal_text` maps `General` and `MemoryExhausted` to `InputError` (`ValueError`, as before) and everything else through `from_core` with the `run_x:` prefix |
 
   `General` still carries invalid-configuration text (it is a string
   variant), so those stay a `ComputationError`; only a typed variant can be
@@ -119,6 +120,22 @@ ferric-core
   pure Python. The classes are built with `type()` at module init (pyo3's
   `create_exception!` takes one base), carry `__module__ = "ferric"` and are
   module attributes, so they pickle. Messages are unchanged.
+
+  The decision is `FerricError::category()` (`ErrorCategory`, an exhaustive
+  match in ferric-core) mapped by `errors::kind_of`, so a new variant cannot
+  be added without choosing its class; `FerricError::samples` (one value per
+  variant) feeds the `ferric._raise_core_error` test hook and a unit test.
+  `tests/test_exception_sites_are_typed.py` fails on a new bare
+  `PyValueError::new_err` / `PyRuntimeError::new_err` outside a short
+  allowlist (the GPU/precision settings, `set_blas_threads`, a libint test
+  hook).
+
+  **Which variant to return (method authors):** return `Convergence` /
+  `ScfConvergence`, `MemoryExhausted`, `Unsupported` (`FerricError::unsupported`)
+  or `Basis` for those failures, never `General` with a descriptive string:
+  only the typed variant reaches Python as `ConvergenceError`,
+  `MemoryBudgetError`, `UnsupportedError` or `BasisError`. `General` ends up
+  as `ComputationError`.
 
 ## Python API compatibility
 
@@ -211,10 +228,14 @@ Done:
     root; `ConvergenceError`, `BasisError`, `NumericalError`,
     `MemoryBudgetError`, `UnsupportedError`, `ComputationError`,
     `InputError`), all also subclasses of the builtin they raised before.
-    Follow-up: `General` cannot be split further until invalid-option
-    failures get a typed variant (item 11e's `OptionError`); `from_bse_json`
-    and `n_functions` still raise their basis problems as `InputError`
-    (`ValueError`) because that is what they raised.
+    Follow-ups: `General` cannot be split further until invalid-option
+    failures get a typed variant (item 11e's `OptionError`); `check_alloc`
+    in `ferric-core/src/memory.rs` returns `General` and should return
+    `MemoryExhausted` (it changes the message prefix, so it needs its own
+    PR). `BasisSet.n_functions` raises `BasisError`; `from_bse_json` raises
+    `BasisError` for malformed JSON and `InputError` for an unreadable file.
+    `ferric.qcschema.run` now classifies by these classes (a driver basis
+    failure is `input_error`, not `execution_error`).
 9a. `energy`/`total_energy` aliases on every SCF result class (molecular,
     CDFT and periodic), so callers no longer branch on the result type.
 -  API snapshot coverage extends to the pure-Python submodules

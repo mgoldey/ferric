@@ -1320,7 +1320,7 @@ pub(crate) fn run_linlccd(
     let var = match variant {
         None => LadderVariant::Hh,
         Some(v) => LadderVariant::parse_config_str(v)
-            .map_err(|e| crate::errors::input_err(format!("run_linlccd: variant: {e}")))?,
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("run_linlccd: variant: {e}")))?,
     };
     let model = local_model_from_kwargs(
         "run_linlccd",
@@ -1790,12 +1790,15 @@ pub(crate) fn oo_rimp2_gradient(
     r: &ferric_mp2::oo_rimp2::OoRiMp2Result,
 ) -> PyResult<Array2<f64>> {
     if !r.converged {
-        return Err(crate::make_err(format!(
-            "run_oo_rimp2: with_gradient=True: the orbital optimisation did not converge \
+        return Err(crate::errors::raise(
+            crate::errors::Kind::Convergence,
+            format!(
+                "run_oo_rimp2: with_gradient=True: the orbital optimisation did not converge \
              ({} iterations, orbital gradient norm {:.2e}); the zero-response gradient holds only \
              at a stationary point. Raise oo_max_iter or loosen grad_conv",
-            r.iterations, r.grad_norm
-        )));
+                r.iterations, r.grad_norm
+            ),
+        ));
     }
     let op = Operator::coulomb();
     py.allow_threads(|| {
