@@ -3643,6 +3643,7 @@ mod tests {
         }));
         assert!(loose.is_err(), "the loose kernel did not panic");
         // The system's own reference still runs.
-        ri_mp2_on(&aux_small, &rhf_small, &cfg).unwrap();
+        let own = ri_mp2_on(&aux_small, &rhf_small, &cfg).unwrap();
+        assert!(own.mp2_corr < 0.0);
     }
 }

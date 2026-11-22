@@ -439,7 +439,11 @@ Done:
 
 8d. (first part) The correlated kernels behind `*_on` entry points,
     results and messages bitwise unchanged (compared against an origin/main
-    build: VERIFY_SUMMARY):
+    build: 172 CLI inputs, the repository examples plus error and new
+    local / open-shell / NPZ-export cases, identical stdout, stderr and
+    exit status after masking timings; 152 Python calls, energies and
+    gradients as hex floats and arrays by hash, identical except timing
+    fields, errors identical in class and message):
     - `PreparedSystem::check_reference(&ScfResult)` (and
       `PreparedAux::check_reference`, the same on `aux.system()`): the one
       check that a reference SCF result fits the system, a
