@@ -9,7 +9,7 @@ use std::borrow::Cow;
 
 // ── KS-DFT ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "DftResult")]
 pub(crate) struct PyDftResult {
     /// SCF energy PLUS the dispersion correction, when one was requested.
@@ -45,19 +45,18 @@ pub(crate) struct PyDftResult {
     /// `(E_xc, V_xc)` of the converged density, computed on the first
     /// `vxc()` / `e_xc` call and cached. Lazy so a caller who never asks for
     /// it does not pay a grid build + XC evaluation per `run_dft`.
-    pub(crate) xc_cache: std::sync::OnceLock<(f64, Array2<f64>)>,
-    /// Serializes the first evaluation so concurrent first calls build the
-    /// grid once (`OnceLock::get_or_try_init` is not stable).
-    pub(crate) xc_lock: std::sync::Mutex<()>,
-    pub(crate) density_data: Array2<f64>,
+    /// Concurrent first calls build the grid once.
+    pub(crate) xc_cache: crate::compute_once::ComputeOnce<(f64, Array2<f64>)>,
     /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
     /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
     /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
     pub(crate) gradient_data: Option<Array2<f64>>,
-    pub(crate) scf_data: ScfResult,
+    /// The solve, shared (`Arc`) as in `PyRhfResult::scf_data`; `density()`
+    /// reads its `density_total`.
+    pub(crate) scf_data: Arc<ScfResult>,
     /// The base SCF settings (functional, grid, density fitting, thresholds)
     /// this result was solved with; see `PyRhfResult::scf_config`.
-    pub(crate) scf_config: RhfConfig,
+    pub(crate) scf_config: Arc<RhfConfig>,
     /// The SCF ran with a `fock_hook` (recorded on the certificate).
     pub(crate) fock_hooked: bool,
 }
@@ -72,22 +71,15 @@ impl PyDftResult {
             &self.xc_mol,
             &self.xc_basis,
             &self.scf_config,
-            &self.density_data,
+            &self.scf_data.density_total,
         );
-        let (cache, lock) = (&self.xc_cache, &self.xc_lock);
-        // One evaluation even under concurrent first calls: the guard is taken
-        // INSIDE allow_threads, so a waiting thread has released the GIL and
-        // cannot deadlock the thread computing (which needs the GIL back).
+        let cache = &self.xc_cache;
+        // The cache's lock is taken INSIDE allow_threads, so a waiting thread
+        // has released the GIL and cannot deadlock the thread computing.
         py.allow_threads(|| {
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.get().is_none() {
-                let pair = ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d)?;
-                let _ = cache.set(pair);
-            }
-            Ok::<(), ferric_core::FerricError>(())
+            cache.get_or_try_init(|| ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d))
         })
-        .map_err(make_err)?;
-        Ok(cache.get().expect("xc_cache is set under xc_lock above"))
+        .map_err(make_err)
     }
 }
 
@@ -179,7 +171,7 @@ impl PyDftResult {
     }
 
     fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        PyArray2::from_array(py, &self.density_data)
+        PyArray2::from_array(py, &self.scf_data.density_total)
     }
 
     /// Kohn-Sham orbital energies (Hartree), ascending: the eigenvalues of
@@ -263,7 +255,7 @@ impl PyDftResult {
 // MP2-based double hybrids (B2PLYP, DSD-PBEP86)
 // ---------------------------------------------------------------------------
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "DoubleHybridResult")]
 pub(crate) struct PyDoubleHybridResult {
     #[pyo3(get)]
@@ -825,12 +817,10 @@ pub(crate) fn run_dft(
         converged: rhf.converged,
         xc_mol: sys.into_mol(),
         xc_basis: basis_set.inner.clone(),
-        xc_cache: std::sync::OnceLock::new(),
-        xc_lock: std::sync::Mutex::new(()),
-        density_data: rhf.density_total.clone(),
+        xc_cache: crate::compute_once::ComputeOnce::new(),
         gradient_data,
-        scf_data: rhf,
-        scf_config: rung_cfg,
+        scf_data: Arc::new(rhf),
+        scf_config: Arc::new(rung_cfg),
         fock_hooked,
     };
     Ok(Py::new(py, result)?.into_any())
@@ -1675,7 +1665,7 @@ pub(crate) fn d3bj_energy(mol: &PyMolecule, functional: &str, s9: f64) -> PyResu
 }
 
 /// Result of `mbd_rsscs_energy`. Atomic units; per-atom lists in atom order.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "MbdRsscsResult")]
 pub(crate) struct PyMbdRsscsResult {
     /// MBD@rsSCS dispersion energy (Hartree).

@@ -128,7 +128,7 @@ impl PyCdftConstraint {
 /// `run_cdft` raises `RuntimeError` instead of returning. The inner SCF at the
 /// final lambda can still be unconverged, which `scf_converged` reports, and
 /// `converged` is True only when BOTH hold.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CdftResult")]
 pub(crate) struct PyCdftResult {
     /// Total energy (Ha) at the constrained density, WITHOUT the constraint
@@ -659,7 +659,7 @@ pub(crate) fn run_cdft(
 }
 
 /// Wu–Van Voorhis electronic coupling between two cDFT diabats.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CdftCouplingResult")]
 pub(crate) struct PyCdftCouplingResult {
     /// Orthogonalized coupling H_ab (Ha). Its SIGN is a determinant-phase
