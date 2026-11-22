@@ -920,7 +920,7 @@ fn refuse_final_pass_result(result: &ScfResult) -> Result<(), FerricError> {
 pub fn gradient_task_config(
     config: &crate::rhf::RhfConfig,
 ) -> std::borrow::Cow<'_, crate::rhf::RhfConfig> {
-    if config.k_builder.as_deref() == Some(crate::options::COSX_K_BUILDER)
+    if config.k_builder == Some(crate::options::KBuilderKind::Cosx)
         && config.cosx.final_grid.is_some()
     {
         if config.verbose {

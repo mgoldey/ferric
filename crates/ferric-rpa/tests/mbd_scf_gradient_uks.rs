@@ -514,7 +514,7 @@ fn uks_mbd_cosx_exact_gradient_matches_fd_of_full_scf_pipeline() {
     let ctx = ParallelContext::default();
     let plain = ks("PBE0");
     let cfg = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx_flat(),
         ..plain.clone()
     };

@@ -93,7 +93,9 @@ fn cosx_pruned() -> CosxConfig {
 /// approximation under test.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
     RhfConfig {
-        k_builder: cosx.as_ref().map(|_| "cosx".to_string()),
+        k_builder: cosx
+            .as_ref()
+            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx.unwrap_or_default(),
         xc: xc.map(str::to_string),
         df_j_aux: Some(String::new()),

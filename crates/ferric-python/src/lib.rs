@@ -547,11 +547,37 @@ impl ScfConv {
     }
 }
 
-fn rhf_config(k_builder: Option<&str>) -> RhfConfig {
-    rhf_config_budgeted(k_builder, None)
+/// A `k_builder=` keyword parsed once (`KBuilderKind::parse`). An unknown
+/// spelling is the `RuntimeError` the solver raised for it before the
+/// bindings parsed it ("General error: unknown k_builder ...").
+fn parse_k_builder(k_builder: Option<&str>) -> PyResult<Option<ferric_scf::options::KBuilderKind>> {
+    ferric_scf::options::KBuilderKind::parse_opt(k_builder)
+        .map_err(ferric_core::FerricError::from)
+        .py()
 }
 
-/// [`rhf_config`] plus the caller's resolved memory budget.
+/// `cfg` with the `k_builder=` spelling `raw` parsed into it, for a
+/// binding that prepares its system inside a GIL-released closure: called
+/// there after the preparation, where the SCF refused an unknown spelling
+/// before the bindings parsed it (same error, `FerricError::General`).
+fn with_k_builder(
+    cfg: &RhfConfig,
+    raw: Option<&str>,
+) -> Result<RhfConfig, ferric_core::FerricError> {
+    Ok(RhfConfig {
+        k_builder: ferric_scf::options::KBuilderKind::parse_opt(raw)?,
+        ..cfg.clone()
+    })
+}
+
+/// The reference-SCF config of a correlated entry point: its `k_builder=`
+/// (parsed by [`parse_k_builder`]) and the caller's resolved memory budget.
+/// The entry points call it after their other keyword checks and, where the
+/// basis is prepared outside the SCF, after the preparation, which is where
+/// the SCF refused an unknown spelling before the bindings parsed it; the
+/// MP2 family goes through `mp2_reference_config`, before its method
+/// keywords, and the CC drivers that prepare in a GIL-released closure use
+/// [`with_k_builder`] there.
 ///
 /// # Why this exists
 ///
@@ -569,12 +595,15 @@ fn rhf_config(k_builder: Option<&str>) -> RhfConfig {
 /// `RhfConfig::three_index_budget_bytes` is a bare `usize` whose `0` sentinel
 /// means "unset → auto" (see `ferric_scf::rhf::resolve_three_index_budget`),
 /// so an unset kwarg maps to `0` and preserves the previous behaviour exactly.
-fn rhf_config_budgeted(k_builder: Option<&str>, budget_bytes: Option<usize>) -> RhfConfig {
-    RhfConfig {
-        k_builder: k_builder.map(|s| s.to_string()),
+fn rhf_config_budgeted(
+    k_builder: Option<&str>,
+    budget_bytes: Option<usize>,
+) -> PyResult<RhfConfig> {
+    Ok(RhfConfig {
+        k_builder: parse_k_builder(k_builder)?,
         three_index_budget_bytes: budget_bytes.unwrap_or(0),
         ..Default::default()
-    }
+    })
 }
 
 /// [`rhf_config_budgeted`] with the caller's SCF convergence keywords applied.
@@ -582,10 +611,10 @@ fn rhf_config_conv(
     k_builder: Option<&str>,
     budget_bytes: Option<usize>,
     conv: ScfConv,
-) -> RhfConfig {
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes);
+) -> PyResult<RhfConfig> {
+    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes)?;
     conv.apply(&mut cfg);
-    cfg
+    Ok(cfg)
 }
 
 /// Resolve a `df_*_aux` kwarg into an `RhfConfig` auxiliary-basis setting.
@@ -669,7 +698,10 @@ fn resolve_cosx_kwargs(
         || cosx_final_pass.is_some()
         || cosx_final_grid.is_some()
         || cosx_overlap_fit.is_some();
-    if any && k_builder != Some(ferric_scf::options::COSX_K_BUILDER) {
+    // `k_builder` as passed, quoted in the message; the entry point parses
+    // it (`parse_k_builder`) after this check, which came first before.
+    let cosx = k_builder.is_some_and(ferric_scf::options::KBuilderKind::spells_cosx);
+    if any && !cosx {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit are only read with \
              k_builder=\"cosx\" (got k_builder={k_builder:?})"

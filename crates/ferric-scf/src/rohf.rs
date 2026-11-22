@@ -1201,17 +1201,18 @@ fn rohf_pluggable_k<'a>(
     (need_k, omega): (bool, f64),
 ) -> Result<Option<Box<dyn KBuilder + 'a>>, FerricError> {
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(),
+        config.k_builder,
         df_j,
         k_df_routed,
         df_k,
         need_k,
         omega,
-    )?;
+    );
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, omega);
     crate::cosx_schedule::refuse(pluggable_k_kind, &config.cosx, "ROHF/ROKS")?;
-    if pluggable_k_kind == Some(crate::options::COSX_K_BUILDER) && config.cosx.final_grid.is_some()
+    if pluggable_k_kind == Some(crate::options::KBuilderKind::Cosx)
+        && config.cosx.final_grid.is_some()
     {
         // The COSX final-grid pass is implemented for RHF/RKS and UHF/UKS
         // only. An explicit request is refused; the default one is skipped,

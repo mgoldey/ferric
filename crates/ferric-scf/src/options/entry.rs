@@ -28,7 +28,9 @@ use std::fmt;
 
 use ndarray::Array2;
 
-use super::{df_k_aux_or_default, AuxBasis, Guess, ScfOptions, Stability, TrahTrigger};
+use super::{
+    ks_jk_fit_defaults, AuxBasis, Guess, KBuilderKind, ScfOptions, Stability, TrahTrigger,
+};
 
 /// `run_dft`'s functional when the caller names none.
 pub const DEFAULT_DFT_FUNCTIONAL: &str = "LDA";
@@ -344,21 +346,12 @@ impl ScfEntryPoint {
         // no RI-K default; a NAMED df_k_aux with HF exchange or a global
         // hybrid is the SCF's conflict). Hartree-Fock: exact J and K unless
         // named.
+        let (df_j_aux, df_k_aux) = (df_j_aux.map(AuxBasis::parse), df_k_aux.map(AuxBasis::parse));
         let (df_j_aux, df_k_aux) = if ks {
-            (
-                Some(
-                    df_j_aux
-                        .map(AuxBasis::parse)
-                        .unwrap_or_else(AuxBasis::default_jk),
-                ),
-                df_k_aux_or_default(
-                    k_builder,
-                    df_k_aux.map(AuxBasis::parse),
-                    Some(AuxBasis::default_jk()),
-                ),
-            )
+            let (j, k) = ks_jk_fit_defaults(k_builder, df_j_aux, df_k_aux, AuxBasis::default_jk());
+            (Some(j), k)
         } else {
-            (df_j_aux.map(AuxBasis::parse), df_k_aux.map(AuxBasis::parse))
+            (df_j_aux, df_k_aux)
         };
         Ok(ScfOptions {
             max_iter,
@@ -367,7 +360,7 @@ impl ScfEntryPoint {
             diis_size,
             diis_flavor,
             integral_thresh,
-            k_builder: k_builder.map(str::to_string),
+            k_builder,
             cosx,
             df_j_aux,
             df_k_aux,
@@ -403,7 +396,6 @@ impl ScfEntryPoint {
             dft_grid,
             // Not Python keywords.
             diis_switch_thresh: None,
-            ri_j_task: None,
             screening: None,
             verbose: None,
         })
@@ -427,8 +419,8 @@ pub struct ScfKwargs<'a> {
     pub diis_flavor: Option<crate::diis::DiisFlavor>,
     /// `integral_thresh=`.
     pub integral_thresh: Option<f64>,
-    /// `k_builder=` (verbatim).
-    pub k_builder: Option<&'a str>,
+    /// `k_builder=` (parsed by [`KBuilderKind::parse`]).
+    pub k_builder: Option<KBuilderKind>,
     /// The resolved `cosx_*` keywords (the default COSX settings when the
     /// entry point offers them and none is passed).
     pub cosx: Option<crate::cosx_k::CosxConfig>,
@@ -628,7 +620,7 @@ mod tests {
         let c = ScfEntryPoint::Rhf
             .options(kw)
             .unwrap()
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap();
         assert!(!c.symmetry);
         assert_eq!(c.irrep_nelec, irrep);
@@ -645,7 +637,7 @@ mod tests {
         let c = ScfEntryPoint::Dft
             .options(ScfKwargs::default())
             .unwrap()
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap();
         assert_eq!(c.xc.as_deref(), Some(DEFAULT_DFT_FUNCTIONAL));
     }

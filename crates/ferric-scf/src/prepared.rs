@@ -513,7 +513,7 @@ mod tests {
         // LinK reads `RhfConfig::screening`; direct J reads the bounds' table.
         let csb = RhfConfig {
             screening: ScreeningKind::Csb,
-            k_builder: Some("link".into()),
+            k_builder: Some(crate::options::KBuilderKind::Link),
             ..Default::default()
         };
         let want = crate::rhf::solve_rhf(

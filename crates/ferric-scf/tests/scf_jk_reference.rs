@@ -50,7 +50,7 @@ fn named(j: Option<&str>, k: Option<&str>, k_builder: Option<&str>) -> RhfConfig
     RhfConfig {
         df_j_aux: j.map(str::to_string),
         df_k_aux: k.map(str::to_string),
-        k_builder: k_builder.map(str::to_string),
+        k_builder: ferric_scf::options::KBuilderKind::parse_opt(k_builder).expect("spelling"),
         ..Default::default()
     }
 }

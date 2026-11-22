@@ -1112,7 +1112,6 @@ mod tests {
             ScfJk {
                 mode: ScfJkMode::RiJk,
                 aux: Some(aux.to_string()),
-                k_builder: None,
             }
             .apply(&mut cfg);
         }

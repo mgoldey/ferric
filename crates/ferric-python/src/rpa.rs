@@ -165,7 +165,10 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     ) {
         return refuse("differentiates dense chi0 only: omit chi0_sparsity".into());
     }
-    if s.k_builder == Some(ferric_scf::options::COSX_K_BUILDER) {
+    // The spelling as passed (the SCF config parses it after this check).
+    if s.k_builder
+        .is_some_and(ferric_scf::options::KBuilderKind::spells_cosx)
+    {
         return refuse("has no COSX exchange response: use an exact k_builder or omit it".into());
     }
     if s.df_aux {
@@ -359,7 +362,7 @@ pub(crate) fn run_rs_mp2_rpa(
             e_delta_drpa_full: r.e_delta_drpa_full,
             e_delta_drpa_sr: r.e_delta_drpa_sr,
             scf_jk: jk.mode.as_str().to_string(),
-            jk_label: jk.label(),
+            jk_label: jk.label(cfg_rhf.k_builder),
             jk_auxbasis: jk.aux.clone(),
             certificate_data,
         });
@@ -927,11 +930,13 @@ pub(crate) fn run_pdep_rpa(
     // computed from it is that of an isolated molecule. Screening a
     // ligand-pocket interaction needs the response of the ligand AS IT SITS
     // IN THE POCKET, so the point charges have to reach this SCF.
+    // Parsed before the reference config, which parses `k_builder` last.
+    let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let mut scf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     if with_gradient && scf_density_conv.is_none() {
         // The analytic gradient's reference setting (`rpa_analytic_gradient`,
         // the CLI optimize path): an energy-grade density threshold leaves
@@ -943,7 +948,7 @@ pub(crate) fn run_pdep_rpa(
     scf_config.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.external_potential = build_external_potential(point_charges, external_field);
-    scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    scf_config.pcm = pcm;
     let rhf = sys
         .solve_rhf(&scf_config)
         .and_then(ScfResult::into_converged)

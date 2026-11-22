@@ -129,7 +129,9 @@ fn cosx_production_nofit() -> CosxConfig {
 /// density-fitted.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
     RhfConfig {
-        k_builder: cosx.as_ref().map(|_| "cosx".to_string()),
+        k_builder: cosx
+            .as_ref()
+            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx.unwrap_or_default(),
         xc: xc.map(str::to_string),
         // Conventional four-centre J (and K when not COSX): the ONLY exchange
@@ -546,7 +548,7 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
         "KS dispatch / _with_exchange(None) differ from ks_gradient_closed"
     );
     let with_cosx = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx_production_nofit(),
         ..plain
     };
@@ -619,7 +621,7 @@ fn unsupported_cosx_gradients_are_refused() {
     // UKS: fit-off COSX is differentiated (`uks_cosx_*` below); the overlap
     // fit with a functional is refused by the gradient and the preflight.
     let uks_fitted = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: CosxConfig::default(),
         xc: Some("B3LYP".into()),
         ..Default::default()
@@ -649,7 +651,7 @@ fn unsupported_cosx_gradients_are_refused() {
 
     // ROHF/ROKS: fit-off passes, the overlap fit is refused for HF and KS.
     let rohf_fitted = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         ..Default::default()
     };
     for xc in [None, Some("B3LYP")] {
@@ -679,7 +681,7 @@ fn unsupported_cosx_gradients_are_refused() {
 #[test]
 fn open_shell_empty_df_name_keeps_cosx_active() {
     let base = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx_exact(),
         ..Default::default()
     };

@@ -96,7 +96,7 @@ fn setup(
 
 fn cfg(kb: Option<&str>) -> RhfConfig {
     RhfConfig {
-        k_builder: kb.map(str::to_string),
+        k_builder: ferric_scf::options::KBuilderKind::parse_opt(kb).expect("spelling"),
         energy_conv: 1e-10,
         density_conv: 1e-8,
         max_iter: 200,
@@ -716,27 +716,16 @@ fn direct_builder_without_density_fitting_is_silent() {
     );
 }
 
-// ── (f) hard errors preserved at the open-shell entry points ─────────────────
+// ── (f) hard errors preserved ─────────────────────────────────────────────────
 
+/// An unknown spelling is refused where it is parsed, with the text the
+/// open-shell solvers raised before the frontends parsed it; no `RhfConfig`
+/// can carry one to `solve_uhf` / `solve_rohf` any more.
 #[test]
-fn unknown_k_builder_errors_from_open_shell_entry_points() {
-    let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
-    let ctx = ParallelContext::default();
-    let bad = cfg(Some("bogus"));
-    let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &bad)
-        .map(|_| ())
-        .expect_err("UHF must reject an unknown k_builder");
-    let er = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &bad)
-        .map(|_| ())
-        .expect_err("ROHF must reject an unknown k_builder");
-    for (label, e) in [("UHF", eu), ("ROHF", er)] {
-        let msg = e.to_string();
-        println!("{label}: {msg}");
-        assert!(
-            msg.contains("unknown k_builder 'bogus'"),
-            "{label}: wrong error text: {msg}"
-        );
-    }
+fn unknown_k_builder_is_refused_at_the_parse() {
+    let e = ferric_scf::options::KBuilderKind::parse("bogus").unwrap_err();
+    let msg = ferric_core::FerricError::from(e).to_string();
+    assert!(msg.contains("unknown k_builder 'bogus'"), "{msg}");
 }
 
 /// `k_builder = "cosx"` is Coulomb-only: an attenuated (erfc) Schwarz bound

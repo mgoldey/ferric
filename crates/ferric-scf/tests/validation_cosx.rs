@@ -290,7 +290,9 @@ fn check_harness(s: &Setup, r: &Value) {
 /// which otherwise defaults to RI-J), so COSX is the only approximation.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
     RhfConfig {
-        k_builder: cosx.as_ref().map(|_| "cosx".to_string()),
+        k_builder: cosx
+            .as_ref()
+            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx.unwrap_or_default(),
         xc: xc.map(str::to_string),
         df_j_aux: xc.map(|_| String::new()),

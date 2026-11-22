@@ -106,7 +106,7 @@ fn cfg(j: Option<&str>, k: Option<&str>, kb: Option<&str>) -> RhfConfig {
     RhfConfig {
         df_j_aux: j.map(str::to_string),
         df_k_aux: k.map(str::to_string),
-        k_builder: kb.map(str::to_string),
+        k_builder: ferric_scf::options::KBuilderKind::parse_opt(kb).expect("spelling"),
         ..Default::default()
     }
 }
@@ -193,12 +193,13 @@ fn route_table_k() {
 /// pre-route certificate rule) fails the LinK-under-RI-J row.
 #[test]
 fn route_table_k_builder() {
+    use ferric_scf::options::KBuilderKind as K;
     for spin in ALL {
         let c = resolve_jk_route(&cfg(Some(AUX), None, Some("cosx")), hybrid(), spin).unwrap();
         assert!(c.cosx_k && c.k_aux.is_none() && c.j_aux.as_deref() == Some(AUX));
         assert_eq!(
-            c.pluggable_k(Some("cosx")),
-            Some("cosx"),
+            c.pluggable_k(Some(K::Cosx)),
+            Some(K::Cosx),
             "RIJCOSX {spin:?}"
         );
         assert!(resolve_jk_route(&cfg(None, Some(OTHER), Some("cosx")), hf(), spin).is_err());
@@ -207,21 +208,21 @@ fn route_table_k_builder() {
         for x in [pure(), rsh()] {
             let c = resolve_jk_route(&cfg(None, None, Some("cosx")), x, spin).unwrap();
             assert!(!c.cosx_k);
-            assert_eq!(c.pluggable_k(Some("cosx")), None, "{x:?}");
-            assert_eq!(c.pluggable_k(Some("link")), None, "{x:?}");
+            assert_eq!(c.pluggable_k(Some(K::Cosx)), None, "{x:?}");
+            assert_eq!(c.pluggable_k(Some(K::Link)), None, "{x:?}");
         }
         let exact = route(hf(), spin, Some(""), Some(""));
-        assert_eq!(exact.pluggable_k(Some("link")), Some("link"));
-        assert_eq!(exact.pluggable_k(Some("direct")), None);
+        assert_eq!(exact.pluggable_k(Some(K::Link)), Some(K::Link));
+        assert_eq!(exact.pluggable_k(Some(K::Direct)), None);
         let rij = route(hf(), spin, Some(AUX), Some(""));
         assert_eq!(
-            rij.pluggable_k(Some("link")),
+            rij.pluggable_k(Some(K::Link)),
             None,
             "LinK under RI-J {spin:?}"
         );
         let rik = route(hf(), spin, Some(""), Some(AUX));
         assert_eq!(
-            rik.pluggable_k(Some("link")),
+            rik.pluggable_k(Some(K::Link)),
             None,
             "LinK under RI-K {spin:?}"
         );
@@ -290,8 +291,10 @@ fn predicted(route: &JkRoute, k_builder: Option<&str>) -> Vec<&'static str> {
     if route.k_aux.is_some() || route.rsh_pair.is_some() {
         v.push("ri-k");
     }
-    if let Some(p) = route.pluggable_k(k_builder) {
-        v.push(p);
+    if let Some(p) = route
+        .pluggable_k(ferric_scf::options::KBuilderKind::parse_opt(k_builder).expect("spelling"))
+    {
+        v.push(p.as_str());
     }
     v
 }

@@ -263,7 +263,10 @@ fn unsupported_combinations_are_typed_errors() {
         ("newton", Box::new(|c| c.newton_trigger = 1e-2)),
         ("trah", Box::new(|c| c.trah_trigger = Some(1e-2))),
         ("stability", Box::new(|c| c.check_stability = true)),
-        ("cosx", Box::new(|c| c.k_builder = Some("cosx".into()))),
+        (
+            "cosx",
+            Box::new(|c| c.k_builder = Some(ferric_scf::options::KBuilderKind::Cosx)),
+        ),
         (
             "pcm",
             Box::new(|c| c.pcm = Some(ferric_pcm::PcmConfig::water())),
