@@ -129,11 +129,13 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
   constructor (`EcpMolecule::new` applies the ECP, `EcpMolecule::prepare`
   takes `PrepareOptions` and builds the basis and bounds) and only
   borrowed afterwards. The ferric-python SCF entry points and correlated
-  drivers and the CLI's molecular, CAS and OP-MP3 paths go through it (see
-  roadmap items 8 and 8b); the correlated kernels themselves and the CLI's
-  per-method `run_*` functions still take a loose `&Molecule` and
-  `&PreparedBasis`, so the types do not yet enforce the invariant there
-  (item 8c).
+  drivers and the CLI's molecular run functions go through it (roadmap
+  items 8, 8b and 8c), and the system owns its screening (its solve
+  methods apply `PreparedSystem::screening` to every config). The
+  frontend-facing drivers of the CAS, OP-MP3, RI-MP2, CC, GW, PDEP-RPA and
+  TDDFT families take `&PreparedSystem` or `&PreparedAux`; most kernels
+  underneath still take a loose `&Molecule` and `&PreparedBasis`, so the
+  types do not enforce the invariant there yet (item 8d).
 - **Units (target):** newtypes at API boundaries only (`Bohr`/`Angstrom` on
   molecule constructors and accessors, `Hartree` on result energies), with
   kernels keeping raw `f64` and arrays. No such newtypes exist yet. Today the
@@ -293,34 +295,74 @@ Done:
    failed with a `df_k_aux` conflict. An explicit opt-out (`df_k_aux=""`)
    already worked, and pure or range-separated functionals ignore COSX, so
    they never hit the conflict.
+8c. `PreparedSystem` follow-ups, bitwise unchanged results and messages
+    (compared against origin/main on Python calls and CLI inputs, ECP and
+    error cases included):
+    - The system owns screening: `PreparedSystem::{solve_rhf, solve_uhf,
+      solve_rohf, solve_reference, solve_rhf_ladder}` run each config (each
+      rung) through `PreparedSystem::screened`, which puts the system's
+      `ScreeningKind` in place of `RhfConfig::screening` (a borrow when they
+      agree, as every caller does; a copy sharing the config's
+      `eri_route`/`raw_handoff` handles otherwise). A Python `screening=`
+      keyword therefore has to go through `PrepareOptions`.
+    - `ferric_ci::driver::rhf_start_prepared` is `rhf_start` again.
+    - Drivers taking the system: `ferric_ci::driver::{nevpt2_on_rhf,
+      casscf_on_rhf, casci_on_rhf}` (`&PreparedSystem`);
+      `opmp3_driver::{opmp3_scf, opmp3_on_reference, run_opmp3}`
+      (`&PreparedSystem`, `Opmp3Integrals::Ri(&PreparedAux)`);
+      `local_opmp3::{local_opmp3_on_reference, run_local_opmp3}`,
+      `rimp2::{ri_mp2_on, ri_mp2_fitted_on}`, `u_rimp2::u_ri_mp2_on`,
+      `ccsd_closed_shell_on`, `u_ccsd_on`, `ferric_gw::run_gw_on`,
+      `ferric_rpa::run_pdep_rpa_on`, `ferric_tddft::run_tddft_on`
+      (`&PreparedAux`, reading the molecule, orbital basis and Coulomb
+      operator from `PreparedAux::system`). `PreparedAux::basis_for(sys)` is
+      the one check that a fitting basis belongs to a system a kernel also
+      holds. The Python and CLI callers use them; the loose functions stay
+      as the kernels they wrap.
+    - The CLI's per-method `run_*` functions in `ferric-cli/src/lib.rs`
+      (every correlated arm, uhf/rohf/cdft, symmetric RHF, the double
+      hybrids, PDEP-RPA, the open-shell/GW reference helpers,
+      `preflight_exact_drpa`, `cdft::run`) take `&PreparedSystem` and build
+      fitting bases with `sys.prepare_aux` (`correlation_aux` returns a
+      `PreparedAux`).
+    - Python bindings that applied the ECP by hand go through
+      `EcpMolecule`: `run_qmmm` builds a `PreparedSystem`, `run_cdft`
+      prepares its `EcpMolecule` stage, and the bindings that need only the
+      valence molecule use `EcpMolecule::into_mol` / `system::ecp_molecule`
+      (integrals.rs, `AoIntegrals`, properties.rs, response_modes.rs,
+      md.rs, geometry.rs, `run_saddle`/`run_irc`, gamma.rs's cell check).
+    - `system::{prepare, prepare_ecp, prepare_aux}` build the basis, bounds
+      and fitting basis with the GIL released.
+    - Also: origin/main did not compile ferric-python (#688's
+      `run_omega_ri` called the `prepare_with_aux` helper #690 removed);
+      fixed as `prepare` + `prepare_aux`.
 
 Next, each as its own PR following the patterns above:
 
-8c. What 8b left loose: (a) kernels taking `&PreparedSystem` (and
-    `&PreparedAux`) so the types enforce the invariant: the correlated
-    kernels in ferric-mp2/cc/rpa/gw/tddft/ci (including
-    `opmp3_driver::{opmp3_scf, opmp3_on_reference, run_opmp3}`,
-    `local_opmp3_on_reference`, `run_casscf`, `nevpt2_on_rhf`), the
-    ferric-scf solvers, and the CLI's per-method `run_*` functions in
-    `ferric-cli/src/lib.rs`, which still take `(mol, prep, op, bounds)`
-    and prepare their fitting bases inline with `PreparedBasis::new(mol, ..)`
-    (about 14 `run_*` sites plus `correlation_aux`). Once kernels take
-    `&PreparedAux` / `&PreparedSystem` and read the molecule and orbital
-    basis from `aux.system()`, `PreparedAux`'s `Deref` goes; (b) the other ferric-python bindings that apply
-    the ECP by hand (`md.rs`, `integrals.rs`, `blocks.rs`'s
-    `AoIntegrals`, `properties.rs`, `cdft.rs`, `qmmm.rs`, `geometry.rs`,
-    `gamma.rs`, two sites in `lib.rs`, `response_modes.rs`); (c)
+8d. What 8c left loose: (a) the kernels under the drivers still take a
+    loose `(mol, prep, dfbs, op)`: `run_casscf`, `run_cas_ci`, `sc_nevpt2`,
+    and the RI kernels without a `PreparedAux` entry point (CCD, LinLCCD,
+    CCSD(T), EOM-CCSD, MP3, OO-RI-MP2, SCS/Laplace/attenuated/terfc MP2,
+    MP2-V, RS-MP2-RPA, BSE-TDA, TDHF polarizability, the fitted and
+    energy-only PDEP-RPA routes, the analytic gradients), so
+    `PreparedAux: Deref<Target = PreparedBasis>` stays: the CLI's
+    correlated arms (37 sites in `ferric-cli/src/lib.rs`) and the Python
+    drivers in `mp2.rs`, `cc.rs`, `gw.rs`, `rpa.rs`, `dft.rs`,
+    `omega_ri.rs` pass `&aux` to them; (b) the ferric-scf solvers take
+    loose arguments, and the CLI arms, the Python block helpers,
+    `run_qmmm` and `run_cdft` call them with the system's pieces and a
+    config of their own, so `PreparedSystem::screened` does not cover them
+    (moving them onto the system's methods would change results when a
+    config's screening differs from `[scf] screening`); (c)
     `run_uks`/`run_roks` share the open-shell tail of `run_uhf`/`run_rohf`
     in substance but not in code (they skip the pre-SCF noise-floor
-    warning, so merging them is a behaviour change); (d) the system should
-    own screening: `PreparedSystem::solve_rhf(&config)` does not check
-    `config.screening == sys.screening()`, so a mismatch would screen
-    direct J/K with one kind and LinK with another, and a future Python
-    `screening=` keyword must go through `PrepareOptions`; (e)
-    `FockResponse` builds non-Coulomb bounds the system cannot own; (f)
-    the Python bindings still prepare the basis and bounds with the GIL
-    held; (g) with `rhf_start` gone, `rhf_start_prepared` can take its
-    name back.
+    warning, so merging them is a behaviour change); (d) `FockResponse`
+    builds non-Coulomb bounds the system cannot own; (e) the GIL is still
+    held while `run_qmmm` builds its system and while the integral
+    bindings (integrals.rs, `AoIntegrals`, response_modes.rs) prepare
+    their bases; (f) the periodic paths (`ferric-cli/src/periodic.rs`'s
+    `apply_ecp`, the Python `pbc.rs` drivers) keep their own preparation,
+    their molecule going into a `Cell`.
 9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
    declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.
