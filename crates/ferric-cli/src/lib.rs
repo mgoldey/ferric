@@ -5814,13 +5814,10 @@ fn export_pdep_npz_bundle(
         .map_err(|e| CliError::verbatim(format!("config error: [rpa] {e}")))?;
     let rpa_cert_json = rpa_cert.to_json().to_string();
     // A file the caller asked for and did not get is not a warning.
-    let write_failed =
-        if let Err(e) = write_pdep_npz(npz_path, inputs, &props, rpa_result, &rpa_cert_json) {
-            eprintln!("error: failed to write {}: {}", npz_path, e);
-            true
-        } else {
-            false
-        };
+    let write_error = write_pdep_npz(npz_path, inputs, &props, rpa_result, &rpa_cert_json)
+        .err()
+        .map(|e| format!("error: failed to write {}: {}", npz_path, e));
+    let write_failed = write_error.is_some();
     if !write_failed {
         println!("Wrote NPZ feature bundle: {}", npz_path);
         if props.c6.is_some() {
@@ -5845,12 +5842,15 @@ fn export_pdep_npz_bundle(
     // exit status changes.
     let allow_partial = cfg.rpa.allow_partial_npz.unwrap_or(false);
     let n_failed = props.gaps.len() + usize::from(write_failed);
-    if n_failed > 0 && !allow_partial {
-        let mut lines = vec![format!(
+    // `allow_partial_npz` accepts gaps in a bundle that was written; a bundle
+    // that was not written at all is always an error.
+    if write_failed || (!props.gaps.is_empty() && !allow_partial) {
+        let mut lines: Vec<String> = write_error.into_iter().collect();
+        lines.push(format!(
             "error: the NPZ bundle is incomplete — {} requested propert{} failed:",
             n_failed,
             if n_failed == 1 { "y" } else { "ies" },
-        )];
+        ));
         lines.extend(props.gaps.iter().map(|g| format!("  - {g}")));
         if write_failed {
             lines.push("  - the bundle could not be written at all".to_string());

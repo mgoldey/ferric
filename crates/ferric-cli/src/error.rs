@@ -56,12 +56,10 @@ pub enum CliError {
 impl CliError {
     /// [`CliError::Msg`] from anything printable: `error: {e}` on stderr.
     pub fn msg(e: impl fmt::Display) -> Self {
-        let s = e.to_string();
-        debug_assert!(
-            !s.starts_with("error:"),
-            "Msg text carries its own prefix: {s:?}"
-        );
-        CliError::Msg(s)
+        // No assertion on the text: it can quote user input (a config path
+        // such as `error:job.toml`), so its first characters say nothing
+        // about whether the caller picked the right variant.
+        CliError::Msg(e.to_string())
     }
 
     /// [`CliError::Verbatim`]: `text` on stderr as written (status 1).

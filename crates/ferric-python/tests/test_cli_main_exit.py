@@ -85,3 +85,32 @@ def test_small_run_exits_zero(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "Traceback" not in r.stderr
     assert "RHF" in r.stdout or "Total" in r.stdout or "energy" in r.stdout.lower()
+
+
+def _cli_with_atexit(*args):
+    """Like `_cli`, but registers an atexit handler first: it only runs if the
+    process shuts down through Python, not through `std::process::exit`."""
+    code = (
+        "import atexit, sys, ferric; "
+        "atexit.register(lambda: print('ATEXIT-RAN', file=sys.stderr)); "
+        "sys.argv = ['ferric'] + sys.argv[1:]; "
+        "sys.exit(ferric._cli_main())"
+    )
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1")
+    return subprocess.run(
+        [sys.executable, "-c", code, *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=600,
+    )
+
+
+def test_python_shuts_down_normally_on_success_and_error(tmp_path):
+    ok = _cli_with_atexit("--version")
+    assert ok.returncode == 0
+    assert ok.stderr.endswith("ATEXIT-RAN\n")
+    bad = _cli_with_atexit(str(tmp_path / "nope.toml"))
+    assert bad.returncode == 1
+    assert bad.stderr.startswith("error: cannot read config file ")
+    assert bad.stderr.endswith("ATEXIT-RAN\n")

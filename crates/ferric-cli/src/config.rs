@@ -2851,7 +2851,8 @@ pub struct RpaCfg {
     /// properties that DID work would be worse. What the default changes is
     /// only that the run stops claiming success. Set this to `true` to opt back
     /// in when gaps are acceptable — the honest form of what used to be
-    /// implicit.
+    /// implicit. It forgives gaps in a bundle that was written; a bundle that
+    /// could not be written at all still fails the run.
     pub allow_partial_npz: Option<bool>,
     /// C6 polarizability source. One of:
     ///   "ts"   — Tkatchenko-Scheffler single-pole model (default)

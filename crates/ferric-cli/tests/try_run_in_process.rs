@@ -107,19 +107,26 @@ fn an_unknown_method_kind_is_refused_after_the_config_loads() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../testdata/molecules/water.xyz"
     );
-    let dir = std::env::temp_dir().join(format!("ferric_try_run_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // A directory this test creates (`create_dir` fails if it exists) and so
+    // owns; the path goes into TOML as an escaped basic string.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ferric_try_run_{}_{nanos}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
     let toml = dir.join("in.toml");
     std::fs::write(
         &toml,
         format!(
-            "[molecule]\nxyz = \"{water}\"\n[basis]\nname = \"sto-3g\"\n\
+            "[molecule]\nxyz = {water:?}\n[basis]\nname = \"sto-3g\"\n\
              [method]\nkind = \"hf-plus\"\n"
         ),
     )
     .unwrap();
     let r = try_run(argv(&[toml.to_str().unwrap(), "--no-json"]));
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&toml);
+    let _ = std::fs::remove_dir(&dir);
     let e = r.unwrap_err();
     assert!(matches!(e, CliError::Msg(_)), "{e:?}");
     assert_eq!(e.exit_code(), 1);
