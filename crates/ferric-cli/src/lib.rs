@@ -637,12 +637,12 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
 /// `--verbose`/`-v`, `--json <path>`, `--no-json`, `--gpu <preset>`,
 /// `--version`/`-V` and `--help`/`-h`.
 ///
-/// The process entry point over [`try_run`]: an error is reported on stderr
-/// ([`CliError::report`]) and terminates the process through
+/// The process entry point over [`try_run`]: it does process init
+/// (`init_threading`), then an error is written to stderr
+/// ([`CliError::eprint`]) and terminates the process through
 /// `std::process::exit` with [`CliError::exit_code`] (status 2 for usage
 /// errors, 1 for input or run errors). `--help`/`--version` and a completed
-/// run return normally (status 0). This and `main` are the only places the
-/// CLI exits.
+/// run return normally (status 0). This is the only place the CLI exits.
 ///
 /// This is the actual CLI, taking argv explicitly instead of reading
 /// `std::env::args()` itself. Split out so a caller whose real OS-process
