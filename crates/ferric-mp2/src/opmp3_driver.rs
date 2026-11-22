@@ -6,9 +6,10 @@
 //!
 //! Every total is `E_HF[ρ] + E_NBS + E_c(model)` (the paper's definition).
 //!
-//! The drivers take the [`PreparedSystem`] (molecule with the basis set's ECP
-//! applied, prepared basis, Coulomb Schwarz bounds, context) and a fitting
-//! basis prepared on it ([`PreparedAux`]), so the reference, the HF Fock
+//! The drivers take the [`PreparedSystem`](ferric_scf::PreparedSystem)
+//! (molecule with the basis set's ECP applied, prepared basis, Coulomb
+//! Schwarz bounds, context) and a fitting basis prepared on it
+//! ([`PreparedAux`](ferric_scf::PreparedAux)), so the reference, the HF Fock
 //! build and the amplitudes all see one molecule and one basis.
 
 use crate::opmp3::{paper_x_ss, w_matrices, Opmp3Models, WMatrices, PAPER_X_SS};

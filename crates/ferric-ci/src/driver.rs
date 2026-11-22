@@ -10,9 +10,10 @@
 //! `"nevpt2"`) call these functions, so the same input gives the same number
 //! on both surfaces.
 //!
-//! Every driver takes the [`PreparedSystem`] (molecule with the basis set's
-//! ECP applied, its prepared basis), so a frontend cannot hand the kernels a
-//! molecule and a basis that disagree about the ECP. The kernels underneath
+//! Every driver takes the [`PreparedSystem`](ferric_scf::PreparedSystem)
+//! (molecule with the basis set's ECP applied, its prepared basis), so a
+//! frontend cannot hand the kernels a molecule and a basis that disagree
+//! about the ECP. The kernels underneath
 //! ([`run_casscf`], [`run_cas_ci`], [`sc_nevpt2`]) take the molecule and the
 //! basis separately.
 
