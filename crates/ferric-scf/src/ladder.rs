@@ -702,6 +702,8 @@ pub fn default_ladder_from(base: &RhfConfig) -> Vec<Rung> {
 /// DF-JK aux is auto-defaulted to `def2-universal-jkfit` only when the base
 /// leaves it unset AND a functional is present (hybrids/RSH need K; pure DFT
 /// still benefits from RI-J) — a bare-HF base with no aux keeps direct J/K.
+/// The defaults are [`crate::options::ks_jk_fit_defaults`] (so no RI-K
+/// default under COSX), the rule the Kohn-Sham entry points apply.
 pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
     let mk = |level_shift: f64, max_iter: usize| {
         let mut c = base.clone();
@@ -710,13 +712,14 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
         c.stall_window = Some(15);
         c.divergence_tol = Some(0.5);
         if c.xc.is_some() {
-            if c.df_j_aux.is_none() {
-                c.df_j_aux = Some("def2-universal-jkfit".to_string());
-            }
-            // RIJCOSX: COSX replaces RI-K, so no RI-K default under it.
-            if c.df_k_aux.is_none() && c.k_builder != Some(crate::options::KBuilderKind::Cosx) {
-                c.df_k_aux = Some("def2-universal-jkfit".to_string());
-            }
+            // The Kohn-Sham JK-fit defaults and the RIJCOSX rule, from their
+            // one home in `crate::options` (what the KS entry points apply).
+            (c.df_j_aux, c.df_k_aux) = crate::options::ks_jk_fit_defaults(
+                c.k_builder,
+                c.df_j_aux.take(),
+                c.df_k_aux.take(),
+                crate::options::DEFAULT_JK_AUX.to_string(),
+            );
         }
         c
     };
@@ -935,6 +938,55 @@ mod tests {
     /// `ksdft_ladder` structural guarantees (fast, no SCF): carries the base's
     /// functional/grid into every rung, escalates the level shift, and layers
     /// stall/divergence early-abort on top.
+    /// The rungs' JK-fit defaults equal the copy `ksdft_ladder` kept before
+    /// it called `options::ks_jk_fit_defaults` (the oracle below, verbatim),
+    /// for every combination of functional, aux settings and builder.
+    #[test]
+    fn ksdft_ladder_jk_defaults_match_its_old_copy() {
+        use crate::options::KBuilderKind;
+        let old = |c: &mut RhfConfig| {
+            if c.xc.is_some() {
+                if c.df_j_aux.is_none() {
+                    c.df_j_aux = Some("def2-universal-jkfit".to_string());
+                }
+                // RIJCOSX: COSX replaces RI-K, so no RI-K default under it.
+                if c.df_k_aux.is_none() && c.k_builder != Some(KBuilderKind::Cosx) {
+                    c.df_k_aux = Some("def2-universal-jkfit".to_string());
+                }
+            }
+        };
+        let auxes = [None, Some(""), Some("cc-pvtz-jkfit")];
+        let kinds = [
+            None,
+            Some(KBuilderKind::Direct),
+            Some(KBuilderKind::Link),
+            Some(KBuilderKind::Cosx),
+        ];
+        for xc in [None, Some("PBE"), Some("B3LYP")] {
+            for j in auxes {
+                for k in auxes {
+                    for kb in kinds {
+                        let base = RhfConfig {
+                            xc: xc.map(str::to_string),
+                            df_j_aux: j.map(str::to_string),
+                            df_k_aux: k.map(str::to_string),
+                            k_builder: kb,
+                            ..RhfConfig::default()
+                        };
+                        let mut want = base.clone();
+                        old(&mut want);
+                        for rung in ksdft_ladder(&base) {
+                            let c = rung.config;
+                            let case = format!("{xc:?} {j:?} {k:?} {kb:?}");
+                            assert_eq!(c.df_j_aux, want.df_j_aux, "{case}");
+                            assert_eq!(c.df_k_aux, want.df_k_aux, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn ksdft_ladder_carries_xc_and_escalates() {
         let grid = ferric_dft::grid::AtomicGridConfig {

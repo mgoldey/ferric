@@ -175,6 +175,23 @@ pub fn df_k_aux_or_default<T>(
     })
 }
 
+/// The Kohn-Sham JK-fit defaults: RI-J on `jk` unless `df_j_aux` names a
+/// choice, and RI-K on `jk` under the RIJCOSX rule
+/// ([`df_k_aux_or_default`]: no RI-K default under COSX). The one home of
+/// both, for the Python KS entry points
+/// ([`ScfEntryPoint::options`](crate::options::entry::ScfEntryPoint::options),
+/// over [`AuxBasis`]) and `ksdft_ladder` (over a lowered config's names).
+/// Returns `(df_j_aux, df_k_aux)`; `df_j_aux` is always `Some`.
+pub fn ks_jk_fit_defaults<T: Clone>(
+    k_builder: Option<KBuilderKind>,
+    df_j_aux: Option<T>,
+    df_k_aux: Option<T>,
+    jk: T,
+) -> (Option<T>, Option<T>) {
+    let df_k_aux = df_k_aux_or_default(k_builder, df_k_aux, Some(jk.clone()));
+    (Some(df_j_aux.unwrap_or(jk)), df_k_aux)
+}
+
 /// A density-fitting auxiliary basis choice for [`RhfConfig::df_j_aux`] /
 /// [`RhfConfig::df_k_aux`].
 #[derive(Debug, Clone, PartialEq, Eq)]

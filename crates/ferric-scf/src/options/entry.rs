@@ -29,7 +29,7 @@ use std::fmt;
 use ndarray::Array2;
 
 use super::{
-    df_k_aux_or_default, AuxBasis, Guess, KBuilderKind, ScfOptions, Stability, TrahTrigger,
+    ks_jk_fit_defaults, AuxBasis, Guess, KBuilderKind, ScfOptions, Stability, TrahTrigger,
 };
 
 /// `run_dft`'s functional when the caller names none.
@@ -346,21 +346,11 @@ impl ScfEntryPoint {
         // no RI-K default; a NAMED df_k_aux with HF exchange or a global
         // hybrid is the SCF's conflict). Hartree-Fock: exact J and K unless
         // named.
+        let (df_j_aux, df_k_aux) = (df_j_aux.map(AuxBasis::parse), df_k_aux.map(AuxBasis::parse));
         let (df_j_aux, df_k_aux) = if ks {
-            (
-                Some(
-                    df_j_aux
-                        .map(AuxBasis::parse)
-                        .unwrap_or_else(AuxBasis::default_jk),
-                ),
-                df_k_aux_or_default(
-                    k_builder,
-                    df_k_aux.map(AuxBasis::parse),
-                    Some(AuxBasis::default_jk()),
-                ),
-            )
+            ks_jk_fit_defaults(k_builder, df_j_aux, df_k_aux, AuxBasis::default_jk())
         } else {
-            (df_j_aux.map(AuxBasis::parse), df_k_aux.map(AuxBasis::parse))
+            (df_j_aux, df_k_aux)
         };
         Ok(ScfOptions {
             max_iter,
