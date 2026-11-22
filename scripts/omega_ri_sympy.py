@@ -430,7 +430,12 @@ def model_system():
     def fit(wv):
         vw = gauss_matrix("erfc", auxb, auxb, wv)
         aw = gauss_matrix("erfc", auxb, pairb, wv) @ cpair
-        cw = np.linalg.solve(vw, aw)
+        try:
+            cw = np.linalg.solve(vw, aw)
+        except np.linalg.LinAlgError:
+            # A singular metric (e.g. a kernel that vanishes as w -> 0) is a
+            # failed fit, reported by the checks below, not a crash.
+            cw = np.full_like(aw, np.nan)
         return cw, cw.T @ v @ cw
 
     # C2: w -> 0 reaches the Coulomb fit. The leaked pair charge makes the
