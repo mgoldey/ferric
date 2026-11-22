@@ -96,11 +96,16 @@ def test_reference_read_during_gil_released_consumer(water, basis, results, kind
     serial = ferric.hirshfeld_charges(water, basis, r)
     density = r.density()
     out: dict[str, object] = {}
+    errors: list[BaseException] = []
     stop = threading.Event()
 
     def consumer():
-        out["q"] = ferric.hirshfeld_charges(water, basis, r)
-        stop.set()
+        try:
+            out["q"] = ferric.hirshfeld_charges(water, basis, r)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            stop.set()
 
     def reader():
         n = 0
@@ -114,6 +119,7 @@ def test_reference_read_during_gil_released_consumer(water, basis, results, kind
         t.start()
     for t in threads:
         t.join()
+    assert not errors, errors[0]
     assert out["q"] == serial
     assert out["reads"] >= 1
 
