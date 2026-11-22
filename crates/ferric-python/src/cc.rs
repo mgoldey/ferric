@@ -120,13 +120,15 @@ pub(crate) fn py_ladder_route(r: &ferric_cc::CcResult) -> (Option<String>, Optio
     }
 }
 
+result_getters! {
+    PyCcResult {
+        #[doc = method_certificate_doc!()]
+        certificate: field certificate_data;
+    }
+}
+
 #[pymethods]
 impl PyCcResult {
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         match self.t_correction {
             Some(t) => format!(
@@ -408,14 +410,16 @@ pub(crate) struct PyEomCcsdResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+result_getters! {
+    PyEomCcsdResult {
+        /// Validation certificate (see `RhfResult.certificate`), capability
+        /// `"eom-ccsd"`.
+        certificate: field certificate_data;
+    }
+}
+
 #[pymethods]
 impl PyEomCcsdResult {
-    /// Validation certificate (see `RhfResult.certificate`), capability
-    /// `"eom-ccsd"`.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     /// Singlet excitation energies ω (Hartree), ascending.
     #[getter]
     fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {

@@ -5,7 +5,7 @@
 //! `run_casscf` and `run_nevpt2` run `ferric_ci::driver`, as the CLI kinds
 //! `casscf` and `nevpt2` do, and carry those kinds' certificates.
 
-use crate::{budget_bytes_from_gb, certificate_dict, make_err, prepare, PyBasisSet, PyMolecule};
+use crate::{budget_bytes_from_gb, make_err, prepare, PyBasisSet, PyMolecule};
 use ferric_ci::driver::{rhf_start_prepared, ScfStart};
 use ferric_core::certificate::{BuildStamp, Certificate};
 use ndarray::{Array2, Array4};
@@ -54,6 +54,15 @@ struct PyCasCiResult {
     certificate_data: Certificate,
 }
 
+stored_method_result!(PyCasCiResult, total_energy: e_total, certificate: certificate_data);
+
+result_getters! {
+    PyCasCiResult {
+        /// Validation certificate (schema of `RhfResult.certificate`).
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyCasCiResult {
     /// CI coefficients, shape `(n_alpha_strings, n_beta_strings)`; strings in
@@ -90,11 +99,6 @@ impl PyCasCiResult {
     #[getter]
     fn mo_coeff_active<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         self.mo_coeff_active.clone().into_pyarray(py)
-    }
-    /// Validation certificate (schema of `RhfResult.certificate`).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -251,6 +255,15 @@ struct PyCasScfResult {
     certificate_data: Certificate,
 }
 
+stored_method_result!(PyCasScfResult, total_energy: e_total, certificate: certificate_data);
+
+result_getters! {
+    PyCasScfResult {
+        /// Validation certificate (schema of `RhfResult.certificate`).
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyCasScfResult {
     /// CI coefficients, shape `(n_alpha_strings, n_beta_strings)`, in the
@@ -282,11 +295,6 @@ impl PyCasScfResult {
     #[getter]
     fn mo_energy<'py>(&self, py: Python<'py>) -> Option<Bound<'py, numpy::PyArray1<f64>>> {
         self.mo_energy.clone().map(|v| v.into_pyarray(py))
-    }
-    /// Validation certificate (schema of `RhfResult.certificate`).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -478,6 +486,15 @@ fn classes_dict<'py>(
     Ok(d)
 }
 
+stored_method_result!(PyNevpt2Result, total_energy: e_total, certificate: certificate_data);
+
+result_getters! {
+    PyNevpt2Result {
+        /// Validation certificate (schema of `RhfResult.certificate`).
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyNevpt2Result {
     /// Class energies (Ha), keyed by PySCF's names `Sr`, `Si`, `Sijrs`,
@@ -501,11 +518,6 @@ impl PyNevpt2Result {
     #[getter]
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
         self.mo_energy.clone().into_pyarray(py)
-    }
-    /// Validation certificate (schema of `RhfResult.certificate`).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         format!(

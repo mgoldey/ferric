@@ -1,6 +1,9 @@
 //! Gamma-point periodic RHF binding: moved verbatim from `lib.rs`.
 
 use super::*;
+use ferric_core::certificate::Certificate;
+use ferric_core::method_result::MethodResult;
+use std::borrow::Cow;
 
 // ── Periodic (Gamma-point) RHF ──
 
@@ -68,20 +71,12 @@ pub(crate) struct PyGammaRhfResult {
     pub(crate) stress_data: Option<Array2<f64>>,
 }
 
-#[pymethods]
-impl PyGammaRhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
+impl MethodResult for PyGammaRhfResult {
     fn total_energy(&self) -> f64 {
         self.energy
     }
-
-    /// Validation certificate (see `GammaOpenShellResult.certificate`):
-    /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc::pbc_certificate_dict(
-            py,
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        Cow::Owned(pbc::pbc_certificate_stamped(
             "rhf-gamma",
             &self.jk,
             self.auxbasis.as_deref(),
@@ -89,8 +84,28 @@ impl PyGammaRhfResult {
             None,
             self.converged,
             self.iterations,
-        )
+        ))
     }
+}
+
+result_getters! {
+    PyGammaRhfResult {
+        total_energy: alias of energy;
+        /// Validation certificate (see `GammaOpenShellResult.certificate`):
+        /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
+        certificate;
+        /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
+        /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
+        /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
+        /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
+        /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
+        /// "cpu_s", "calls"}}, "counters": {name: int}}`.
+        timings: field timings_data;
+    }
+}
+
+#[pymethods]
+impl PyGammaRhfResult {
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order); `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
@@ -105,16 +120,6 @@ impl PyGammaRhfResult {
         self.stress_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
-    /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
-    /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
-    /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
-    /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
-    /// "cpu_s", "calls"}}, "counters": {name: int}}`.
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        pbc::timings_dict(py, &self.timings_data)
     }
     /// MO energies (Hartree), ascending, 1D numpy array.
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {

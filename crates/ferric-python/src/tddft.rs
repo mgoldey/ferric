@@ -55,19 +55,21 @@ pub(crate) struct PyTddftResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+result_getters! {
+    PyTddftResult {
+        /// Validation certificate (see `RhfResult.certificate`): capability
+        /// `"tda"` or `"tddft"`, `grade` `"proven_narrow"` capped by the SCF
+        /// reference's. A KS run records `response-grid` (the grid the reference
+        /// SCF and the f_xc kernel shared, equal to `grid`, and whether it was the
+        /// meta-GGA response default) and a meta-GGA run warns that its roots are
+        /// grid-sensitive. Every run records `eigensolver` (solver, root count,
+        /// largest residual).
+        certificate: field certificate_data;
+    }
+}
+
 #[pymethods]
 impl PyTddftResult {
-    /// Validation certificate (see `RhfResult.certificate`): capability
-    /// `"tda"` or `"tddft"`, `grade` `"proven_narrow"` capped by the SCF
-    /// reference's. A KS run records `response-grid` (the grid the reference
-    /// SCF and the f_xc kernel shared, equal to `grid`, and whether it was the
-    /// meta-GGA response default) and a meta-GGA run warns that its roots are
-    /// grid-sensitive. Every run records `eigensolver` (solver, root count,
-    /// largest residual).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     #[getter]
     fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         PyArray1::from_slice(py, &self.excitation_energies)

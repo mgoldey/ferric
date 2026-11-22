@@ -49,6 +49,19 @@ pub(crate) struct PyRiMp2Result {
     pub(crate) gradient_data: Option<Array2<f64>>,
 }
 
+stored_method_result!(PyRiMp2Result, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PyRiMp2Result {
+        /// Validation certificate of this result (see `RhfResult.certificate`):
+        /// capability `"rimp2"` (`"att-rimp2"` for `run_terfc_rimp2`), the grade
+        /// capped by the reference SCF's, the auxiliary basis, frozen core and
+        /// correlation operator, the reference's approximations as `scf <name>`,
+        /// and for a local run the local-scheme cap and warnings.
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyRiMp2Result {
     /// Analytic nuclear gradient of `total_energy` as an (natoms, 3) array in
@@ -58,15 +71,6 @@ impl PyRiMp2Result {
         self.gradient_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    /// Validation certificate of this result (see `RhfResult.certificate`):
-    /// capability `"rimp2"` (`"att-rimp2"` for `run_terfc_rimp2`), the grade
-    /// capped by the reference SCF's, the auxiliary basis, frozen core and
-    /// correlation operator, the reference's approximations as `scf <name>`,
-    /// and for a local run the local-scheme cap and warnings.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// Precision provenance of the MP2 correlation energy (the
     /// `rimp2-energy` kernel): `{"precision": "f64", "counter_scope": "process", "kernels": []}` for an
@@ -1598,6 +1602,15 @@ pub(crate) struct PyOoRiMp2Result {
     pub(crate) gradient_data: Option<Array2<f64>>,
 }
 
+stored_method_result!(PyOoRiMp2Result, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PyOoRiMp2Result {
+        #[doc = method_certificate_doc!()]
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyOoRiMp2Result {
     /// Analytic nuclear gradient of `total_energy` as an (natoms, 3) array in
@@ -1607,11 +1620,6 @@ impl PyOoRiMp2Result {
         self.gradient_data
             .as_ref()
             .map(|g| PyArray2::from_array(py, g))
-    }
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -1813,13 +1821,17 @@ pub(crate) struct PyMp3Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyMp3Result, total_energy: e_total, certificate: certificate_data);
+
+result_getters! {
+    PyMp3Result {
+        #[doc = method_certificate_doc!()]
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyMp3Result {
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         format!(
             "Mp3Result(e_total={:.10}, e_corr={:.10})",
@@ -1919,13 +1931,17 @@ pub(crate) struct PyLaplaceMp2Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyLaplaceMp2Result, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PyLaplaceMp2Result {
+        #[doc = method_certificate_doc!()]
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyLaplaceMp2Result {
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         format!(
             "LaplaceMp2Result(total_energy={:.10}, mp2_corr={:.10})",
@@ -2056,13 +2072,17 @@ pub(crate) struct PySosMp2Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PySosMp2Result, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PySosMp2Result {
+        #[doc = method_certificate_doc!()]
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PySosMp2Result {
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         format!(
             "SosMp2Result(total_energy={:.10}, sos_corr={:.10}, formulation=\"{}\")",
@@ -2225,13 +2245,17 @@ pub(crate) struct PyAttenuatedMp2Result {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyAttenuatedMp2Result, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PyAttenuatedMp2Result {
+        #[doc = method_certificate_doc!()]
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyAttenuatedMp2Result {
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         format!(
             "AttenuatedMp2Result(total_energy={:.10}, mp2_corr={:.10})",
@@ -2469,13 +2493,17 @@ impl PyScsMp2Result {
     }
 }
 
+stored_method_result!(PyScsMp2Result, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PyScsMp2Result {
+        #[doc = method_certificate_doc!()]
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyScsMp2Result {
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         format!(
             "ScsMp2Result(total_energy={:.10}, scs_corr={:.10})",
@@ -2668,13 +2696,17 @@ pub(crate) struct PyMp2VResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyMp2VResult, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PyMp2VResult {
+        #[doc = method_certificate_doc!()]
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyMp2VResult {
-    #[doc = method_certificate_doc!()]
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         format!(
             "Mp2VResult(total_energy={:.10}, att_mp2_corr={:.10}, vv10_e_nl={:.10})",

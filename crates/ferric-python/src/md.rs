@@ -40,6 +40,17 @@ impl PyMdResult {
     }
 }
 
+result_getters! {
+    PyMdResult {
+        /// Validation certificate (dict form of
+        /// `ferric_core::certificate::Certificate`). Always `not graded`, with
+        /// capability `"md:<label>"`; the integrator, thermostat, time step and
+        /// seed are recorded as approximations. For `run_aimd` the SCF at the
+        /// final geometry is folded in as the reference.
+        certificate: field certificate_data;
+    }
+}
+
 #[pymethods]
 impl PyMdResult {
     /// Step index of each recorded frame.
@@ -113,15 +124,6 @@ impl PyMdResult {
     #[getter]
     fn scf_iterations(&self) -> Option<Vec<usize>> {
         self.scf_iterations_data.clone()
-    }
-    /// Validation certificate (dict form of
-    /// `ferric_core::certificate::Certificate`). Always `not graded`, with
-    /// capability `"md:<label>"`; the integrator, thermostat, time step and
-    /// seed are recorded as approximations. For `run_aimd` the SCF at the
-    /// final geometry is folded in as the reference.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// The final geometry as a new `Molecule` (`run_aimd`); `None` for
     /// `run_ffmd`.

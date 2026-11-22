@@ -177,14 +177,26 @@ pub(crate) struct PyRhfResult {
     pub(crate) gradient_data: Option<Array2<f64>>,
 }
 
+stored_method_result!(PyRhfResult, total_energy: energy, certificate: certificate_data);
+
+result_getters! {
+    PyRhfResult {
+        total_energy: alias of energy;
+        /// Validation certificate of this result (the dict form of
+        /// `ferric_core::certificate::Certificate`): `capability`, `build`,
+        /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
+        /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
+        /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
+        /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
+        /// grid, level shift, ECP, embedding, solvation), `precision` and
+        /// `warnings` (one per element, basis or functional outside the solver's
+        /// energy anchor among them; those do not change the grade).
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyRhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-
     /// Analytic nuclear gradient `dE/dR` as an (natoms, 3) array in
     /// Hartree/Bohr, rows in the Molecule's atom order; `None` unless the
     /// result came from `run_rhf(..., with_gradient=True)`.
@@ -251,19 +263,6 @@ impl PyRhfResult {
     #[getter]
     fn ri_k_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_k_precision().map(|p| p.as_str())
-    }
-    /// Validation certificate of this result (the dict form of
-    /// `ferric_core::certificate::Certificate`): `capability`, `build`,
-    /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
-    /// or `"ungraded"`, from the `method.kind` matrix of the validation page;
-    /// an unconverged SCF is `"ungraded"`), `grade_source`, `measured_error`,
-    /// `approximations` (`[{"name", "detail"}]`: RI-J/RI-K, LinK/COSX, XC
-    /// grid, level shift, ECP, embedding, solvation), `precision` and
-    /// `warnings` (one per element, basis or functional outside the solver's
-    /// energy anchor among them; those do not change the grade).
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// First-order energy change (Hartree) of one plain Roothaan step from the
     /// converged density, `Tr[F[D] (D' - D)]` with `D'` the aufbau density of
@@ -1150,14 +1149,14 @@ pub(crate) const SYMMETRIC_FRAME_MSG: &str =
 reoriented, symmetrized frame (see frame_transform()), not the input frame. Run with \
 symmetry=False for density/MO coefficients/gradients.";
 
+result_getters! {
+    PySymmetricRhfResult {
+        total_energy: alias of field energy;
+    }
+}
+
 #[pymethods]
 impl PySymmetricRhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-
     /// Orbital energies (Hartree) in MO-column order, aligned with
     /// `orbital_irreps`. Occupied columns come first (energy-ordered), then
     /// the virtuals, so with `irrep_nelec` the list need not be globally
@@ -1299,14 +1298,20 @@ impl PyUhfResult {
     }
 }
 
+stored_method_result!(PyUhfResult, total_energy: energy, certificate: certificate_data);
+
+result_getters! {
+    PyUhfResult {
+        total_energy: alias of energy;
+        /// Validation certificate of this result (see `RhfResult.certificate`).
+        /// A UHF/UKS result solved without `stability_descent=True` carries the
+        /// "internal stability not checked" warning.
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyUhfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-
     /// The COSX final-grid pass record (see `RhfResult.cosx_final_pass`).
     #[getter]
     fn cosx_final_pass(&self, py: Python<'_>) -> PyResult<Option<Py<pyo3::types::PyDict>>> {
@@ -1324,13 +1329,6 @@ impl PyUhfResult {
     #[getter]
     fn precision(&self, py: Python<'_>) -> PyResult<PyObject> {
         precision_dict(py, &self.precision)
-    }
-    /// Validation certificate of this result (see `RhfResult.certificate`).
-    /// A UHF/UKS result solved without `stability_descent=True` carries the
-    /// "internal stability not checked" warning.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
     /// First-order energy change of one plain Roothaan step from the converged
     /// density, summed over spins (see `RhfResult.one_step_energy_drop`), or

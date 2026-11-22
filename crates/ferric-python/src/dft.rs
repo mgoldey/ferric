@@ -2,7 +2,10 @@
 
 use super::*;
 use crate::scf::scf_options_from_kwargs;
+use ferric_core::certificate::Certificate;
+use ferric_core::method_result::MethodResult;
 use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
+use std::borrow::Cow;
 
 // ── KS-DFT ──
 
@@ -88,14 +91,37 @@ impl PyDftResult {
     }
 }
 
-#[pymethods]
-impl PyDftResult {
-    /// Alias of `total_energy` (the same value), so callers can read either spelling.
-    #[getter]
-    fn energy(&self) -> f64 {
+impl MethodResult for PyDftResult {
+    fn total_energy(&self) -> f64 {
         self.total_energy
     }
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        let c = scf_kind_certificate(
+            &self.xc_mol,
+            &self.scf_data,
+            &self.scf_config,
+            &self.xc_basis,
+            self.fock_hooked,
+        );
+        Cow::Owned(match self.dispersion_model.as_deref() {
+            Some(m) => c.with_approximation("dispersion", m),
+            None => c,
+        })
+    }
+}
 
+result_getters! {
+    PyDftResult {
+        energy: alias of total_energy;
+        /// Validation certificate of this result (see `RhfResult.certificate`),
+        /// with a `dispersion` approximation when a correction was added to
+        /// `total_energy`.
+        certificate;
+    }
+}
+
+#[pymethods]
+impl PyDftResult {
     /// Precision provenance of this KS-DFT SCF (see `RhfResult.precision`;
     /// the `xc-vxc` kernel carries a `ladder` record).
     #[getter]
@@ -114,24 +140,6 @@ impl PyDftResult {
     #[getter]
     fn ri_k_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_k_precision().map(|p| p.as_str())
-    }
-    /// Validation certificate of this result (see `RhfResult.certificate`),
-    /// with a `dispersion` approximation when a correction was added to
-    /// `total_energy`.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let c = scf_kind_certificate(
-            &self.xc_mol,
-            &self.scf_data,
-            &self.scf_config,
-            &self.xc_basis,
-            self.fock_hooked,
-        );
-        let c = match self.dispersion_model.as_deref() {
-            Some(m) => c.with_approximation("dispersion", m),
-            None => c,
-        };
-        certificate_dict(py, &c)
     }
     /// Exchange-correlation potential V_xc[D] of the converged density `D`
     /// (`density()`), as an AO matrix (n_bf x n_bf), on the SCF's own XC grid.
@@ -279,19 +287,23 @@ pub(crate) struct PyDoubleHybridResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyDoubleHybridResult, total_energy: total_energy, certificate: certificate_data);
+
+result_getters! {
+    PyDoubleHybridResult {
+        /// Validation certificate (see `RhfResult.certificate`): capability
+        /// `"b2plyp"` or `"dsd-pbep86"`, `grade` `"proven"` (both are compared with
+        /// PySCF built from the definition) capped by the Kohn-Sham reference's,
+        /// `measured_error` the kind's anchor only inside the evidence's settings
+        /// (flat (75, 110) grid, f64 RI-J), `approximations`
+        /// `scf ...` (the reference's), `ri`, `frozen-core` and
+        /// `spin-component-scaling`.
+        certificate;
+    }
+}
+
 #[pymethods]
 impl PyDoubleHybridResult {
-    /// Validation certificate (see `RhfResult.certificate`): capability
-    /// `"b2plyp"` or `"dsd-pbep86"`, `grade` `"proven"` (both are compared with
-    /// PySCF built from the definition) capped by the Kohn-Sham reference's,
-    /// `measured_error` the kind's anchor only inside the evidence's settings
-    /// (flat (75, 110) grid, f64 RI-J), `approximations`
-    /// `scf ...` (the reference's), `ri`, `frozen-core` and
-    /// `spin-component-scaling`.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
-    }
     fn __repr__(&self) -> String {
         format!(
             "DoubleHybridResult(total_energy={:.10}, e_ks={:.10}, e_corr={:.10})",

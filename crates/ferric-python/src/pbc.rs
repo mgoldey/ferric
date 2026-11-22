@@ -21,6 +21,8 @@
 //! counts (and `frozen_core`) are VALENCE counts under an ECP.
 
 use super::*;
+use ferric_core::certificate::Certificate;
+use ferric_core::method_result::MethodResult;
 use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
@@ -62,6 +64,7 @@ use ferric_pbc::{
     KUksGradConfig, KUksStressConfig,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use std::borrow::Cow;
 
 // ─────────────────────────────────────────────────────────────── helpers ──
 
@@ -1311,21 +1314,12 @@ struct PyGammaOpenShellResult {
     stress_data: Option<Array2<f64>>,
 }
 
-#[pymethods]
-impl PyGammaOpenShellResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
+impl MethodResult for PyGammaOpenShellResult {
     fn total_energy(&self) -> f64 {
         self.energy
     }
-
-    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        Cow::Owned(pbc_certificate_stamped(
             &format!("{}-gamma", self.method),
             &self.jk,
             self.auxbasis.as_deref(),
@@ -1333,8 +1327,24 @@ impl PyGammaOpenShellResult {
             None,
             self.converged,
             self.iterations,
-        )
+        ))
     }
+}
+
+result_getters! {
+    PyGammaOpenShellResult {
+        total_energy: alias of energy;
+        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+        certificate;
+        /// Stage timings and counters (see `timings_dict`).
+        timings: field timings_data;
+    }
+}
+
+#[pymethods]
+impl PyGammaOpenShellResult {
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell, rows in the Molecule's atom order) of the final SCF stage;
     /// `None` unless `with_gradient=True`.
@@ -1347,11 +1357,6 @@ impl PyGammaOpenShellResult {
     /// antisymmetric part). `None` unless `with_stress=True`.
     fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.stress_data)
-    }
-    /// Stage timings and counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     /// Alpha MO energies (Hartree), ascending.
     fn mo_energy_alpha<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -2086,21 +2091,12 @@ struct PyGammaRksResult {
     stress_data: Option<Array2<f64>>,
 }
 
-#[pymethods]
-impl PyGammaRksResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
+impl MethodResult for PyGammaRksResult {
     fn total_energy(&self) -> f64 {
         self.energy
     }
-
-    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        Cow::Owned(pbc_certificate_stamped(
             "rks-gamma",
             &self.jk,
             self.auxbasis.as_deref(),
@@ -2108,8 +2104,24 @@ impl PyGammaRksResult {
             None,
             self.converged,
             self.iterations,
-        )
+        ))
     }
+}
+
+result_getters! {
+    PyGammaRksResult {
+        total_energy: alias of energy;
+        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+        certificate;
+        /// Stage timings and counters (see `timings_dict`).
+        timings: field timings_data;
+    }
+}
+
+#[pymethods]
+impl PyGammaRksResult {
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per
     /// cell); `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
@@ -2119,11 +2131,6 @@ impl PyGammaRksResult {
     /// symmetrised); `None` unless `with_stress=True`.
     fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.stress_data)
-    }
-    /// Stage timings and counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     /// MO energies (Hartree), ascending.
     fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
@@ -2379,15 +2386,12 @@ struct PyGammaCorrelationResult {
     timings_data: PbcTimings,
 }
 
-#[pymethods]
-impl PyGammaCorrelationResult {
-    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
+impl MethodResult for PyGammaCorrelationResult {
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        Cow::Owned(pbc_certificate_stamped(
             &format!("{}-gamma", self.method),
             &self.jk,
             self.auxbasis.as_deref(),
@@ -2395,14 +2399,24 @@ impl PyGammaCorrelationResult {
             None,
             self.converged,
             self.iterations,
-        )
+        ))
     }
-    /// Stage timings and counters (see `timings_dict`); the correlation
-    /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
+}
+
+result_getters! {
+    PyGammaCorrelationResult {
+        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+        certificate;
+        /// Stage timings and counters (see `timings_dict`); the correlation
+        /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
+        timings: field timings_data;
     }
+}
+
+#[pymethods]
+impl PyGammaCorrelationResult {
     fn __repr__(&self) -> String {
         format!(
             "GammaCorrelationResult(method={:?}, correlation_energy={:.10}, energy={:.10}, \
@@ -2778,21 +2792,12 @@ struct PyKpointScfResult {
     stress_data: Option<Array2<f64>>,
 }
 
-#[pymethods]
-impl PyKpointScfResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
+impl MethodResult for PyKpointScfResult {
     fn total_energy(&self) -> f64 {
         self.energy
     }
-
-    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        Cow::Owned(pbc_certificate_stamped(
             &format!("{}-kpts", self.method),
             &self.jk,
             self.auxbasis.as_deref(),
@@ -2800,8 +2805,25 @@ impl PyKpointScfResult {
             Some((self.mesh, self.centring.as_str())),
             self.converged,
             self.iterations,
-        )
+        ))
     }
+}
+
+result_getters! {
+    PyKpointScfResult {
+        total_energy: alias of energy;
+        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+        certificate;
+        /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
+        /// the RS-GDF counters (see `timings_dict`).
+        timings: field timings_data;
+    }
+}
+
+#[pymethods]
+impl PyKpointScfResult {
     /// Analytic nuclear gradient `dE/dR` (natoms x 3, Hartree/Bohr per cell,
     /// rows in the Molecule's atom order; the force on ONE copy of each atom
     /// in the supercell of the mesh) of the converged SCF (UHF: the final
@@ -2815,12 +2837,6 @@ impl PyKpointScfResult {
     /// unless `with_stress=True`.
     fn stress<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.stress_data)
-    }
-    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
-    /// the RS-GDF counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -3454,21 +3470,12 @@ struct PyKpointRksResult {
     stress_data: Option<Array2<f64>>,
 }
 
-#[pymethods]
-impl PyKpointRksResult {
-    /// Alias of `energy` (the same value), so callers can read either spelling.
-    #[getter]
+impl MethodResult for PyKpointRksResult {
     fn total_energy(&self) -> f64 {
         self.energy
     }
-
-    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        Cow::Owned(pbc_certificate_stamped(
             "rks-kpts",
             &self.jk,
             self.auxbasis.as_deref(),
@@ -3476,8 +3483,24 @@ impl PyKpointRksResult {
             Some((self.mesh, self.centring.as_str())),
             self.converged,
             self.iterations,
-        )
+        ))
     }
+}
+
+result_getters! {
+    PyKpointRksResult {
+        total_energy: alias of energy;
+        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+        certificate;
+        /// Stage timings and counters (see `timings_dict`).
+        timings: field timings_data;
+    }
+}
+
+#[pymethods]
+impl PyKpointRksResult {
     /// Analytic stress `σ_ab = (1/Ω) dE/dε_ab` (3 x 3, Hartree/Bohr³; strain
     /// of the lattice rows AND the atoms, fixed fractional coordinates;
     /// pressure = -tr(σ)/3), the XC term on the energy's own grid. Not
@@ -3491,11 +3514,6 @@ impl PyKpointRksResult {
     /// term on the energy's own grid; `None` unless `with_gradient=True`.
     fn gradient<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyArray2<f64>>> {
         opt_array(py, &self.gradient_data)
-    }
-    /// Stage timings and counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
     }
     fn __repr__(&self) -> String {
         format!(
@@ -4155,15 +4173,12 @@ struct PyKpointCorrelationResult {
     timings_data: PbcTimings,
 }
 
-#[pymethods]
-impl PyKpointCorrelationResult {
-    /// Validation certificate (schema of `RhfResult.certificate`). Periodic
-    /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
-    /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        pbc_certificate_dict(
-            py,
+impl MethodResult for PyKpointCorrelationResult {
+    fn total_energy(&self) -> f64 {
+        self.energy
+    }
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        Cow::Owned(pbc_certificate_stamped(
             &format!("{}-kpts", self.method),
             &self.jk,
             self.auxbasis.as_deref(),
@@ -4171,15 +4186,25 @@ impl PyKpointCorrelationResult {
             Some((self.mesh, self.centring.as_str())),
             self.converged,
             self.iterations,
-        )
+        ))
     }
-    /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
-    /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
-    /// and the RS-GDF counters (see `timings_dict`).
-    #[getter]
-    fn timings(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyDict>> {
-        timings_dict(py, &self.timings_data)
+}
+
+result_getters! {
+    PyKpointCorrelationResult {
+        /// Validation certificate (schema of `RhfResult.certificate`). Periodic
+        /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
+        /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
+        certificate;
+        /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
+        /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
+        /// and the RS-GDF counters (see `timings_dict`).
+        timings: field timings_data;
     }
+}
+
+#[pymethods]
+impl PyKpointCorrelationResult {
     fn __repr__(&self) -> String {
         format!(
             "KpointCorrelationResult(method={:?}, correlation_energy={:.10}, mesh={:?}, \
@@ -4621,10 +4646,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// The periodic certificate (`ferric_pbc::certificate::pbc_certificate`)
-/// stamped with this build, as a dict.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn pbc_certificate_dict(
-    py: Python<'_>,
+/// stamped with this build.
+pub(crate) fn pbc_certificate_stamped(
     capability: &str,
     jk: &str,
     auxbasis: Option<&str>,
@@ -4632,14 +4655,13 @@ pub(crate) fn pbc_certificate_dict(
     mesh: Option<((usize, usize, usize), &str)>,
     converged: bool,
     iterations: usize,
-) -> PyResult<PyObject> {
-    let c = ferric_pbc::certificate::pbc_certificate(
+) -> ferric_core::certificate::Certificate {
+    ferric_pbc::certificate::pbc_certificate(
         capability, jk, auxbasis, exxdiv, mesh, converged, iterations,
     )
     .with_build(ferric_core::certificate::BuildStamp::new(
         ferric_build_info::VERSION,
         ferric_build_info::COMMIT,
         ferric_build_info::DIRTY,
-    ));
-    crate::certificate_dict(py, &c)
+    ))
 }
