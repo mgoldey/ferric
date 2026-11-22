@@ -43,7 +43,7 @@ fn channels_dict<'py>(py: Python<'py>, w: &WChannels) -> PyResult<Bound<'py, pyo
 result_getters! {
     PyOpmp3Result {
         /// Validation certificate (see `RhfResult.certificate`).
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

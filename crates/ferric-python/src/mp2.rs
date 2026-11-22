@@ -58,7 +58,7 @@ result_getters! {
         /// capped by the reference SCF's, the auxiliary basis, frozen core and
         /// correlation operator, the reference's approximations as `scf <name>`,
         /// and for a local run the local-scheme cap and warnings.
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -1607,7 +1607,7 @@ stored_method_result!(PyOoRiMp2Result, total_energy: total_energy, certificate: 
 result_getters! {
     PyOoRiMp2Result {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -1826,7 +1826,7 @@ stored_method_result!(PyMp3Result, total_energy: e_total, certificate: certifica
 result_getters! {
     PyMp3Result {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -1936,7 +1936,7 @@ stored_method_result!(PyLaplaceMp2Result, total_energy: total_energy, certificat
 result_getters! {
     PyLaplaceMp2Result {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -2077,7 +2077,7 @@ stored_method_result!(PySosMp2Result, total_energy: total_energy, certificate: c
 result_getters! {
     PySosMp2Result {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -2250,7 +2250,7 @@ stored_method_result!(PyAttenuatedMp2Result, total_energy: total_energy, certifi
 result_getters! {
     PyAttenuatedMp2Result {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -2498,7 +2498,7 @@ stored_method_result!(PyScsMp2Result, total_energy: total_energy, certificate: c
 result_getters! {
     PyScsMp2Result {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -2701,7 +2701,7 @@ stored_method_result!(PyMp2VResult, total_energy: total_energy, certificate: cer
 result_getters! {
     PyMp2VResult {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 

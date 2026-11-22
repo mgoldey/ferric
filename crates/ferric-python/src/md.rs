@@ -47,7 +47,7 @@ result_getters! {
         /// capability `"md:<label>"`; the integrator, thermostat, time step and
         /// seed are recorded as approximations. For `run_aimd` the SCF at the
         /// final geometry is folded in as the reference.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

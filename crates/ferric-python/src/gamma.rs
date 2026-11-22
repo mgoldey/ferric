@@ -1,9 +1,6 @@
 //! Gamma-point periodic RHF binding: moved verbatim from `lib.rs`.
 
 use super::*;
-use ferric_core::certificate::Certificate;
-use ferric_core::method_result::MethodResult;
-use std::borrow::Cow;
 
 // ── Periodic (Gamma-point) RHF ──
 
@@ -71,36 +68,21 @@ pub(crate) struct PyGammaRhfResult {
     pub(crate) stress_data: Option<Array2<f64>>,
 }
 
-impl MethodResult for PyGammaRhfResult {
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-    fn certificate(&self) -> Cow<'_, Certificate> {
-        Cow::Owned(pbc::pbc_certificate_stamped(
-            "rhf-gamma",
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        ))
-    }
-}
+periodic_method_result!(PyGammaRhfResult, |r| capability: "rhf-gamma", mesh: None);
 
 result_getters! {
     PyGammaRhfResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate (see `GammaOpenShellResult.certificate`):
         /// capability `"rhf-gamma"`, `grade` `"ungraded"`.
-        certificate;
+        certificate: via trait;
         /// Stage timings and counters: hcore (setup, S/T, SR/LR attraction,
         /// Ewald), the J/K build (RS-GDF: SR metric, SR 3-centre, LR pair FT,
         /// LR GEMM, G = 0, metric eigh, B; dense: pair FT, GEMM), the SCF's
         /// J/K calls, and counters (triplets, G vectors, chunks, aux dropped).
         /// `{"wall_s", "cpu_s", "unattributed_wall_s", "stages": {name: {"wall_s",
         /// "cpu_s", "calls"}}, "counters": {name: int}}`.
-        timings: field timings_data;
+        timings: from field timings_data;
     }
 }
 

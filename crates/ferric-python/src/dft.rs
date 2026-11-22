@@ -1,9 +1,9 @@
 //! KS-DFT and double-hybrid bindings: moved verbatim from `lib.rs`.
 
 use super::*;
+use crate::method_result::MethodResult;
 use crate::scf::scf_options_from_kwargs;
 use ferric_core::certificate::Certificate;
-use ferric_core::method_result::MethodResult;
 use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
 use std::borrow::Cow;
 
@@ -112,11 +112,11 @@ impl MethodResult for PyDftResult {
 
 result_getters! {
     PyDftResult {
-        energy: alias of total_energy;
+        energy: via trait;
         /// Validation certificate of this result (see `RhfResult.certificate`),
         /// with a `dispersion` approximation when a correction was added to
         /// `total_energy`.
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -298,7 +298,7 @@ result_getters! {
         /// (flat (75, 110) grid, f64 RI-J), `approximations`
         /// `scf ...` (the reference's), `ri`, `frozen-core` and
         /// `spin-component-scaling`.
-        certificate;
+        certificate: via trait;
     }
 }
 

@@ -64,7 +64,7 @@ result_getters! {
         /// meta-GGA response default) and a meta-GGA run warns that its roots are
         /// grid-sensitive. Every run records `eigensolver` (solver, root count,
         /// largest residual).
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

@@ -66,111 +66,8 @@ macro_rules! method_certificate_doc {
     };
 }
 
-/// The Python getters the result classes share, declared once per class as
-/// a second `#[pymethods]` block (pyo3's `multiple-pymethods`: a macro item
-/// inside a `#[pymethods]` impl is a hard error). Entries, in any order,
-/// each ending in `;`, the getter's doc comments above it:
-///
-/// * `total_energy: alias of energy;` / `energy: alias of total_energy;`:
-///   the alias getter (#676) with its fixed docstring, read through
-///   `ferric_core::method_result::MethodResult::total_energy`;
-/// * `total_energy: alias of field energy;`: the same for a class that is
-///   not a `MethodResult` (it has no certificate);
-/// * `certificate;`: the dict form of `MethodResult::certificate`;
-/// * `certificate: field <name>;`: the same from a stored `Certificate`
-///   field, for a class that is not a `MethodResult`;
-/// * `timings: field <name>;`: `pbc::timings_dict` of a `PbcTimings` field.
-///
-/// Each getter keeps the name, return type, value, docstring and errors of
-/// the hand-written one it replaced.
-macro_rules! result_getters {
-    ($ty:ident { $($body:tt)* }) => {
-        result_getters!(@munch $ty [] $($body)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*]) => {
-        #[::pyo3::pymethods]
-        impl $ty {
-            $($acc)*
-        }
-    };
-    (@munch $ty:ident [$($acc:tt)*] total_energy: alias of energy; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            /// Alias of `energy` (the same value), so callers can read either spelling.
-            #[getter]
-            fn total_energy(&self) -> f64 {
-                ::ferric_core::method_result::MethodResult::total_energy(self)
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] total_energy: alias of field $f:ident; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            /// Alias of `energy` (the same value), so callers can read either spelling.
-            #[getter]
-            fn total_energy(&self) -> f64 {
-                self.$f
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] energy: alias of total_energy; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            /// Alias of `total_energy` (the same value), so callers can read either spelling.
-            #[getter]
-            fn energy(&self) -> f64 {
-                ::ferric_core::method_result::MethodResult::total_energy(self)
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] $(#[$($doc:tt)*])* certificate; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            $(#[$($doc)*])*
-            #[getter]
-            fn certificate(&self, py: ::pyo3::Python<'_>) -> ::pyo3::PyResult<::pyo3::PyObject> {
-                $crate::certificate_dict(
-                    py,
-                    &::ferric_core::method_result::MethodResult::certificate(self),
-                )
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] $(#[$($doc:tt)*])* certificate: field $f:ident; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            $(#[$($doc)*])*
-            #[getter]
-            fn certificate(&self, py: ::pyo3::Python<'_>) -> ::pyo3::PyResult<::pyo3::PyObject> {
-                $crate::certificate_dict(py, &self.$f)
-            }
-        ] $($rest)*);
-    };
-    (@munch $ty:ident [$($acc:tt)*] $(#[$($doc:tt)*])* timings: field $f:ident; $($rest:tt)*) => {
-        result_getters!(@munch $ty [$($acc)*
-            $(#[$($doc)*])*
-            #[getter]
-            fn timings(
-                &self,
-                py: ::pyo3::Python<'_>,
-            ) -> ::pyo3::PyResult<::pyo3::Py<::pyo3::types::PyDict>> {
-                $crate::pbc::timings_dict(py, &self.$f)
-            }
-        ] $($rest)*);
-    };
-}
-
-/// `MethodResult` for a result class that stores its certificate:
-/// `stored_method_result!(PyX, total_energy: <f64 field>, certificate: <Certificate field>);`.
-macro_rules! stored_method_result {
-    ($ty:ident, total_energy: $e:ident, certificate: $c:ident) => {
-        impl ::ferric_core::method_result::MethodResult for $ty {
-            fn total_energy(&self) -> f64 {
-                self.$e
-            }
-            fn certificate(
-                &self,
-            ) -> ::std::borrow::Cow<'_, ::ferric_core::certificate::Certificate> {
-                ::std::borrow::Cow::Borrowed(&self.$c)
-            }
-        }
-    };
-}
+#[macro_use]
+mod method_result;
 
 mod blocks;
 mod cc;
@@ -1409,7 +1306,7 @@ result_getters! {
         /// geometry (re-solved) is folded in as the reference; the P-RFO settings
         /// and the Hessian construction are approximations; a gradient that did not
         /// converge, or a result that is not a first-order saddle, is a warning.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

@@ -59,7 +59,7 @@ stored_method_result!(PyRsMp2RpaResult, total_energy: total_energy, certificate:
 result_getters! {
     PyRsMp2RpaResult {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -463,7 +463,7 @@ stored_method_result!(PyPdepRpaResult, total_energy: total_energy, certificate: 
 result_getters! {
     PyPdepRpaResult {
         #[doc = method_certificate_doc!()]
-        certificate;
+        certificate: via trait;
     }
 }
 

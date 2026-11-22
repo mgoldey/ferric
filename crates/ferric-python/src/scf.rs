@@ -181,7 +181,7 @@ stored_method_result!(PyRhfResult, total_energy: energy, certificate: certificat
 
 result_getters! {
     PyRhfResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate of this result (the dict form of
         /// `ferric_core::certificate::Certificate`): `capability`, `build`,
         /// `grade` (`"proven"`, `"proven_narrow"`, `"smoke"`, `"spike"`, `"stub"`
@@ -191,7 +191,7 @@ result_getters! {
         /// grid, level shift, ECP, embedding, solvation), `precision` and
         /// `warnings` (one per element, basis or functional outside the solver's
         /// energy anchor among them; those do not change the grade).
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -1151,7 +1151,7 @@ symmetry=False for density/MO coefficients/gradients.";
 
 result_getters! {
     PySymmetricRhfResult {
-        total_energy: alias of field energy;
+        total_energy: from field energy;
     }
 }
 
@@ -1302,11 +1302,11 @@ stored_method_result!(PyUhfResult, total_energy: energy, certificate: certificat
 
 result_getters! {
     PyUhfResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate of this result (see `RhfResult.certificate`).
         /// A UHF/UKS result solved without `stability_descent=True` carries the
         /// "internal stability not checked" warning.
-        certificate;
+        certificate: via trait;
     }
 }
 

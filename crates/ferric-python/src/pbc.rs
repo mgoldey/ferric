@@ -21,8 +21,6 @@
 //! counts (and `frozen_core`) are VALENCE counts under an ECP.
 
 use super::*;
-use ferric_core::certificate::Certificate;
-use ferric_core::method_result::MethodResult;
 use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
 use ferric_pbc::drpa::DEFAULT_GAMMA_DRPA_QUAD_POINTS;
@@ -64,7 +62,6 @@ use ferric_pbc::{
     KUksGradConfig, KUksStressConfig,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
-use std::borrow::Cow;
 
 // ─────────────────────────────────────────────────────────────── helpers ──
 
@@ -1314,32 +1311,17 @@ struct PyGammaOpenShellResult {
     stress_data: Option<Array2<f64>>,
 }
 
-impl MethodResult for PyGammaOpenShellResult {
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-    fn certificate(&self) -> Cow<'_, Certificate> {
-        Cow::Owned(pbc_certificate_stamped(
-            &format!("{}-gamma", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        ))
-    }
-}
+periodic_method_result!(PyGammaOpenShellResult, |r| capability: format!("{}-gamma", r.method), mesh: None);
 
 result_getters! {
     PyGammaOpenShellResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate (schema of `RhfResult.certificate`). Periodic
         /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
         /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate;
+        certificate: via trait;
         /// Stage timings and counters (see `timings_dict`).
-        timings: field timings_data;
+        timings: from field timings_data;
     }
 }
 
@@ -2091,32 +2073,17 @@ struct PyGammaRksResult {
     stress_data: Option<Array2<f64>>,
 }
 
-impl MethodResult for PyGammaRksResult {
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-    fn certificate(&self) -> Cow<'_, Certificate> {
-        Cow::Owned(pbc_certificate_stamped(
-            "rks-gamma",
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        ))
-    }
-}
+periodic_method_result!(PyGammaRksResult, |r| capability: "rks-gamma", mesh: None);
 
 result_getters! {
     PyGammaRksResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate (schema of `RhfResult.certificate`). Periodic
         /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
         /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate;
+        certificate: via trait;
         /// Stage timings and counters (see `timings_dict`).
-        timings: field timings_data;
+        timings: from field timings_data;
     }
 }
 
@@ -2386,32 +2353,17 @@ struct PyGammaCorrelationResult {
     timings_data: PbcTimings,
 }
 
-impl MethodResult for PyGammaCorrelationResult {
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-    fn certificate(&self) -> Cow<'_, Certificate> {
-        Cow::Owned(pbc_certificate_stamped(
-            &format!("{}-gamma", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            None,
-            self.converged,
-            self.iterations,
-        ))
-    }
-}
+periodic_method_result!(PyGammaCorrelationResult, |r| capability: format!("{}-gamma", r.method), mesh: None);
 
 result_getters! {
     PyGammaCorrelationResult {
         /// Validation certificate (schema of `RhfResult.certificate`). Periodic
         /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
         /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate;
+        certificate: via trait;
         /// Stage timings and counters (see `timings_dict`); the correlation
         /// step is the `"gamma MP2"` / `"gamma dRPA"` stage.
-        timings: field timings_data;
+        timings: from field timings_data;
     }
 }
 
@@ -2792,33 +2744,18 @@ struct PyKpointScfResult {
     stress_data: Option<Array2<f64>>,
 }
 
-impl MethodResult for PyKpointScfResult {
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-    fn certificate(&self) -> Cow<'_, Certificate> {
-        Cow::Owned(pbc_certificate_stamped(
-            &format!("{}-kpts", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            Some((self.mesh, self.centring.as_str())),
-            self.converged,
-            self.iterations,
-        ))
-    }
-}
+periodic_method_result!(PyKpointScfResult, |r| capability: format!("{}-kpts", r.method), mesh: Some((r.mesh, r.centring.as_str())));
 
 result_getters! {
     PyKpointScfResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate (schema of `RhfResult.certificate`). Periodic
         /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
         /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate;
+        certificate: via trait;
         /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`) and
         /// the RS-GDF counters (see `timings_dict`).
-        timings: field timings_data;
+        timings: from field timings_data;
     }
 }
 
@@ -3470,32 +3407,17 @@ struct PyKpointRksResult {
     stress_data: Option<Array2<f64>>,
 }
 
-impl MethodResult for PyKpointRksResult {
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-    fn certificate(&self) -> Cow<'_, Certificate> {
-        Cow::Owned(pbc_certificate_stamped(
-            "rks-kpts",
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            Some((self.mesh, self.centring.as_str())),
-            self.converged,
-            self.iterations,
-        ))
-    }
-}
+periodic_method_result!(PyKpointRksResult, |r| capability: "rks-kpts", mesh: Some((r.mesh, r.centring.as_str())));
 
 result_getters! {
     PyKpointRksResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate (schema of `RhfResult.certificate`). Periodic
         /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
         /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate;
+        certificate: via trait;
         /// Stage timings and counters (see `timings_dict`).
-        timings: field timings_data;
+        timings: from field timings_data;
     }
 }
 
@@ -4173,33 +4095,18 @@ struct PyKpointCorrelationResult {
     timings_data: PbcTimings,
 }
 
-impl MethodResult for PyKpointCorrelationResult {
-    fn total_energy(&self) -> f64 {
-        self.energy
-    }
-    fn certificate(&self) -> Cow<'_, Certificate> {
-        Cow::Owned(pbc_certificate_stamped(
-            &format!("{}-kpts", self.method),
-            &self.jk,
-            self.auxbasis.as_deref(),
-            &self.exxdiv,
-            Some((self.mesh, self.centring.as_str())),
-            self.converged,
-            self.iterations,
-        ))
-    }
-}
+periodic_method_result!(PyKpointCorrelationResult, |r| capability: format!("{}-kpts", r.method), mesh: Some((r.mesh, r.centring.as_str())));
 
 result_getters! {
     PyKpointCorrelationResult {
         /// Validation certificate (schema of `RhfResult.certificate`). Periodic
         /// capabilities have no validation-page row, so `grade` is `"ungraded"`;
         /// `approximations` record the J/K route, `exxdiv` and the k-point mesh.
-        certificate;
+        certificate: via trait;
         /// Coarse stage timings (`"k hcore"`, `"k J/K build"`, `"k SCF"`,
         /// dense: `"k correlation pair tensors"`, then `"k MP2"` / `"k dRPA"`)
         /// and the RS-GDF counters (see `timings_dict`).
-        timings: field timings_data;
+        timings: from field timings_data;
     }
 }
 

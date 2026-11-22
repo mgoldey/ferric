@@ -59,7 +59,7 @@ stored_method_result!(PyCasCiResult, total_energy: e_total, certificate: certifi
 result_getters! {
     PyCasCiResult {
         /// Validation certificate (schema of `RhfResult.certificate`).
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -260,7 +260,7 @@ stored_method_result!(PyCasScfResult, total_energy: e_total, certificate: certif
 result_getters! {
     PyCasScfResult {
         /// Validation certificate (schema of `RhfResult.certificate`).
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -491,7 +491,7 @@ stored_method_result!(PyNevpt2Result, total_energy: e_total, certificate: certif
 result_getters! {
     PyNevpt2Result {
         /// Validation certificate (schema of `RhfResult.certificate`).
-        certificate;
+        certificate: via trait;
     }
 }
 

@@ -441,7 +441,7 @@ result_getters! {
         /// certificate is folded in as the reference; the partition, the embedding
         /// (MM charges, boundary scheme, link atoms, polarizable sites) and the MM force field are
         /// approximations; a run that did not converge is a warning.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 
@@ -899,7 +899,7 @@ result_getters! {
         /// certificate is folded in as the reference; the partition, the embedding
         /// (MM charges, boundary scheme, link atoms, polarizable sites), the MM atoms that moved and the optimizer settings are
         /// approximations; a run that did not converge is a warning.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

@@ -123,7 +123,7 @@ pub(crate) fn py_ladder_route(r: &ferric_cc::CcResult) -> (Option<String>, Optio
 result_getters! {
     PyCcResult {
         #[doc = method_certificate_doc!()]
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 
@@ -414,7 +414,7 @@ result_getters! {
     PyEomCcsdResult {
         /// Validation certificate (see `RhfResult.certificate`), capability
         /// `"eom-ccsd"`.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

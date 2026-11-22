@@ -32,7 +32,7 @@ result_getters! {
         /// the returned geometry) is the reference whose grade, approximations and
         /// warnings it inherits, `gradient` and `optimizer` are recorded as
         /// approximations, and a run with `converged = False` is `not graded`.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 
@@ -1729,7 +1729,7 @@ result_getters! {
         /// is the reference whose grade, approximations and warnings it inherits,
         /// the Hessian construction is recorded as the `hessian` approximation,
         /// and each imaginary frequency count is a warning.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

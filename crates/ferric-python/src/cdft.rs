@@ -191,7 +191,7 @@ stored_method_result!(PyCdftResult, total_energy: energy, certificate: certifica
 
 result_getters! {
     PyCdftResult {
-        total_energy: alias of energy;
+        total_energy: via trait;
         /// Validation certificate of this result (dict form of
         /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
         /// `capability` is `"cdft:uhf"` or `"cdft:uks"` and the grade is
@@ -200,7 +200,7 @@ result_getters! {
         /// reference; each constraint (fragment, kind, target, multiplier,
         /// population), the Becke weight grid and the outer-loop settings are
         /// approximations; an unconverged inner SCF or constraint is a warning.
-        certificate;
+        certificate: via trait;
     }
 }
 
@@ -677,7 +677,7 @@ result_getters! {
         /// A's certificate is the reference; state B's approximations and warnings
         /// carry the prefix `state B`; the Wu-Van Voorhis formula is recorded as
         /// an approximation.
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 

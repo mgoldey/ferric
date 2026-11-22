@@ -46,7 +46,7 @@ pub(crate) struct PyGwResult {
 result_getters! {
     PyGwResult {
         #[doc = method_certificate_doc!()]
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 
@@ -395,7 +395,7 @@ pub(crate) struct PyUGwResult {
 result_getters! {
     PyUGwResult {
         #[doc = method_certificate_doc!()]
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 
@@ -694,7 +694,7 @@ pub(crate) struct PyBseResult {
 result_getters! {
     PyBseResult {
         #[doc = method_certificate_doc!()]
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 
@@ -867,7 +867,7 @@ pub(crate) struct PyTdhfStaticPolarizabilityResult {
 result_getters! {
     PyTdhfStaticPolarizabilityResult {
         #[doc = method_certificate_doc!()]
-        certificate: field certificate_data;
+        certificate: from field certificate_data;
     }
 }
 
