@@ -15,8 +15,7 @@ pub(crate) fn compute_eri3<'py>(
     basis_set: &PyBasisSet,
     aux_basis_set: &PyBasisSet,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
     let eri3 = ferric_integrals::threeindex::eri3_tensor(Operator::coulomb(), &obs, &dfbs)
@@ -82,8 +81,7 @@ pub(crate) fn compute_eri3_mo<'py>(
     omega: Option<f64>,
     r0: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
     let n_bf = obs.nbasis();
@@ -156,8 +154,7 @@ pub(crate) fn boys_localize(
     c_orbs: numpy::PyReadonlyArray2<f64>,
     max_iter: usize,
 ) -> PyResult<PyBoysResult> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let c = c_orbs.as_array().to_owned();
     if c.nrows() != obs.nbasis() {
@@ -414,8 +411,7 @@ pub(crate) fn compute_metric_2c<'py>(
     omega: Option<f64>,
     r0: Option<f64>,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let emol = ecp_molecule(mol, basis_set);
     let dfbs = PreparedBasis::new(&emol, &aux_basis_set.inner).map_err(make_err)?;
     let op = resolve_operator(operator, omega, r0)?;
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).map_err(make_err)?;

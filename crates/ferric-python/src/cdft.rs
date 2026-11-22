@@ -437,8 +437,9 @@ pub(crate) fn run_cdft(
     )?;
 
     let use_sad_guess = parse_guess(guess)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    // Validated on the ECP molecule before any integral; prepared below.
+    let ecp = EcpMolecule::new(mol.inner.clone(), &basis_set.inner);
+    let emol = ecp.mol();
     let natoms = emol.atoms.len();
     let nelec = emol.nelec();
     if nelec <= 0 {
@@ -581,18 +582,23 @@ pub(crate) fn run_cdft(
         ..defaults
     };
 
-    let hamiltonian_key = cdft_hamiltonian_key(&emol, &config);
+    let hamiltonian_key = cdft_hamiltonian_key(emol, &config);
     let bs = basis_set.inner.clone();
-    let prep = PreparedBasis::new(&emol, &bs).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let overlap = ferric_integrals::oneelectron::overlap(&prep);
-    let ctx = ParallelContext::default();
+    let sys = ecp.prepare(PrepareOptions::default()).map_err(make_err)?;
+    let (emol, prep) = (sys.mol(), sys.basis());
+    let overlap = ferric_integrals::oneelectron::overlap(prep);
     // Release the GIL for the whole constrained solve. Everything the closure
     // touches is an owned Rust value built above.
     let r = py
         .allow_threads(|| {
-            ferric_scf::cdft_driver::solve_cdft_uhf(&ctx, &emol, &prep, &bs, &bounds, &config)
+            ferric_scf::cdft_driver::solve_cdft_uhf(
+                sys.ctx(),
+                emol,
+                prep,
+                &bs,
+                sys.bounds(),
+                &config,
+            )
         })
         .map_err(make_err)?;
 
@@ -606,7 +612,7 @@ pub(crate) fn run_cdft(
     let nocc_beta = (nel - nopen.min(nel)) / 2;
     let scf = r.scf;
     let certificate_data = ferric_scf::certificate::cdft_certificate(
-        &reference_certificate(&emol, &scf, &config, &bs),
+        &reference_certificate(emol, &scf, &config, &bs),
         &config,
         &ferric_scf::certificate::CdftRun {
             lambdas: &r.lambdas,

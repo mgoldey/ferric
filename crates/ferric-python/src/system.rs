@@ -17,6 +17,15 @@
 
 use super::*;
 
+/// A copy of `mol` with `basis_set`'s ECP applied (`EcpMolecule::new`, the
+/// one place the ECP enters a molecule), for a binding that needs the
+/// valence molecule (electron count, effective nuclear charges) but prepares
+/// its own bases, or none, and needs no Schwarz bounds: the integral and
+/// property helpers, `AoIntegrals`, `response_modes`.
+pub(crate) fn ecp_molecule(mol: &PyMolecule, basis_set: &PyBasisSet) -> Molecule {
+    EcpMolecule::new(mol.inner.clone(), &basis_set.inner).into_mol()
+}
+
 /// `PreparedSystem::new` on a copy of `mol`, for a binding returning
 /// `PyResult`.
 pub(crate) fn prepare(mol: &PyMolecule, basis: &PyBasisSet) -> PyResult<PreparedSystem> {

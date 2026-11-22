@@ -163,9 +163,7 @@ pub(crate) fn validate_periodic_cell(
             mol.charge
         )));
     }
-    let mut emol = mol.clone();
-    emol.apply_ecp(bs);
-    Ok(emol)
+    Ok(EcpMolecule::new(mol.clone(), bs).into_mol())
 }
 
 /// Reject what a closed-shell periodic driver (RHF/RKS and the correlation

@@ -86,6 +86,14 @@ impl<'b> EcpMolecule<'b> {
         &self.mol
     }
 
+    /// The molecule with the ECP core counts applied, consuming the stage:
+    /// for a caller that needs the valence molecule (its electron count,
+    /// nuclear repulsion, effective charges) but no prepared basis or bounds,
+    /// such as one that prepares a basis per geometry itself.
+    pub fn into_mol(self) -> Molecule {
+        self.mol
+    }
+
     /// The basis set whose ECP was applied and that [`Self::prepare`]
     /// prepares.
     pub fn basis_set(&self) -> &'b BasisSet {
@@ -420,6 +428,11 @@ mod tests {
         let ecp = EcpMolecule::new(hi(), &bs);
         assert_eq!(ecp.mol().nelec(), 26);
         assert!(std::ptr::eq(ecp.basis_set(), &bs));
+        let mut by_hand = hi();
+        by_hand.apply_ecp(&bs);
+        let applied = EcpMolecule::new(hi(), &bs).into_mol();
+        assert_eq!(applied.nelec(), by_hand.nelec());
+        assert_eq!(applied.nuclear_repulsion(), by_hand.nuclear_repulsion());
         let sys = ecp.prepare(PrepareOptions::default()).unwrap();
         assert_eq!(sys.mol().nelec(), 26);
         assert_eq!(sys.screening(), ScreeningKind::Schwarz);
