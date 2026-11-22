@@ -9,6 +9,7 @@
 //! the final geometry, and an `md` run-log record.
 
 use crate::config::{Config, MdCfg};
+use crate::error::CliError;
 use ferric_core::basis::BasisSet;
 use ferric_core::certificate::Certificate;
 use ferric_core::mol::Molecule;
@@ -21,9 +22,9 @@ use ferric_md::{
 use ferric_scf::rhf::RhfConfig;
 use std::path::Path;
 
-fn die(what: &str, e: impl std::fmt::Display) -> ! {
-    eprintln!("error{what}: {e}");
-    std::process::exit(1);
+/// `error{what}: {e}` (`what` is empty or starts with a space).
+fn md_error(what: &str, e: impl std::fmt::Display) -> CliError {
+    CliError::Report(format!("error{what}: {e}"))
 }
 
 /// Prints one table row per recorded frame.
@@ -50,7 +51,7 @@ fn md_spin(method: &str) -> ferric_scf::Spin {
 }
 
 /// `method.task = "md"`. `load_config` has already checked `[md]` and the
-/// kind (`Config::validate_md`); every failure here exits 1.
+/// kind (`Config::validate_md`); every failure here is an error (exit 1).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_md(
     method: &str,
@@ -61,19 +62,19 @@ pub(crate) fn run_md(
     op: Operator,
     rhf_config: &RhfConfig,
     toml_path: &Path,
-) {
+) -> Result<(), CliError> {
     let md_cfg: &MdCfg = cfg
         .md
         .as_ref()
-        .unwrap_or_else(|| die("", "method.task = \"md\" needs an [md] section"));
-    let md = md_cfg.md_config().unwrap_or_else(|e| die("", e));
+        .ok_or_else(|| md_error("", "method.task = \"md\" needs an [md] section"))?;
+    let md = md_cfg.md_config().map_err(|e| md_error("", e))?;
     let spin = md_spin(method);
-    let model = crate::dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "md", spin);
+    let model = crate::dispersion_gradient_model(cfg, ctx, mol, bs, op, rhf_config, "md", spin)?;
     let (xyz_path, csv_path) = md_cfg.output_paths(toml_path);
     let mut xyz =
-        XyzTrajectoryWriter::create(&xyz_path).unwrap_or_else(|e| die(" in [md] trajectory", e));
+        XyzTrajectoryWriter::create(&xyz_path).map_err(|e| md_error(" in [md] trajectory", e))?;
     let mut csv =
-        EnergyCsvWriter::create(&csv_path).unwrap_or_else(|e| die(" in [md] energies", e));
+        EnergyCsvWriter::create(&csv_path).map_err(|e| md_error(" in [md] energies", e))?;
     let config = ferric_scf::AimdConfig {
         md,
         scf_warm_start: md_cfg.scf_warm_start.unwrap_or(true),
@@ -102,7 +103,7 @@ pub(crate) fn run_md(
         correction,
         &mut [&mut xyz, &mut csv, &mut FramePrinter],
     )
-    .unwrap_or_else(|e| die(" during molecular dynamics", e));
+    .map_err(|e| md_error(" during molecular dynamics", e))?;
     print_summary(&r, &xyz_path, &csv_path);
     let reference = crate::task_reference_certificate_from(
         method,
@@ -113,9 +114,10 @@ pub(crate) fn run_md(
         &r.mol,
         &r.last_scf,
         ferric_scf::gradient::gradient_task_config(rhf_config).into_owned(),
-    );
+    )?;
     crate::print_and_note_certificate(&md_certificate(method, &r.md).with_reference(&reference));
     note_md_record(&r, &xyz_path, &csv_path);
+    Ok(())
 }
 
 fn print_header(md: &ferric_md::MdConfig) {

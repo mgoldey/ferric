@@ -10,7 +10,7 @@
 //! key is read by one surface and ignored by the other.
 
 use crate::config::Config;
-use crate::error::die;
+use crate::error::CliError;
 use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer, CasScfStabilityMode};
 use ferric_ci::driver::{casscf_on_rhf, nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
@@ -349,28 +349,28 @@ fn stability_json(st: Option<&ferric_ci::CasScfStability>) -> serde_json::Value 
 
 /// Run `cfg`'s CAS plan; `gpu_flag` is whether `--gpu` was given (refused:
 /// the CAS kinds run on the CPU).
-pub fn run_cas(cfg: &Config, gpu_flag: bool) {
+pub fn run_cas(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
     let Some(plan) = cfg.cas_plan.as_ref() else {
-        die("internal: run_cas called without a CAS plan");
+        return Err(CliError::msg("internal: run_cas called without a CAS plan"));
     };
     let kind = cfg.method.kind.as_str();
     if gpu_flag {
-        die(format!(
+        return Err(CliError::msg(format!(
             "--gpu is not read by method.kind = \"{kind}\", which runs on the CPU"
-        ));
+        )));
     }
     let mol = Molecule::load_xyz_with_charge(
         &cfg.molecule.xyz,
         cfg.molecule.charge,
         cfg.molecule.multiplicity,
     )
-    .unwrap_or_else(|e| die(e));
+    .map_err(CliError::msg)?;
     let bs = match (&cfg.basis.name, &cfg.basis.path) {
         (Some(name), _) => basis::bundled(name),
         (None, Some(path)) => basis::load_g94(path),
         (None, None) => Err(ferric_core::FerricError::Basis("no basis specified".into())),
     }
-    .unwrap_or_else(|e| die(e));
+    .map_err(CliError::msg)?;
     let ecp = EcpMolecule::new(mol, &bs);
     let mut cas = plan.cas;
     cas.n_core = match plan.n_core {
@@ -378,7 +378,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
         None => {
             let nelec = ecp.mol().nelec() as usize;
             ferric_ci::driver::default_n_core(nelec, cas.n_elec_active, "[cas]")
-                .unwrap_or_else(|e| die(e))
+                .map_err(CliError::msg)?
         }
     };
     let resolution = ferric_core::memory::resolve_budget(cas.memory_budget_bytes);
@@ -388,7 +388,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
     eprintln!("[ferric] {}", resolution.audit_line());
     let sys = ecp
         .prepare(PrepareOptions::default())
-        .unwrap_or_else(|e| die(e));
+        .map_err(CliError::msg)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
@@ -421,7 +421,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
-    let rhf = rhf_start(&sys, plan.scf, cas.memory_budget_bytes).unwrap_or_else(|e| die(e));
+    let rhf = rhf_start(&sys, plan.scf, cas.memory_budget_bytes).map_err(CliError::msg)?;
     let (na, nb) = cas.n_elec_active;
     let header = |name: &str| {
         println!("{name}/{} on {}", bs.name, cfg.molecule.xyz);
@@ -436,7 +436,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
     };
     let (energy, converged) = match plan.nevpt2 {
         None => {
-            let r = casscf_on_rhf(&sys, &rhf, &cas).unwrap_or_else(|e| die(e));
+            let r = casscf_on_rhf(&sys, &rhf, &cas).map_err(CliError::msg)?;
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::casscf_certificate(&r, &cas).with_build(build_stamp()),
                 "CASSCF",
@@ -483,7 +483,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             (r.e_total, r.converged)
         }
         Some(on) => {
-            let run = nevpt2_on_rhf(&sys, &rhf, on, &cas).unwrap_or_else(|e| die(e));
+            let run = nevpt2_on_rhf(&sys, &rhf, on, &cas).map_err(CliError::msg)?;
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::nevpt2_certificate(
                     on,
@@ -552,4 +552,5 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
+    Ok(())
 }
