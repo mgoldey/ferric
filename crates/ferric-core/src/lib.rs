@@ -40,6 +40,8 @@ pub mod internal_coords;
 pub mod linalg;
 /// Memory budget discovery and enforcement.
 pub mod memory;
+/// [`MethodResult`](method_result::MethodResult): total energy and certificate of a method result.
+pub mod method_result;
 /// Lindh (1995) model Hessian, the initial Hessian of the geometry optimizer.
 pub mod model_hessian;
 /// Molecular geometry: [`Atom`](mol::Atom), [`Molecule`](mol::Molecule), XYZ parser, nuclear repulsion.
