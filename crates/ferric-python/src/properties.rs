@@ -50,15 +50,10 @@ impl<'py> FromPyObject<'py> for DensitySource<'py> {
     }
 }
 
-/// The molecule with `basis_set`'s ECP applied (`Atom::n_core_ecp`), as the
-/// SCF drivers apply it. The nuclear charge a property pairs with the density
-/// is `Atom::effective_z`, so a property on an ECP atom needs this; a bare
-/// `PyMolecule` carries no ECP until a basis is attached.
-fn ecp_molecule(mol: &PyMolecule, basis_set: &PyBasisSet) -> ferric_core::mol::Molecule {
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    emol
-}
+// `ecp_molecule` (system.rs): the nuclear charge a property pairs with the
+// density is `Atom::effective_z`, so a property on an ECP atom needs the
+// molecule with the basis set's ECP applied; a bare `PyMolecule` carries no
+// ECP until a basis is attached.
 
 /// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
 /// `result` is an `RhfResult` or `DftResult` from a converged SCF.

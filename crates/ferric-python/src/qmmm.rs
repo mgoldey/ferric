@@ -606,14 +606,11 @@ pub(crate) fn run_qmmm(
         ));
     }
 
-    let sys = &system.inner;
+    let mm_sys = &system.inner;
     let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut mol = sys.to_qm_molecule();
-    mol.apply_ecp(&bs);
-    let prep = PreparedBasis::new(&mol, &bs).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let polarizable = if sys.to_polarizable_sites().is_empty() {
+    let sys = PreparedSystem::new(mm_sys.to_qm_molecule(), &bs).map_err(make_err)?;
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
+    let polarizable = if mm_sys.to_polarizable_sites().is_empty() {
         None
     } else {
         let scheme =
@@ -621,7 +618,7 @@ pub(crate) fn run_qmmm(
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let bonds: Option<Vec<(usize, usize)>> =
             mm_topology.map(|t| t.inner.bonds.iter().map(|b| (b.i, b.j)).collect());
-        let ids = sys
+        let ids = mm_sys
             .polarization_molecule_ids(scheme, bonds.as_deref())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let thole_a = match thole_a {
@@ -629,7 +626,8 @@ pub(crate) fn run_qmmm(
             Some(a) if a > 0.0 => Some(a),
             Some(_) => None,
         };
-        sys.polarizable_embedding(thole_a, ids.as_deref())
+        mm_sys
+            .polarizable_embedding(thole_a, ids.as_deref())
             .map_err(make_err)?
     };
     let mut config = RhfConfig {
@@ -639,7 +637,7 @@ pub(crate) fn run_qmmm(
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         use_sad_guess: parse_guess(guess)?,
-        external_potential: sys.to_external_potential(),
+        external_potential: mm_sys.to_external_potential(),
         polarizable,
         ..Default::default()
     };
@@ -652,17 +650,16 @@ pub(crate) fn run_qmmm(
         config.ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
         config.df_k_aux = Some("def2-universal-jkfit".to_string());
     }
-    let ctx = ParallelContext::default();
     let ext = config.external_potential.as_ref();
     let (r, qm_grad) = match method {
         "rhf" => {
-            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
+            let r = solve_rhf(ctx, mol, prep, op, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 rhf_gradient_with_polarizable(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     op,
-                    &bounds,
+                    bounds,
                     &r,
                     ext,
                     config.polarizable.as_ref(),
@@ -670,18 +667,18 @@ pub(crate) fn run_qmmm(
                 )
                 .map_err(make_err)?
             } else {
-                rhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
+                rhf_gradient(mol, prep, op, bounds, &r, ext).map_err(make_err)?
             };
             (r, g)
         }
         "uhf" => {
-            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
+            let r = solve_uhf(ctx, mol, prep, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 uhf_gradient_with_polarizable(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     op,
-                    &bounds,
+                    bounds,
                     &r,
                     ext,
                     config.polarizable.as_ref(),
@@ -689,19 +686,19 @@ pub(crate) fn run_qmmm(
                 )
                 .map_err(make_err)?
             } else {
-                uhf_gradient(&mol, &prep, op, &bounds, &r, ext).map_err(make_err)?
+                uhf_gradient(mol, prep, op, bounds, &r, ext).map_err(make_err)?
             };
             (r, g)
         }
         "rks" => {
-            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).map_err(make_err)?;
+            let r = solve_rhf(ctx, mol, prep, op, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 ks_gradient_closed_with_polarizable_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -712,11 +709,11 @@ pub(crate) fn run_qmmm(
                 .map_err(make_err)?
             } else {
                 ks_gradient_closed_with_exchange_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -728,14 +725,14 @@ pub(crate) fn run_qmmm(
             (r, g)
         }
         "uks" => {
-            let r = solve_uhf(&ctx, &mol, &prep, &bounds, &config).map_err(make_err)?;
+            let r = solve_uhf(ctx, mol, prep, bounds, &config).map_err(make_err)?;
             let g = if config.polarizable.is_some() {
                 ks_gradient_uks_with_polarizable_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -746,11 +743,11 @@ pub(crate) fn run_qmmm(
                 .map_err(make_err)?
             } else {
                 ks_gradient_uks_with_exchange_on_grids(
-                    &mol,
-                    &prep,
+                    mol,
+                    prep,
                     &bs,
                     op,
-                    &bounds,
+                    bounds,
                     xc.unwrap(),
                     &r,
                     ext,
@@ -781,31 +778,31 @@ pub(crate) fn run_qmmm(
             .collect();
         let site_basis_p =
             ferric_integrals::site_basis::SiteBasis::new(&site_xyz, 1).map_err(make_err)?;
-        let ir =
-            induce(&mol, &prep, ext, pol, &site_basis_p, r.density_total()).map_err(make_err)?;
+        let ir = induce(mol, prep, ext, pol, &site_basis_p, r.density_total()).map_err(make_err)?;
         (ir.e_pol, Some(ir.dipoles))
     } else {
         (0.0, None)
     };
     let (e_pol, induced_dipoles_data) = e_pol;
 
-    let forces = mm_forces(sys, &mol, &prep, r.density_total()).map_err(make_err)?;
+    let forces = mm_forces(mm_sys, mol, prep, r.density_total()).map_err(make_err)?;
 
     let (mm_energy, mut full) = match mm_topology {
         Some(top) => {
-            let n = sys.atoms.len();
+            let n = mm_sys.atoms.len();
             let mut coords_full = Array2::<f64>::zeros((n, 3));
-            for (i, a) in sys.atoms.iter().enumerate() {
+            for (i, a) in mm_sys.atoms.iter().enumerate() {
                 coords_full[(i, 0)] = a.x;
                 coords_full[(i, 1)] = a.y;
                 coords_full[(i, 2)] = a.z_pos;
             }
-            let (e_mm, g_mm) = qmmm_mm_terms(sys, &top.inner, &coords_full).map_err(make_err)?;
-            let full = full_gradient_with_mm(sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
+            let (e_mm, g_mm) = qmmm_mm_terms(mm_sys, &top.inner, &coords_full).map_err(make_err)?;
+            let full = full_gradient_with_mm(mm_sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
             (e_mm, full)
         }
         None => {
-            let full = ferric_scf::qmmm::full_gradient(sys, &qm_grad, &forces).map_err(make_err)?;
+            let full =
+                ferric_scf::qmmm::full_gradient(mm_sys, &qm_grad, &forces).map_err(make_err)?;
             (ferric_mm::MmEnergy::default(), full)
         }
     };
@@ -825,9 +822,9 @@ pub(crate) fn run_qmmm(
             .as_ref()
             .expect("polarizable config always produces dipoles");
         let site_rows = ferric_scf::qmmm::polarizable_site_gradient(
-            sys,
-            &mol,
-            &prep,
+            mm_sys,
+            mol,
+            prep,
             r.density_total(),
             ext,
             pol,
@@ -841,7 +838,7 @@ pub(crate) fn run_qmmm(
         }
         if let Some(ext) = ext {
             let charge_rows =
-                ferric_scf::qmmm::polarizable_charge_gradient_rows(sys, ext, pol, dipoles);
+                ferric_scf::qmmm::polarizable_charge_gradient_rows(mm_sys, ext, pol, dipoles);
             for (full_idx, g) in charge_rows {
                 for k in 0..3 {
                     full[(full_idx, k)] += g[k];
@@ -852,8 +849,8 @@ pub(crate) fn run_qmmm(
 
     let certificate_data = ferric_scf::certificate::qmmm_certificate(
         method,
-        &reference_certificate(&mol, &r, &config, &bs),
-        sys,
+        &reference_certificate(mol, &r, &config, &bs),
+        mm_sys,
         mm_topology.map(|t| t.inner.n_atoms()),
         r.converged,
     );

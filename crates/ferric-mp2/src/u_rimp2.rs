@@ -23,7 +23,7 @@ use ferric_core::timing::PhaseAccumulator;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::{ScfResult, Spin};
+use ferric_scf::{PreparedAux, ScfResult, Spin};
 use ndarray::{Array2, Array3, Array4, ArrayView2};
 
 /// Components of the U-RI-MP2 correlation energy.
@@ -314,6 +314,17 @@ pub fn u_ri_mp2(
         total_energy: scf.energy + e_total,
         precision: probe.finish(ferric_core::gpu::provenance::RIMP2_KERNELS),
     })
+}
+
+/// [`u_ri_mp2`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+pub fn u_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<URiMp2Result, FerricError> {
+    let sys = aux.system();
+    u_ri_mp2(sys.mol(), sys.basis(), aux.basis(), sys.op(), scf, config)
 }
 
 impl URiMp2Components {

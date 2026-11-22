@@ -16,6 +16,13 @@
 //! [`PreparedSystem::prepare_aux`], which returns a [`PreparedAux`] that
 //! borrows the system it was prepared for and names it
 //! ([`PreparedAux::system`]).
+//!
+//! The system owns its screening: the bounds were built for one
+//! [`ScreeningKind`] ([`PrepareOptions::screening`]), and the solve methods
+//! refuse a config whose `RhfConfig::screening` names another kind, so
+//! direct J/K (which reads the bounds' tables) and LinK (which reads the
+//! config) cannot screen with two kinds. A driver that builds its own config
+//! sets `screening: sys.screening()`.
 
 use std::ops::Deref;
 
@@ -40,7 +47,8 @@ pub struct PrepareOptions {
     /// ([`SchwarzBounds::compute_for_screening`]): `Schwarz` leaves both
     /// refinement tables unset, `Csb` / `Csam` attach theirs. A solver whose
     /// `RhfConfig::screening` should agree reads it back through
-    /// [`PreparedSystem::screening`], which derives it from the bounds.
+    /// [`PreparedSystem::screening`], which derives it from the bounds; the
+    /// system's own solve methods apply it to every config they run.
     pub screening: ScreeningKind,
     /// The parallel execution context the system's solvers run in.
     pub ctx: ParallelContext,
@@ -76,6 +84,14 @@ impl<'b> EcpMolecule<'b> {
     /// The molecule, with the basis set's ECP core counts applied.
     pub fn mol(&self) -> &Molecule {
         &self.mol
+    }
+
+    /// The molecule with the ECP core counts applied, consuming the stage:
+    /// for a caller that needs the valence molecule (its electron count,
+    /// nuclear repulsion, effective charges) but no prepared basis or bounds,
+    /// such as one that prepares a basis per geometry itself.
+    pub fn into_mol(self) -> Molecule {
+        self.mol
     }
 
     /// The basis set whose ECP was applied and that [`Self::prepare`]
@@ -182,8 +198,27 @@ impl PreparedSystem {
         &self.ctx
     }
 
-    /// [`solve_rhf`](crate::rhf::solve_rhf) on this system.
+    /// `Ok` when `config` screens with the kind the bounds were built for
+    /// ([`Self::screening`]); otherwise an error naming both kinds. The one
+    /// check behind every solve method.
+    fn check_screening(&self, config: &RhfConfig) -> Result<(), FerricError> {
+        let built = self.screening();
+        if config.screening == built {
+            Ok(())
+        } else {
+            Err(FerricError::General(format!(
+                "the config screens with {:?} but the system's bounds were built for {:?} \
+                 (PrepareOptions::screening); set RhfConfig::screening to \
+                 PreparedSystem::screening()",
+                config.screening, built
+            )))
+        }
+    }
+
+    /// [`solve_rhf`](crate::rhf::solve_rhf) on this system; a config
+    /// whose screening is not the system's is an error.
     pub fn solve_rhf(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {
+        self.check_screening(config)?;
         crate::rhf::solve_rhf(
             &self.ctx,
             &self.mol,
@@ -194,13 +229,17 @@ impl PreparedSystem {
         )
     }
 
-    /// [`solve_uhf`](crate::uhf::solve_uhf) on this system.
+    /// [`solve_uhf`](crate::uhf::solve_uhf) on this system; a config
+    /// whose screening is not the system's is an error.
     pub fn solve_uhf(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {
+        self.check_screening(config)?;
         crate::uhf::solve_uhf(&self.ctx, &self.mol, &self.basis, &self.bounds, config)
     }
 
-    /// [`solve_rohf`](crate::rohf::solve_rohf) on this system.
+    /// [`solve_rohf`](crate::rohf::solve_rohf) on this system; a config
+    /// whose screening is not the system's is an error.
     pub fn solve_rohf(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {
+        self.check_screening(config)?;
         crate::rohf::solve_rohf(
             &self.ctx,
             &self.mol,
@@ -224,8 +263,12 @@ impl PreparedSystem {
         scf.into_converged()
     }
 
-    /// [`solve_rhf_ladder`](crate::ladder::solve_rhf_ladder) on this system.
+    /// [`solve_rhf_ladder`](crate::ladder::solve_rhf_ladder) on this system;
+    /// a rung whose screening is not the system's is an error.
     pub fn solve_rhf_ladder(&self, ladder: &[Rung]) -> Result<LadderResult, FerricError> {
+        for rung in ladder {
+            self.check_screening(&rung.config)?;
+        }
         crate::ladder::solve_rhf_ladder(
             &self.ctx,
             &self.mol,
@@ -246,6 +289,14 @@ impl PreparedSystem {
 /// system of its own. It dereferences to the [`PreparedBasis`] that the
 /// fitting kernels take.
 ///
+/// The correlated crates' `*_on(aux, ..)` entry points (`ri_mp2_on`,
+/// `ccsd_closed_shell_on`, `run_gw_on`, `run_tddft_on`, ...) take a
+/// `&PreparedAux` and read the molecule (with the ECP applied), the orbital
+/// basis and, where the kernel takes one, the Coulomb operator from
+/// [`Self::system`], with this basis as the fitting basis, so a frontend
+/// cannot pair the fitting basis of one system with the orbital basis of
+/// another.
+///
 /// The fitting basis takes its nuclear charges from its own basis set's ECP
 /// table ([`PreparedBasis::new`]), so on an ECP atom an aux set without ECP
 /// data carries the all-electron charge `Z`. Only a fitting kernel that read
@@ -265,6 +316,29 @@ impl<'s> PreparedAux<'s> {
     /// The prepared fitting basis.
     pub fn basis(&self) -> &PreparedBasis {
         &self.basis
+    }
+
+    /// The prepared fitting basis, for a kernel that also holds `sys`: an
+    /// error unless this basis was prepared on `sys` (the same system, not an
+    /// equal one), so a kernel taking both cannot pair the fitting basis of
+    /// one system with the orbital basis of another.
+    pub fn basis_for(&self, sys: &PreparedSystem) -> Result<&PreparedBasis, FerricError> {
+        if std::ptr::eq(self.system, sys) {
+            Ok(&self.basis)
+        } else {
+            Err(FerricError::General(
+                "a fitting basis was paired with a system it was not prepared on".to_string(),
+            ))
+        }
+    }
+}
+
+/// The fitting basis only: the system it borrows is not printed.
+impl std::fmt::Debug for PreparedAux<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedAux")
+            .field("basis", &self.basis)
+            .finish_non_exhaustive()
     }
 }
 
@@ -348,6 +422,11 @@ mod tests {
         let ecp = EcpMolecule::new(hi(), &bs);
         assert_eq!(ecp.mol().nelec(), 26);
         assert!(std::ptr::eq(ecp.basis_set(), &bs));
+        let mut by_hand = hi();
+        by_hand.apply_ecp(&bs);
+        let applied = EcpMolecule::new(hi(), &bs).into_mol();
+        assert_eq!(applied.nelec(), by_hand.nelec());
+        assert_eq!(applied.nuclear_repulsion(), by_hand.nuclear_repulsion());
         let sys = ecp.prepare(PrepareOptions::default()).unwrap();
         assert_eq!(sys.mol().nelec(), 26);
         assert_eq!(sys.screening(), ScreeningKind::Schwarz);
@@ -379,6 +458,80 @@ mod tests {
         }
     }
 
+    fn csb_water() -> PreparedSystem {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let options = PrepareOptions {
+            screening: ScreeningKind::Csb,
+            ..Default::default()
+        };
+        EcpMolecule::new(mol, &bs).prepare(options).unwrap()
+    }
+
+    fn rung(config: RhfConfig) -> Rung {
+        Rung {
+            config,
+            restart: false,
+        }
+    }
+
+    #[test]
+    fn the_solve_methods_refuse_a_config_screening_with_another_kind() {
+        let sys = csb_water();
+        let schwarz = RhfConfig::default();
+        assert_eq!(schwarz.screening, ScreeningKind::Schwarz);
+        let errors = [
+            sys.solve_rhf(&schwarz).map(|_| ()).unwrap_err(),
+            sys.solve_uhf(&schwarz).map(|_| ()).unwrap_err(),
+            sys.solve_rohf(&schwarz).map(|_| ()).unwrap_err(),
+            sys.solve_reference(&schwarz).map(|_| ()).unwrap_err(),
+        ];
+        for e in errors {
+            let msg = e.to_string();
+            assert!(msg.contains("Schwarz") && msg.contains("Csb"), "{msg}");
+            assert!(msg.contains("PrepareOptions::screening"), "{msg}");
+        }
+        // One disagreeing rung refuses the whole ladder, before any SCF.
+        let csb = RhfConfig {
+            screening: ScreeningKind::Csb,
+            ..Default::default()
+        };
+        assert!(sys
+            .solve_rhf_ladder(&[rung(csb), rung(schwarz.clone())])
+            .is_err());
+        assert!(schwarz.eri_route.get().is_none());
+    }
+
+    #[test]
+    fn a_csb_system_solves_a_csb_config_as_the_loose_solver_does() {
+        let sys = csb_water();
+        // LinK reads `RhfConfig::screening`; direct J reads the bounds' table.
+        let csb = RhfConfig {
+            screening: ScreeningKind::Csb,
+            k_builder: Some("link".into()),
+            ..Default::default()
+        };
+        let want = crate::rhf::solve_rhf(
+            sys.ctx(),
+            sys.mol(),
+            sys.basis(),
+            sys.op(),
+            sys.bounds(),
+            &csb,
+        )
+        .unwrap();
+        let got = sys.solve_rhf(&csb).unwrap();
+        assert!(got.converged);
+        assert_eq!(got.energy.to_bits(), want.energy.to_bits());
+        let lr = sys.solve_rhf_ladder(&[rung(csb)]).unwrap();
+        assert!(lr.converged);
+    }
+
     #[test]
     fn an_aux_names_the_system_it_was_prepared_on() {
         let bs = basis::bundled("def2-svp").unwrap();
@@ -386,6 +539,9 @@ mod tests {
         let sys = PreparedSystem::new(hi(), &bs).unwrap();
         let aux = sys.prepare_aux(&aux_bs).unwrap();
         assert!(std::ptr::eq(aux.system(), &sys));
+        assert!(std::ptr::eq(aux.basis_for(&sys).unwrap(), aux.basis()));
+        let other = PreparedSystem::new(hi(), &bs).unwrap();
+        assert!(aux.basis_for(&other).is_err());
         // The fitting basis, not the orbital one.
         let by_hand = PreparedBasis::new(&hi(), &aux_bs).unwrap();
         assert_eq!(aux.nbasis(), by_hand.nbasis());

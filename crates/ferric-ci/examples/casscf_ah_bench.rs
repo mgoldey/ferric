@@ -7,7 +7,7 @@
 //! ```
 //!
 //! `<xyz>` is a file under `testdata/molecules`. The start is the exact-J/K
-//! RHF of [`ferric_ci::driver::rhf_start_prepared`] with its defaults (what the CLI
+//! RHF of [`ferric_ci::driver::rhf_start`] with its defaults (what the CLI
 //! runs); the CASSCF uses [`CasScfConfig`] defaults except the active space,
 //! the optimizer and, for `ah`, the Davidson forcing
 //! ([`CasScfConfig::ah_forcing`]). One line on stdout: the energy to 17
@@ -16,7 +16,7 @@
 //! on stderr counts the Hessian-vector products.
 
 use ferric_ci::casscf::{run_casscf, AhForcing, CasScfConfig, CasScfOptimizer};
-use ferric_ci::driver::{rhf_start_prepared, ScfStart};
+use ferric_ci::driver::{rhf_start, ScfStart};
 use ferric_core::mol::Molecule;
 use ferric_scf::PreparedSystem;
 use std::path::PathBuf;
@@ -48,7 +48,7 @@ fn main() {
     let bs = ferric_core::basis::bundled(&a[2]).expect("basis");
     let sys = PreparedSystem::new(mol, &bs).expect("basis on molecule");
     let (mol, prep) = (sys.mol(), sys.basis());
-    let rhf = rhf_start_prepared(&sys, ScfStart::default(), None).expect("RHF");
+    let rhf = rhf_start(&sys, ScfStart::default(), None).expect("RHF");
     let t_rhf = t0.elapsed().as_secs_f64();
     let cfg = CasScfConfig {
         n_core: num(3),

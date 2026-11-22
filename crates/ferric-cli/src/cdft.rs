@@ -33,11 +33,9 @@ use crate::config::Config;
 use crate::error::die;
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
 use ferric_dft::cdft::{Constraint, SpinChannel};
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::rhf::RhfConfig;
-use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedSystem;
 use serde::Deserialize;
 
 /// `[cdft]`: the constraints and the lambda loop of a constrained run.
@@ -351,16 +349,8 @@ fn constraints_for(c: &CdftCfg, mol: &Molecule) -> Result<Vec<Constraint>, Strin
 /// reference config (`rhf_config` is the run's `RhfConfig`, whose `xc` is the
 /// `[dft] functional`), print the result and write the run log's `result` and
 /// `run_end` records.
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    cfg: &Config,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    bs: &BasisSet,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    rhf_config: &RhfConfig,
-) {
+pub fn run(cfg: &Config, sys: &PreparedSystem, bs: &BasisSet, rhf_config: &RhfConfig) {
+    let (ctx, mol, prep, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.bounds());
     let Some(c) = cfg.cdft.as_ref() else {
         die("internal: cdft::run called without a [cdft] section");
     };

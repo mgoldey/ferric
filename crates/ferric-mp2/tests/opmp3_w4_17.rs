@@ -50,10 +50,9 @@ use std::path::{Path, PathBuf};
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_mp2::opmp3::{Opmp3Models, WChannels};
 use ferric_mp2::opmp3_driver::{run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind};
+use ferric_scf::PreparedSystem;
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 use serde_json::Value;
@@ -171,21 +170,15 @@ fn hf_reference_reproduces_the_paper_w_and_tae_errors() {
             .map(|t| t.parse().unwrap())
             .collect();
         let mol = Molecule::parse_xyz(&xyz, cm[0] as i32, cm[1] as usize).unwrap();
-        let obs = PreparedBasis::new(&mol, &bs).unwrap();
+        let sys = PreparedSystem::new(mol, &bs).unwrap();
         let cfg = Opmp3Config {
             scf_energy_conv: Some(1e-12),
             scf_density_conv: Some(1e-10),
             scf_max_iter: Some(400),
             ..Opmp3Config::new(Opmp3RefKind::Hf)
         };
-        let r = run_opmp3(
-            &ParallelContext::default(),
-            &mol,
-            &obs,
-            Opmp3Integrals::Exact,
-            &cfg,
-        )
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let r =
+            run_opmp3(&sys, Opmp3Integrals::Exact, &cfg).unwrap_or_else(|e| panic!("{name}: {e}"));
         let p = &data["structures"]["HF"][name];
         let tw = 10.0 * r.models.mp3.abs() * 1e-5 + 1e-10;
         tol_w.insert(name, tw);

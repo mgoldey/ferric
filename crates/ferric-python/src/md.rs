@@ -330,8 +330,7 @@ pub(crate) fn run_aimd(
     cfg.df_k_aux = crate::geometry_df_aux(xc, df_k_aux);
     geometry_task_scf(&mut cfg, None)?;
     let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&bs);
+    let emol = EcpMolecule::new(mol.inner.clone(), &bs).into_mol();
     let system = MdSystem::from_molecule(&emol, masses_amu.as_deref())
         .map_err(|e| value_error(format!("run_aimd: {e}")))?;
     let kw = MdKwargs {

@@ -48,7 +48,7 @@ use ferric_scf::{EcpMolecule, PrepareOptions, PreparedAux, PreparedSystem};
 // here. A closed-shell `run_ccsd` / `run_ccsd_t` takes the spin-adapted
 // solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
 // and `ferric_cc::u_ccsd_t` (see `cc.rs`).
-use ferric_cc::ccsd_closed_shell::ccsd_closed_shell as run_ccsd_cs_inner;
+use ferric_cc::ccsd_closed_shell::ccsd_closed_shell_on;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell as run_ccsd_t_cs_inner;
 use ferric_cc::CcConfig;
 use ndarray::{Array2, Array3};
@@ -1453,10 +1453,10 @@ fn run_saddle(
     // ECP must be applied BEFORE the first SCF: it changes the electron count,
     // so a search started without it optimizes a different molecule than the
     // one the caller asked about.
-    {
+    let m = {
         let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
-        m.apply_ecp(&bs);
-    }
+        EcpMolecule::new(m, &bs).into_mol()
+    };
     // The MM field. Both closures below ALREADY read
     // `scf_g.external_potential` and hand it to `rhf_gradient` /
     // `ks_gradient_closed`, and `harmonic_frequencies` threads it too -- the
@@ -1701,10 +1701,10 @@ fn run_irc(
     }
     // ECP before the first SCF -- it changes the electron count, so a path
     // walked without it is a path on a different molecule.
-    {
+    let m = {
         let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
-        m.apply_ecp(&bs);
-    }
+        EcpMolecule::new(m, &bs).into_mol()
+    };
 
     // The MM field, same as `run_saddle`. An IRC started from an embedded
     // saddle MUST be walked in the same field: the path is a property of the
