@@ -8,9 +8,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::RpaIntermediates;
-use ferric_scf::properties::{
-    hirshfeld_margin, hirshfeld_spacing, slater_xi_for_z, ProatomProvider,
-};
+use ferric_scf::properties::{hirshfeld_margin, hirshfeld_spacing, ProatomProvider, SlaterProatom};
 use ferric_scf::result::{ScfResult, Spin};
 use ndarray::{Array1, Array2};
 
@@ -688,8 +686,7 @@ fn hirshfeld_bra(
     let hz = grid.step_z[2];
     for a in 0..natoms {
         let z_a = mol.atoms[a].z;
-        let xi = slater_xi_for_z(z_a);
-        let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
+        let slater = SlaterProatom::for_atom(&mol.atoms[a]);
         let pa = proatom.and_then(|p| p(z_a, 0)); // neutral same-basis proatom
         let rax = mol.atoms[a].x;
         let ray = mol.atoms[a].y;
@@ -708,7 +705,7 @@ fn hirshfeld_bra(
                     let r = (dx * dx + dy * dy + dz * dz).sqrt();
                     let rho = match &pa {
                         Some(p) => p.at(r),
-                        None => prefac * (-2.0 * xi * r).exp(),
+                        None => slater.at(r),
                     };
                     row[g] = rho;
                     rho_sum[g] += rho;

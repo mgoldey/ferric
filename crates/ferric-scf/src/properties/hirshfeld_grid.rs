@@ -9,8 +9,8 @@ use ferric_core::FerricError;
 use ndarray::Array2;
 
 use super::{
-    debug_toggle, hirshfeld_margin, hirshfeld_spacing, slater_xi_for_z, ProatomProvider,
-    RadialProatom,
+    debug_toggle, hirshfeld_margin, hirshfeld_spacing, ProatomProvider, RadialProatom,
+    SlaterProatom,
 };
 
 /// Basis-function count for `bs` on `mol`, without materializing an AO-on-grid
@@ -197,8 +197,9 @@ pub const HIRSHFELD_VOLUME_CHUNK_POINTS: usize = 8192;
 ///
 /// `proatom` supplies each atom's neutral free-atom density ρ⁰_A (ferric-cli
 /// passes [`scf_proatom_provider`](super::scf_proatom_provider)); with `None`, or for
-/// an atom the provider returns `None` for, ρ⁰_A is the single-Slater proatom of
-/// [`slater_xi_for_z`].
+/// an atom the provider returns `None` for, ρ⁰_A is the Slater fallback
+/// [`SlaterProatom::for_atom`] (single exponential; valence shells for an ECP
+/// atom).
 ///
 /// Integrated on the **atom-centred Becke–Lebedev grid** — the same
 /// [`ferric_dft::grid::build_atomic_grid`] quadrature [`hirshfeld_charges`]
@@ -295,12 +296,7 @@ pub fn atomic_effective_volumes_hirshfeld(
             fallback_atoms.len()
         );
     }
-    let xi: Vec<f64> = (0..natoms)
-        .map(|a| slater_xi_for_z(mol.atoms[a].z))
-        .collect();
-    let prefac: Vec<f64> = (0..natoms)
-        .map(|a| mol.atoms[a].z as f64 * xi[a].powi(3) / std::f64::consts::PI)
-        .collect();
+    let slater: Vec<SlaterProatom> = mol.atoms.iter().map(SlaterProatom::for_atom).collect();
     let pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
     const EPS_FLOOR: f64 = 1e-12;
@@ -338,7 +334,7 @@ pub fn atomic_effective_volumes_hirshfeld(
                 let r = (dx * dx + dy * dy + dz * dz).sqrt();
                 let r0 = match &proatoms[a] {
                     Some(p) => p.at(r),
-                    None => prefac[a] * (-2.0 * xi[a] * r).exp(),
+                    None => slater[a].at(r),
                 };
                 rho0[a] = r0;
                 rho_sum += r0;
@@ -519,8 +515,7 @@ pub fn atomic_effective_volumes_hirshfeld_on_grid(
     let mut rho_sum = vec![0.0_f64; npts];
     for a in 0..natoms {
         let z_a = mol.atoms[a].z;
-        let xi = slater_xi_for_z(z_a);
-        let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
+        let slater = SlaterProatom::for_atom(&mol.atoms[a]);
         let pa = proatom.and_then(|p| p(z_a, 0));
         let (rax, ray, raz) = (mol.atoms[a].x, mol.atoms[a].y, mol.atoms[a].zpos);
         let row = &mut rho_free[a];
@@ -535,7 +530,7 @@ pub fn atomic_effective_volumes_hirshfeld_on_grid(
                         .sqrt();
                     let r0 = match &pa {
                         Some(p) => p.at(r),
-                        None => prefac * (-2.0 * xi * r).exp(),
+                        None => slater.at(r),
                     };
                     row[g] = r0;
                     rho_sum[g] += r0;
@@ -633,8 +628,8 @@ pub fn estimate_hirshfeld_volume_gradient_bytes(
 /// Slater profile has a cusp and the tabulated proatom, an even function of
 /// r, is flat).
 /// `ρ⁰_B'` is [`RadialProatom::deriv`] for a provider proatom and
-/// `−2ξ ρ⁰_B` for the Slater fallback; each atom uses the same proatom the
-/// energy uses (`proatom(z, 0)`, else the [`slater_xi_for_z`] Slater). The
+/// [`SlaterProatom::value_and_deriv`] for the Slater fallback; each atom uses
+/// the same proatom the energy uses (`proatom(z, 0)`, else the Slater). The
 /// provider is called once per distinct element.
 ///
 /// Evaluated in [`HIRSHFELD_GRAD_CHUNK_POINTS`]-point lattice chunks, in
@@ -723,7 +718,7 @@ pub fn hirshfeld_volume_gradient(
     let mut by_z: std::collections::BTreeMap<i32, Option<RadialProatom>> =
         std::collections::BTreeMap::new();
     let mut pro: Vec<Option<RadialProatom>> = Vec::with_capacity(natoms);
-    let mut slater: Vec<(f64, f64)> = Vec::with_capacity(natoms); // (xi, prefac)
+    let mut slater: Vec<SlaterProatom> = Vec::with_capacity(natoms);
     let mut pos: Vec<[f64; 3]> = Vec::with_capacity(natoms);
     for atom in &mol.atoms {
         let z_a = atom.z;
@@ -732,8 +727,7 @@ pub fn hirshfeld_volume_gradient(
             .or_insert_with(|| proatom.and_then(|p| p(z_a, 0)))
             .clone();
         pro.push(pa);
-        let xi = slater_xi_for_z(z_a);
-        slater.push((xi, z_a as f64 * xi.powi(3) / std::f64::consts::PI));
+        slater.push(SlaterProatom::for_atom(atom));
         pos.push([atom.x, atom.y, atom.zpos]);
     }
 
@@ -815,11 +809,7 @@ pub fn hirshfeld_volume_gradient(
                     let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                     let (v, dvdr) = match &pro[a] {
                         Some(pa) => pa.value_and_deriv(r),
-                        None => {
-                            let (xi, prefac) = slater[a];
-                            let v = prefac * (-2.0 * xi * r).exp();
-                            (v, -2.0 * xi * v)
-                        }
+                        None => slater[a].value_and_deriv(r),
                     };
                     dvec[a] = d;
                     rr[a] = r;
@@ -962,7 +952,7 @@ pub fn hirshfeld_volume_density_derivative(
     let mut by_z: std::collections::BTreeMap<i32, Option<RadialProatom>> =
         std::collections::BTreeMap::new();
     let mut pro: Vec<Option<RadialProatom>> = Vec::with_capacity(natoms);
-    let mut slater: Vec<(f64, f64)> = Vec::with_capacity(natoms);
+    let mut slater: Vec<SlaterProatom> = Vec::with_capacity(natoms);
     let mut pos: Vec<[f64; 3]> = Vec::with_capacity(natoms);
     for atom in &mol.atoms {
         let z_a = atom.z;
@@ -971,8 +961,7 @@ pub fn hirshfeld_volume_density_derivative(
             .or_insert_with(|| proatom.and_then(|p| p(z_a, 0)))
             .clone();
         pro.push(pa);
-        let xi = slater_xi_for_z(z_a);
-        slater.push((xi, z_a as f64 * xi.powi(3) / std::f64::consts::PI));
+        slater.push(SlaterProatom::for_atom(atom));
         pos.push([atom.x, atom.y, atom.zpos]);
     }
     let eps_floor = 1e-12;
@@ -1003,10 +992,7 @@ pub fn hirshfeld_volume_density_derivative(
                 let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                 let r0 = match &pro[a] {
                     Some(pa) => pa.at(r),
-                    None => {
-                        let (xi, prefac) = slater[a];
-                        prefac * (-2.0 * xi * r).exp()
-                    }
+                    None => slater[a].at(r),
                 };
                 s += r0;
                 num += de_dv[a] * r0 * r * r * r;
@@ -1229,8 +1215,10 @@ pub fn hirshfeld_i_charges(
 /// `proatom` supplies each atom's neutral free-atom density ρ⁰_A; ferric-cli
 /// and the Python `ferric.hirshfeld_charges` (default `proatom="scf"`) pass
 /// [`scf_proatom_provider`](super::scf_proatom_provider). With `None`, or for an atom
-/// the provider returns `None` for, ρ⁰_A is the single-Slater proatom of
-/// [`slater_xi_for_z`], and a warning is printed.
+/// the provider returns `None` for, ρ⁰_A is the Slater fallback
+/// [`SlaterProatom::for_atom`] (single exponential; valence shells for an ECP
+/// atom, so it holds the `Z − n_core` electrons of the valence density it
+/// partitions), and a warning is printed.
 ///
 /// The total electronic charge is renormalized so Σ_A (Z_A − q_A) = N_e
 /// exactly (compensates for grid quadrature error in the density integral).
@@ -1307,8 +1295,7 @@ pub fn hirshfeld_charges(
     let mut fallback_atoms: Vec<usize> = Vec::new();
     for a in 0..natoms {
         let z_a = mol.atoms[a].z;
-        let xi = slater_xi_for_z(z_a);
-        let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
+        let slater = SlaterProatom::for_atom(&mol.atoms[a]);
         let pa = proatom.and_then(|p| p(z_a, 0));
         if pa.is_none() {
             fallback_atoms.push(a);
@@ -1324,7 +1311,7 @@ pub fn hirshfeld_charges(
             let r = (dx * dx + dy * dy + dz * dz).sqrt();
             let r0 = match &pa {
                 Some(p) => p.at(r),
-                None => prefac * (-2.0 * xi * r).exp(),
+                None => slater.at(r),
             };
             row[g] = r0;
             rho_sum[g] += r0;

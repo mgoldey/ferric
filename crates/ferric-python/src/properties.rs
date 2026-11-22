@@ -55,6 +55,22 @@ impl<'py> FromPyObject<'py> for DensitySource<'py> {
 // molecule with the basis set's ECP applied; a bare `PyMolecule` carries no
 // ECP until a basis is attached.
 
+/// Refuse a `result` whose AO dimension `result_nbf` (rows of its density /
+/// MO coefficients) is not the `nbf` basis functions `basis_set` places on
+/// `mol`, i.e. a result computed for another molecule or basis set. Raises
+/// `ValueError` naming both sizes, before any array is indexed by the basis
+/// size (which would otherwise panic in ndarray and surface as
+/// `PanicException`). `who` prefixes the message.
+pub(crate) fn check_result_matches_basis(who: &str, result_nbf: usize, nbf: usize) -> PyResult<()> {
+    if result_nbf == nbf {
+        return Ok(());
+    }
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "{who}: result has {result_nbf} basis functions but basis_set places {nbf} on mol; \
+         pass the molecule and basis set the result was computed with"
+    )))
+}
+
 /// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
 /// `result` is an `RhfResult` or `DftResult` from a converged SCF.
 #[pyfunction]
@@ -245,6 +261,7 @@ pub(crate) fn orbital_moments(
             "orbital_moments: restricted (RHF/RKS) results only".into(),
         )));
     }
+    check_result_matches_basis("orbital_moments", scf.mos_r().nrows(), prep.nbasis())?;
     let (centers, spreads) =
         ferric_integrals::oneelectron::orbital_moments(&prep, scf.mos_r()).map_err(make_err)?;
     let c: Vec<[f64; 3]> = (0..centers.nrows())
@@ -262,6 +279,11 @@ pub(crate) fn density_second_moment(
     result: DensitySource,
 ) -> PyResult<[[f64; 3]; 3]> {
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
+    check_result_matches_basis(
+        "density_second_moment",
+        result.density().nrows(),
+        prep.nbasis(),
+    )?;
     ferric_integrals::oneelectron::density_second_moment(&prep, result.density(), [0.0; 3])
         .map_err(make_err)
 }
@@ -331,6 +353,11 @@ pub(crate) fn eval_density_on_points(
 ) -> PyResult<Vec<f64>> {
     let pts = points_to_vec(&points)?;
     let chi = ao_values_checked(&mol.inner, &basis_set.inner, &pts)?;
+    check_result_matches_basis(
+        "eval_density_on_points",
+        result.density().nrows(),
+        chi.nrows(),
+    )?;
     Ok(density_from_ao_values(result.density(), &chi))
 }
 
@@ -363,6 +390,7 @@ pub(crate) fn eval_mo_on_points<'py>(
     }
     let pts = points_to_vec(&points)?;
     let chi = ao_values_checked(&mol.inner, &basis_set.inner, &pts)?;
+    check_result_matches_basis("eval_mo_on_points", c.nrows(), chi.nrows())?;
     let mut out = Array2::<f64>::zeros((pts.len(), mo_indices.len()));
     for (k, &i) in mo_indices.iter().enumerate() {
         let psi = c.column(i).dot(&chi);
@@ -457,6 +485,7 @@ pub(crate) fn write_cube(
         "density" => {
             let chi = ferric_export::eval_basis_on_grid(&mol.inner, &basis_set.inner, &grid)
                 .map_err(make_err)?;
+            check_result_matches_basis("write_cube", result.density().nrows(), chi.nrows())?;
             (
                 density_from_ao_values(result.density(), &chi),
                 "total electron density (e/Bohr^3), lengths in Bohr".to_string(),
@@ -481,6 +510,7 @@ pub(crate) fn write_cube(
             }
             let chi = ferric_export::eval_basis_on_grid(&mol.inner, &basis_set.inner, &grid)
                 .map_err(make_err)?;
+            check_result_matches_basis("write_cube", c.nrows(), chi.nrows())?;
             (
                 c.column(i).dot(&chi).to_vec(),
                 format!("MO {i} (psi, Bohr^-3/2), lengths in Bohr"),
@@ -591,6 +621,11 @@ pub(crate) fn hirshfeld_polarizability<'py>(
     let emol = ecp_molecule(mol, basis_set);
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&emol, &auxbasis.inner).map_err(make_err)?;
+    check_result_matches_basis(
+        "hirshfeld_polarizability",
+        result.density().nrows(),
+        prep.nbasis(),
+    )?;
     let op = Operator::coulomb();
     let cfg = ferric_rpa::PdepRpaConfig {
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
