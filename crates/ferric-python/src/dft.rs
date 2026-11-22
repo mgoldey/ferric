@@ -1252,7 +1252,7 @@ fn run_open_ks(
     // Refuse a molecule whose electron count cannot carry the multiplicity
     // before any integral work (an odd count with multiplicity 1, ...).
     let n_spin = spin_counts(ecp.mol(), who)?;
-    let sys = ecp.prepare(PrepareOptions::default()).map_err(make_err)?;
+    let sys = prepare_ecp(ecp)?;
     let (emol, prep) = (sys.mol(), sys.basis());
     let dm0 = blocks::checked_dm0_spin(dm0, prep, n_spin, who)?;
     // Parsed in the order the pre-`ScfOptions` construction evaluated them;

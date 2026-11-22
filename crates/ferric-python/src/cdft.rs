@@ -584,7 +584,7 @@ pub(crate) fn run_cdft(
 
     let hamiltonian_key = cdft_hamiltonian_key(emol, &config);
     let bs = basis_set.inner.clone();
-    let sys = ecp.prepare(PrepareOptions::default()).map_err(make_err)?;
+    let sys = prepare_ecp(ecp)?;
     let (emol, prep) = (sys.mol(), sys.basis());
     let overlap = ferric_integrals::oneelectron::overlap(prep);
     // Release the GIL for the whole constrained solve. Everything the closure
