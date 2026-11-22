@@ -12,7 +12,7 @@
 use crate::config::Config;
 use crate::error::die;
 use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer, CasScfStabilityMode};
-use ferric_ci::driver::{nevpt2_on_rhf, rhf_start_prepared, Nevpt2On, ScfStart};
+use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::certificate::BuildStamp;
@@ -421,8 +421,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
-    let rhf =
-        rhf_start_prepared(&sys, plan.scf, cas.memory_budget_bytes).unwrap_or_else(|e| die(e));
+    let rhf = rhf_start(&sys, plan.scf, cas.memory_budget_bytes).unwrap_or_else(|e| die(e));
     let (na, nb) = cas.n_elec_active;
     let header = |name: &str| {
         println!("{name}/{} on {}", bs.name, cfg.molecule.xyz);

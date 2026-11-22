@@ -15,7 +15,7 @@
 //! * `cli_casscf_equals_the_driver_bit_for_bit`: H2O CAS(4,4), N2 CAS(6,6)
 //!   at 1.0977 and 1.6 Å and O2 CAS(8,6) in the `(5, 3)` sector, 6-31G
 //!   (`testdata/reference/casscf_*_pyscf.json`). The logged total equals
-//!   `ferric_ci::driver::rhf_start_prepared` + `run_casscf` called in-process with
+//!   `ferric_ci::driver::rhf_start` + `run_casscf` called in-process with
 //!   the same settings, bit for bit (both run the same deterministic code on
 //!   the same rayon width), and it lies within 1e-9 Ha of PySCF (measured
 //!   gaps are at most 1.5e-11 Ha; the derived bar is in `casscf_vs_pyscf.rs`).
@@ -46,7 +46,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ferric_ci::driver::{nevpt2_on_rhf, rhf_start_prepared, Nevpt2On, ScfStart};
+use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{run_casscf, CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -172,7 +172,7 @@ fn library_start(xyz: &str, basis_name: &str) -> (PreparedSystem, ferric_scf::Sc
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let bs = basis::bundled(basis_name).unwrap();
     let sys = PreparedSystem::new(mol, &bs).unwrap();
-    let rhf = rhf_start_prepared(&sys, ScfStart::default(), None).unwrap();
+    let rhf = rhf_start(&sys, ScfStart::default(), None).unwrap();
     (sys, rhf)
 }
 

@@ -6,7 +6,7 @@
 //! `casscf` and `nevpt2` do, and carry those kinds' certificates.
 
 use crate::{budget_bytes_from_gb, certificate_dict, make_err, prepare, PyBasisSet, PyMolecule};
-use ferric_ci::driver::{rhf_start_prepared, ScfStart};
+use ferric_ci::driver::{rhf_start, ScfStart};
 use ferric_core::certificate::{BuildStamp, Certificate};
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray4};
@@ -148,7 +148,7 @@ fn run_casci(
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
+        .allow_threads(|| rhf_start(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasCiConfig {
         n_active,
@@ -353,7 +353,7 @@ fn run_casscf(
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
+        .allow_threads(|| rhf_start(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasScfConfig {
         n_active,
@@ -573,7 +573,7 @@ fn run_nevpt2(
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
+        .allow_threads(|| rhf_start(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasScfConfig {
         n_active,

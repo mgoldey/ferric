@@ -1,7 +1,7 @@
 //! Molecule-to-energy drivers for CASSCF and SC-NEVPT2.
 //!
 //! Each driver runs the exact-J/K Coulomb RHF that starts the calculation
-//! ([`rhf_start_prepared`](crate::driver::rhf_start_prepared)), then two-step CASSCF
+//! ([`rhf_start`](crate::driver::rhf_start)), then two-step CASSCF
 //! ([`run_casscf`]) or a CASSCF or CAS-CI reference plus
 //! SC-NEVPT2 ([`nevpt2_on_rhf`](crate::driver::nevpt2_on_rhf)). The Python
 //! bindings (`ferric.run_casscf`, `ferric.run_nevpt2`) and the CLI kinds
@@ -35,7 +35,7 @@ pub struct ScfStart {
 /// [`RhfConfig`] defaults, `start`'s overrides and the memory budget
 /// (`three_index_budget_bytes`; `None` is the auto-detected budget). An
 /// unconverged SCF is a [`FerricError::ScfConvergence`].
-pub fn rhf_start_prepared(
+pub fn rhf_start(
     sys: &PreparedSystem,
     start: ScfStart,
     memory_budget_bytes: Option<usize>,
