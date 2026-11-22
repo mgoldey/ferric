@@ -3,7 +3,7 @@
 //!
 //! The trait lives here, not in ferric-core, because every implementer is a
 //! ferric-python result class and nothing consumes it generically yet: its
-//! only caller is [`result_getters!`]. It moves to ferric-core when a kernel
+//! only caller is `result_getters!`. It moves to ferric-core when a kernel
 //! or CLI result implements it, or when generic code needs it (ARCHITECTURE.md,
 //! roadmap item 9b).
 //!
