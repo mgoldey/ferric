@@ -474,9 +474,13 @@ Done:
       (a grid build) by `to_dict`. A ferric class with no entry raises
       `TypeError`; objects ferric does not define (and ferric exceptions)
       are still read by reflection.
-    - Measured: see the item 13 PR. The removed copies are one
-      `nbf x nbf` f64 array per held `RhfResult` / `DftResult` and one per
-      `hirshfeld_charges` call, too small to show against the call itself.
+    - Measured (naphthalene RHF/cc-pVTZ, 412 basis functions, a 1.36 MB
+      density): `hirshfeld_charges(proatom="slater")`, best of 5, 4.09 s
+      before and 4.06 s after, peak RSS rising 36 kB and 0 kB over the
+      calls; at cc-pVDZ 2.73 s and 2.48 s (a loaded machine, so within
+      noise). The removed copies are one `nbf x nbf` f64 array per held
+      `RhfResult` / `DftResult` (plus the orbital energies for
+      `RhfResult`) and one per `hirshfeld_charges` call: memory, not time.
     - Left: `UhfResult` (and `CdftResult`) copy their arrays out of the
       `ScfResult` into separate fields; nothing consumes them as a
       reference, so they were not changed. Results are not picklable and
