@@ -66,6 +66,9 @@ macro_rules! method_certificate_doc {
     };
 }
 
+#[macro_use]
+mod method_result;
+
 mod blocks;
 mod cc;
 mod cdft;
@@ -1305,9 +1308,8 @@ impl PySaddleResult {
     /// converge, or a result that is not a first-order saddle, is a warning.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
-
     /// A first-order transition state: gradient converged AND exactly one
     /// imaginary frequency. Both halves are required.
     fn is_transition_state(&self) -> bool {

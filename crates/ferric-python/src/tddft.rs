@@ -66,7 +66,7 @@ impl PyTddftResult {
     /// largest residual).
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
     #[getter]
     fn excitation_energies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
