@@ -446,12 +446,13 @@ pub(crate) fn compute_metric_2c<'py>(
 /// `args[1..]`), so this only needs to be non-empty and present, not any
 /// particular string.
 ///
-/// Calls `std::process::exit()` on every error path and on `--help` --
-/// deliberately NOT caught or converted to a Python exception here, because
-/// that IS this command's correct CLI behavior (a shell script or
-/// `subprocess` caller reads $?/returncode, not a Python traceback), and
-/// pyo3 has no supported way to make `std::process::exit` merely raise
-/// instead of terminating the process regardless.
+/// On an error `ferric_cli::run` prints it to stderr and calls
+/// `std::process::exit()` with its status (2 for a usage error, 1 otherwise)
+/// -- deliberately NOT converted to a Python exception here, because that IS
+/// this command's correct CLI behavior (a shell script or `subprocess` caller
+/// reads $?/returncode, not a Python traceback). `--help`, `--version` and a
+/// completed run return normally, so the console script exits 0. (The CLI
+/// itself returns its errors from `ferric_cli::try_run`; only `run` exits.)
 ///
 /// `init_threading()`/the ctrlc handler already ran at `import ferric` (this
 /// module's own init, above) -- `ferric_cli::run` calls `init_threading()`
