@@ -4,7 +4,8 @@
 Covers the τ-only hybrid meta-GGAs ferric resolves through libxc: TPSSh
 (HYB_MGGA_XC_TPSSH, 10% exact exchange), M06-2X (HYB_MGGA_X_M06_2X +
 MGGA_C_M06_2X, 54%), SCAN0 (HYB_MGGA_X_SCAN0 + MGGA_C_SCAN, 25%) and the
-range-separated wB97M-V (HYB_MGGA_XC_WB97M_V with VV10).
+range-separated wB97M-V (HYB_MGGA_XC_WB97M_V with VV10), and r2SCAN0
+(HYB_MGGA_XC_R2SCAN0, 25%; libxc >= 6.1, so ferric's libxc 7.0.0 pin).
 
 Settings match ferric's (as in gen_pyscf_mgga_refs.py): the flat (75, 110)
 Becke-Lebedev grid with no pruning and Becke-1988 radii adjustment, and
@@ -19,12 +20,14 @@ parameters (b = 6.0, C = 0.01). Gradients use grid_response = True, which
 ferric's XC gradient includes.
 
 Energies: cc-pVDZ, H2O (RKS) and NH2 doublet (UKS; TPSSh also ROKS).
+The JSONs record PySCF's libxc version (7.0.0 for PySCF 2.13).
 Gradients: 6-31G (ferric's AO Hessians, which the meta-GGA gradient needs,
 cover s/p shells only), H2O and NH2.
 
 Usage:
     python scripts/gen_pyscf_hybrid_mgga_refs.py            # energies + gradients
     python scripts/gen_pyscf_hybrid_mgga_refs.py stability  # TPSSh orbital Hessians
+    python scripts/gen_pyscf_hybrid_mgga_refs.py energy r2scan0  # energies of the named xc only
 """
 
 import json
@@ -51,10 +54,13 @@ PYSCF_XC = {
     "m062x": "HYB_MGGA_X_M06_2X,MGGA_C_M06_2X",
     "scan0": "HYB_MGGA_X_SCAN0,MGGA_C_SCAN",
     "wb97m_v": "HYB_MGGA_XC_WB97M_V",
+    "r2scan0": "HYB_MGGA_XC_R2SCAN0",
 }
 
 ENERGY_CASES = [
-    (mol, "cc-pvdz", xc) for xc in ("tpssh", "m062x", "scan0") for mol in ("h2o", "nh2")
+    (mol, "cc-pvdz", xc)
+    for xc in ("tpssh", "m062x", "scan0", "r2scan0")
+    for mol in ("h2o", "nh2")
 ] + [("h2o", "cc-pvdz", "wb97m_v")]
 
 GRAD_CASES = [
@@ -144,10 +150,27 @@ def stability_refs():
         print(f"wrote {path}  lowest = {low[:3]}")
 
 
+def energy_refs(cases):
+    for label, basis, xc in cases:
+        mol, mf, charge, mult = build(label, basis, xc)
+        e = mf.kernel()
+        out = record(label, basis, xc, mol, mf, charge, mult, e)
+        path = REFDIR / f"{label}_{basis}_{xc}.json"
+        path.write_text(json.dumps(out, indent=2) + "\n")
+        print(f"wrote {path}  E = {e:.10f}  converged={mf.converged}")
+
+
 def main():
     REFDIR.mkdir(parents=True, exist_ok=True)
     if sys.argv[1:] == ["stability"]:
         stability_refs()
+        return
+    if sys.argv[1:2] == ["energy"]:
+        wanted = set(sys.argv[2:])
+        unknown = wanted - set(PYSCF_XC)
+        if unknown:
+            sys.exit(f"unknown xc tag(s) {sorted(unknown)}; known: {sorted(PYSCF_XC)}")
+        energy_refs([c for c in ENERGY_CASES if c[2] in wanted])
         return
     mol, mf, charge, mult = build("nh2", "cc-pvdz", "tpssh", restricted_open=True)
     e = mf.kernel()
@@ -156,13 +179,7 @@ def main():
     path = REFDIR / "nh2_cc-pvdz_tpssh_roks.json"
     path.write_text(json.dumps(out, indent=2) + "\n")
     print(f"wrote {path}  E = {e:.10f}  converged={mf.converged}")
-    for label, basis, xc in ENERGY_CASES:
-        mol, mf, charge, mult = build(label, basis, xc)
-        e = mf.kernel()
-        out = record(label, basis, xc, mol, mf, charge, mult, e)
-        path = REFDIR / f"{label}_{basis}_{xc}.json"
-        path.write_text(json.dumps(out, indent=2) + "\n")
-        print(f"wrote {path}  E = {e:.10f}  converged={mf.converged}")
+    energy_refs(ENERGY_CASES)
     for label, basis, xc in GRAD_CASES:
         mol, mf, charge, mult = build(label, basis, xc)
         e = mf.kernel()

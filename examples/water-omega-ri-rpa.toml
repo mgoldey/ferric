@@ -1,0 +1,17 @@
+# omega-RI RPA (Luenser, Schurkus, Ochsenfeld, JCTC 13, 1647 (2017)'s fit)
+# on the full-rank PDEP-RPA: energy only.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "pdep-rpa"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+
+[ri]
+metric = "erfc"
+omega_bohr = 0.1

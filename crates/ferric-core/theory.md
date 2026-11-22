@@ -10,6 +10,7 @@ The derivations, proofs and measurements for `ferric-core` are in the ferric boo
 | Contracted Gaussians, normalization and parsers | `basis-sets` | [`book/src/02-molecules-and-numerics/02-basis-sets.md`](../../book/src/02-molecules-and-numerics/02-basis-sets.md) | `scripts/basis_normalization_sympy.py` | `basis.unit-self-overlap` |
 | Determinism, threads and the memory budget | `determinism-and-memory` | [`book/src/02-molecules-and-numerics/03-determinism-and-memory.md`](../../book/src/02-molecules-and-numerics/03-determinism-and-memory.md) | — | — |
 | One-electron integrals and multipoles | `one-electron` | [`book/src/03-integrals/01-one-electron.md`](../../book/src/03-integrals/01-one-electron.md) | — | — |
+| Closed-shell RI-MP2 energy | `closed-shell-ri-mp2` | [`book/src/10-mp2/01-closed-shell-ri-mp2.md`](../../book/src/10-mp2/01-closed-shell-ri-mp2.md) | — | — |
 | Streaming the MO transform and the dressing | `streaming-transform` | [`book/src/11-rimp2-algorithms/02-streaming-transform.md`](../../book/src/11-rimp2-algorithms/02-streaming-transform.md) | — | — |
 | The memory budget, the admission checks and the shared pool | `memory-budget` | [`book/src/11-rimp2-algorithms/04-memory-budget.md`](../../book/src/11-rimp2-algorithms/04-memory-budget.md) | — | — |
 | Device and mixed-precision kernels | `device-mixed-precision` | [`book/src/11-rimp2-algorithms/06-device-mixed-precision.md`](../../book/src/11-rimp2-algorithms/06-device-mixed-precision.md) | `scripts/mp2_variant_identities.py` | `rimp2alg.mixed-element-bound` |

@@ -83,6 +83,10 @@ check_stability = false                # diagnostic orbital-Hessian check of the
 # irrep_nelec: electrons per irrep; not read here: only with symmetry = true
 # ladder: [[scf.ladder]] convergence-ladder rungs; not read here: rhf and ksdft only
 
+[ri]
+metric = "coulomb"  # coulomb | erfc
+# omega_bohr: omega-RI attenuation, Bohr^-1; not read here: only with metric = "erfc", where it is required
+
 [rpa]
 auxbasis = "cc-pvdz-ri"         # RI auxiliary basis
 frozen_core = 0                 # as [mp2] frozen_core

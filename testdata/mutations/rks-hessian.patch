@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/ks_fixed_grid.rs b/crates/ferric-scf/src/ks_fixed_grid.rs
+index f2a5e73a0..091320534 100644
+--- a/crates/ferric-scf/src/ks_fixed_grid.rs
++++ b/crates/ferric-scf/src/ks_fixed_grid.rs
+@@ -1158,7 +1158,7 @@ impl FixedGridKs {
+                     riding_cross = Some(&c + &c.t());
+                 } else {
+                     let c = wd.grad.dot(&df.t());
+-                    g.scaled_add(mm.weight_cross, &(&c + &c.t()));
++                    g.scaled_add(mm.weight_cross, &c);
+                 }
+                 Ok((riding_cross, translation_fill(g.view(), home, mm.fill)))
+             },

@@ -12,9 +12,9 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
+use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::{s, Array2, Array3};
-use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 
 /// Dressed RI integrals over the full active-MO square.
 ///
@@ -176,28 +176,6 @@ fn guard_b_full_at(
         )));
     }
     Ok(())
-}
-
-/// Metric Cholesky + triangular solve (naux×naux). Call-path proof: reached
-/// only from `build_full_b_with_mos`/`build_full_b_both_spins`, which are in
-/// turn reached only from top-level GW entry points (lib.rs:211,:279) and
-/// BSE's top-level `build_full_b` calls (bse.rs) — none of which run inside a
-/// rayon `par_iter`. `opt_in_blas_threads()` defaults to 1 (identical to
-/// today) and additionally self-guards to 1 if it is ever invoked from a
-/// rayon worker thread, so this raise is safe even if a future caller's
-/// assumption breaks.
-fn cholesky_inverse_sqrt(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let n = v.nrows();
-    with_blas_threads(opt_in_blas_threads(), || {
-        let l = v
-            .cholesky(UPLO::Lower)
-            .map_err(|e| FerricError::General(format!("V cholesky failed: {e}")))?;
-        let eye = Array2::<f64>::eye(n);
-        let v_inv_sqrt = l
-            .solve_triangular(UPLO::Lower, Diag::NonUnit, &eye)
-            .map_err(|e| FerricError::General(format!("triangular solve failed: {e}")))?;
-        Ok(v_inv_sqrt)
-    })
 }
 
 /// Build B̃^P_{mn} over the full active-MO square (closed-shell RHF reference).

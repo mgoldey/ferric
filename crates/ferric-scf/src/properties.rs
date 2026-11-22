@@ -1179,8 +1179,6 @@ pub fn lowdin_charges(
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ndarray_linalg::Eigh;
-
     let nbf = prep.nbasis();
     if density.nrows() != nbf || density.ncols() != nbf {
         return Err(FerricError::General(format!(
@@ -1193,20 +1191,8 @@ pub fn lowdin_charges(
     let s = oneelectron::overlap(prep);
 
     // S = U diag(λ) U^T → S^{1/2} = U diag(√λ) U^T.
-    let (eigvals, eigvecs) = s
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::General(format!("lowdin_charges: S eigh failed: {e}")))?;
-    let mut sqrt_lambda = Array2::<f64>::zeros((nbf, nbf));
-    for i in 0..nbf {
-        if eigvals[i] <= 0.0 {
-            return Err(FerricError::General(format!(
-                "lowdin_charges: overlap eigenvalue {} <= 0 (linear dependence)",
-                eigvals[i]
-            )));
-        }
-        sqrt_lambda[(i, i)] = eigvals[i].sqrt();
-    }
-    let s_half = eigvecs.dot(&sqrt_lambda).dot(&eigvecs.t());
+    let s_half = ferric_core::linalg::symmetric_sqrt(&s)
+        .map_err(|e| FerricError::General(format!("lowdin_charges: S^1/2: {e}")))?;
 
     // M = S^{1/2} · D · S^{1/2}
     let m = s_half.dot(density).dot(&s_half);

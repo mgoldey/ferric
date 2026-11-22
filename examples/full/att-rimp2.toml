@@ -118,6 +118,9 @@ att_operator = "erfc"    # erfc | terfc
 # oo_diis_size: orbital-rotation DIIS subspace; not read here: oo-rimp2 only
 # att_r0: terfc r0, Angstrom; not read here: att-rimp2 with att_operator = "terfc" only
 # att_omega: terfc sharpness, Angstrom^-1; not read here: att-rimp2 with att_operator = "terfc" only
+# cdd_tol: omega-RI-CDD pseudo-MO Cholesky truncation; not read here: laplace-mp2 / laplace-sos-mp2; setting it selects the omega-RI-CDD route
+# cdd_schwarz_thresh: omega-RI-CDD exchange virtual screen; not read here: laplace-mp2 omega-RI-CDD route only
+# cdd_pair_thresh: omega-RI-CDD exchange pair prescreen; not read here: laplace-mp2 omega-RI-CDD route only
 
 [local]
 scheme = "none"  # none | amplitude-threshold

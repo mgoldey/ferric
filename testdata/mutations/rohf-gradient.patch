@@ -1,0 +1,13 @@
+diff --git a/crates/ferric-scf/src/gradient.rs b/crates/ferric-scf/src/gradient.rs
+index e887cdf6e..e875d8584 100644
+--- a/crates/ferric-scf/src/gradient.rs
++++ b/crates/ferric-scf/src/gradient.rs
+@@ -2405,7 +2405,7 @@ pub(crate) fn rohf_energy_weighted_density(result: &ScfResult) -> Result<Array2<
+         .density_beta
+         .as_ref()
+         .ok_or_else(|| FerricError::General("ROHF gradient: missing density_beta".into()))?;
+-    let w = d_a.dot(f_a).dot(d_a) + d_a.dot(f_b).dot(d_b);
++    let w = d_a.dot(f_a).dot(d_a) + d_a.dot(f_a).dot(d_b);
+     Ok(0.5 * (&w + &w.t()))
+ }
+ 

@@ -2076,6 +2076,44 @@ class Mp3Result:
     @property
     def e_total(self) -> float: ...
 
+class OmegaRiResult:
+    """Result of :func:`run_omega_ri`."""
+
+    @property
+    def total_energy(self) -> float: ...
+    @property
+    def rhf_energy(self) -> float: ...
+    @property
+    def e_corr(self) -> float:
+        """Correlation energy of ``method`` (SOS-scaled for ``"cdd-sos-mp2"``)."""
+        ...
+    @property
+    def e_os(self) -> float | None:
+        """Unscaled opposite-spin MP2 component (``None`` for ``"rpa"``)."""
+        ...
+    @property
+    def e_ss(self) -> float | None:
+        """Same-spin MP2 component (``None`` for ``"rpa"`` and ``"cdd-sos-mp2"``)."""
+        ...
+    @property
+    def method(self) -> str: ...
+    @property
+    def fit(self) -> str:
+        """The fit, e.g. ``"erfc(omega=0.1 Bohr^-1)"``."""
+        ...
+    @property
+    def mean_rank_occ(self) -> float | None:
+        """Mean occupied pseudo-MO rank over the Laplace points (CDD methods)."""
+        ...
+    @property
+    def mean_rank_vir(self) -> float | None: ...
+    @property
+    def pair_fraction(self) -> float | None:
+        """Occupied pairs kept by the exchange screen (``"cdd-mp2"`` only)."""
+        ...
+    @property
+    def virtual_fraction(self) -> float | None: ...
+
 class LaplaceMp2Result:
     """Result of a Laplace RI-MP2 calculation."""
 
@@ -5648,6 +5686,42 @@ def run_opmp3(
     solves.
     `frozen_core` counts orbitals of the valence occupied space, after the ECP has
     removed its core.
+    """
+    ...
+
+def run_omega_ri(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    omega_bohr: float,
+    method: str = "rimp2",
+    frozen_core: int | None = None,
+    n_quad: int | None = None,
+    cdd_tol: float | None = None,
+    cdd_schwarz_thresh: float | None = None,
+    cdd_pair_thresh: float | None = None,
+    c_os: float | None = None,
+    memory_budget_gb: float | None = None,
+    scf_max_iter: int | None = None,
+    scf_energy_conv: float | None = None,
+    scf_density_conv: float | None = None,
+) -> OmegaRiResult:
+    """Correlation energy with the omega-RI fitting metric.
+
+    The three-index integrals are erfc(omega r)/r-attenuated and the fit uses
+    the metric V~^-1 V V~^-1 (Glasbrenner, Graf, Ochsenfeld, JCTC 16, 6856
+    (2020); Luenser, Schurkus, Ochsenfeld, JCTC 13, 1647 (2017)).
+    ``omega_bohr`` is in Bohr^-1 (the papers recommend 0.1); 0 is the
+    Coulomb fit. The algebra is dense: the fit changes the energy, not the
+    cost.
+
+    ``method``: ``"rimp2"`` (canonical RI-MP2), ``"cdd-mp2"`` /
+    ``"cdd-sos-mp2"`` (Laplace MP2 / SOS-MP2 in pivoted-Cholesky pseudo-MOs;
+    ``n_quad`` in {3, 5, 7}, default 7; ``cdd_tol`` default 0 keeps every
+    pseudo-MO; ``cdd_schwarz_thresh`` / ``cdd_pair_thresh`` are the paper's
+    exchange screens, default 0 = none; ``c_os`` default 1.3), or ``"rpa"``
+    (full-rank PDEP-RPA, closed shell or UHF). A key the chosen method does
+    not read raises ``ValueError``. The MP2 methods are closed-shell only.
     """
     ...
 

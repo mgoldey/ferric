@@ -221,8 +221,11 @@ Two notes on the table:
   therefore drops only whole $(i,a)$ pairs.
 - **Cost.** Per point, the code does one
   $N_{\mathrm{aux}}\times\lvert T\rvert\times N_{\mathrm{aux}}$ GEMM for $Z$.
-  The whitening $\hat B = MH$ is done once, outside the point loop, with
-  $H$ the unwhitened localized integrals. Memory is
+  The whitening $\hat B = L^{-1}H$ is done once, outside the point loop, with
+  $H$ the unwhitened localized integrals: one Cholesky of the metric and one
+  triangular solve into $H$ (`ferric-mp2/src/rimp2.rs::cholesky_whiten`), no
+  explicit inverse. At C48 / 6-31G (cc-pVDZ-RI, 4060 functions, `local` at
+  8 Bohr) it takes 1.9 s of a 43 s SOS stage (2026-11-21). Memory is
   $N_{\mathrm{aux}}\lvert T\rvert$. At a fixed radius
   $\lvert T\rvert = \sum_i\lvert V_i\rvert$ grows linearly with system size, against
   $n_on_v$ for the MO path. The global Coulomb metric keeps the

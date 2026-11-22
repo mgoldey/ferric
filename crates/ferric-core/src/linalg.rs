@@ -476,3 +476,159 @@ pub fn logdet_lu(a: &Array2<f64>) -> Result<f64, FerricError> {
 
     Ok(log_abs_det)
 }
+
+/// `L⁻¹` for the Cholesky factor of a symmetric positive definite matrix,
+/// `V = L Lᵀ` (`L` lower triangular), by LAPACK `dpotrf_` + `dtrtri_`.
+///
+/// Returns the lower-triangular `L⁻¹` with the strict upper triangle zero, so
+/// `L⁻¹ V L⁻ᵀ = I` and `(L⁻¹)ᵀ L⁻¹ = V⁻¹`. This is the RI metric factor every
+/// `B = L⁻¹ (P|ia)` builder uses (`ferric_mp2::rimp2::cholesky_inverse_sqrt`).
+///
+/// Layout: the row-major buffer of a symmetric `V` is its column-major buffer,
+/// so `dpotrf_('U')` factors `V = Uᵀ U` in place with `U` upper triangular in
+/// column-major order. Read back row-major, that triangle is `Uᵀ = L`.
+/// `dtrtri_('U')` then overwrites it with `U⁻¹`, whose row-major reading is
+/// `U⁻ᵀ = L⁻¹`. The other triangle still holds input entries and is zeroed.
+///
+/// A matrix that is not positive definite (`dpotrf_` info > 0) is an error,
+/// not a panic. Threading is whatever the caller's OpenBLAS count is.
+pub fn cholesky_inverse_lower(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let (n, ncols) = v.dim();
+    if n != ncols {
+        return Err(FerricError::Lapack(format!(
+            "cholesky_inverse_lower: matrix must be square, got {n}x{ncols}"
+        )));
+    }
+    if n == 0 {
+        return Ok(Array2::zeros((0, 0)));
+    }
+    let mut buf: Vec<f64> = v.as_standard_layout().iter().copied().collect();
+    let n_i = n as c_int;
+    let uplo: c_char = b'U' as c_char;
+    let diag: c_char = b'N' as c_char;
+    let mut info: c_int = 0;
+    unsafe {
+        lapack_sys::dpotrf_(&uplo, &n_i, buf.as_mut_ptr(), &n_i, &mut info);
+    }
+    if info != 0 {
+        return Err(FerricError::Lapack(format!(
+            "Cholesky on (P|Q): dpotrf_ info={info} (the leading minor of order {info} \
+             is not positive definite)"
+        )));
+    }
+    unsafe {
+        lapack_sys::dtrtri_(&uplo, &diag, &n_i, buf.as_mut_ptr(), &n_i, &mut info);
+    }
+    if info != 0 {
+        return Err(FerricError::Lapack(format!(
+            "cholesky_inverse_lower: dtrtri_ info={info} (singular Cholesky factor)"
+        )));
+    }
+    let mut out = Array2::from_shape_vec((n, n), buf)
+        .map_err(|e| FerricError::Lapack(format!("cholesky_inverse_lower: reshape: {e}")))?;
+    for i in 0..n {
+        for j in (i + 1)..n {
+            out[[i, j]] = 0.0;
+        }
+    }
+    Ok(out)
+}
+
+/// `A^{1/2} = U diag(√λ) Uᵀ` for a symmetric positive definite `A` (the
+/// overlap `S^{1/2}` of Löwdin orthogonalization), through [`eigh_dc`]. A
+/// symmetric matrix function, so the degenerate-subspace freedom of the
+/// eigensolver does not reach the result. An eigenvalue `<= 0` is an error
+/// (linear dependence), not a NaN.
+pub fn symmetric_sqrt(a: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
+    let (evals, evecs) = eigh_dc(a, Uplo::Upper)?;
+    if let Some(&lmin) = evals.first() {
+        if lmin <= 0.0 {
+            return Err(FerricError::Lapack(format!(
+                "symmetric_sqrt: eigenvalue {lmin:e} <= 0 (linear dependence)"
+            )));
+        }
+    }
+    let mut us = evecs.clone();
+    for (mut col, &l) in us.axis_iter_mut(Axis(1)).zip(&evals) {
+        col *= l.sqrt();
+    }
+    Ok(us.dot(&evecs.t()))
+}
+
+#[cfg(test)]
+mod cholesky_inverse_tests {
+    use super::*;
+
+    fn spd(n: usize, seed: u64) -> Array2<f64> {
+        let mut s = seed;
+        let m = Array2::from_shape_fn((n, n), |_| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        });
+        m.dot(&m.t()) + Array2::<f64>::eye(n) * (n as f64)
+    }
+
+    /// `L⁻¹` is lower triangular and whitens `V`, checked against the textbook
+    /// scalar forward substitution on an explicit factor (an independent route).
+    #[test]
+    fn cholesky_inverse_lower_whitens_and_matches_forward_substitution() {
+        let n = 37;
+        let v = spd(n, 5);
+        let li = cholesky_inverse_lower(&v).unwrap();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                assert_eq!(li[[i, j]], 0.0);
+            }
+        }
+        let w = li.dot(&v).dot(&li.t()) - Array2::<f64>::eye(n);
+        let err = w.iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(err < 1e-12, "L^-1 V L^-T - I = {err:e}");
+        // scalar Cholesky + forward substitution
+        let mut l = Array2::<f64>::zeros((n, n));
+        for j in 0..n {
+            let mut d = v[[j, j]];
+            for k in 0..j {
+                d -= l[[j, k]] * l[[j, k]];
+            }
+            l[[j, j]] = d.sqrt();
+            for i in (j + 1)..n {
+                let mut s = v[[i, j]];
+                for k in 0..j {
+                    s -= l[[i, k]] * l[[j, k]];
+                }
+                l[[i, j]] = s / l[[j, j]];
+            }
+        }
+        let mut want = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            want[[i, i]] = 1.0 / l[[i, i]];
+            for j in (0..i).rev() {
+                let s: f64 = (j..i).map(|k| l[[i, k]] * want[[k, j]]).sum();
+                want[[i, j]] = -s / l[[i, i]];
+            }
+        }
+        let d = (&li - &want).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(d < 1e-13, "LAPACK vs scalar L^-1: {d:e}");
+    }
+
+    #[test]
+    fn symmetric_sqrt_squares_back() {
+        let v = spd(23, 9);
+        let h = symmetric_sqrt(&v).unwrap();
+        let e = (&h.dot(&h) - &v).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        let asym = (&h - &h.t()).iter().fold(0.0f64, |a, x| a.max(x.abs()));
+        assert!(e < 1e-11 && asym < 1e-12, "{e:e} {asym:e}");
+        let mut bad = v.clone();
+        bad[[0, 0]] = -1e3;
+        assert!(symmetric_sqrt(&bad).is_err());
+    }
+
+    #[test]
+    fn cholesky_inverse_lower_refuses_an_indefinite_matrix() {
+        let mut v = spd(6, 1);
+        v[[3, 3]] = -1.0;
+        assert!(cholesky_inverse_lower(&v).is_err());
+    }
+}

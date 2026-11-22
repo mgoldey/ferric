@@ -1,4 +1,4 @@
-//! Hybrid meta-GGA (TPSSh, M06-2X, SCAN0, wB97M-V) SCF energies.
+//! Hybrid meta-GGA (TPSSh, M06-2X, SCAN0, r2SCAN0, wB97M-V) SCF energies.
 //!
 //! A hybrid meta-GGA is the τ-dependent semilocal path of the pure meta-GGAs
 //! (`dft_scan.rs`) plus the exact-exchange fraction libxc reports, applied
@@ -213,6 +213,33 @@ fn scan0_nh2_uks_vs_pyscf() {
         "SCAN0",
         Reference::Uks,
         "nh2_cc-pvdz_scan0.json",
+    );
+}
+
+/// r2SCAN0 (libxc HYB_MGGA_XC_R2SCAN0, 25% exact exchange; libxc >= 6.1).
+/// One combined libxc component, so the exact-exchange fraction is the one
+/// `xc_hyb_exx_coef` reports for it.
+#[test]
+fn r2scan0_h2o_rks_vs_pyscf() {
+    check(
+        "H2O",
+        H2O,
+        1,
+        "r2SCAN0",
+        Reference::Rks,
+        "h2o_cc-pvdz_r2scan0.json",
+    );
+}
+
+#[test]
+fn r2scan0_nh2_uks_vs_pyscf() {
+    check(
+        "NH2",
+        NH2,
+        2,
+        "r2SCAN0",
+        Reference::Uks,
+        "nh2_cc-pvdz_r2scan0.json",
     );
 }
 
