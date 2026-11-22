@@ -346,35 +346,58 @@ Done:
     calls and CLI inputs, every `k_builder` spelling and error case
     included):
     - `ferric_scf::options::KBuilderKind { Direct, Link, Cosx }` (named
-      `...Kind`: `fock::KBuilder` is the trait). `RhfConfig::k_builder` is
-      `Option<KBuilderKind>`; `KBuilderKind::parse` is the one whitelist,
-      refusing with the solvers' old text (`FerricError::General`, so
-      Python still raises `RuntimeError("General error: unknown k_builder
-      ...")`). Parsed once per frontend: the six SCF entry points last of
-      their keywords, the correlated entry points when they build their
-      reference config (`rhf_config_budgeted` / `rhf_config_conv`),
-      `run_cdft` before its config, the CLI in `try_scf_config` as its last
-      fallible step. `COSX_K_BUILDER` and the solver-side check are gone;
+      `...Kind`: `fock::KBuilder` is the trait). It lives in `options`
+      because the frontends parse into it there, next to the other
+      boundary types; it may move to `fock` / `fock_assembly` with 11(b),
+      when the J/K route becomes a sub-config. `RhfConfig::k_builder` is
+      `Option<KBuilderKind>`; `KBuilderKind::parse` (also `FromStr`) is the
+      one whitelist, refusing with the solvers' old text
+      (`FerricError::General`, so Python still raises
+      `RuntimeError("General error: unknown k_builder ...")`).
+      `COSX_K_BUILDER` and the solver-side check are gone;
       `df_k_aux_or_default`, the J/K route, the certificate, `EffectiveJk`
       and the COSX schedule take the enum. `ScfJk` no longer copies the
-      builder (`ScfJk::label` takes the config's; `ScfJk::resolve` checks
-      the spelling as typed so its conflicts quote it). The checkpoint
-      identity keeps the old `Debug` text (`Some("cosx")`).
-      Behaviour change, for an unknown spelling only: same class and text,
-      but raised at the boundary rather than by the solver, so whatever ran
-      in between now runs after it (the pre-SCF noise-floor warning, the
-      `with_gradient` / hook / symmetry refusals, in some correlated
-      bindings the basis preparation; the CLI's banners, run-log header and
-      its "SCF ladder failed: General(...)" wrapper are replaced by
-      `error: unknown k_builder ...`).
+      builder (`ScfJk::label` takes the config's). The checkpoint identity
+      keeps the old `Debug` text (`Some("cosx")`).
+    - Where it is parsed: the six SCF entry points last of their keywords;
+      the correlated entry points after their keyword checks and their
+      system / fitting-basis preparation (`rhf_config_budgeted` /
+      `rhf_config_conv`; the CC drivers that prepare inside a GIL-released
+      closure through `with_k_builder` there), except the MP2 family,
+      which parses it in `mp2_reference_config` before its method
+      keywords; `run_cdft` before its config; the CLI as the last
+      load-time check (`ScfCfg::k_builder_kind`: `error: <file>: [scf]
+      k_builder: unknown k_builder ...`, the form of the sibling keys),
+      read again by `try_scf_config`.
+    - Re-reads of the raw spelling, through the same whitelist
+      (`KBuilderKind::spells_cosx`), where a message quotes what was typed
+      and runs before the parse: the CLI load-time COSX checks
+      (`ScfCfg::k_builder_is_cosx`), `resolve_cosx_kwargs`, the PDEP-RPA
+      gradient scope and `ScfJk::resolve`'s conflicts. They go when that
+      message constraint does.
+    - Behaviour change, for an unknown spelling only: same class and text
+      (CLI: the new prefix above), but raised at the boundary rather than
+      by the solver. Checks that ran between the two now run after it: the
+      pre-SCF noise-floor warning and `run_dft`'s ladder banner (no longer
+      printed), the `with_gradient` / hook / symmetry refusals and the
+      libxc functional lookup, the MP2 family's method keywords, and in the
+      CLI every run-time check after loading, the banners and run-log
+      header (and the per-kind "SCF ladder failed: General(...)" /
+      "General error: ..." wrappers). So with two bad inputs the reported
+      error can switch, including from a `ValueError` to the
+      `RuntimeError`; with one, nothing changes.
+      `tests/test_k_builder_parse_order.py` pins both sides of the line.
     - `options::ks_jk_fit_defaults`: the one home of the Kohn-Sham JK-fit
-      default and the RIJCOSX rule, used by `ScfEntryPoint::options` and by
-      `ksdft_ladder` (which had its own copy).
+      default of the Python KS entry points (`ScfEntryPoint::options`) and
+      `ksdft_ladder` (which had its own copy), with the RIJCOSX rule. The
+      CLI's per-kind defaults (`Config::scf_xc_and_aux_defaults`) are
+      deliberately separate and share only the RIJCOSX rule
+      (`df_k_aux_or_default`).
     - `ri_j_task` is the argument of `ScfOptions::into_rhf_config`, not an
       option.
     - `ferric-python`: `parse_fock_hook` returns one
-      `Option<Hook { fock, grad }>` (same messages and order), carried by
-      the open-shell entry (`OpenShellEntry`, `run_open_ks`).
+      `Option<FockHook { fock, grad }>` (same messages and order), carried
+      by the open-shell entry (`OpenShellEntry`, `run_open_ks`).
     - `ferric.pyi`: the `run_dft` / `run_ksdft` `symmetry=True` overloads
       type `with_gradient` as `Literal[False]` and `dispersion` as `None`.
 
@@ -447,9 +470,13 @@ Next, each as its own PR following the patterns above:
 11. `RhfConfig` in steps, each with a field-by-field oracle test:
     (a) route every literal site through an options lowering, then mark it
     `#[non_exhaustive]`; (b) group fields into sub-configs (`Convergence`,
-    `Diis`, `JkRoute`, `Guess`, `Mom`, `Stability`, `Occupation`,
+    `Diis`, `JkRoute` (holding `Option<KBuilderKind>` with `df_j_aux` /
+    `df_k_aux`, the request), `Guess`, `Mom`, `Stability`, `Occupation`,
     `Option<KsConfig>`, `Option<CdftConfig>`); (c) replace correlated
-    bools and sentinels with sum types (`KMethod { Exact, Ri, Cosx }`,
+    bools and sentinels with sum types (an effective-route
+    `KMethod { Exact, Ri, Cosx }` naming what the solver builds, as
+    `fock_assembly::JkRoute` / `EffectiveJk` do today, not a second
+    request type next to `KBuilderKind`,
     `Stability { Off, Check, Descend }`, `LevelShift { Auto, Fixed }`,
     `Mom { Off, After(n), Initial }`, `Guess { Core, Sad, Projected,
     Density }`); (d) move `eri_route` (solver output written through
@@ -495,4 +522,21 @@ Next, each as its own PR following the patterns above:
       and the solver field, the CLI the `[scf]` key and the multiplicity).
     - `ScfKwargs` fields grouped (convergence, J/K route, guess,
       environment, accelerators, Kohn-Sham): mechanical, deferred to keep
-      this PR reviewable; the oracle tests' `kwargs()` mirror moves with it.
+      this PR reviewable; the groups should take 11(b)'s sub-config names,
+      and the oracle tests' `kwargs()` mirror moves with it.
+    - Design sketch for the symmetry pair: `enum SymmetryRequest { Off,
+      On { irrep_nelec } }` in `ScfKwargs` / `ScfOptions` (later
+      `RhfConfig`); the lowering returns a typed
+      `Refusal::IrrepNelecWithoutSymmetry`, which each entry point renders
+      with its own text (`run_dft: irrep_nelec requires symmetry=True`, ...);
+      `run_rhf`'s three refusals fold into one `validate` at the point the
+      first of them runs today.
+    - The "overridden" rule (a pluggable builder is skipped when `k_aux`
+      is set, or `j_aux` is set and the builder is not COSX) is still
+      written in three places: `scf_jk::effective_jk`,
+      `JkRoute::pluggable_k` and `fock_assembly::resolve_k_builder`.
+    - The `ferric.pyi` `symmetry=True` overloads still admit keywords the
+      blocked solve refuses (`point_charges`, `external_field`,
+      `solvent`, `smeared_charges`, `k_builder="cosx"`, `aurora`,
+      `stability_descent`); typing them needs an overload per refusal or
+      `None`-typed parameters, checked against the binding.
