@@ -3,7 +3,8 @@
 //! `ferric.write_response_mode_cube` to put one on a cube grid.
 
 use crate::{
-    budget_bytes_from_gb, cube_grid_spec, make_err, DensitySource, PyBasisSet, PyMolecule,
+    budget_bytes_from_gb, check_result_matches_basis, cube_grid_spec, make_err, DensitySource,
+    PyBasisSet, PyMolecule,
 };
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -117,13 +118,7 @@ fn response_modes(
     let obs = PreparedBasis::new(&mol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol, &auxbasis.inner).map_err(make_err)?;
     let scf = result.scf();
-    if scf.mos_r().nrows() != obs.nbasis() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "result has {} AOs but basis_set places {} on mol: pass the basis the SCF ran in",
-            scf.mos_r().nrows(),
-            obs.nbasis()
-        )));
-    }
+    check_result_matches_basis("response_modes", scf.mos_r().nrows(), obs.nbasis())?;
     let inner = ferric_rpa::response_modes::response_modes(
         &mol,
         &obs,
