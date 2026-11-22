@@ -449,9 +449,7 @@ struct ScfConfigInputs<'a> {
 /// error. Most were already validated by `load_config`; an error here still
 /// fails the run rather than dropping the key.
 fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig, CliError> {
-    use ferric_scf::options::{
-        df_k_aux_or_default, AuxBasis, Guess, KBuilderKind, ScfOptions, TrahTrigger,
-    };
+    use ferric_scf::options::{df_k_aux_or_default, AuxBasis, Guess, ScfOptions, TrahTrigger};
     let ScfConfigInputs {
         task,
         cosx_router_allowed,
@@ -534,11 +532,10 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // ("exact"/"none"/"off"/... mean no density fitting, as in the Python
     // bindings); the kind default is already an `AuxBasis`.
     let df_j_aux = s.df_j_aux.as_deref().map(AuxBasis::parse).or(df_j_default);
-    // The one parse of `[scf] k_builder` (the load-time checks read the
-    // spelling as written, `ScfCfg::k_builder_is_cosx`). Last of the
-    // fallible steps here: an unknown spelling used to be refused by the
-    // solver, after everything else.
-    let k_builder = KBuilderKind::parse_opt(s.k_builder.as_deref()).map_err(|e| e.to_string())?;
+    // `[scf] k_builder`, already refused at load if unknown
+    // (`ScfCfg::k_builder_kind`, the last load-time check); last of the
+    // fallible steps here too.
+    let k_builder = s.k_builder_kind()?;
     // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default is not
     // applied under it (the shared rule; an explicit `df_k_aux` next to COSX
     // is refused by the SCF as a conflict).
@@ -1046,7 +1043,7 @@ pub fn run(args: Vec<String>) {
                 // The EFFECTIVE J/K route (what the SCF builds), not the
                 // raw `[scf] jk` key: rs-mp2-rpa with no `jk` is "rijk", and
                 // a `k_builder` that density fitting overrides is null.
-                "k_builder": jk_route.k_builder.map(|k| k.as_str()),
+                "k_builder": jk_route.k_builder.map(ferric_scf::options::KBuilderKind::as_str),
                 "scf_jk": jk_route.mode,
                 "jk_aux": jk_route.j_aux,
                 "level_shift": rhf_config.level_shift,
@@ -9192,12 +9189,10 @@ mod scf_config_lowering_tests {
             }
             text(cfg.scf.relativistic_resolved())?; // relativistic
                                                     // k_builder: copied verbatim by the literal and refused by the
-                                                    // solver (`unknown k_builder ...`) after everything else; the
-                                                    // lowering now parses it, as its last fallible step, with the
-                                                    // solver's text.
-            text(ferric_scf::options::KBuilderKind::parse_opt(
-                cfg.scf.k_builder.as_deref(),
-            ))
+                                                    // solver after everything else; now refused at load
+                                                    // (`ScfCfg::k_builder_kind`, its last check) and by the
+                                                    // lowering as its last fallible step.
+            text(cfg.scf.k_builder_kind())
         };
         first().err()
     }
@@ -9657,8 +9652,9 @@ solvent = \"water\"
     #[test]
     fn unknown_k_builder_is_the_lowerings_last_error() {
         for kb in ["Link", "COSX", "Direct", "", " cosx", "bogus"] {
-            let unknown =
-                format!("unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'");
+            let unknown = format!(
+                "[scf] k_builder: unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'"
+            );
             let alone = parse(&header("rhf", &format!("[scf]\nk_builder = {kb:?}\n")));
             for task in TASKS {
                 let e = new_lowering(&alone, task, false, None)
