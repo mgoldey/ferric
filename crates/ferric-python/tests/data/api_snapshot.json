@@ -3146,6 +3146,44 @@
     }
    }
   },
+  "OmegaRiResult": {
+   "constructor": null,
+   "members": {
+    "e_corr": {
+     "kind": "attribute"
+    },
+    "e_os": {
+     "kind": "attribute"
+    },
+    "e_ss": {
+     "kind": "attribute"
+    },
+    "fit": {
+     "kind": "attribute"
+    },
+    "mean_rank_occ": {
+     "kind": "attribute"
+    },
+    "mean_rank_vir": {
+     "kind": "attribute"
+    },
+    "method": {
+     "kind": "attribute"
+    },
+    "pair_fraction": {
+     "kind": "attribute"
+    },
+    "rhf_energy": {
+     "kind": "attribute"
+    },
+    "total_energy": {
+     "kind": "attribute"
+    },
+    "virtual_fraction": {
+     "kind": "attribute"
+    }
+   }
+  },
   "OoRiMp2Result": {
    "constructor": null,
    "members": {
@@ -7964,6 +8002,79 @@
     "default": "'off'",
     "kind": "POSITIONAL_OR_KEYWORD",
     "name": "casscf_stability"
+   }
+  ],
+  "run_omega_ri": [
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "mol"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "basis_set"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "auxbasis"
+   },
+   {
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "omega_bohr"
+   },
+   {
+    "default": "'rimp2'",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "method"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "frozen_core"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "n_quad"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cdd_tol"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cdd_schwarz_thresh"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "cdd_pair_thresh"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "c_os"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "memory_budget_gb"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_max_iter"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_energy_conv"
+   },
+   {
+    "default": "None",
+    "kind": "POSITIONAL_OR_KEYWORD",
+    "name": "scf_density_conv"
    }
   ],
   "run_oo_rimp2": [
