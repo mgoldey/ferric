@@ -140,7 +140,7 @@ struct GradientScope<'a> {
 /// see (it takes none of the external potential, PCM or COSX terms).
 fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     let refuse = |what: String| {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "run_pdep_rpa: with_gradient=True {what}"
         )))
     };
@@ -248,7 +248,7 @@ pub(crate) fn run_rs_mp2_rpa(
         .map(|f| match f.as_str() {
             "delta-lr" => Ok(ferric_rpa::RsMp2RpaFormulation::DeltaLr),
             "coupled-rings" => Ok(ferric_rpa::RsMp2RpaFormulation::CoupledRings),
-            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            other => Err(crate::errors::input_err(format!(
                 "unknown formulation \"{other}\"; expected \"delta-lr\" or \"coupled-rings\""
             ))),
         })
@@ -258,7 +258,7 @@ pub(crate) fn run_rs_mp2_rpa(
         "erf" => ferric_rpa::rs_mp2_rpa::Attenuator::Erf,
         "terf" => ferric_rpa::rs_mp2_rpa::Attenuator::Terf,
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown attenuator \"{other}\"; expected \"erf\" or \"terf\""
             )))
         }
@@ -269,12 +269,12 @@ pub(crate) fn run_rs_mp2_rpa(
     let (omegas, omega_seq) = rs_scan_axis::<f64>(omega, "omega")?;
     let (terf_omegas, terf_seq) = rs_scan_axis::<f64>(terf_omega, "terf_omega")?;
     if omega_seq && terf {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "omega is ignored with attenuator=\"terf\"; scan the seam sharpness with a list-valued terf_omega",
         ));
     }
     if terf_seq && !terf {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "terf_omega needs attenuator=\"terf\"; scan an erf split with a list-valued omega",
         ));
     }
@@ -284,7 +284,7 @@ pub(crate) fn run_rs_mp2_rpa(
             .as_ref()
             .and_then(|v| v.iter().find(|w| !(w.is_finite() && **w > 0.0)))
         {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{name} must be finite and > 0 (got {w})"
             )));
         }
@@ -294,7 +294,7 @@ pub(crate) fn run_rs_mp2_rpa(
         .enumerate()
         .any(|(i, f)| forms[..i].contains(f))
     {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "formulation lists the same formulation twice",
         ));
     }
@@ -319,7 +319,7 @@ pub(crate) fn run_rs_mp2_rpa(
     if is_scan {
         let axis: Vec<f64> = if terf {
             terf_omegas.clone().ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
+                crate::errors::input_err(
                     "scanning formulations with attenuator=\"terf\" needs terf_omega",
                 )
             })?
@@ -394,12 +394,12 @@ fn rs_scan_axis<'py, T: FromPyObject<'py>>(
         return Ok((Some(vec![x]), false));
     }
     let v: Vec<T> = o.extract().map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(format!(
+        crate::errors::input_err(format!(
             "{name} must be a scalar or a sequence of the same type"
         ))
     })?;
     if v.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{name} must not be an empty list"
         )));
     }
@@ -957,7 +957,7 @@ pub(crate) fn run_pdep_rpa(
     // Canonical parser (shared with the CLI): unknown schemes error rather than
     // silently running Gauss-Legendre.
     let scheme = QuadratureScheme::parse_config_str(quadrature)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+        .map_err(|e| crate::errors::input_err(format!("quadrature: {e}")))?;
     if u0.is_some() && !scheme.honours_u0() {
         eprintln!(
             "warning: u0 is ignored by quadrature='minimax' (it derives u0 from \

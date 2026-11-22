@@ -58,7 +58,11 @@ def grad(*_):
 def raises(call, cls, msg):
     with pytest.raises(cls) as e:
         call()
-    assert type(e.value) is cls
+    # `isinstance`, not `type(...) is cls`: since roadmap 10 the exception is a
+    # `ferric.FerricError` subclass of `cls` (ConvergenceError, InputError, ...),
+    # which every `except cls` handler still catches.
+    assert isinstance(e.value, cls)
+    assert isinstance(e.value, ferric.FerricError)
     assert str(e.value) == msg
 
 

@@ -135,3 +135,32 @@ Pure-Python helpers under `ferric.*` (not part of the compiled API; their option
 * **`ferric.qcschema`**: `run`, `molecule_from_qcschema`, `molecule_to_qcschema`.
 * **`ferric.mlip`**: `write_extxyz`, `write_asedb`, `frames`, `to_atoms` (QCSchema results or `FerricCalculator` atoms -> extended XYZ / ASE database, eV and eV/Angstrom, level-of-theory metadata; writing needs `pip install "ferric[ase]"`).
 * **`ferric.ase`** (`pip install "ferric[ase]"`) and **`ferric.viz`** (py3Dmol): ASE calculator and 3-D views.
+
+## 5. Errors
+
+Every exception ferric raises for a failed computation derives from
+`ferric.FerricError` **and** from the builtin class it raised before the
+hierarchy existed, so `except RuntimeError` / `except ValueError` /
+`except NotImplementedError` handlers keep working and messages are unchanged.
+
+| class | also | meaning |
+|---|---|---|
+| `ConvergenceError` | `RuntimeError` | SCF or another iterative solver did not converge |
+| `BasisError` | `ValueError`, `RuntimeError` | unknown or non-covering basis set / ECP |
+| `NumericalError` | `RuntimeError` | a linear-algebra call failed |
+| `MemoryBudgetError` | `RuntimeError` | a memory budget cannot cover the request |
+| `UnsupportedError` | `NotImplementedError` | a valid option combination the method does not implement |
+| `InputError` | `ValueError` | an invalid argument or option value |
+| `ComputationError` | `RuntimeError` | any other failure (including a few "invalid option" cases that still come from an untyped source, such as an unknown functional) |
+
+```python
+try:
+    ferric.run_frequencies(mol, "def2-svp", scf_max_iter=20)
+except ferric.ConvergenceError:
+    ...  # retry with a level shift
+except ferric.InputError:
+    ...  # fix the call
+```
+
+`TypeError` from argument conversion is unchanged. See `ARCHITECTURE.md`
+("Errors") for the mapping from the Rust `FerricError` variants.

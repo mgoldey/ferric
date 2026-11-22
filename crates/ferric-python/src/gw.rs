@@ -98,7 +98,7 @@ fn parse_gw_method(method: Option<&str>) -> PyResult<ferric_gw::GwMethod> {
             Some("evgw0") => GwMethod::EvGw0,
             Some("evgw") => GwMethod::EvGw,
             Some(other) => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                 "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
             )));
             }
@@ -127,7 +127,7 @@ impl PdepArgs<'_> {
     fn config(&self, default_n_quad: usize) -> PyResult<ferric_rpa::PdepRpaConfig> {
         use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
         let scheme = QuadratureScheme::parse_config_str(self.quadrature)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+            .map_err(|e| crate::errors::input_err(format!("quadrature: {e}")))?;
         Ok(ferric_rpa::PdepRpaConfig {
             frozen_core: self.frozen_core,
             trunc_thresh: self.trunc_thresh.unwrap_or(1e-4),
@@ -508,7 +508,7 @@ pub(crate) fn run_u_gw(
         None | Some("uhf") => "uhf",
         Some("rohf") => "rohf",
         Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "reference: unknown value \"{other}\"; expected \"uhf\" or \"rohf\""
             )));
         }

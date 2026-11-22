@@ -6,6 +6,7 @@ the [gpu] mode stays off.
 """
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -40,8 +41,11 @@ def _refusal(code, exc="ValueError", **extra_env):
     rc, _, err = _run(code, **extra_env)
     assert rc != 0
     last = err.strip().splitlines()[-1]
-    assert last.startswith(exc + ": "), last
-    return last[len(exc) + 2 :]
+    # A failure raised through the ferric hierarchy prints as
+    # `ferric.<Subclass>: ...` (the subclass of `exc`, roadmap 10).
+    m = re.match(rf"(?:{exc}|ferric\.\w+Error): ", last)
+    assert m, last
+    return last[m.end() :]
 
 
 # ── the record on results (this process: nothing configured, all f64) ──

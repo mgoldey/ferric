@@ -65,7 +65,7 @@ pub(crate) fn check_result_matches_basis(who: &str, result_nbf: usize, nbf: usiz
     if result_nbf == nbf {
         return Ok(());
     }
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "{who}: result has {result_nbf} basis functions but basis_set places {nbf} on mol; \
          pass the molecule and basis set the result was computed with"
     )))
@@ -105,7 +105,7 @@ pub(crate) fn esp_at_points(
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let arr = points.as_array();
     if arr.ncols() != 3 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "points must have shape (N, 3); got (_, {})",
             arr.ncols()
         )));
@@ -221,7 +221,7 @@ pub(crate) fn parse_proatom(proatom: &str) -> PyResult<bool> {
     match proatom {
         "scf" => Ok(true),
         "slater" => Ok(false),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+        other => Err(crate::errors::input_err(format!(
             "unknown proatom {other:?}: expected \"scf\" or \"slater\""
         ))),
     }
@@ -292,7 +292,7 @@ pub(crate) fn density_second_moment(
 pub(crate) fn points_to_vec(points: &numpy::PyReadonlyArray2<f64>) -> PyResult<Vec<[f64; 3]>> {
     let arr = points.as_array();
     if arr.ncols() != 3 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "points must have shape (N, 3); got (_, {})",
             arr.ncols()
         )));
@@ -409,15 +409,13 @@ pub(crate) fn cube_grid_spec(
     shape: Option<[usize; 3]>,
 ) -> PyResult<ferric_integrals::ao_grid::GridSpec> {
     if !(spacing.is_finite() && spacing > 0.0) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "spacing must be a positive number of Bohr",
         ));
     }
     let atoms = &mol.inner.atoms;
     if atoms.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "molecule has no atoms",
-        ));
+        return Err(crate::errors::input_err("molecule has no atoms"));
     }
     let origin = origin.unwrap_or_else(|| {
         let mut lo = [f64::INFINITY; 3];
@@ -439,9 +437,7 @@ pub(crate) fn cube_grid_spec(
         [n(0), n(1), n(2)]
     });
     if shape.contains(&0) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "shape entries must be >= 1",
-        ));
+        return Err(crate::errors::input_err("shape entries must be >= 1"));
     }
     Ok(ferric_integrals::ao_grid::GridSpec {
         origin,
@@ -492,9 +488,8 @@ pub(crate) fn write_cube(
             )
         }
         "mo" => {
-            let i = mo_index.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("what=\"mo\" requires mo_index")
-            })?;
+            let i = mo_index
+                .ok_or_else(|| crate::errors::input_err("what=\"mo\" requires mo_index"))?;
             let scf = result.scf();
             if scf.spin != ferric_scf::result::Spin::Restricted {
                 return Err(make_err(
@@ -517,7 +512,7 @@ pub(crate) fn write_cube(
             )
         }
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown what {other:?}: expected \"density\" or \"mo\""
             )))
         }

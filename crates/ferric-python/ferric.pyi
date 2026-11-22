@@ -174,6 +174,38 @@ def configure_precision(
     """
     ...
 
+# ── Exceptions ──
+# Every class below also derives from the builtin class the same failure raised
+# before the hierarchy existed, so existing `except RuntimeError` /
+# `except ValueError` / `except NotImplementedError` handlers are unchanged.
+# Messages are the same text as before. See src/errors.rs for the mapping.
+
+class FerricError(Exception):
+    """Root of the ferric exception hierarchy; never raised itself."""
+
+class ConvergenceError(FerricError, RuntimeError):
+    """An iterative procedure (SCF, a response or CC solver) did not converge."""
+
+class NumericalError(FerricError, RuntimeError):
+    """A dense linear-algebra call (eigensolver, factorization) failed."""
+
+class MemoryBudgetError(FerricError, RuntimeError):
+    """A memory budget or the shared pool cannot cover a request."""
+
+class UnsupportedError(FerricError, NotImplementedError):
+    """A valid option combination the method does not implement."""
+
+class ComputationError(FerricError, RuntimeError):
+    """Any other failure inside a computation."""
+
+class InputError(FerricError, ValueError):
+    """An invalid argument or option value."""
+
+class BasisError(InputError, RuntimeError):
+    """A basis set or ECP could not be loaded or does not cover the molecule.
+    Both a ``ValueError`` and a ``RuntimeError``: ``BasisSet.bundled`` raised
+    the former and the ``run_*`` drivers the latter."""
+
 # ── Classes ──
 
 class Molecule:

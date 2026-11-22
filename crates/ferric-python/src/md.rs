@@ -140,7 +140,7 @@ impl PyMdResult {
 }
 
 fn value_error(msg: impl Into<String>) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(msg.into())
+    crate::errors::input_err(msg.into())
 }
 
 /// The MD kwargs shared by `run_aimd` and `run_ffmd`.

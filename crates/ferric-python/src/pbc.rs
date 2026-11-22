@@ -61,20 +61,19 @@ use ferric_pbc::{
     kpoint_uks_gradient, kpoint_uks_stress, solve_krohf_keep, solve_kroks_keep, solve_kuks_keep,
     KUksGradConfig, KUksStressConfig,
 };
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
 // ─────────────────────────────────────────────────────────────── helpers ──
 
 fn val_err(m: String) -> PyErr {
-    PyValueError::new_err(m)
+    crate::errors::input_err(m)
 }
 
 /// Map a `ferric-pbc` error: refusals (`General`) are `ValueError`s with the
 /// Rust message, anything numerical is a `RuntimeError`.
 fn pbc_err(fname: &'static str) -> impl Fn(FerricError) -> PyErr {
     move |e| match refusal_text(e) {
-        Ok(m) => PyValueError::new_err(format!("{fname}: {m}")),
-        Err(other) => PyRuntimeError::new_err(format!("{fname}: {other}")),
+        Ok(m) => crate::errors::input_err(format!("{fname}: {m}")),
+        Err(other) => crate::errors::from_core_msg(&other, format!("{fname}: {other}")),
     }
 }
 
@@ -322,7 +321,7 @@ impl<'a> PbcArgs<'a, '_> {
     fn scf_kind(&self) -> PyResult<PbcKind<'a>> {
         match self.role {
             PbcRole::Scf(k) => Ok(k),
-            PbcRole::Correlation | PbcRole::CellOnly => Err(PyRuntimeError::new_err(format!(
+            PbcRole::Correlation | PbcRole::CellOnly => Err(crate::make_err(format!(
                 "{}: internal: SCF prologue on non-SCF args",
                 self.fname
             ))),
@@ -337,7 +336,7 @@ impl<'a> PbcArgs<'a, '_> {
             PbcKind::Uks(f) => OpenMethod::Uks(f.to_string()),
             PbcKind::Roks(f) => OpenMethod::Roks(f.to_string()),
             PbcKind::Rhf | PbcKind::Rks(_) => {
-                return Err(PyRuntimeError::new_err(format!(
+                return Err(crate::make_err(format!(
                     "{}: internal: open-shell entry on a closed-shell kind",
                     self.fname
                 )))
@@ -3862,7 +3861,7 @@ fn kpoint_open_entry(
     let fname = a.fname;
     if let Some(x) = level_shift {
         if !(x.is_finite() && x >= 0.0) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{fname}: level_shift must be a finite number >= 0 (Hartree), got {x}"
             )));
         }

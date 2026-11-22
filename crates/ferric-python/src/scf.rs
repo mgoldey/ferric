@@ -38,7 +38,7 @@ pub(crate) fn alias_kwarg<T>(
     new: Option<T>,
 ) -> PyResult<Option<T>> {
     match (old, new) {
-        (Some(_), Some(_)) => Err(pyo3::exceptions::PyValueError::new_err(format!(
+        (Some(_), Some(_)) => Err(crate::errors::input_err(format!(
             "{driver}: `{old_name}` is a deprecated alias of `{new_name}`; pass only `{new_name}`"
         ))),
         (Some(v), None) => {
@@ -365,7 +365,7 @@ impl PyRhfResult {
 pub(crate) fn check_trah_trigger(t: Option<f64>) -> PyResult<Option<TrahTrigger>> {
     t.map(TrahTrigger::new)
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 /// The `guess=` kwarg as parsed by [`parse_guess`] (`true` = SAD/MINAO).
@@ -389,9 +389,7 @@ pub(crate) fn scf_options_from_kwargs(
     entry: ScfEntryPoint,
     kw: ScfKwargs<'_>,
 ) -> PyResult<ScfOptions> {
-    entry
-        .options(kw)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    entry.options(kw).map_err(crate::errors::input_err)
 }
 
 /// The knobs each SCF entry point refuses
@@ -570,7 +568,7 @@ pub(crate) fn parse_ri_k_precision(
 ) -> PyResult<Option<ferric_scf::df_k::RiKPrecision>> {
     s.map(ferric_scf::df_k::RiKPrecision::parse_config_str)
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 /// Strict parse of an `eri` / `scf_eri` kwarg (`"auto"`, `"direct"`,
@@ -578,7 +576,7 @@ pub(crate) fn parse_ri_k_precision(
 pub(crate) fn parse_eri(s: Option<&str>) -> PyResult<ferric_scf::incore_jk::EriMode> {
     s.map_or(Ok(ferric_scf::incore_jk::EriMode::Auto), |s| {
         ferric_scf::incore_jk::EriMode::parse_config_str(s)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("eri: {e}")))
+            .map_err(|e| crate::errors::input_err(format!("eri: {e}")))
     })
 }
 
@@ -589,7 +587,7 @@ pub(crate) fn parse_relativistic(
 ) -> PyResult<Option<ferric_scf::x2c::Relativistic>> {
     s.map(ferric_scf::x2c::Relativistic::parse_config_str)
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 #[pyfunction]
@@ -795,13 +793,13 @@ pub(crate) fn scf_gradient_config(
     fock_hook: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<RhfConfig> {
     let refuse = |what: &str| {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "{who}: with_gradient=True cannot be combined with {what}"
         )))
     };
     if fock_hook.is_some() {
         ferric_scf::rhf::validate_fock_hook(config)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+            .map_err(|e| crate::errors::input_err(format!("{who}: {e}")))?;
     }
     if matches!(kind, ScfGradientKind::Rhf) {
         if config.symmetry || config.irrep_nelec.is_some() {
@@ -823,7 +821,7 @@ pub(crate) fn scf_gradient_config(
         ScfGradientKind::Uhf => ferric_scf::gradient::preflight_cosx_unrestricted(config),
         ScfGradientKind::Rohf => ferric_scf::gradient::preflight_cosx_restricted_open(config),
     };
-    preflight.map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+    preflight.map_err(|e| crate::errors::input_err(format!("{who}: {e}")))?;
     // A gradient is a geometry task: an unset RI-J precision resolves to f64
     // (the f32 RI-J energy surface is jagged between nearby geometries), an
     // explicit one is kept.
@@ -970,7 +968,7 @@ fn parse_fock_hook_grad(
         return Ok(None);
     };
     let refuse = |why: &str| {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "{who}: fock_hook_grad {why}"
         )))
     };
@@ -986,7 +984,7 @@ fn parse_fock_hook_grad(
 /// The `ValueError` for `with_gradient=True` with a `fock_hook` but no
 /// `fock_hook_grad`.
 pub(crate) fn refuse_hook_without_grad<T>(who: &str) -> PyResult<T> {
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "{who}: with_gradient=True with a fock_hook needs fock_hook_grad=, the hook's explicit \
          nuclear derivative dE_hook/dR at fixed density, shape (natoms, 3) in Hartree/Bohr \
          (zeros when the hook depends on the density only); the analytic gradient supplies \
@@ -1000,7 +998,7 @@ pub(crate) fn refuse_hook_without_grad<T>(who: &str) -> PyResult<T> {
 pub(crate) fn symmetry_err(who: &'static str) -> impl Fn(ferric_core::error::FerricError) -> PyErr {
     move |e| {
         if ferric_scf::symmetric::is_symmetry_refusal(&e) {
-            pyo3::exceptions::PyValueError::new_err(format!("{who}(symmetry=True): {e}"))
+            crate::errors::input_err(format!("{who}(symmetry=True): {e}"))
         } else {
             make_err(e)
         }
@@ -1055,7 +1053,7 @@ pub(crate) fn solve_rhf_outcome(
         return wrap_rhf_result(py, mol, prep.basis_set(), r, config, true);
     }
     if config.irrep_nelec.is_some() && !config.symmetry {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_rhf: irrep_nelec requires symmetry=True",
         ));
     }

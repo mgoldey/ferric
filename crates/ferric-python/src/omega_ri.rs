@@ -53,9 +53,7 @@ impl PyOmegaRiResult {
 
 fn refuse(cond: bool, msg: &str) -> PyResult<()> {
     if cond {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_omega_ri: {msg}"
-        )))
+        Err(crate::errors::input_err(format!("run_omega_ri: {msg}")))
     } else {
         Ok(())
     }

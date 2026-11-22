@@ -31,7 +31,7 @@ use super::*;
 /// fix the input (re-order the conformers, drop the unconverged one). The
 /// message is core's, which already names the offending conformer/atom index.
 pub(crate) fn conformer_err(e: ferric_core::conformers::ConformerError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(format!("{e}"))
+    crate::errors::input_err(e)
 }
 
 /// Build a `Molecule` from a coordinate array plus a shared element list.
@@ -54,7 +54,7 @@ pub(crate) fn molecule_from_coords(
     conformer_index: usize,
 ) -> PyResult<Molecule> {
     if coords.len() != symbols.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "conformer {conformer_index}: got {} coordinate rows but {} element symbols; \
              the element list is shared by all conformers and must match each geometry's \
              atom count",
@@ -65,14 +65,14 @@ pub(crate) fn molecule_from_coords(
     let mut xyz = format!("{}\nconformer {conformer_index}\n", coords.len());
     for (atom_index, (row, sym)) in coords.iter().zip(symbols).enumerate() {
         if row.len() != 3 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "conformer {conformer_index}, atom {atom_index}: expected 3 Cartesian \
                  coordinates, got {}",
                 row.len()
             )));
         }
         if !row.iter().all(|v| v.is_finite()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "conformer {conformer_index}, atom {atom_index}: non-finite coordinate \
                  {row:?} (NaN/inf geometries produce a plausible-looking but meaningless \
                  energy, so they are rejected here)"
@@ -80,9 +80,8 @@ pub(crate) fn molecule_from_coords(
         }
         xyz.push_str(&format!("{} {:?} {:?} {:?}\n", sym, row[0], row[1], row[2]));
     }
-    Molecule::parse_xyz(&xyz, charge, multiplicity).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!("conformer {conformer_index}: {e}"))
-    })
+    Molecule::parse_xyz(&xyz, charge, multiplicity)
+        .map_err(|e| crate::errors::input_err(format!("conformer {conformer_index}: {e}")))
 }
 
 /// A weighted mean with its spread. Returned by every ensemble-averaging call.
@@ -348,7 +347,7 @@ impl PyConformerEnsemble {
         energies: Option<Vec<f64>>,
     ) -> PyResult<Self> {
         if coordinates.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "conformer ensemble is empty (need at least one conformer); \
                  did EmbedMultipleConfs return zero conformers?",
             ));
@@ -363,7 +362,7 @@ impl PyConformerEnsemble {
         let inner = match energies {
             Some(e) => {
                 if e.len() != molecules.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    return Err(crate::errors::input_err(format!(
                         "got {} energies for {} conformers",
                         e.len(),
                         molecules.len()
@@ -399,11 +398,11 @@ impl PyConformerEnsemble {
         energies: Option<Vec<f64>>,
     ) -> PyResult<Self> {
         let molecules = ferric_core::conformers::load_multi_xyz(path, charge, multiplicity)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+            .map_err(crate::errors::input_err)?;
         let inner = match energies {
             Some(e) => {
                 if e.len() != molecules.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    return Err(crate::errors::input_err(format!(
                         "got {} energies for {} frames in {path:?}",
                         e.len(),
                         molecules.len()
@@ -544,7 +543,7 @@ impl PyConformerEnsemble {
         let e = match energies {
             Some(e) => {
                 if e.len() != self.inner.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    return Err(crate::errors::input_err(format!(
                         "got {} energies for {} conformers",
                         e.len(),
                         self.inner.len()
@@ -635,7 +634,7 @@ pub(crate) fn extract_element_symbols(elements: &Bound<'_, PyAny>) -> PyResult<V
         )
     })?;
     if items.is_empty() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "elements list is empty (need one entry per atom)",
         ));
     }
@@ -657,7 +656,7 @@ pub(crate) fn extract_element_symbols(elements: &Bound<'_, PyAny>) -> PyResult<V
                 return ferric_core::elements::z_to_symbol(z)
                     .map(str::to_string)
                     .ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err(format!(
+                        crate::errors::input_err(format!(
                             "element {i}: atomic number {z} is not a known element"
                         ))
                     });

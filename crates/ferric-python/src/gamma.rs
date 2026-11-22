@@ -148,7 +148,7 @@ pub(crate) fn validate_periodic_cell(
     bs: &ferric_core::basis::BasisSet,
 ) -> PyResult<Molecule> {
     if mol.charge != 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{fname}: charged cell (charge = {}) is not supported: a periodic \
              charged cell needs a neutralising-background correction for the \
              electrons that is not implemented. Use a neutral cell.",
@@ -169,7 +169,7 @@ pub(crate) fn validate_gamma_cell(
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
 ) -> PyResult<Molecule> {
-    let bad = |m: String| -> PyResult<Molecule> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
+    let bad = |m: String| -> PyResult<Molecule> { Err(crate::errors::input_err(m)) };
     let emol = validate_periodic_cell(fname, mol, bs)?;
     if emol.multiplicity != 1 {
         return bad(format!(
@@ -404,7 +404,7 @@ pub(crate) fn gamma_auxbasis(
     }
     if let Ok(name) = obj.extract::<String>() {
         return basis::bundled(&name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
+            crate::errors::input_err(format!(
                 "{fname}: auxbasis {name:?} is not a bundled basis: {e}"
             ))
         });
@@ -434,7 +434,7 @@ pub(crate) fn parse_gamma_options(
     omega: Option<f64>,
 ) -> PyResult<GammaOptions> {
     let auxbasis: Option<()> = if auxbasis_given { Some(()) } else { None };
-    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
+    let val_err = |m: String| crate::errors::input_err(m);
     let exx = ferric_pbc::ExxDiv::parse_config_str(exxdiv).map_err(|e| val_err(format!("{e}")))?;
     let use_rsgdf = match jk.to_ascii_lowercase().as_str() {
         "dense" => false,
@@ -650,7 +650,7 @@ pub(crate) fn run_rhf_gamma(
     gdf_omega: Option<f64>,
     sr_column_rotation: Option<bool>,
 ) -> PyResult<PyGammaRhfResult> {
-    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
+    let val_err = |m: String| crate::errors::input_err(m);
     let GammaOptions {
         exx,
         lattice_bohr: a,
