@@ -7,7 +7,7 @@ use crate::pdep_properties::{
 
 // ── RS-MP2-RPA (SR-MP2 + LR-dRPA, Δ-form B or coupled-rings T) ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "RsMp2RpaResult")]
 pub(crate) struct PyRsMp2RpaResult {
     #[pyo3(get)]
@@ -408,7 +408,7 @@ fn rs_scan_axis<'py, T: FromPyObject<'py>>(
 
 // ── PDEP-RPA ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "PdepRpaResult")]
 pub(crate) struct PyPdepRpaResult {
     #[pyo3(get)]

@@ -4,7 +4,7 @@ use super::*;
 
 // ── Optimize ──
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "OptimizeResult")]
 pub(crate) struct PyOptimizeResult {
     #[pyo3(get)]
@@ -1645,7 +1645,7 @@ fn run_optimize_oo_rimp2(
     })
 }
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "FrequencyResult")]
 pub(crate) struct PyFrequencyResult {
     /// Vibrational wavenumbers in cm^-1, ascending. `3N-6` entries (`3N-5` if
@@ -1704,8 +1704,12 @@ pub(crate) struct PyFrequencyResult {
     pub(crate) molecule: ferric_core::mol::Molecule,
     /// What `ir_intensities` differentiates, or why it cannot.
     pub(crate) ir_source: Result<IrSource, String>,
-    /// `ir_intensities` after its first call.
-    pub(crate) ir_cache: Option<Vec<f64>>,
+    /// `ir_intensities` after its first call (the class is frozen, so the
+    /// cache is set through a shared reference).
+    pub(crate) ir_cache: std::sync::OnceLock<Vec<f64>>,
+    /// Serializes the first `ir_intensities` evaluation so concurrent first
+    /// calls run the six field SCFs once (as `DftResult::xc_lock`).
+    pub(crate) ir_lock: std::sync::Mutex<()>,
 }
 
 /// The SCF of a frequency run, kept so `FrequencyResult.ir_intensities` can
@@ -1764,8 +1768,8 @@ impl PyFrequencyResult {
     /// IR intensity of each mode in km/mol, in the order of `frequencies`
     /// (the field route: six SCF + gradient evaluations in a field of
     /// +-1e-3 a.u., computed on the first call and cached).
-    fn ir_intensities(&mut self, py: Python<'_>) -> PyResult<Vec<f64>> {
-        if let Some(a) = &self.ir_cache {
+    fn ir_intensities(&self, py: Python<'_>) -> PyResult<Vec<f64>> {
+        if let Some(a) = self.ir_cache.get() {
             return Ok(a.clone());
         }
         let src = self
@@ -1774,9 +1778,13 @@ impl PyFrequencyResult {
             .map_err(|why| value_error(why.clone()))?;
         let ctx = ParallelContext::default();
         let mol = &self.molecule;
-        let apt = py
-            .allow_threads(|| {
-                ferric_scf::infrared::dipole_derivatives_field(
+        let (cache, lock) = (&self.ir_cache, &self.ir_lock);
+        // One evaluation even under concurrent first calls: the guard is taken
+        // INSIDE allow_threads, so a waiting thread has released the GIL.
+        py.allow_threads(|| {
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if cache.get().is_none() {
+                let apt = ferric_scf::infrared::dipole_derivatives_field(
                     &ctx,
                     mol,
                     &src.basis_name,
@@ -1784,12 +1792,17 @@ impl PyFrequencyResult {
                     &src.scf_cfg,
                     src.reference,
                     ferric_scf::infrared::DEFAULT_IR_FIELD,
-                )
-            })
-            .map_err(make_err)?;
-        let a = ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes).map_err(make_err)?;
-        self.ir_cache = Some(a.clone());
-        Ok(a)
+                )?;
+                let a = ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes)?;
+                let _ = cache.set(a);
+            }
+            Ok::<(), ferric_core::FerricError>(())
+        })
+        .map_err(make_err)?;
+        Ok(cache
+            .get()
+            .expect("ir_cache is set under ir_lock above")
+            .clone())
     }
 
     fn __repr__(&self) -> String {
@@ -2839,7 +2852,8 @@ fn frequency_result_to_py(
         certificate_data,
         molecule,
         ir_source,
-        ir_cache: None,
+        ir_cache: std::sync::OnceLock::new(),
+        ir_lock: std::sync::Mutex::new(()),
     }
 }
 
@@ -3023,7 +3037,8 @@ pub(crate) fn run_xtb_frequencies(
                             in ferric"
                     .to_string(),
             ),
-            ir_cache: None,
+            ir_cache: std::sync::OnceLock::new(),
+            ir_lock: std::sync::Mutex::new(()),
         })
     }
     #[cfg(not(feature = "xtb"))]

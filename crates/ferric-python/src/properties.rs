@@ -16,8 +16,8 @@ pub(crate) enum DensitySource<'py> {
 impl<'py> DensitySource<'py> {
     fn density(&self) -> &Array2<f64> {
         match self {
-            DensitySource::Rhf(r) => &r.density_data,
-            DensitySource::Dft(d) => &d.density_data,
+            DensitySource::Rhf(r) => &r.scf_data.density_total,
+            DensitySource::Dft(d) => &d.scf_data.density_total,
         }
     }
 
@@ -28,10 +28,12 @@ impl<'py> DensitySource<'py> {
         }
     }
 
-    fn scf_config(&self) -> &RhfConfig {
+    /// The solve and its settings as shared handles, for work that runs
+    /// with the GIL released: cloning the `Arc`s copies no arrays.
+    fn shared(&self) -> (Arc<ScfResult>, Arc<RhfConfig>) {
         match self {
-            DensitySource::Rhf(r) => &r.scf_config,
-            DensitySource::Dft(d) => &d.scf_config,
+            DensitySource::Rhf(r) => (Arc::clone(&r.scf_data), Arc::clone(&r.scf_config)),
+            DensitySource::Dft(d) => (Arc::clone(&d.scf_data), Arc::clone(&d.scf_config)),
         }
     }
 }
@@ -180,12 +182,13 @@ pub(crate) fn hirshfeld_charges(
     py.allow_threads(|| job.run()).map_err(make_err)
 }
 
-/// Owned inputs of one `hirshfeld_charges` call.
+/// Owned inputs of one `hirshfeld_charges` call. The result's solve and
+/// settings are shared with it (`Arc`), not copied.
 pub(crate) struct HirshfeldJob {
     pub(crate) mol: ferric_core::mol::Molecule,
     pub(crate) bs: ferric_core::basis::BasisSet,
-    pub(crate) density: ndarray::Array2<f64>,
-    pub(crate) config: RhfConfig,
+    pub(crate) scf: Arc<ScfResult>,
+    pub(crate) config: Arc<RhfConfig>,
     pub(crate) use_scf: bool,
 }
 
@@ -196,12 +199,13 @@ impl HirshfeldJob {
         result: &DensitySource,
         proatom: &str,
     ) -> PyResult<Self> {
+        let (scf, config) = result.shared();
         Ok(Self {
             use_scf: parse_proatom(proatom)?,
             mol: ecp_molecule(mol, basis_set),
             bs: basis_set.inner.clone(),
-            density: result.density().clone(),
-            config: result.scf_config().clone(),
+            scf,
+            config,
         })
     }
 
@@ -209,7 +213,7 @@ impl HirshfeldJob {
         hirshfeld_with_proatoms(
             &self.mol,
             &self.bs,
-            &self.density,
+            &self.scf.density_total,
             &self.config,
             self.use_scf,
         )

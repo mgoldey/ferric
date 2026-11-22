@@ -435,6 +435,55 @@ Done:
     - `ferric.pyi`: the `run_dft` / `run_ksdft` `symmetry=True` overloads
       type `with_gradient` as `Literal[False]` and `dispersion` as `None`.
 
+13. Result storage, bitwise unchanged (old-vs-new over the 15
+    `result=`-taking functions and the array getters, on two RHF and two
+    KS references: 84 values):
+    - Survey: no Python API passes a result into a correlated method (those
+      run their own SCF), and the functions that take `result=`
+      (`DensitySource` in properties.rs, `response_modes`, `cdft_coupling`)
+      already borrowed it through a `PyRef`; nothing deep-copied an
+      `ScfResult`. The copies were smaller: `RhfResult` / `DftResult` kept
+      the density (and `RhfResult` the orbital energies) twice, beside the
+      `ScfResult` they came from, and `hirshfeld_charges` cloned the density
+      and `RhfConfig` to release the GIL.
+    - `RhfResult` / `DftResult` hold `scf_data: Arc<ScfResult>` and
+      `scf_config: Arc<RhfConfig>`; `density()` / `orbital_energies()` read
+      the `ScfResult`, and `HirshfeldJob` holds clones of the two `Arc`s
+      (`DensitySource::shared`). Kernels still take `&ScfResult`. Getters
+      still return fresh, writable numpy copies.
+    - Every result class (and `ResponseModes`, `BoysResult`, `IrcBranch`,
+      the conformer statistics classes) is `#[pyclass(frozen)]`.
+      `FrequencyResult.ir_intensities`, the one `&mut self` result method,
+      caches in a `OnceLock` behind a `Mutex` like `DftResult::xc_cache`,
+      so concurrent first calls compute once instead of raising
+      `RuntimeError("Already borrowed")`. Assignment to a getter still
+      raises the same `AttributeError` ("not writable"). Not frozen:
+      `ConformerEnsemble` (`set_energy` mutates it) and the `blocks`
+      handles (`DfJk`, `XcFunctional` have `&mut self` methods; also
+      `AoIntegrals`, `Cphf`, `Ucphf`); and, as inputs rather than results,
+      `BasisSet`, `QmmmSystem`, `MmTopology` and `CdftConstraint`, which
+      have no mutating method and could be frozen in a follow-up.
+    - `ferric.serialize.RESULT_SCHEMA` (class name -> getters and array
+      accessors) replaces the `dir()` scan for ferric classes, generated
+      from the reflected field set so the output is byte-identical
+      (`tests/test_serialize_schema.py` compares against the old rule kept
+      as an oracle, with key orders recorded from the old build in
+      `tests/data/serialize_keys.json`). The value filter is unchanged, so a
+      dict-valued getter (`cosx_final_pass`, `precision`...) still appears
+      only when it is `None`, and `DftResult`'s `e_xc` is still evaluated
+      (a grid build) by `to_dict`. A ferric class with no entry raises
+      `TypeError`; objects ferric does not define (and ferric exceptions)
+      are still read by reflection.
+    - Measured: see the item 13 PR. The removed copies are one
+      `nbf x nbf` f64 array per held `RhfResult` / `DftResult` and one per
+      `hirshfeld_charges` call, too small to show against the call itself.
+    - Left: `UhfResult` (and `CdftResult`) copy their arrays out of the
+      `ScfResult` into separate fields; nothing consumes them as a
+      reference, so they were not changed. Results are not picklable and
+      do not support `copy.deepcopy`, before and after (no `__reduce__`).
+      `to_dict` should stop evaluating `e_xc` (drop it from the schema), a
+      visible output change left for its own PR.
+
 Next, each as its own PR following the patterns above:
 
 8d. What 8c left loose: (a) the kernels under the drivers still take a
@@ -517,11 +566,6 @@ Next, each as its own PR following the patterns above:
     then return a typed `OptionError`.
 12. CLI run functions return `Result<_, CliError>`; `process::exit` only in
     the binaries' `main`, since Python calls `ferric_cli::run`.
-13. Python results store `Arc<ScfResult>` so passing a reference into a
-    correlated method does not deep-copy arrays; result classes become
-    `frozen`; `ferric.serialize` reads an explicit, Python-side result
-    schema instead of reflection (the Rust `MethodResult` trait of 9b does
-    not provide it).
 14. A shared `ferric-testkit` dev crate, file splits, and a clippy ratchet on
     `too_many_arguments`.
 15. (rest) Still stringly or boolean at the boundary, after the first

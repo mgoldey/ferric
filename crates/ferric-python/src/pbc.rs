@@ -1241,7 +1241,7 @@ fn gamma_rhf_reference(
 
 /// Result of `run_uhf_gamma` / `run_rohf_gamma` / `run_uks_gamma` /
 /// `run_roks_gamma`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaOpenShellResult")]
 struct PyGammaOpenShellResult {
     /// `"uhf"`, `"rohf"`, `"uks"` or `"roks"`.
@@ -2038,7 +2038,7 @@ fn run_roks_gamma(
 // ─────────────────────────────────────────────────────────── Gamma RKS ──
 
 /// Result of `run_rks_gamma`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaRksResult")]
 struct PyGammaRksResult {
     #[pyo3(get)]
@@ -2309,7 +2309,7 @@ fn run_rks_gamma(
 // ─────────────────────────────────────────────── Gamma MP2 / dRPA ──
 
 /// Result of `run_mp2_gamma` / `run_drpa_gamma` (SCF + correlation).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "GammaCorrelationResult")]
 struct PyGammaCorrelationResult {
     /// `"mp2"` or `"drpa"`.
@@ -2658,7 +2658,7 @@ impl From<&LindepReport> for LindepTotals {
 }
 
 /// Result of `run_rhf_kpts` / `run_uhf_kpts`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "KpointScfResult")]
 struct PyKpointScfResult {
     /// `"rhf"`, `"uhf"`, `"uks"`, `"rohf"` or `"roks"`.
@@ -3367,7 +3367,7 @@ fn check_kpoint_ks_support(
 }
 
 /// Result of `run_rks_kpts`. Energies per cell, Hartree.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "KpointRksResult")]
 struct PyKpointRksResult {
     #[pyo3(get)]
@@ -4048,7 +4048,7 @@ fn run_rohf_kpts(
 // ─────────────────────────────────────────────── k-point MP2 / dRPA ──
 
 /// Result of `run_mp2_kpts` / `run_drpa_kpts` (k-point RHF + correlation).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "KpointCorrelationResult")]
 struct PyKpointCorrelationResult {
     /// `"mp2"` or `"drpa"`.
