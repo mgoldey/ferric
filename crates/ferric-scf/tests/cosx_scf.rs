@@ -96,11 +96,11 @@ fn cosx_default() -> CosxConfig {
 fn cosx_rhf_water_ccpvdz_vs_direct() {
     let direct = run(tight());
     let cosx = run(RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         ..tight()
     });
     let cosx_nofit = run(RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: CosxConfig {
             overlap_fit: false,
             ..cosx_default()
@@ -142,7 +142,7 @@ fn cosx_rhf_energy_error_falls_with_grid() {
         cosx.grid.n_radial = nr;
         cosx.grid.n_angular = na;
         let r = run(RhfConfig {
-            k_builder: Some("cosx".into()),
+            k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
             cosx,
             ..tight()
         });
@@ -178,7 +178,7 @@ fn cosx_with_a_named_df_k_is_refused() {
     let cfg = RhfConfig {
         df_j_aux: Some(aux.into()),
         df_k_aux: Some(aux.into()),
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         ..tight()
     };
     let err = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap_err();
@@ -188,8 +188,9 @@ fn cosx_with_a_named_df_k_is_refused() {
     );
 }
 
-/// Unknown k_builder values are a hard error, and an untabulated COSX grid
-/// order is a typed error rather than a Lebedev-table panic.
+/// Unknown k_builder spellings are a hard error (at the parse, so no config
+/// can hold one), and an untabulated COSX grid order is a typed error rather
+/// than a Lebedev-table panic.
 #[test]
 fn cosx_config_errors_are_typed() {
     let mol = Molecule::parse_xyz(WATER, 0, 1).expect("water");
@@ -198,15 +199,11 @@ fn cosx_config_errors_are_typed() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let bad = RhfConfig {
-        k_builder: Some("cosxx".into()),
-        ..Default::default()
-    };
-    assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad).is_err());
+    assert!(ferric_scf::options::KBuilderKind::parse("cosxx").is_err());
     let mut cosx = cosx_default();
     cosx.grid.n_angular = 147;
     let bad_grid = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx,
         ..Default::default()
     };

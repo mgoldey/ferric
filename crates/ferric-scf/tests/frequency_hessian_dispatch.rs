@@ -668,7 +668,7 @@ fn rohf_probe_refuses_what_the_hessian_does_not_cover() {
         ..Default::default()
     };
     let cosx = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         ..Default::default()
     };
     let ks = RhfConfig {

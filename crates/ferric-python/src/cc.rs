@@ -55,12 +55,13 @@ fn run_u_ccsd_inner(
     mol: Molecule,
     basis: &ferric_core::basis::BasisSet,
     aux: &ferric_core::basis::BasisSet,
-    scf_config: &RhfConfig,
+    (scf_config, k_builder): (&RhfConfig, Option<&str>),
     cfg: &CcConfig,
     level: CcLevel,
 ) -> Result<PyCcResult, ferric_core::FerricError> {
     let sys = PreparedSystem::new(mol, basis)?;
     let dfbs = sys.prepare_aux(aux)?;
+    let scf_config = &with_k_builder(scf_config, k_builder)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
     let uhf = sys.solve_uhf(scf_config)?.into_converged()?;
     let cc = ferric_cc::u_ccsd::u_ccsd_on(&dfbs, &uhf, cfg)?;
@@ -175,13 +176,13 @@ pub(crate) fn run_ccd(
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
     let op = Operator::coulomb();
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let sys = prepare(py, mol, basis_set)?;
-    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    )?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -245,16 +246,24 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
     let raw_mol = a.mol.inner.clone();
     let ebasis = a.basis_set.inner.clone();
     let eaux = a.auxbasis.inner.clone();
-    let rhf_config = rhf_config_conv(
-        a.k_builder,
-        budget_bytes_from_gb(a.memory_budget_gb),
-        a.conv,
-    );
     let cfg = cc_config(a.frozen_core, a.memory_budget_gb, a.ladder)?;
     refuse_open_shell_ladder(&raw_mol, a.ladder)?;
+    // `k_builder` is parsed in the closures, after the system and fitting
+    // basis are prepared: where the SCF refused an unknown spelling.
+    let rhf_config = rhf_config_conv(None, budget_bytes_from_gb(a.memory_budget_gb), a.conv)?;
+    let k_builder = a.k_builder;
     if raw_mol.multiplicity > 1 {
         return py
-            .allow_threads(|| run_u_ccsd_inner(raw_mol, &ebasis, &eaux, &rhf_config, &cfg, level))
+            .allow_threads(|| {
+                run_u_ccsd_inner(
+                    raw_mol,
+                    &ebasis,
+                    &eaux,
+                    (&rhf_config, k_builder),
+                    &cfg,
+                    level,
+                )
+            })
             .map_err(make_err);
     }
     // Release the GIL for the SCF + CCSD (+ (T)) compute. All captured values
@@ -279,6 +288,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
             let sys = PreparedSystem::new(raw_mol, &ebasis)?;
             let aux = sys.prepare_aux(&eaux)?;
+            let rhf_config = with_k_builder(&rhf_config, k_builder)?;
             let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
             let r = ccsd_closed_shell_on(&aux, &rhf, &cfg)?;
@@ -496,11 +506,13 @@ pub(crate) fn run_eom_ccsd(
     let ebasis = basis_set.inner.clone();
     let eaux = auxbasis.inner.clone();
     let budget = budget_bytes_from_gb(memory_budget_gb);
+    // `k_builder` is parsed in the closure, after the system and fitting
+    // basis are prepared: where the SCF refused an unknown spelling.
     let rhf_config = rhf_config_conv(
-        k_builder,
+        None,
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let cfg = CcConfig {
         energy_conv: ferric_cc::eom_ccsd::EOM_CCSD_ENERGY_CONV,
         ..cc_config(frozen_core, memory_budget_gb, ladder)?
@@ -516,6 +528,7 @@ pub(crate) fn run_eom_ccsd(
         .allow_threads(|| -> Result<_, ferric_core::FerricError> {
             let sys = PreparedSystem::new(raw_mol, &ebasis)?;
             let dfbs = sys.prepare_aux(&eaux)?;
+            let rhf_config = with_k_builder(&rhf_config, k_builder)?;
             let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
             let cc = ccsd_closed_shell_on(&dfbs, &rhf, &cfg)?;

@@ -52,7 +52,7 @@ fn cosx_rhf(cosx: CosxConfig) -> RhfConfig {
     RhfConfig {
         energy_conv: 1e-7,
         density_conv: 1e-8,
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx,
         ..Default::default()
     }
@@ -98,7 +98,7 @@ fn schedule_off_is_inert() {
     assert!(off.cosx_schedule.is_none());
 
     let base = RhfConfig {
-        k_builder: Some("link".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
         ..cosx_rhf(CosxConfig::default())
     };
     let link = run_rhf(&base);

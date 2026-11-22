@@ -315,7 +315,7 @@ fn sparse_cosx_rhf_water_energy_matches_dense() {
     let ctx = ParallelContext::default();
     let run = |half: CosxHalfTransform| {
         let c = RhfConfig {
-            k_builder: Some("cosx".into()),
+            k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
             cosx: CosxConfig {
                 half_transform: half,
                 ..CosxConfig::flat_reference()

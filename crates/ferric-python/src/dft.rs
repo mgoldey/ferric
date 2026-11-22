@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::method_result::MethodResult;
-use crate::scf::scf_options_from_kwargs;
+use crate::scf::{scf_options_from_kwargs, FockHook};
 use ferric_core::certificate::Certificate;
 use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
 use std::borrow::Cow;
@@ -386,12 +386,13 @@ pub(crate) fn run_double_hybrid(
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
 
+    let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
+    )?;
+    let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), ri_j_precision);
 
     let (ks, cfg) = if open_shell {
         let ks = sys.solve_uhf(&cfg).and_then(ScfResult::into_converged);
@@ -569,8 +570,9 @@ pub(crate) fn run_dft(
     trah_trigger: Option<f64>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad =
-        crate::scf::parse_fock_hook_grad("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = crate::scf::parse_fock_hook("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
+    let fock_hook = hook.as_ref().map(FockHook::callable);
+    let hook_grad = hook.as_ref().and_then(FockHook::grad);
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -630,6 +632,9 @@ pub(crate) fn run_dft(
     }
     // run_dft's policy (RI-J / RI-K on by default, the RIJCOSX rule, the
     // "LDA" default) is `ScfEntryPoint::Dft`'s (ferric_scf::options::entry).
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -669,7 +674,9 @@ pub(crate) fn run_dft(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Dft, kw)?;
-    let mut cfg = options.into_rhf_config().py()?;
+    let mut cfg = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
     if cfg.symmetry {
         return solve_symmetric_outcome(py, "run_dft", &sys, &cfg);
     }
@@ -771,7 +778,7 @@ pub(crate) fn run_dft(
         )
         .map_err(make_err)?;
         // The hook's explicit term (its Pulay term is already in `g`).
-        if let Some(h) = &hook_grad {
+        if let Some(h) = hook_grad {
             g = h.add_to(py, g, &rhf, false, emol)?;
         }
         // Dispersion is additive in the ENERGY, so it is additive in the
@@ -1275,8 +1282,7 @@ fn run_open_ks(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let dft_grid =
         resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?;
-    let hook_grad =
-        crate::scf::parse_fock_hook_grad(who, fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = crate::scf::parse_fock_hook(who, fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let eri = crate::scf::parse_eri(eri)?;
     let cosx = resolve_cosx_kwargs(
@@ -1297,6 +1303,9 @@ fn run_open_ks(
     // run_uks / run_roks policy (run_dft's KS defaults, including the
     // RIJCOSX rule) is `ScfEntryPoint::Uks` / `Roks`'s
     // (ferric_scf::options::entry).
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1331,14 +1340,17 @@ fn run_open_ks(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(entry, kw)?;
-    let mut config = options.into_rhf_config().py()?;
+    let mut config = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
     let (solver, gradient_kind) = match kind {
         OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),
         OpenKs::Roks => (blocks::OpenShell::Rohf, ScfGradientKind::Rohf),
     };
+    let fock_hook = hook.as_ref().map(FockHook::callable);
     if with_gradient {
         config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
+        if hook.as_ref().is_some_and(FockHook::lacks_grad) {
             return crate::scf::refuse_hook_without_grad(who);
         }
     }
@@ -1360,7 +1372,7 @@ fn run_open_ks(
         .then(|| {
             let g = scf_gradient(py, gradient_kind, &sys, &config, &r)?;
             // The hook's explicit term (its Pulay term is already in `g`).
-            match &hook_grad {
+            match hook.as_ref().and_then(FockHook::grad) {
                 Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }

@@ -67,7 +67,7 @@ fn direct_and_link(mol: &Molecule, basis_name: &str) -> (ScfResult, ScfResult) {
         mol,
         &bs,
         &RhfConfig {
-            k_builder: Some("link".into()),
+            k_builder: Some(ferric_scf::options::KBuilderKind::Link),
             ..Default::default()
         },
     );

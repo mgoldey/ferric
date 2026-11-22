@@ -36,8 +36,8 @@ enum Route {
 
 /// HF on `route`, tight convergence.
 fn config(route: Route, level_shift: f64) -> RhfConfig {
-    let (j, k, kb): (&str, &str, Option<&str>) = match route {
-        Route::RiJCosx => (AUX, "", Some("cosx")),
+    let (j, k, kb): (&str, &str, Option<ferric_scf::options::KBuilderKind>) = match route {
+        Route::RiJCosx => (AUX, "", Some(ferric_scf::options::KBuilderKind::Cosx)),
         Route::DfJDirectK => (AUX, "", None),
         Route::DfKDirectJ => ("", AUX, None),
         Route::Fitted => (AUX, AUX, None),
@@ -49,7 +49,7 @@ fn config(route: Route, level_shift: f64) -> RhfConfig {
         level_shift,
         df_j_aux: Some(j.into()),
         df_k_aux: Some(k.into()),
-        k_builder: kb.map(Into::into),
+        k_builder: kb,
         ..Default::default()
     }
 }

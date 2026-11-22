@@ -477,7 +477,7 @@ fn csam_screening_rhf_energy_matches_schwarz() {
     let base = RhfConfig {
         density_conv: 1e-9,
         integral_thresh: 1e-14,
-        k_builder: Some("link".to_string()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
         ..Default::default()
     };
 

@@ -365,7 +365,7 @@ fn rijcosx_scf_energy_is_bit_identical_with_the_router_on() {
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let run = |m: f64| {
         let c = RhfConfig {
-            k_builder: Some("cosx".to_string()),
+            k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
             cosx: CosxConfig {
                 fp64_multiplier: m,
                 ..CosxConfig::default()

@@ -112,7 +112,7 @@ fn f64_scf_results_carry_the_explicit_f64_record() {
 
 fn cosx_cfg(f32_route: Option<PrimPairSum>) -> RhfConfig {
     RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: CosxConfig {
             grid: AtomicGridConfig {
                 n_radial: 30,

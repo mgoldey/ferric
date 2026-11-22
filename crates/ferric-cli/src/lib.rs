@@ -318,19 +318,24 @@ fn apply_scf_jk(cfg: &Config, task: &str, rhf_config: &mut RhfConfig) -> bool {
     if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::CLI) {
         eprintln!("warning: {w}");
     }
-    println!("{}", scf_jk_route_line(cfg, &jk));
+    println!("{}", scf_jk_route_line(cfg, &jk, rhf_config.k_builder));
     jk.apply(rhf_config);
     jk.is_fitted()
 }
 
 /// The run-log line naming the reference SCF's J/K route: what `[scf] jk`
-/// resolved to and, when the key was omitted, the rule that chose it.
-fn scf_jk_route_line(cfg: &Config, jk: &ferric_scf::scf_jk::ScfJk) -> String {
+/// resolved to and, when the key was omitted, the rule that chose it
+/// (`k_builder` is the reference config's, named on the four-centre path).
+fn scf_jk_route_line(
+    cfg: &Config,
+    jk: &ferric_scf::scf_jk::ScfJk,
+    k_builder: Option<ferric_scf::options::KBuilderKind>,
+) -> String {
     let source = match &cfg.scf.jk {
         Some(_) => "[scf] jk".to_string(),
         None => format!("[scf] jk omitted: {}", cfg.omitted_scf_jk().why),
     };
-    format!("Reference SCF J/K: {} ({source})", jk.label())
+    format!("Reference SCF J/K: {} ({source})", jk.label(k_builder))
 }
 
 /// One stderr line saying what the DF-guess stage actually did.
@@ -413,6 +418,9 @@ fn resolve_grid_prune(cfg: &Config) -> Option<ferric_dft::prune::PruneScheme> {
 /// resolved. Passed in, never read from globals, so the lowering is a function
 /// of its arguments.
 struct ScfConfigInputs<'a> {
+    /// The input file, named in a refused `[scf] k_builder` as load-time
+    /// errors name it.
+    input_path: &'a str,
     /// `method.task`: selects the RI-J precision default ([`ri_j_task_for`]).
     task: &'a str,
     /// The `[gpu]` side of the COSX fp64 router: `precision = "mixed"` with
@@ -446,6 +454,7 @@ struct ScfConfigInputs<'a> {
 fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig, CliError> {
     use ferric_scf::options::{df_k_aux_or_default, AuxBasis, Guess, ScfOptions, TrahTrigger};
     let ScfConfigInputs {
+        input_path,
         task,
         cosx_router_allowed,
         grid_prune,
@@ -527,11 +536,17 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // ("exact"/"none"/"off"/... mean no density fitting, as in the Python
     // bindings); the kind default is already an `AuxBasis`.
     let df_j_aux = s.df_j_aux.as_deref().map(AuxBasis::parse).or(df_j_default);
+    // `[scf] k_builder` (`ScfCfg::k_builder_kind`), the last fallible step
+    // here: an unknown spelling was the solver's refusal, after everything
+    // else. Named with the file, in the form of the load-time errors.
+    let k_builder = s
+        .k_builder_kind()
+        .map_err(|e| format!("{input_path}: {e}"))?;
     // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default is not
     // applied under it (the shared rule; an explicit `df_k_aux` next to COSX
     // is refused by the SCF as a conflict).
     let df_k_aux = df_k_aux_or_default(
-        s.k_builder.as_deref(),
+        k_builder,
         s.df_k_aux.as_deref().map(AuxBasis::parse),
         df_k_default,
     );
@@ -542,7 +557,7 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
         diis_size: Some(s.diis_size),
         diis_flavor: Some(diis_flavor),
         integral_thresh: Some(s.integral_thresh),
-        k_builder: s.k_builder.clone(),
+        k_builder,
         cosx: Some(cosx),
         df_j_aux,
         df_k_aux,
@@ -593,15 +608,14 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
         xc,
         dft_grid,
         diis_switch_thresh: s.diis_switch_thresh,
-        // The one place the CLI picks the RI-J default by task: optimize and
-        // frequencies resolve an unset precision to f64 (the f32 surface is
-        // jagged), an energy run to f32; an explicit value always wins.
-        ri_j_task: Some(ri_j_task_for(task)),
         // Same resolved kind that selected `bounds` in `run`.
         screening: Some(screening),
         verbose: Some(s.verbose),
     };
-    let mut config = options.into_rhf_config()?;
+    // The one place the CLI picks the RI-J default by task: optimize and
+    // frequencies resolve an unset precision to f64 (the f32 surface is
+    // jagged), an energy run to f32; an explicit value always wins.
+    let mut config = options.into_rhf_config(ri_j_task_for(task))?;
     // Fields `ScfOptions` does not carry, owned by other sections. `[cdft]`
     // fills the constraint fields in `cdft::run` (it starts from this config),
     // and the geometry drivers install their own `raw_handoff`; both keep the
@@ -970,6 +984,7 @@ pub fn run(args: Vec<String>) {
     let mut rhf_config = try_scf_config(
         &cfg,
         ScfConfigInputs {
+            input_path: toml_path,
             task,
             cosx_router_allowed: ferric_core::gpu::settings()
                 .mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
@@ -1035,7 +1050,7 @@ pub fn run(args: Vec<String>) {
                 // The EFFECTIVE J/K route (what the SCF builds), not the
                 // raw `[scf] jk` key: rs-mp2-rpa with no `jk` is "rijk", and
                 // a `k_builder` that density fitting overrides is null.
-                "k_builder": jk_route.k_builder,
+                "k_builder": jk_route.k_builder.map(ferric_scf::options::KBuilderKind::as_str),
                 "scf_jk": jk_route.mode,
                 "jk_aux": jk_route.j_aux,
                 "level_shift": rhf_config.level_shift,
@@ -2088,10 +2103,7 @@ fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
     };
     let (exchange_used, rsh) = (route.k_consumed, route.omega > 0.0);
     let df_j = route.j_aux.as_deref();
-    if scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
-        && exchange_used
-        && !rsh
-    {
+    if scf.k_builder == Some(ferric_scf::options::KBuilderKind::Cosx) && exchange_used && !rsh {
         let j = df_j.filter(|s| !s.is_empty()).map_or_else(
             || "exact J (four-centre)".to_string(),
             |a| format!("RI-J via {a}"),
@@ -7333,7 +7345,6 @@ fn rimp2_gradient_scf_jk(
         "rijk" => Ok(ferric_scf::scf_jk::ScfJk {
             mode: ferric_scf::scf_jk::ScfJkMode::RiJk,
             aux: route.j_aux,
-            k_builder: None,
         }),
         other => Err(format!(
             "method.kind = \"{kind}\", task = \"optimize\" or \"frequencies\" differentiates a \
@@ -9082,7 +9093,11 @@ mod scf_config_lowering_tests {
             diis_switch_thresh: cfg.scf.diis_switch_thresh.unwrap_or(1e-1),
             smearing_sigma: cfg.scf.smearing_sigma,
             integral_thresh: cfg.scf.integral_thresh,
-            k_builder: cfg.scf.k_builder.clone(),
+            // Verbatim then; the solver refused an unknown spelling, which
+            // `old_first_error` reports where the lowering now does.
+            k_builder: ferric_scf::options::KBuilderKind::parse_opt(cfg.scf.k_builder.as_deref())
+                .ok()
+                .flatten(),
             cosx: cfg.scf.cosx_config(router_allowed).or_exit(),
             df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
             ri_j_precision: cfg.scf.ri_j_precision_resolved().or_exit(),
@@ -9179,12 +9194,23 @@ mod scf_config_lowering_tests {
                 ferric_scf::incore_jk::EriMode::parse_config_str(eri)
                     .map_err(|e| format!("[scf] eri: {e}"))?;
             }
-            text(cfg.scf.relativistic_resolved()) // relativistic
+            // relativistic
+            text(cfg.scf.relativistic_resolved())?;
+            // k_builder: copied verbatim by the literal and refused by the
+            // solver after everything else; now refused by the lowering as
+            // its last fallible step, naming the file.
+            cfg.scf
+                .k_builder_kind()
+                .map(|_| ())
+                .map_err(|e| format!("{INPUT}: {e}"))
         };
         first().err()
     }
 
     // ── the new path, fed exactly what `run` now passes ──
+
+    /// The input file name the tests' lowering is given.
+    const INPUT: &str = "in.toml";
 
     fn new_lowering(
         cfg: &Config,
@@ -9201,6 +9227,7 @@ mod scf_config_lowering_tests {
         Some(try_scf_config(
             cfg,
             ScfConfigInputs {
+                input_path: INPUT,
                 task,
                 cosx_router_allowed: router_allowed,
                 grid_prune,
@@ -9630,6 +9657,64 @@ solvent = \"water\"
             text.push_str("[pcm]\nsolvent = \"water\"\n");
         }
         text
+    }
+
+    /// `[scf] k_builder` is parsed by the lowering, as its last fallible
+    /// step, with the text the solver refused an unknown spelling with; any
+    /// key the lowering resolves earlier reports first, and the load-time
+    /// COSX-knob check still quotes the spelling as written.
+    #[test]
+    fn unknown_k_builder_is_the_lowerings_last_error() {
+        for kb in ["Link", "COSX", "Direct", "", " cosx", "bogus"] {
+            let unknown = format!(
+                "{INPUT}: [scf] k_builder: unknown k_builder '{kb}': valid options are 'direct', \
+                 'link', 'cosx'"
+            );
+            let alone = parse(&header("rhf", &format!("[scf]\nk_builder = {kb:?}\n")));
+            for task in TASKS {
+                let e = new_lowering(&alone, task, false, None)
+                    .unwrap()
+                    .unwrap_err();
+                assert_eq!(e.to_string(), unknown, "{kb:?} {task}");
+            }
+            assert_eq!(old_first_error(&alone, false, None), Some(unknown.clone()));
+            let earlier = parse(&header(
+                "rhf",
+                &format!("[scf]\nk_builder = {kb:?}\ndiis = \"nope\"\n"),
+            ));
+            let e = new_lowering(&earlier, "energy", false, None)
+                .unwrap()
+                .unwrap_err()
+                .to_string();
+            assert!(e.starts_with("[scf] diis: "), "{kb:?}: {e}");
+            let knob = parse(&header(
+                "rhf",
+                &format!("[scf]\nk_builder = {kb:?}\ncosx_overlap_fit = false\n"),
+            ));
+            let e = new_lowering(&knob, "energy", false, None)
+                .unwrap()
+                .unwrap_err()
+                .to_string();
+            assert!(
+                e.ends_with(&format!(
+                    "but k_builder = Some({kb:?}); they are only read with k_builder = \"cosx\""
+                )),
+                "{kb:?}: {e}"
+            );
+            assert!(!knob.scf.k_builder_is_cosx());
+        }
+        for kind in ferric_scf::options::KBuilderKind::ALL {
+            let cfg = parse(&header(
+                "rhf",
+                &format!("[scf]\nk_builder = \"{}\"\n", kind.as_str()),
+            ));
+            let c = new_lowering(&cfg, "energy", false, None).unwrap().unwrap();
+            assert_eq!(c.k_builder, Some(kind));
+            assert_eq!(
+                cfg.scf.k_builder_is_cosx(),
+                kind == ferric_scf::options::KBuilderKind::Cosx
+            );
+        }
     }
 
     /// Seeded random `[scf]` tables across kinds, tasks and router states:

@@ -40,7 +40,7 @@ pub fn pool() -> rayon::ThreadPool {
 
 fn rhf_cfg(cosx: CosxConfig, cosx_k: bool) -> RhfConfig {
     RhfConfig {
-        k_builder: cosx_k.then(|| "cosx".to_string()),
+        k_builder: cosx_k.then_some(ferric_scf::options::KBuilderKind::Cosx),
         cosx,
         df_j_aux: Some(JK.to_string()),
         df_k_aux: Some(if cosx_k {

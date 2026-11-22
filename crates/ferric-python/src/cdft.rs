@@ -304,7 +304,7 @@ pub(crate) fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> Strin
         config.xc,
         effective_aux(&config.df_j_aux),
         effective_aux(&config.df_k_aux),
-        config.k_builder,
+        config.k_builder.map(ferric_scf::options::KBuilderKind::as_str),
         config.dft_grid,
         config.external_potential,
     )
@@ -554,6 +554,7 @@ pub(crate) fn run_cdft(
         })
     };
 
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let config = RhfConfig {
         constraints: cons,
         cdft_lambda_tol: lambda_tol,
@@ -566,7 +567,7 @@ pub(crate) fn run_cdft(
         density_conv: density_conv.unwrap_or(defaults.density_conv),
         diis_size: diis_size.unwrap_or(defaults.diis_size),
         integral_thresh: integral_thresh.unwrap_or(defaults.integral_thresh),
-        k_builder: k_builder.map(|s| s.to_string()),
+        k_builder,
         // Same shared parser as run_rhf/run_uhf/run_dft, so "exact"/"off" mean
         // exact J/K here too and cdft_coupling's Hamiltonian key sees one
         // spelling for one Hamiltonian.

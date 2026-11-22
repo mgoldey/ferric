@@ -144,7 +144,7 @@ fn injected_molecular_link_pair_reproduces_solve_rhf_bitwise() {
 
     // Reference: molecular solve_rhf through the pluggable-K arm (DirectJ + LinkK).
     let ref_cfg = RhfConfig {
-        k_builder: Some("link".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
         ..injectable_config()
     };
     let reference =
@@ -391,7 +391,7 @@ fn rejected_cases() -> Vec<(&'static str, RhfConfig)> {
         (
             "k_builder",
             RhfConfig {
-                k_builder: Some("direct".into()),
+                k_builder: Some(ferric_scf::options::KBuilderKind::Direct),
                 ..base()
             },
         ),
@@ -636,7 +636,7 @@ fn injected_molecular_link_pair_reproduces_solve_uhf_bitwise() {
     let cfg = injectable_config();
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
     let ref_cfg = RhfConfig {
-        k_builder: Some("link".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
         ..injectable_config()
     };
     let reference =
@@ -961,7 +961,7 @@ fn injected_molecular_link_pair_reproduces_solve_rohf_bitwise() {
     let cfg = injectable_config();
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
     let ref_cfg = RhfConfig {
-        k_builder: Some("link".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
         ..injectable_config()
     };
     let reference = solve_rohf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &ref_cfg)

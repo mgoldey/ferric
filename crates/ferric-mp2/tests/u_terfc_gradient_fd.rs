@@ -111,13 +111,11 @@ fn route(fit: bool) -> ScfJk {
         ScfJk {
             mode: ScfJkMode::RiJk,
             aux: Some("def2-universal-jkfit".into()),
-            k_builder: None,
         }
     } else {
         ScfJk {
             mode: ScfJkMode::Exact,
             aux: None,
-            k_builder: None,
         }
     }
 }

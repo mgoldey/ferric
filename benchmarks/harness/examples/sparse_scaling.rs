@@ -215,7 +215,7 @@ fn main() {
             energy_conv: 1e-7,
             density_conv: 1e-6,
             df_j_aux: Some("cc-pvdz-ri".to_string()),
-            k_builder: Some("link".to_string()),
+            k_builder: Some(ferric_scf::options::KBuilderKind::Link),
             ..Default::default()
         };
 

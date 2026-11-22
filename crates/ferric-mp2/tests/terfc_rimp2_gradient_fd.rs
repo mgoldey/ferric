@@ -127,7 +127,6 @@ fn rijk() -> ScfJk {
     ScfJk {
         mode: ScfJkMode::RiJk,
         aux: Some("def2-universal-jkfit".to_string()),
-        k_builder: None,
     }
 }
 

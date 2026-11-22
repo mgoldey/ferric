@@ -119,7 +119,6 @@ fn check(system: &str) {
         &ScfJk {
             mode: ScfJkMode::Exact,
             aux: None,
-            k_builder: None,
         },
         &mut ScfWarmStart::new(false),
         RhfConfig {

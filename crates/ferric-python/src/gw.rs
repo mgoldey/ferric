@@ -237,14 +237,19 @@ pub(crate) fn run_gw(
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let mol = sys.mol();
 
+    // `scf_ri_j_precision` is read (and parsed) only with a KS reference.
+    let ri_j_precision = match xc {
+        Some(_) => parse_ri_j_precision(scf_ri_j_precision)?,
+        None => None,
+    };
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let (scf, cfg, vxc_diag) = if let Some(xc_name) = xc {
         // KS reference through the level-shift ladder.
-        let cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
+        let cfg = ks_jkfit_config(cfg, xc_name, ri_j_precision);
         let (scf, cfg) = ks_ladder_reference(&sys, cfg)?;
         let (diag, _beta) = {
             // The grids this reference SCF ran on.
@@ -513,16 +518,21 @@ pub(crate) fn run_u_gw(
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
+    // `scf_ri_j_precision` is read (and parsed) only with a KS reference.
+    let ri_j_precision = match xc {
+        Some(_) => parse_ri_j_precision(scf_ri_j_precision)?,
+        None => None,
+    };
     let mut cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms
     // (same precedent as the CLI's "pdep-rpa"/"gw" open-shell dispatch).
     cfg.mom_after_iter = 5;
     if let Some(xc_name) = xc {
-        cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
+        cfg = ks_jkfit_config(cfg, xc_name, ri_j_precision);
     }
     let scf = if reference == "rohf" {
         sys.solve_rohf(&cfg)
@@ -782,13 +792,13 @@ pub(crate) fn run_bse_tda(
 ) -> PyResult<PyBseResult> {
     use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
 
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let sys = prepare(py, mol, basis_set)?;
-    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    )?;
     let scf = sys
         .solve_rhf(&cfg)
         .and_then(ScfResult::into_converged)
@@ -951,12 +961,13 @@ pub(crate) fn run_tdhf_static_polarizability(
 
     // KS reference (required — see doc comment above), same ladder path
     // run_gw's xc branch uses.
+    let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let cfg = ks_jkfit_config(cfg, xc, scf_ri_j_precision)?;
+    )?;
+    let cfg = ks_jkfit_config(cfg, xc, ri_j_precision);
     let (scf, cfg) = ks_ladder_reference(&sys, cfg)?;
 
     let fc = frozen_core.unwrap_or(0);

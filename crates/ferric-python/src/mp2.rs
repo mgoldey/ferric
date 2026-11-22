@@ -620,13 +620,13 @@ pub(crate) fn refuse_rimp2_gradient(
     }
     let rijk = jk.mode == ferric_scf::scf_jk::ScfJkMode::RiJk;
     if (jk.is_fitted() && !rijk)
-        || rhf_config.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
+        || rhf_config.k_builder == Some(ferric_scf::options::KBuilderKind::Cosx)
     {
         return refuse(format!(
             "differentiates a four-centre or an RI-JK reference only (it has no COSX \
              exchange response); got the SCF J/K \"{}\". Use scf_jk=\"exact\" with an exact \
              k_builder, or scf_jk=\"rijk\"",
-            jk.label()
+            jk.label(rhf_config.k_builder)
         ));
     }
     Ok(())
@@ -694,7 +694,7 @@ pub(crate) fn run_rimp2_exact(
         reference: if open_shell { "UHF" } else { "RHF" }.to_string(),
         local: None,
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux,
         precision_rec: r.precision,
         scf_precision_rec: r.scf_precision,
@@ -708,7 +708,9 @@ pub(crate) fn run_rimp2_exact(
 /// rule (`ferric_scf::scf_jk::ScfJk`), so "rijk" means the same `RhfConfig`
 /// in every function. `default` is the entry point's historical J/K mode,
 /// which keeps an unset `scf_jk` bit-identical to before. Errors are
-/// `ValueError` naming `who`, raised before any integral is computed.
+/// `ValueError` naming `who` (an unknown `k_builder` is
+/// [`parse_k_builder`]'s `RuntimeError`), raised before any integral is
+/// computed.
 pub(crate) fn mp2_reference_config(
     who: &str,
     k_builder: Option<&str>,
@@ -730,10 +732,14 @@ pub(crate) fn mp2_reference_config(
     if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::PYTHON) {
         eprintln!("[ferric] warning: {who}: {w}");
     }
-    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    let ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    // `k_builder` is parsed here, last of this helper's keywords but before
+    // the calling entry point's method keywords (an unknown spelling was the
+    // SCF's refusal, after those, before the bindings parsed it).
+    let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb))?;
     jk.apply(&mut cfg);
     conv.apply(&mut cfg);
-    cfg.ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    cfg.ri_j_precision = ri_j_precision;
     Ok((cfg, jk))
 }
 
@@ -769,13 +775,13 @@ pub(crate) fn mp2_exact_default_config(
 pub(crate) fn ks_jkfit_config(
     mut cfg: RhfConfig,
     xc: &str,
-    scf_ri_j_precision: Option<&str>,
-) -> PyResult<RhfConfig> {
+    ri_j_precision: Option<ferric_scf::df_j::RiJPrecision>,
+) -> RhfConfig {
     cfg.xc = Some(xc.to_string());
     cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    cfg.ri_j_precision = ri_j_precision;
     cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-    Ok(cfg)
+    cfg
 }
 
 /// The converged closed-shell KS reference run through the KS-DFT
@@ -811,7 +817,7 @@ pub(crate) fn local_rhf_reference(
     memory_budget_gb: Option<f64>,
     conv: ScfConv,
 ) -> PyResult<ferric_scf::result::ScfResult> {
-    let config = rhf_config_conv(k_builder, budget_bytes_from_gb(memory_budget_gb), conv);
+    let config = rhf_config_conv(k_builder, budget_bytes_from_gb(memory_budget_gb), conv)?;
     sys.solve_rhf(&config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)
@@ -915,7 +921,7 @@ pub(crate) fn run_rimp2_local(
         reference: "RHF".to_string(),
         local: Some(d.unbind()),
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux.clone(),
         // The local model's energy is its own CPU f64 kernel, not
         // `rimp2-energy`: nothing in it can run mixed.
@@ -1135,7 +1141,7 @@ pub(crate) fn run_drpa(
                 k_builder,
                 budget_bytes_from_gb(memory_budget_gb),
                 ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-            ),
+            )?,
             &basis_set.inner,
         ),
         &auxbasis.inner.name,
@@ -1205,13 +1211,13 @@ pub(crate) fn run_drpa_scan(
     // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
     let compute_reference = compute_reference.unwrap_or(false);
     let op = Operator::coulomb();
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let sys = prepare(py, mol, basis_set)?;
-    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    )?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1240,7 +1246,7 @@ pub(crate) fn run_drpa_scan(
     let scf_certificate = reference_certificate(
         mol,
         &rhf,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
+        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb))?,
         &basis_set.inner,
     );
     for ((r, eps), wall_s) in results.iter().zip(&eps_list).zip(&per_point_walls) {
@@ -1412,7 +1418,7 @@ pub(crate) fn run_linlccd(
                 k_builder,
                 budget,
                 ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-            ),
+            )?,
             &basis_set.inner,
         ),
         &auxbasis.inner.name,
@@ -1765,7 +1771,7 @@ pub(crate) fn run_oo_rimp2(
         iterations: r.iterations,
         grad_norm: r.grad_norm,
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux,
         certificate_data,
         gradient_data,
@@ -1863,13 +1869,13 @@ pub(crate) fn run_mp3(
 ) -> PyResult<PyMp3Result> {
     let op = Operator::coulomb();
     let budget = budget_bytes_from_gb(memory_budget_gb);
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf_config = rhf_config_conv(
         k_builder,
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
-    let sys = prepare(py, mol, basis_set)?;
-    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    )?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2023,7 +2029,7 @@ pub(crate) fn run_laplace_mp2(
         e_os: r.e_os,
         e_ss: r.e_ss,
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux,
         certificate_data,
     })
@@ -2200,7 +2206,7 @@ pub(crate) fn run_laplace_sos_mp2(
             SosFormulation::Local(_) => "local".to_string(),
         },
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux,
         certificate_data,
     })
@@ -2328,7 +2334,7 @@ pub(crate) fn run_attenuated_rimp2(
         e_os: r.spin_components.e_os,
         e_ss: r.spin_components.e_ss,
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux,
         certificate_data,
     })
@@ -2422,7 +2428,7 @@ pub(crate) fn run_terfc_rimp2(
         reference: reference_name(&rhf),
         local: None,
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux,
         precision_rec: mp2.precision,
         scf_precision_rec: rhf.precision.clone(),
@@ -2468,7 +2474,10 @@ impl PyScsMp2Result {
     fn new(
         r: &ferric_mp2::scs::ScsMp2Result,
         rhf: &ferric_scf::result::ScfResult,
-        jk: ferric_scf::scf_jk::ScfJk,
+        (jk, k_builder): (
+            ferric_scf::scf_jk::ScfJk,
+            Option<ferric_scf::options::KBuilderKind>,
+        ),
         certificate_data: ferric_core::certificate::Certificate,
     ) -> Self {
         Self {
@@ -2479,7 +2488,7 @@ impl PyScsMp2Result {
             e_os: r.e_os,
             e_ss: r.e_ss,
             scf_jk: jk.mode.as_str().to_string(),
-            jk_label: jk.label(),
+            jk_label: jk.label(k_builder),
             jk_auxbasis: jk.aux,
             certificate_data,
         }
@@ -2567,7 +2576,12 @@ pub(crate) fn run_scs_mp2(
         &basis_set.inner,
         Some(&auxbasis.inner),
     );
-    Ok(PyScsMp2Result::new(&r, &rhf, jk, certificate_data))
+    Ok(PyScsMp2Result::new(
+        &r,
+        &rhf,
+        (jk, rhf_config.k_builder),
+        certificate_data,
+    ))
 }
 
 /// SCS-MP2(2terfc): dual-attenuated SCS-MP2 (Goldey & Head-Gordon, J. Phys.
@@ -2647,7 +2661,12 @@ pub(crate) fn run_scs_mp2_2terfc(
         &auxbasis.inner.name,
         &cfg,
     );
-    Ok(PyScsMp2Result::new(&r, &rhf, jk, certificate_data))
+    Ok(PyScsMp2Result::new(
+        &r,
+        &rhf,
+        (jk, rhf_config.k_builder),
+        certificate_data,
+    ))
 }
 
 // ── MP2-V (attenuated MP2 + Eq.-11-damped VV10, JCTC 11, 4159 (2015)) ──
@@ -2839,7 +2858,7 @@ pub(crate) fn run_mp2_v(
         e_ss,
         n_nlc_points: r.n_nlc_points,
         scf_jk: jk.mode.as_str().to_string(),
-        jk_label: jk.label(),
+        jk_label: jk.label(rhf_config.k_builder),
         jk_auxbasis: jk.aux,
         certificate_data,
     })
@@ -2899,13 +2918,14 @@ pub(crate) fn run_mp2_v_scan(
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
+    let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let mut rcfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
-    rcfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    rcfg.ri_j_precision = ri_j_precision;
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
     let rhf = sys
         .solve_rhf(&rcfg)
@@ -3014,7 +3034,7 @@ pub(crate) fn run_vv10_variants(
         None,
         None,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     rcfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");

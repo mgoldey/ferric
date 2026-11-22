@@ -140,7 +140,9 @@ fn sgx(cfg: CosxConfig, n_radial: usize) -> CosxConfig {
 /// `cosx = None`: exact K (direct, or `""` DF-K for a functional).
 fn cfg(xc: Option<&str>, j_fit: bool, cosx: Option<CosxConfig>) -> RhfConfig {
     RhfConfig {
-        k_builder: cosx.as_ref().map(|_| "cosx".to_string()),
+        k_builder: cosx
+            .as_ref()
+            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx.unwrap_or_default(),
         xc: xc.map(str::to_string),
         df_j_aux: Some(if j_fit { JK.to_string() } else { String::new() }),
@@ -227,7 +229,7 @@ fn rijcosx_dispatch_rules() {
     assert!(scf_exchange_is_cosx(&named_j, true).unwrap());
     // B3LYP with the RHF auto-defaults (df_j_aux / df_k_aux unset): RIJCOSX.
     let auto = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         xc: Some("B3LYP".into()),
         ..Default::default()
     };
@@ -388,7 +390,7 @@ fn rijcosx_energy_is_rij_plus_the_cosx_error_uhf() {
 fn b3lyp_auto_default_is_rijcosx() {
     let mol = mol_of(WATER, 1);
     let auto = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: cosx_exact(),
         xc: Some("B3LYP".into()),
         energy_conv: 1e-8,
