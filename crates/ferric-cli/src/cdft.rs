@@ -349,7 +349,6 @@ fn constraints_for(c: &CdftCfg, mol: &Molecule) -> Result<Vec<Constraint>, Strin
 /// reference config (`rhf_config` is the run's `RhfConfig`, whose `xc` is the
 /// `[dft] functional`), print the result and write the run log's `result` and
 /// `run_end` records.
-#[allow(clippy::too_many_arguments)]
 pub fn run(cfg: &Config, sys: &PreparedSystem, bs: &BasisSet, rhf_config: &RhfConfig) {
     let (ctx, mol, prep, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.bounds());
     let Some(c) = cfg.cdft.as_ref() else {

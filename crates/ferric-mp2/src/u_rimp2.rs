@@ -316,10 +316,8 @@ pub fn u_ri_mp2(
     })
 }
 
-/// [`u_ri_mp2`] on the system `aux` was prepared on ([`PreparedAux::system`]):
-/// its molecule (with the ECP applied), its orbital basis and the Coulomb
-/// operator, with `aux` as the fitting basis. The frontends call this, so
-/// the fitting basis and the orbital basis cannot come from two systems.
+/// [`u_ri_mp2`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
 pub fn u_ri_mp2_on(
     aux: &PreparedAux<'_>,
     scf: &ScfResult,

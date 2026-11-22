@@ -946,10 +946,8 @@ pub fn u_ccsd(
     solve(&eris, &den, cfg)
 }
 
-/// [`u_ccsd`] on the system `aux` was prepared on ([`PreparedAux::system`]):
-/// its molecule (with the ECP applied), its orbital basis and the Coulomb
-/// operator, with `aux` as the fitting basis. The frontends call this, so
-/// the fitting basis and the orbital basis cannot come from two systems.
+/// [`u_ccsd`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
 pub fn u_ccsd_on(
     aux: &PreparedAux<'_>,
     scf: &ScfResult,

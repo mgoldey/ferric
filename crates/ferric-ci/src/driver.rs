@@ -158,9 +158,9 @@ pub fn casscf_on_rhf(
 pub fn casci_on_rhf(
     sys: &PreparedSystem,
     rhf: &ScfResult,
-    cfg: CasCiConfig,
+    cas: &CasCiConfig,
 ) -> Result<CasCiResult, FerricError> {
-    run_cas_ci(sys.mol(), sys.basis(), rhf, cfg)
+    run_cas_ci(sys.mol(), sys.basis(), rhf, *cas)
 }
 
 /// SC-NEVPT2 on `sys` and the reference `on` built from its converged RHF

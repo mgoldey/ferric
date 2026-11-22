@@ -161,7 +161,7 @@ fn run_casci(
         compute_rdms,
     };
     let r = py
-        .allow_threads(|| ferric_ci::driver::casci_on_rhf(&sys, &rhf, cfg))
+        .allow_threads(|| ferric_ci::driver::casci_on_rhf(&sys, &rhf, &cfg))
         .map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CAPABILITY).with_build(build_stamp());

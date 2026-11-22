@@ -1623,18 +1623,16 @@ pub fn ri_mp2_on(
     rhf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
-    ri_mp2_fitted_on(aux, rhf, config, &RiFit::Coulomb)
+    ri_mp2_fitted_on(aux, rhf, &RiFit::Coulomb, config)
 }
 
-/// [`ri_mp2_fitted`] on the system `aux` was prepared on ([`PreparedAux::system`]):
-/// its molecule (with the ECP applied), its orbital basis and the Coulomb
-/// operator, with `aux` as the fitting basis. The frontends call this, so
-/// the fitting basis and the orbital basis cannot come from two systems.
+/// [`ri_mp2_fitted`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
 pub fn ri_mp2_fitted_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
-    config: &RiMp2Config,
     fit: &RiFit,
+    config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
     let sys = aux.system();
     ri_mp2_fitted(

@@ -293,7 +293,7 @@ pub(crate) fn run_gw(
     // built above), so nothing Python-borrowed crosses the boundary; safe to
     // release the GIL for the expensive GW compute.
     let r = py
-        .allow_threads(|| run_gw_on(&dfbs, &scf, &pdep_cfg, &gw_cfg, vxc_diag.as_ref()))
+        .allow_threads(|| run_gw_on(&dfbs, &scf, vxc_diag.as_ref(), &pdep_cfg, &gw_cfg))
         .map_err(make_err)?;
     if !r.outer_converged {
         eprintln!(

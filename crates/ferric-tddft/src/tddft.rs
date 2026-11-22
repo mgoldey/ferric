@@ -1422,10 +1422,8 @@ pub fn run_tddft(
     })
 }
 
-/// [`run_tddft`] on the system `aux` was prepared on ([`PreparedAux::system`]):
-/// its molecule (with the ECP applied) and orbital basis, with `aux` as the
-/// fitting basis. The frontends call this, so the fitting basis and the
-/// orbital basis cannot come from two systems.
+/// [`run_tddft`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
 pub fn run_tddft_on(
     aux: &PreparedAux<'_>,
     scf: &ScfResult,

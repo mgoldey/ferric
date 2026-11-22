@@ -2512,12 +2512,15 @@ fn print_lmp2_certificate(cert: &ferric_mp2::lmp2_certificate::Lmp2Certificate) 
 /// reference = true` (OPT-IN: it is a full N^5 canonical RI-MP2 over the
 /// global 3-index tensor -- the object the integral-direct path exists to
 /// avoid). Measured record of the direct path: wiki/amplitude-threshold-lmp2.md.
+///
+/// `op` is the correlation operator: the system's Coulomb operator for
+/// `rimp2`, the attenuated one for `att-rimp2` (`run_att_rimp2_local`).
 #[allow(clippy::too_many_arguments)]
 fn run_rimp2_local(
     cfg: &Config,
-    model: &config::LocalModel,
     sys: &PreparedSystem,
     bs: &BasisSet,
+    model: &config::LocalModel,
     op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
@@ -2686,7 +2689,7 @@ fn run_rimp2(
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
     let model = cfg.local_model().or_exit();
     if let Some(model) = model {
-        run_rimp2_local(cfg, &model, sys, bs, op, result, budget_bytes, scf_cert);
+        run_rimp2_local(cfg, sys, bs, &model, op, result, budget_bytes, scf_cert);
         return;
     }
     // An open-shell molecule arrives with a UHF reference (see
@@ -2714,7 +2717,7 @@ fn run_rimp2(
         ..Default::default()
     };
     let mp2_result =
-        ferric_mp2::rimp2::ri_mp2_fitted_on(&dfbs, result, &mp2_config, &fit).or_exit();
+        ferric_mp2::rimp2::ri_mp2_fitted_on(&dfbs, result, &fit, &mp2_config).or_exit();
     println!("{}", model_label("RI-MP2", None));
     if !fit.is_coulomb() {
         println!("  RI fit     = {}", fit.label());
@@ -3131,9 +3134,9 @@ fn run_att_rimp2_local(
     print_terfc_r0_note(cfg, bs);
     run_rimp2_local(
         cfg,
-        &model,
         sys,
         bs,
+        &model,
         att_operator,
         result,
         budget_bytes,
@@ -6055,7 +6058,7 @@ fn run_gw(
         None => None,
     };
     let gw_result =
-        ferric_gw::run_gw_on(&dfbs, result, &rpa_cfg, &gw_cfg, vxc_diag.as_ref()).or_exit();
+        ferric_gw::run_gw_on(&dfbs, result, vxc_diag.as_ref(), &rpa_cfg, &gw_cfg).or_exit();
     let ref_label = if cfg.rpa.xc.is_some() { "KS" } else { "HF" };
     println!(
         "GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",

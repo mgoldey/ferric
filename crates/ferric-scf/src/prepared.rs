@@ -289,6 +289,14 @@ impl PreparedSystem {
 /// system of its own. It dereferences to the [`PreparedBasis`] that the
 /// fitting kernels take.
 ///
+/// The correlated crates' `*_on(aux, ..)` entry points (`ri_mp2_on`,
+/// `ccsd_closed_shell_on`, `run_gw_on`, `run_tddft_on`, ...) take a
+/// `&PreparedAux` and read the molecule (with the ECP applied), the orbital
+/// basis and, where the kernel takes one, the Coulomb operator from
+/// [`Self::system`], with this basis as the fitting basis, so a frontend
+/// cannot pair the fitting basis of one system with the orbital basis of
+/// another.
+///
 /// The fitting basis takes its nuclear charges from its own basis set's ECP
 /// table ([`PreparedBasis::new`]), so on an ECP atom an aux set without ECP
 /// data carries the all-electron charge `Z`. Only a fitting kernel that read
