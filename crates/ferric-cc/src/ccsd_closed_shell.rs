@@ -77,7 +77,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{build_b, transpose_b};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{Array2, ArrayD, IxDyn};
 
@@ -1099,6 +1099,19 @@ pub fn ccsd_closed_shell(
     Err(FerricError::Convergence(
         "closed-shell CCSD did not converge".into(),
     ))
+}
+
+/// [`ccsd_closed_shell`] on the system `aux` was prepared on ([`PreparedAux::system`]):
+/// its molecule (with the ECP applied), its orbital basis and the Coulomb
+/// operator, with `aux` as the fitting basis. The frontends call this, so
+/// the fitting basis and the orbital basis cannot come from two systems.
+pub fn ccsd_closed_shell_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &CcConfig,
+) -> Result<CcResult, FerricError> {
+    let sys = aux.system();
+    ccsd_closed_shell(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, cfg)
 }
 
 /// Build the outer-product `tau1[p,q,r,s] = t1[p,r] * t1[q,s]` in the axis order

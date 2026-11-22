@@ -61,7 +61,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::PdepRpaConfig;
 use ferric_rpa::{run_pdep_rpa, PdepRpaResult};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::Array1;
 
 /// Clone a PDEP-RPA config with `need_inv_dielectric_freq` forced on. Every GW
@@ -530,6 +530,30 @@ pub fn run_gw(
     }?;
     warn_gw_unconverged(&result, gw_cfg);
     Ok(result)
+}
+
+/// [`run_gw`] on the system `aux` was prepared on ([`PreparedAux::system`]):
+/// its molecule (with the ECP applied), its orbital basis and the Coulomb
+/// operator, with `aux` as the fitting basis. The frontends call this, so
+/// the fitting basis and the orbital basis cannot come from two systems.
+pub fn run_gw_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+    vxc_diag: Option<&ndarray::Array1<f64>>,
+) -> Result<GwResult, FerricError> {
+    let sys = aux.system();
+    run_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
 }
 
 /// Surface non-convergence (reliability audit: unreported flags hide that

@@ -18,7 +18,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::{Array2, Array3, Axis};
 use ndarray_linalg::{Cholesky, Eigh, UPLO};
 
@@ -1614,6 +1614,38 @@ pub fn ri_mp2_fitted(
         total_energy: rhf.energy + sc.e_total,
         precision: probe.finish(ferric_core::gpu::provenance::RIMP2_KERNELS),
     })
+}
+
+/// [`ri_mp2`] (the Coulomb-metric fit) on the system `aux` was prepared on:
+/// [`ri_mp2_fitted_on`] with [`RiFit::Coulomb`].
+pub fn ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<RiMp2Result, FerricError> {
+    ri_mp2_fitted_on(aux, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`ri_mp2_fitted`] on the system `aux` was prepared on ([`PreparedAux::system`]):
+/// its molecule (with the ECP applied), its orbital basis and the Coulomb
+/// operator, with `aux` as the fitting basis. The frontends call this, so
+/// the fitting basis and the orbital basis cannot come from two systems.
+pub fn ri_mp2_fitted_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<RiMp2Result, FerricError> {
+    let sys = aux.system();
+    ri_mp2_fitted(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        config,
+        fit,
+    )
 }
 
 /// All intermediates needed by the analytical RI-MP2 gradient.

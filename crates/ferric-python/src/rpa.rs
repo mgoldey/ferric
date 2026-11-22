@@ -914,7 +914,7 @@ pub(crate) fn run_pdep_rpa(
         })?;
     }
 
-    use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
+    use ferric_rpa::{run_pdep_rpa_on, PdepRpaConfig};
 
     let sys = prepare(mol, basis_set)?;
     let dfbs = prepare_aux(&sys, auxbasis)?;
@@ -979,7 +979,7 @@ pub(crate) fn run_pdep_rpa(
         need_eigenvalues_freq: true,
         verbose: false,
     };
-    let r = run_pdep_rpa_inner(mol, prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    let r = run_pdep_rpa_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     if !r.eigensolver_converged {
         eprintln!(
             "warning: PDEP-RPA eigensolver did not fully converge (best-effort Ritz pairs; \

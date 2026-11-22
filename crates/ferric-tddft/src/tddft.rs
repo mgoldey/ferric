@@ -65,7 +65,7 @@ use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
 use ferric_mp2::rimp2::{eri3_budget_bytes, metric_inverse_sqrt, stream_dressed_mo_band};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -1420,6 +1420,19 @@ pub fn run_tddft(
         residuals: roots.residuals,
         iterations: roots.iterations,
     })
+}
+
+/// [`run_tddft`] on the system `aux` was prepared on ([`PreparedAux::system`]):
+/// its molecule (with the ECP applied) and orbital basis, with `aux` as the
+/// fitting basis. The frontends call this, so the fitting basis and the
+/// orbital basis cannot come from two systems.
+pub fn run_tddft_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    config: &TddftConfig,
+) -> Result<TddftResult, FerricError> {
+    let sys = aux.system();
+    run_tddft(sys.mol(), sys.basis(), aux.basis(), scf, config)
 }
 
 #[cfg(test)]

@@ -9,4 +9,6 @@ mod matvec;
 pub mod tddft;
 mod unrestricted;
 
-pub use tddft::{run_tddft, ResponseSpin, TddftConfig, TddftMethod, TddftResult, TddftSolver};
+pub use tddft::{
+    run_tddft, run_tddft_on, ResponseSpin, TddftConfig, TddftMethod, TddftResult, TddftSolver,
+};

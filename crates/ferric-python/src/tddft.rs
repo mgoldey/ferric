@@ -304,7 +304,7 @@ pub(crate) fn run_tddft(
     // built above), so nothing Python-borrowed crosses the boundary; safe to
     // release the GIL for the TDDFT compute.
     let r = py
-        .allow_threads(|| ferric_tddft::run_tddft(mol, sys.basis(), &dfbs, &scf, &config))
+        .allow_threads(|| ferric_tddft::run_tddft_on(&dfbs, &scf, &config))
         .map_err(make_err)?;
     let certificate_data = ferric_tddft::certificate::tddft_certificate(
         &reference_certificate(mol, &scf, &scf_cfg, &basis_set.inner),

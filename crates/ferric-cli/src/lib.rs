@@ -24,7 +24,7 @@ use config::{load_config, Config};
 /// apply the SAME rules to their `local=`/`eps=` kwargs.
 pub use config::{LocalCfg, LocalDirectKnobs, LocalModel, LocalScheme, Mp2Cfg};
 use ferric_cc::ccd::ccd;
-use ferric_cc::ccsd_closed_shell::ccsd_closed_shell;
+use ferric_cc::ccsd_closed_shell::ccsd_closed_shell_on;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell;
 use ferric_cc::double_hybrid::{run_wb97x_l_v, DoubleHybridConfig};
 use ferric_cc::linlccd::linlccd;
@@ -49,7 +49,7 @@ use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
-use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
+use ferric_rpa::PdepRpaConfig;
 use ferric_scf::optimize::{
     optimize_geometry_rohf_with_scf_correction, optimize_geometry_uhf_with_scf_correction,
     optimize_geometry_with_scf_correction, OptimizeConfig,
@@ -2714,7 +2714,7 @@ fn run_rimp2(
         ..Default::default()
     };
     let mp2_result =
-        ferric_mp2::rimp2::ri_mp2_fitted(mol, prep, &dfbs, op, result, &mp2_config, &fit).or_exit();
+        ferric_mp2::rimp2::ri_mp2_fitted_on(&dfbs, result, &mp2_config, &fit).or_exit();
     println!("{}", model_label("RI-MP2", None));
     if !fit.is_coulomb() {
         println!("  RI fit     = {}", fit.label());
@@ -2834,7 +2834,7 @@ fn run_u_rimp2(
         memory_budget_bytes: budget_bytes,
         ..Default::default()
     };
-    let r = ferric_mp2::u_rimp2::u_ri_mp2(mol, prep, &dfbs, op, result, &mp2_config).or_exit();
+    let r = ferric_mp2::u_rimp2::u_ri_mp2_on(&dfbs, result, &mp2_config).or_exit();
     // Same layout as the closed-shell printout (the "MP2 corr" / "Total"
     // labels are what downstream parsers read), with the reference named and
     // the three spin blocks shown.
@@ -4107,7 +4107,7 @@ fn run_ccsd(
     budget_bytes: Option<usize>,
     scf_cert: &Certificate,
 ) {
-    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let (mol, prep) = (sys.mol(), sys.basis());
     if matches!(result.spin, ferric_scf::result::Spin::Unrestricted) {
         run_u_ccsd(cfg, sys, bs, result, budget_bytes, scf_cert, false);
         return;
@@ -4131,7 +4131,7 @@ fn run_ccsd(
     // A UHF reference went to `run_u_ccsd` above and any other open-shell
     // reference was refused, so this is always the spin-adapted solver.
     let solver = "spin-adapted";
-    let cc_result = ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).or_exit();
+    let cc_result = ccsd_closed_shell_on(&dfbs, result, &cc_config).or_exit();
     let ladder = ladder_label(&cc_result, &cc_config);
     println!(
         "CCSD/{} (aux: {}, {solver}) on {}",
@@ -4426,7 +4426,7 @@ fn run_ccsd_t(
     require_restricted(result, "ccsd(t)");
     let (aux_name, dfbs) = correlation_aux(cfg, sys);
     let cc_config = closed_shell_cc_config(cfg, mol, budget_bytes);
-    let cc_result = ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).or_exit();
+    let cc_result = ccsd_closed_shell_on(&dfbs, result, &cc_config).or_exit();
     let e_t = ccsd_t_closed_shell(mol, prep, &dfbs, op, result, &cc_result, &cc_config).or_exit();
     let e_ccsd = cc_result.correlation_energy;
     let ladder = ladder_label(&cc_result, &cc_config).unwrap_or_default();
@@ -4484,7 +4484,7 @@ fn run_u_ccsd(
     }
     let (aux_name, dfbs) = correlation_aux(cfg, sys);
     let cc_config = closed_shell_cc_config(cfg, mol, budget_bytes);
-    let cc = ferric_cc::u_ccsd::u_ccsd(mol, prep, &dfbs, op, result, &cc_config)
+    let cc = ferric_cc::u_ccsd::u_ccsd_on(&dfbs, result, &cc_config)
         .map_err(|e| e.to_string())
         .or_exit();
     let tri = triples.then(|| {
@@ -4565,7 +4565,7 @@ fn run_eom_ccsd(
         ..closed_shell_cc_config(cfg, mol, budget_bytes)
     };
     let eom_config = (cfg.eom_config(budget_bytes)).or_exit();
-    let cc_result = ccsd_closed_shell(mol, prep, &dfbs, op, result, &cc_config).or_exit();
+    let cc_result = ccsd_closed_shell_on(&dfbs, result, &cc_config).or_exit();
     let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
         mol,
         prep,
@@ -5562,7 +5562,7 @@ fn run_pdep_rpa_arm(
         let rr = if !fit.is_coulomb() {
             ferric_rpa::run_pdep_rpa_fitted(mol, prep, &dfbs, op, &result, &rpa_cfg, &fit)
         } else if exports {
-            run_pdep_rpa(mol, prep, &dfbs, op, &result, &rpa_cfg)
+            ferric_rpa::run_pdep_rpa_on(&dfbs, &result, &rpa_cfg)
         } else {
             ferric_rpa::run_pdep_rpa_energy(mol, prep, &dfbs, op, &result, &rpa_cfg)
         }
@@ -6054,17 +6054,8 @@ fn run_gw(
         }
         None => None,
     };
-    let gw_result = ferric_gw::run_gw(
-        mol,
-        prep,
-        &dfbs,
-        op,
-        result,
-        &rpa_cfg,
-        &gw_cfg,
-        vxc_diag.as_ref(),
-    )
-    .or_exit();
+    let gw_result =
+        ferric_gw::run_gw_on(&dfbs, result, &rpa_cfg, &gw_cfg, vxc_diag.as_ref()).or_exit();
     let ref_label = if cfg.rpa.xc.is_some() { "KS" } else { "HF" };
     println!(
         "GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
@@ -8354,7 +8345,6 @@ fn run_tddft_arm(
     rhf_config: &RhfConfig,
     scf_cert: &Certificate,
 ) {
-    let (mol, prep) = (sys.mol(), sys.basis());
     use ferric_tddft::{TddftConfig, TddftMethod};
 
     let auxbasis_name = cfg
@@ -8403,7 +8393,7 @@ fn run_tddft_arm(
         );
     }
 
-    let r = ferric_tddft::run_tddft(mol, prep, &dfbs, result, &config).unwrap_or_else(|e| {
+    let r = ferric_tddft::run_tddft_on(&dfbs, result, &config).unwrap_or_else(|e| {
         eprintln!("error: TDDFT failed: {e}");
         std::process::exit(1);
     });

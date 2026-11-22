@@ -48,7 +48,7 @@ use ferric_scf::{EcpMolecule, PrepareOptions, PreparedAux, PreparedSystem};
 // here. A closed-shell `run_ccsd` / `run_ccsd_t` takes the spin-adapted
 // solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
 // and `ferric_cc::u_ccsd_t` (see `cc.rs`).
-use ferric_cc::ccsd_closed_shell::ccsd_closed_shell as run_ccsd_cs_inner;
+use ferric_cc::ccsd_closed_shell::ccsd_closed_shell_on;
 use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell as run_ccsd_t_cs_inner;
 use ferric_cc::CcConfig;
 use ndarray::{Array2, Array3};

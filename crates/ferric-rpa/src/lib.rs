@@ -103,7 +103,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::omega_ri::RiFit;
 use ferric_mp2::rimp2::{compute_rpa_intermediates_fitted, RiMp2Config};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::{Array1, Array2};
 
 pub use config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig};
@@ -585,6 +585,19 @@ pub fn run_pdep_rpa(
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
     run_pdep_rpa_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
+}
+
+/// [`run_pdep_rpa`] on the system `aux` was prepared on ([`PreparedAux::system`]):
+/// its molecule (with the ECP applied), its orbital basis and the Coulomb
+/// operator, with `aux` as the fitting basis. The frontends call this, so
+/// the fitting basis and the orbital basis cannot come from two systems.
+pub fn run_pdep_rpa_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    let sys = aux.system();
+    run_pdep_rpa(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, config)
 }
 
 /// Refuse the [`PdepRpaConfig`] options that rebuild Coulomb-fitted

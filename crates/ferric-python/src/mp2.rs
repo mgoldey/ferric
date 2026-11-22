@@ -271,10 +271,10 @@ pub(crate) fn rimp2_energies(
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
     let scf = sys.solve_reference(rhf_config)?;
     let (mp2_corr, total_energy, precision) = if scf.spin == ferric_scf::Spin::Unrestricted {
-        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, prep, &dfbs, op, &scf, mp2_config)?;
+        let u = ferric_mp2::u_rimp2::u_ri_mp2_on(&dfbs, &scf, mp2_config)?;
         (u.mp2_corr, u.total_energy, u.precision)
     } else {
-        let mp2 = ri_mp2(mol, prep, &dfbs, op, &scf, mp2_config)?;
+        let mp2 = ferric_mp2::rimp2::ri_mp2_on(&dfbs, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
     // Closed shell only: `run_rimp2` refuses an open-shell gradient first.

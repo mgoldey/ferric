@@ -63,7 +63,7 @@ fn run_u_ccsd_inner(
     let dfbs = sys.prepare_aux(aux)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
     let uhf = sys.solve_uhf(scf_config)?.into_converged()?;
-    let cc = ferric_cc::u_ccsd::u_ccsd(mol, prep, &dfbs, op, &uhf, cfg)?;
+    let cc = ferric_cc::u_ccsd::u_ccsd_on(&dfbs, &uhf, cfg)?;
     let mut comps = std::collections::HashMap::from([
         ("e_aa".to_string(), cc.e_aa),
         ("e_ab".to_string(), cc.e_ab),
@@ -280,7 +280,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
             let aux = sys.prepare_aux(&eaux)?;
             let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
-            let r = run_ccsd_cs_inner(mol, prep, &aux, op, &rhf, &cfg)?;
+            let r = ccsd_closed_shell_on(&aux, &rhf, &cfg)?;
             let e_t = match level {
                 CcLevel::Ccsd => None,
                 CcLevel::CcsdT => Some(run_ccsd_t_cs_inner(mol, prep, &aux, op, &rhf, &r, &cfg)?),
@@ -517,7 +517,7 @@ pub(crate) fn run_eom_ccsd(
             let dfbs = sys.prepare_aux(&eaux)?;
             let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
             let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
-            let cc = run_ccsd_cs_inner(mol, prep, &dfbs, op, &rhf, &cfg)?;
+            let cc = ccsd_closed_shell_on(&dfbs, &rhf, &cfg)?;
             let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
                 mol,
                 prep,
