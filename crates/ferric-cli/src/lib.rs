@@ -605,15 +605,14 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
         xc,
         dft_grid,
         diis_switch_thresh: s.diis_switch_thresh,
-        // The one place the CLI picks the RI-J default by task: optimize and
-        // frequencies resolve an unset precision to f64 (the f32 surface is
-        // jagged), an energy run to f32; an explicit value always wins.
-        ri_j_task: Some(ri_j_task_for(task)),
         // Same resolved kind that selected `bounds` in `run`.
         screening: Some(screening),
         verbose: Some(s.verbose),
     };
-    let mut config = options.into_rhf_config()?;
+    // The one place the CLI picks the RI-J default by task: optimize and
+    // frequencies resolve an unset precision to f64 (the f32 surface is
+    // jagged), an energy run to f32; an explicit value always wins.
+    let mut config = options.into_rhf_config(ri_j_task_for(task))?;
     // Fields `ScfOptions` does not carry, owned by other sections. `[cdft]`
     // fills the constraint fields in `cdft::run` (it starts from this config),
     // and the geometry drivers install their own `raw_handoff`; both keep the

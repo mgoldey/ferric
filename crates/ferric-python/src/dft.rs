@@ -661,7 +661,9 @@ pub(crate) fn run_dft(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Dft, kw)?;
-    let mut cfg = options.into_rhf_config().py()?;
+    let mut cfg = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
     if cfg.symmetry {
         return solve_symmetric_outcome(py, "run_dft", &sys, &cfg);
     }
@@ -1325,7 +1327,9 @@ fn run_open_ks(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(entry, kw)?;
-    let mut config = options.into_rhf_config().py()?;
+    let mut config = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
     let (solver, gradient_kind) = match kind {
         OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),
         OpenKs::Roks => (blocks::OpenShell::Rohf, ScfGradientKind::Rohf),

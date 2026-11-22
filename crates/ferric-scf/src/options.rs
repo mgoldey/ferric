@@ -37,10 +37,14 @@
 //!
 //! | Frontend | `df_j_aux` | `df_k_aux` | `guess` | `cosx` | `ri_j_task` | `xc` |
 //! |---|---|---|---|---|---|---|
-//! | `run_rhf` / `run_uhf` / `run_rohf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | unset (HF) |
-//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | the functional, default `"LDA"` |
-//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | unset (energy) | the functional (required) |
+//! | `run_rhf` / `run_uhf` / `run_rohf` | unset (exact J) | unset (exact K) | `guess=` kwarg, else SAD | the `cosx_*` kwargs | `Energy` | unset (HF) |
+//! | `run_dft` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | `Energy` | the functional, default `"LDA"` |
+//! | `run_uks` / `run_roks` | `JK` | `JK`; no RI-K under COSX | `guess=` kwarg, else SAD | the `cosx_*` kwargs | `Energy` | the functional (required) |
 //! | CLI `[scf]` | the kind's default: `JK` for Kohn-Sham, RPA/response and TDA/TDDFT kinds, else unset | as `df_j_aux`; no RI-K under COSX | `[scf] guess`, else SAD | `[scf] cosx_*` and the `[gpu]` fp64 router | from `method.task`: geometry for `optimize` / `frequencies` / `md`, else energy | the kind's functional (`[dft]`, `[rpa] xc`, `[tddft] xc`), else unset |
+//!
+//! `ri_j_task` is not an option but the argument of
+//! [`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config):
+//! the task class the frontend runs.
 //!
 //! The CLI column is `Config::scf_xc_and_aux_defaults` and `ri_j_task_for`
 //! in `ferric-cli`; the Python rows are
@@ -393,10 +397,6 @@ pub struct ScfOptions {
     pub dft_grid: Option<ferric_dft::grid::AtomicGridConfig>,
     /// [`RhfConfig::diis_switch_thresh`].
     pub diis_switch_thresh: Option<f64>,
-    /// [`RhfConfig::ri_j_task`]: the task class an unset
-    /// [`RhfConfig::ri_j_precision`] resolves against. A frontend derives it
-    /// from the task it runs; it is not a user knob.
-    pub ri_j_task: Option<crate::df_j::RiJTask>,
     /// [`RhfConfig::screening`].
     pub screening: Option<crate::screening::ScreeningKind>,
     /// [`RhfConfig::verbose`].
@@ -418,7 +418,14 @@ impl ScfOptions {
     /// `RhfConfig::default()` value; adding a field to `RhfConfig` does not
     /// break this function (the test `every_rhf_config_field_is_classified`
     /// is where a new field must be classified).
-    pub fn into_rhf_config(self) -> Result<RhfConfig, FerricError> {
+    ///
+    /// `ri_j_task` is [`RhfConfig::ri_j_task`], the task class an unset
+    /// [`RhfConfig::ri_j_precision`] resolves against: the frontend derives
+    /// it from the task it runs (it is not a user knob, so not an option).
+    pub fn into_rhf_config(
+        self,
+        ri_j_task: crate::df_j::RiJTask,
+    ) -> Result<RhfConfig, FerricError> {
         // Exhaustive destructure: a new ScfOptions field fails to compile
         // here until the lowering decides what it means.
         let ScfOptions {
@@ -455,7 +462,6 @@ impl ScfOptions {
             xc,
             dft_grid,
             diis_switch_thresh,
-            ri_j_task,
             screening,
             verbose,
         } = self;
@@ -565,9 +571,7 @@ impl ScfOptions {
         if let Some(v) = diis_switch_thresh {
             c.diis_switch_thresh = v;
         }
-        if let Some(v) = ri_j_task {
-            c.ri_j_task = v;
-        }
+        c.ri_j_task = ri_j_task;
         if let Some(v) = screening {
             c.screening = v;
         }
@@ -914,7 +918,7 @@ mod tests {
         entry
             .options(kwargs(entry, k))
             .unwrap()
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap()
     }
 
@@ -1514,7 +1518,11 @@ mod tests {
                 set.push("mom_reference");
                 kw.mom_reference = Some(MomReference::Initial);
             }
-            let c = entry.options(kw).unwrap().into_rhf_config().unwrap();
+            let c = entry
+                .options(kw)
+                .unwrap()
+                .into_rhf_config(crate::df_j::RiJTask::default())
+                .unwrap();
             let d = RhfConfig::default();
             let who = entry.name();
             let check = |n: &'static str, ok: bool| {
@@ -1610,7 +1618,7 @@ mod tests {
             level_shift: Some(0.0),
             ..Default::default()
         }
-        .into_rhf_config()
+        .into_rhf_config(crate::df_j::RiJTask::default())
         .unwrap();
         assert!(!c.meta_gga_auto_level_shift);
         assert!(RhfConfig::default().meta_gga_auto_level_shift);
@@ -1624,7 +1632,12 @@ mod tests {
         assert_eq!(d.density_conv, DEFAULT_SCF_DENSITY_CONV);
         assert_eq!(d.diis_size, DEFAULT_DIIS_SIZE);
         assert_eq!(d.integral_thresh, DEFAULT_INTEGRAL_THRESH);
-        same(&ScfOptions::default().into_rhf_config().unwrap(), &d);
+        same(
+            &ScfOptions::default()
+                .into_rhf_config(crate::df_j::RiJTask::default())
+                .unwrap(),
+            &d,
+        );
     }
 
     #[test]
@@ -1646,7 +1659,7 @@ mod tests {
                 stability: Some(st),
                 ..Default::default()
             }
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap();
             (c.check_stability, c.scf_stability_descent)
         };
@@ -1665,12 +1678,11 @@ mod tests {
         use crate::screening::ScreeningKind;
         let c = ScfOptions {
             diis_switch_thresh: Some(3e-2),
-            ri_j_task: Some(RiJTask::Geometry),
             screening: Some(ScreeningKind::Csb),
             verbose: Some(true),
             ..Default::default()
         }
-        .into_rhf_config()
+        .into_rhf_config(RiJTask::Geometry)
         .unwrap();
         let expected = RhfConfig {
             diis_switch_thresh: 3e-2,

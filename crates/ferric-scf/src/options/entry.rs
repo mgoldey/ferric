@@ -395,7 +395,6 @@ impl ScfEntryPoint {
             dft_grid,
             // Not Python keywords.
             diis_switch_thresh: None,
-            ri_j_task: None,
             screening: None,
             verbose: None,
         })
@@ -620,7 +619,7 @@ mod tests {
         let c = ScfEntryPoint::Rhf
             .options(kw)
             .unwrap()
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap();
         assert!(!c.symmetry);
         assert_eq!(c.irrep_nelec, irrep);
@@ -637,7 +636,7 @@ mod tests {
         let c = ScfEntryPoint::Dft
             .options(ScfKwargs::default())
             .unwrap()
-            .into_rhf_config()
+            .into_rhf_config(crate::df_j::RiJTask::default())
             .unwrap();
         assert_eq!(c.xc.as_deref(), Some(DEFAULT_DFT_FUNCTIONAL));
     }

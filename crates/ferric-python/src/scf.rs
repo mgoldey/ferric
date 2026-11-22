@@ -724,7 +724,9 @@ pub(crate) fn run_rhf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Rhf, kw)?;
-    let mut config = options.into_rhf_config().py()?;
+    let mut config = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
         if hook.as_ref().is_some_and(|h| h.grad.is_none()) {
@@ -1586,7 +1588,9 @@ pub(crate) fn run_uhf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Uhf, kw)?;
-    let config: UhfConfig = options.into_rhf_config().py()?;
+    let config: UhfConfig = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Uhf,
@@ -1730,7 +1734,9 @@ pub(crate) fn run_rohf(
         ..ScfKwargs::default()
     };
     let options = scf_options_from_kwargs(ScfEntryPoint::Rohf, kw)?;
-    let config: RohfConfig = options.into_rhf_config().py()?;
+    let config: RohfConfig = options
+        .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+        .py()?;
     solve_open_shell_entry(
         py,
         blocks::OpenShell::Rohf,
