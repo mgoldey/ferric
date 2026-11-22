@@ -27,7 +27,10 @@ fn no_arguments_is_a_usage_error_carrying_the_help_text() {
         ),
         "{text}"
     );
-    assert!(text.contains("  --gpu <preset>  off, auto, on, mixed or auto-mixed"), "{text}");
+    assert!(
+        text.contains("  --gpu <preset>  off, auto, on, mixed or auto-mixed"),
+        "{text}"
+    );
     assert!(
         text.ends_with("flag, build profile, libint version and limits) and exit.\n"),
         "{text}"
@@ -100,7 +103,10 @@ fn a_missing_input_file_is_an_input_error() {
 
 #[test]
 fn an_unknown_method_kind_is_refused_after_the_config_loads() {
-    let water = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/water.xyz");
+    let water = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/water.xyz"
+    );
     let dir = std::env::temp_dir().join(format!("ferric_try_run_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let toml = dir.join("in.toml");
