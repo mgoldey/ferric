@@ -22,9 +22,11 @@ use std::fmt;
 /// | `Usage`    | `{text}\n` (as is)    | 2      |
 ///
 /// Build the string variants with [`CliError::msg`], [`CliError::verbatim`]
-/// and [`CliError::usage`], which check (in debug builds) that the text has
-/// no trailing newline and that a `Msg` does not carry its own `error:`
-/// prefix. There is deliberately no `From<String>`: each site picks the
+/// and [`CliError::usage`], which check (in debug builds) that a `Msg` does
+/// not carry its own `error:` prefix and that usage text (always a literal)
+/// has no trailing newline. `Msg`/`Verbatim` often wrap a library message,
+/// and some end in a newline (a TOML parse error's caret block): that one
+/// is printed as is, a blank line included, as it always was. There is deliberately no `From<String>`: each site picks the
 /// variant, so a message is never prefixed twice or not at all by accident.
 ///
 /// `Display` writes the stderr text without its trailing newline and without
@@ -59,14 +61,12 @@ impl CliError {
             !s.starts_with("error:"),
             "Msg text carries its own prefix: {s:?}"
         );
-        debug_assert!(!s.ends_with('\n'), "trailing newline: {s:?}");
         CliError::Msg(s)
     }
 
     /// [`CliError::Verbatim`]: `text` on stderr as written (status 1).
     pub fn verbatim(text: impl Into<String>) -> Self {
         let s = text.into();
-        debug_assert!(!s.ends_with('\n'), "trailing newline: {s:?}");
         CliError::Verbatim(s)
     }
 
