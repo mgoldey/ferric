@@ -38,11 +38,10 @@ use std::process::Command;
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_mp2::lmp2_amplitude::{AmplitudeLmp2Config, FOCK_SCREEN_KAPPA_DEFAULT};
 use ferric_mp2::local_opmp3::run_local_opmp3;
 use ferric_mp2::opmp3_driver::{run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind};
+use ferric_scf::PreparedSystem;
 use serde_json::Value;
 
 #[path = "support/cli_bin.rs"]
@@ -129,7 +128,7 @@ fn toml_with(opmp3: &str, extra: &str) -> String {
 #[test]
 fn cli_equals_the_driver_bit_for_bit() {
     let mol = Molecule::parse_xyz(&ch2_xyz(), 0, 3).unwrap();
-    let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+    let sys = PreparedSystem::new(mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(CLI_THREADS)
         .build()
@@ -161,15 +160,7 @@ fn cli_equals_the_driver_bit_for_bit() {
             ..Opmp3Config::new(kind)
         };
         let lib = pool
-            .install(|| {
-                run_opmp3(
-                    &ParallelContext::default(),
-                    &mol,
-                    &prep,
-                    Opmp3Integrals::Exact,
-                    &cfg,
-                )
-            })
+            .install(|| run_opmp3(&sys, Opmp3Integrals::Exact, &cfg))
             .unwrap();
         let comps = &res["components"];
         let get = |k: &str| {
@@ -220,8 +211,10 @@ fn local_toml(opmp3: &str, extra: &str, mult: usize) -> String {
 fn cli_local_equals_the_driver_bit_for_bit() {
     let mol = Molecule::parse_xyz(&ch2_xyz(), 0, 1).unwrap();
     let obs_bs = basis::bundled("cc-pvdz").unwrap();
-    let prep = PreparedBasis::new(&mol, &obs_bs).unwrap();
-    let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+    let sys = PreparedSystem::new(mol, &obs_bs).unwrap();
+    let aux = sys
+        .prepare_aux(&basis::bundled("cc-pvdz-ri").unwrap())
+        .unwrap();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(CLI_THREADS)
         .build()
@@ -243,17 +236,7 @@ fn cli_local_equals_the_driver_bit_for_bit() {
             ..Default::default()
         };
         let lib = pool
-            .install(|| {
-                run_local_opmp3(
-                    &ParallelContext::default(),
-                    &mol,
-                    &prep,
-                    &obs_bs,
-                    &aux,
-                    &cfg,
-                    &local,
-                )
-            })
+            .install(|| run_local_opmp3(&obs_bs, &aux, &cfg, &local))
             .unwrap();
         let comps = &res["components"];
         let m = &lib.opmp3.models;

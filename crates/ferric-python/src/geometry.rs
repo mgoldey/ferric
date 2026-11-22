@@ -281,8 +281,7 @@ pub(crate) fn run_optimize(
     // run. Without this an ECP basis (aug-cc-pvdz-pp, Z >= 37) would optimize
     // with the all-electron count against ECP integrals.
     let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&bs);
+    let emol = EcpMolecule::new(mol.inner.clone(), &bs).into_mol();
     let mut opt_config = optimize_config(max_steps, e_conv, scf_warm_start, coordinates)?;
     if let Some(s) = initial_hessian {
         opt_config.initial_hessian = Some(
@@ -2302,8 +2301,8 @@ pub(crate) fn run_frequencies(
         FrequencyReference::Uhf => ferric_scf::Spin::Unrestricted,
         FrequencyReference::Rohf => ferric_scf::Spin::RestrictedOpen,
     };
-    let mut m_ecp = m.clone();
-    m_ecp.apply_ecp(&basis::bundled(basis_name).map_err(make_err)?);
+    let m_ecp =
+        EcpMolecule::new(m.clone(), &basis::bundled(basis_name).map_err(make_err)?).into_mol();
     let (kind, reference) = task_reference_certificate(&m_ecp, basis_name, &scf_cfg, spin);
     let certificate_data = match reference {
         Ok(reference) => {
@@ -2387,8 +2386,7 @@ fn run_frequencies_pdep_rpa(
     };
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(aux_name).map_err(make_err)?;
-    let mut m = mol.inner.clone();
-    m.apply_ecp(&obs);
+    let m = EcpMolecule::new(mol.inner.clone(), &obs).into_mol();
     let delta_used = fcfg.delta;
     let r = py
         .allow_threads(|| {
@@ -2546,8 +2544,7 @@ fn run_frequencies_att_rimp2(
     };
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(aux_name).map_err(make_err)?;
-    let mut m = mol.inner.clone();
-    m.apply_ecp(&obs);
+    let m = EcpMolecule::new(mol.inner.clone(), &obs).into_mol();
     let delta_used = fcfg.delta;
     let r = py
         .allow_threads(|| {
@@ -2681,8 +2678,7 @@ fn run_frequencies_mp2_family(
     fcfg.scf_warm_start = scf_warm_start.unwrap_or(false);
     let obs = basis::bundled(basis_name).map_err(make_err)?;
     let aux = basis::bundled(aux_name).map_err(make_err)?;
-    let mut m = mol.inner.clone();
-    m.apply_ecp(&obs);
+    let m = EcpMolecule::new(mol.inner.clone(), &obs).into_mol();
     let budget = budget_bytes_from_gb(k.memory_budget_gb);
     let frozen_core = k.frozen_core.unwrap_or(0);
 

@@ -229,13 +229,13 @@ pub(crate) fn run_gw(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyGwResult> {
-    use ferric_gw::{run_gw as run_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids};
+    use ferric_gw::{run_gw_on, vxc_mo::vxc_diagonal_mo_on_grids};
 
     let gw_method = parse_gw_method(method)?;
 
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
-    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
+    let mol = sys.mol();
 
     let cfg = rhf_config_conv(
         k_builder,
@@ -293,18 +293,7 @@ pub(crate) fn run_gw(
     // built above), so nothing Python-borrowed crosses the boundary; safe to
     // release the GIL for the expensive GW compute.
     let r = py
-        .allow_threads(|| {
-            run_gw_inner(
-                mol,
-                prep,
-                &dfbs,
-                op,
-                &scf,
-                &pdep_cfg,
-                &gw_cfg,
-                vxc_diag.as_ref(),
-            )
-        })
+        .allow_threads(|| run_gw_on(&dfbs, &scf, vxc_diag.as_ref(), &pdep_cfg, &gw_cfg))
         .map_err(make_err)?;
     if !r.outer_converged {
         eprintln!(
@@ -481,6 +470,7 @@ impl PyUGwResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_u_gw(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -519,8 +509,8 @@ pub(crate) fn run_u_gw(
         }
     };
 
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let mut cfg = rhf_config_conv(
@@ -773,6 +763,7 @@ impl PyBseResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_bse_tda(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -796,8 +787,8 @@ pub(crate) fn run_bse_tda(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let scf = sys
         .solve_rhf(&cfg)
         .and_then(ScfResult::into_converged)
@@ -932,6 +923,7 @@ impl PyTdhfStaticPolarizabilityResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tdhf_static_polarizability(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -953,8 +945,8 @@ pub(crate) fn run_tdhf_static_polarizability(
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
     use ferric_gw::bse::run_rpax_static_polarizability;
 
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     // KS reference (required — see doc comment above), same ladder path

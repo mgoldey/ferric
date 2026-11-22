@@ -30,7 +30,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{dress_3index, transform_3center_ov};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_scf::result::Spin;
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ferric_tensors::{einsum_dyn, permute_to_owned};
 use ndarray::{Array2, Array3, Array4, ArrayD, IxDyn};
 
@@ -944,6 +944,17 @@ pub fn u_ccsd(
     let eris = UEris::build(&ri);
     let den = Denoms::new(&ri);
     solve(&eris, &den, cfg)
+}
+
+/// [`u_ccsd`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+pub fn u_ccsd_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    cfg: &CcConfig,
+) -> Result<UCcsdResult, FerricError> {
+    let sys = aux.system();
+    u_ccsd(sys.mol(), sys.basis(), aux.basis(), sys.op(), scf, cfg)
 }
 
 fn solve(eris: &UEris, den: &Denoms, cfg: &CcConfig) -> Result<UCcsdResult, FerricError> {

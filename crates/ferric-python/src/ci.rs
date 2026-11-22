@@ -6,7 +6,7 @@
 //! `casscf` and `nevpt2` do, and carry those kinds' certificates.
 
 use crate::{budget_bytes_from_gb, make_err, prepare, PyBasisSet, PyMolecule};
-use ferric_ci::driver::{rhf_start_prepared, ScfStart};
+use ferric_ci::driver::{rhf_start, ScfStart};
 use ferric_core::certificate::{BuildStamp, Certificate};
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray4};
@@ -127,8 +127,8 @@ fn run_casci(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCasCiResult> {
-    let sys = prepare(mol, basis_set)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let sys = prepare(py, mol, basis_set)?;
+    let mol = sys.mol();
     let nelec = mol.nelec() as usize;
     let n_act_el = n_elec_active.0 + n_elec_active.1;
     let active_start = match active_start {
@@ -150,7 +150,7 @@ fn run_casci(
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
+        .allow_threads(|| rhf_start(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasCiConfig {
         n_active,
@@ -163,7 +163,7 @@ fn run_casci(
         compute_rdms,
     };
     let r = py
-        .allow_threads(|| ferric_ci::run_cas_ci(mol, prep, &rhf, cfg))
+        .allow_threads(|| ferric_ci::driver::casci_on_rhf(&sys, &rhf, &cfg))
         .map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CAPABILITY).with_build(build_stamp());
@@ -341,8 +341,8 @@ fn run_casscf(
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     let stability = ferric_ci::CasScfStabilityMode::parse_config_str(casscf_stability)
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
-    let sys = prepare(mol, basis_set)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let sys = prepare(py, mol, basis_set)?;
+    let mol = sys.mol();
     let n_core = match n_core {
         Some(s) => s,
         None => {
@@ -357,7 +357,7 @@ fn run_casscf(
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
+        .allow_threads(|| rhf_start(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasScfConfig {
         n_active,
@@ -378,7 +378,7 @@ fn run_casscf(
         ..Default::default()
     };
     let r = py
-        .allow_threads(|| ferric_ci::run_casscf(mol, prep, &rhf, &cfg))
+        .allow_threads(|| ferric_ci::driver::casscf_on_rhf(&sys, &rhf, &cfg))
         .map_err(make_err)?;
 
     let cert = ferric_mp2::certificate::with_anchor_envelope(
@@ -563,8 +563,8 @@ fn run_nevpt2(
         .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let on = ferric_ci::driver::Nevpt2On::parse_config_str(reference)
         .map_err(|e| make_err(format!("run_nevpt2: {e}")))?;
-    let sys = prepare(mol, basis_set)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let sys = prepare(py, mol, basis_set)?;
+    let mol = sys.mol();
     let n_core = match n_core {
         Some(s) => s,
         None => {
@@ -579,7 +579,7 @@ fn run_nevpt2(
         density_conv: scf_density_conv,
     };
     let rhf = py
-        .allow_threads(|| rhf_start_prepared(&sys, start, budget))
+        .allow_threads(|| rhf_start(&sys, start, budget))
         .map_err(make_err)?;
     let cfg = ferric_ci::CasScfConfig {
         n_active,
@@ -599,7 +599,7 @@ fn run_nevpt2(
         ..Default::default()
     };
     let run = py
-        .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(mol, prep, &rhf, on, &cfg))
+        .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(&sys, &rhf, on, &cfg))
         .map_err(make_err)?;
     let cert = ferric_mp2::certificate::with_anchor_envelope(
         ferric_ci::certificate::nevpt2_certificate(on, &cfg, run.reference_stability.as_ref())

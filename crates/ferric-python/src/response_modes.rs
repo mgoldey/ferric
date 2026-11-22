@@ -113,8 +113,7 @@ fn response_modes(
     }
     // The occupied count comes from the molecule, so it must carry the ECP
     // core counts of `basis_set`, as the molecule `result` was solved on did.
-    let mut mol = mol.inner.clone();
-    mol.apply_ecp(&basis_set.inner);
+    let mol = crate::system::ecp_molecule(mol, basis_set);
     let obs = PreparedBasis::new(&mol, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol, &auxbasis.inner).map_err(make_err)?;
     let scf = result.scf();

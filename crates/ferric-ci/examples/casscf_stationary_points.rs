@@ -20,7 +20,7 @@
 //! eigenvector, converged and classified again, at most `max` times.
 
 use ferric_ci::casscf::{optimize, CasScfConfig, CasScfOptimizer, CasScfProblem, CasScfResult};
-use ferric_ci::driver::{rhf_start_prepared, ScfStart};
+use ferric_ci::driver::{rhf_start, ScfStart};
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::PreparedSystem;
@@ -188,7 +188,7 @@ fn main() {
     let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
     let sys = PreparedSystem::new(mol, &bs).unwrap();
     let (mol, prep) = (sys.mol(), sys.basis());
-    let rhf = rhf_start_prepared(&sys, ScfStart::default(), None).unwrap();
+    let rhf = rhf_start(&sys, ScfStart::default(), None).unwrap();
     let cfg = CasScfConfig {
         n_core: 2,
         n_active: 10,

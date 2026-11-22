@@ -633,8 +633,7 @@ impl PyAoIntegrals {
 impl PyAoIntegrals {
     #[new]
     fn new(mol: &PyMolecule, basis_set: &PyBasisSet) -> PyResult<Self> {
-        let mut emol = mol.inner.clone();
-        emol.apply_ecp(&basis_set.inner);
+        let emol = crate::system::ecp_molecule(mol, basis_set);
         let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
         let log = provenance::Log::new(&emol, &basis_set.inner);
         Ok(PyAoIntegrals {

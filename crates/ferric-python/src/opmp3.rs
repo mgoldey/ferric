@@ -214,16 +214,12 @@ pub(crate) fn run_opmp3(
         ..Opmp3Config::new(kind)
     };
     let x = config.resolved_x_ss().map_err(make_err)?;
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let mol = sys.mol();
-    let aux = auxbasis
-        .map(|a| sys.prepare_aux(&a.inner))
-        .transpose()
-        .map_err(make_err)?;
+    let aux = auxbasis.map(|a| prepare_aux(py, &sys, a)).transpose()?;
     let integrals = aux
-        .as_deref()
+        .as_ref()
         .map_or(Opmp3Integrals::Exact, Opmp3Integrals::Ri);
-    let (ctx, prep, bounds) = (sys.ctx(), sys.basis(), sys.bounds());
     // the same builder as the CLI's [local] run (`LocalModel::amplitude_config`)
     let lcfg = model.as_ref().map(|m| {
         (
@@ -233,21 +229,11 @@ pub(crate) fn run_opmp3(
     });
     let (scf, inner, local_run) = py
         .allow_threads(|| {
-            let scf = opmp3_scf(ctx, mol, prep, bounds, &config)?;
-            let canonical = || opmp3_on_reference(ctx, mol, prep, bounds, &scf, integrals, &config);
+            let scf = opmp3_scf(&sys, &config)?;
+            let canonical = || opmp3_on_reference(&sys, &scf, integrals, &config);
             match (&lcfg, aux.as_ref()) {
                 (Some((lc, with_reference)), Some(aux)) => {
-                    let lr = local_opmp3_on_reference(
-                        ctx,
-                        mol,
-                        prep,
-                        &basis_set.inner,
-                        bounds,
-                        &scf,
-                        aux,
-                        &config,
-                        lc,
-                    )?;
+                    let lr = local_opmp3_on_reference(&basis_set.inner, &scf, aux, &config, lc)?;
                     let reference = with_reference.then(canonical).transpose()?;
                     let r = lr.opmp3.clone();
                     Ok::<_, ferric_core::FerricError>((scf, r, Some((lr, reference))))

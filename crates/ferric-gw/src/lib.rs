@@ -61,7 +61,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::PdepRpaConfig;
 use ferric_rpa::{run_pdep_rpa, PdepRpaResult};
-use ferric_scf::ScfResult;
+use ferric_scf::{PreparedAux, ScfResult};
 use ndarray::Array1;
 
 /// Clone a PDEP-RPA config with `need_inv_dielectric_freq` forced on. Every GW
@@ -530,6 +530,28 @@ pub fn run_gw(
     }?;
     warn_gw_unconverged(&result, gw_cfg);
     Ok(result)
+}
+
+/// [`run_gw`] on the system `aux` was prepared on; see [`PreparedAux`] for
+/// what such an entry point reads from the system.
+pub fn run_gw_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    vxc_diag: Option<&Array1<f64>>,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<GwResult, FerricError> {
+    let sys = aux.system();
+    run_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
 }
 
 /// Surface non-convergence (reliability audit: unreported flags hide that

@@ -273,10 +273,10 @@ pub(crate) fn rimp2_energies(
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
     let scf = sys.solve_reference(rhf_config)?;
     let (mp2_corr, total_energy, precision) = if scf.spin == ferric_scf::Spin::Unrestricted {
-        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, prep, &dfbs, op, &scf, mp2_config)?;
+        let u = ferric_mp2::u_rimp2::u_ri_mp2_on(&dfbs, &scf, mp2_config)?;
         (u.mp2_corr, u.total_energy, u.precision)
     } else {
-        let mp2 = ri_mp2(mol, prep, &dfbs, op, &scf, mp2_config)?;
+        let mp2 = ferric_mp2::rimp2::ri_mp2_on(&dfbs, &scf, mp2_config)?;
         (mp2.mp2_corr, mp2.total_energy, mp2.precision)
     };
     // Closed shell only: `run_rimp2` refuses an open-shell gradient first.
@@ -850,8 +850,8 @@ pub(crate) fn run_rimp2_local(
         )));
     }
     let op = local_correlation_operator(att_keys, model, &basis_set.inner.name)?;
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1070,7 +1070,7 @@ pub(crate) fn run_drpa(
         Some(m) => (m.eps[0], m.reference),
     };
     let fc = frozen_core.unwrap_or(0);
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     if model.is_none() {
         // Refuse an exact run that cannot fit, BEFORE the SCF.
@@ -1097,7 +1097,7 @@ pub(crate) fn run_drpa(
             )));
         }
     }
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = local_rhf_reference(
         &sys,
         k_builder,
@@ -1210,8 +1210,8 @@ pub(crate) fn run_drpa_scan(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1333,8 +1333,8 @@ pub(crate) fn run_linlccd(
             mol.inner.multiplicity
         )));
     }
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let rhf = local_rhf_reference(
         &sys,
@@ -1489,7 +1489,7 @@ pub(crate) fn tune_omega(
     check_cation_stability: Option<bool>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_scf::omega_tuning::{tune_omega as tune, OmegaTuneConfig};
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let defaults = OmegaTuneConfig::default();
     let cfg = OmegaTuneConfig {
         functional: functional.to_string(),
@@ -1719,8 +1719,8 @@ pub(crate) fn run_oo_rimp2(
     } else {
         rhf_config
     };
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let rhf = sys
         .solve_rhf(&rhf_config)
@@ -1850,6 +1850,7 @@ impl PyMp3Result {
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_mp3(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -1867,8 +1868,8 @@ pub(crate) fn run_mp3(
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1959,6 +1960,7 @@ impl PyLaplaceMp2Result {
 #[pyo3(signature = (mol, basis_set, auxbasis, n_quad=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_laplace_mp2(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -1984,8 +1986,8 @@ pub(crate) fn run_laplace_mp2(
     )?;
     let op = Operator::coulomb();
     let budget = budget_bytes_from_gb(memory_budget_gb);
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2125,6 +2127,7 @@ impl PySosMp2Result {
                     memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_laplace_sos_mp2(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -2152,8 +2155,8 @@ pub(crate) fn run_laplace_sos_mp2(
         scf_ri_j_precision,
     )?;
     let op = Operator::coulomb();
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2269,6 +2272,7 @@ impl PyAttenuatedMp2Result {
 #[pyo3(signature = (mol, basis_set, auxbasis, omega=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_attenuated_rimp2(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -2292,8 +2296,8 @@ pub(crate) fn run_attenuated_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
@@ -2350,6 +2354,7 @@ pub(crate) fn run_attenuated_rimp2(
 #[pyo3(signature = (mol, basis_set, auxbasis, r0=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_terfc_rimp2(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -2373,8 +2378,8 @@ pub(crate) fn run_terfc_rimp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     // r0 supplied in Å; convert to Bohr for the operator.
@@ -2515,6 +2520,7 @@ impl PyScsMp2Result {
 #[pyo3(signature = (mol, basis_set, auxbasis, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_scs_mp2(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -2539,8 +2545,8 @@ pub(crate) fn run_scs_mp2(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let cfg = ScsMp2Config {
@@ -2579,6 +2585,7 @@ pub(crate) fn run_scs_mp2(
 #[pyo3(signature = (mol, basis_set, auxbasis, r0_bonded=None, r0_nonbonded=None, c_os=None, c_ss=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_scs_mp2_2terfc(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -2605,8 +2612,8 @@ pub(crate) fn run_scs_mp2_2terfc(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
@@ -2729,6 +2736,7 @@ impl PyMp2VResult {
 #[pyo3(signature = (mol, basis_set, auxbasis, r0=None, b=None, c=None, omega=None, attenuator=None, vv10_damping=None, frozen_core=None, k_builder=None, memory_budget_gb=None, scf_jk=None, jk_auxbasis=None, scf_ri_j_precision=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_mp2_v(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -2757,8 +2765,8 @@ pub(crate) fn run_mp2_v(
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
         scf_ri_j_precision,
     )?;
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2888,8 +2896,8 @@ pub(crate) fn run_mp2_v_scan(
             )));
         }
     }
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
     let mut rcfg = rhf_config_conv(
         k_builder,
@@ -2985,6 +2993,7 @@ pub(crate) fn run_mp2_v_scan(
 #[pyo3(signature = (mol, basis_set, specs, b=11.0, c=0.0089, nlc_grid=None, df_j_aux=None, df_k_aux=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_vv10_variants(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     specs: Vec<(String, f64, Option<f64>, i32)>,
@@ -2999,7 +3008,7 @@ pub(crate) fn run_vv10_variants(
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<Vec<f64>> {
     use ferric_dft::vv10::{Vv10Damping, Vv10Weight};
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let mol = sys.mol();
     let mut rcfg = rhf_config_conv(
         None,
