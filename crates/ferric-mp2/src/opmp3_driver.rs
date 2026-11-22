@@ -189,9 +189,13 @@ pub fn opmp3_scf_config(config: &Opmp3Config) -> RhfConfig {
 }
 
 /// The reference SCF of `config` on `sys` (restricted: RHF/RKS for a
-/// singlet, ROHF/ROKS otherwise), exact J/K. Unconverged is an error.
+/// singlet, ROHF/ROKS otherwise), exact J/K, screening with the system's
+/// kind ([`PreparedSystem::screening`]). Unconverged is an error.
 pub fn opmp3_scf(sys: &PreparedSystem, config: &Opmp3Config) -> Result<ScfResult, FerricError> {
-    let cfg = opmp3_scf_config(config);
+    let cfg = RhfConfig {
+        screening: sys.screening(),
+        ..opmp3_scf_config(config)
+    };
     let scf = if sys.mol().multiplicity == 1 {
         sys.solve_rhf(&cfg)?
     } else {

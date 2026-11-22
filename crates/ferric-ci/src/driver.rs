@@ -40,14 +40,18 @@ pub struct ScfStart {
 /// The exact-J/K Coulomb RHF of `sys` (its molecule with the basis set's
 /// ECP applied, its prepared basis and Schwarz bounds) with the
 /// [`RhfConfig`] defaults, `start`'s overrides and the memory budget
-/// (`three_index_budget_bytes`; `None` is the auto-detected budget). An
+/// (`three_index_budget_bytes`; `None` is the auto-detected budget),
+/// screening with the system's kind ([`PreparedSystem::screening`]). An
 /// unconverged SCF is a [`FerricError::ScfConvergence`].
 pub fn rhf_start(
     sys: &PreparedSystem,
     start: ScfStart,
     memory_budget_bytes: Option<usize>,
 ) -> Result<ScfResult, FerricError> {
-    let cfg = start_config(start, memory_budget_bytes);
+    let cfg = RhfConfig {
+        screening: sys.screening(),
+        ..start_config(start, memory_budget_bytes)
+    };
     sys.solve_rhf(&cfg)?.into_converged()
 }
 
@@ -216,6 +220,31 @@ pub fn nevpt2_on_rhf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rhf_start` builds its own config; on a CSB system it must screen
+    /// with CSB (the system's solve methods refuse any other kind).
+    #[test]
+    fn rhf_start_runs_on_a_csb_system() {
+        use ferric_scf::screening::ScreeningKind;
+        use ferric_scf::{EcpMolecule, PrepareOptions};
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let options = PrepareOptions {
+            screening: ScreeningKind::Csb,
+            ..Default::default()
+        };
+        let sys = EcpMolecule::new(mol, &bs).prepare(options).unwrap();
+        assert!(
+            rhf_start(&sys, ScfStart::default(), None)
+                .unwrap()
+                .converged
+        );
+    }
 
     #[test]
     fn default_n_core_needs_an_even_remainder() {
