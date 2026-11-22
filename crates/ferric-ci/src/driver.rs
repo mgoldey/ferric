@@ -2,19 +2,25 @@
 //!
 //! Each driver runs the exact-J/K Coulomb RHF that starts the calculation
 //! ([`rhf_start`](crate::driver::rhf_start)), then two-step CASSCF
-//! ([`run_casscf`]) or a CASSCF or CAS-CI reference plus
-//! SC-NEVPT2 ([`nevpt2_on_rhf`](crate::driver::nevpt2_on_rhf)). The Python
-//! bindings (`ferric.run_casscf`, `ferric.run_nevpt2`) and the CLI kinds
-//! (`method.kind = "casscf"`, `"nevpt2"`) call these functions, so the same
-//! input gives the same number on both surfaces.
+//! ([`casscf_on_rhf`](crate::driver::casscf_on_rhf)), CAS-CI
+//! ([`casci_on_rhf`](crate::driver::casci_on_rhf)) or a CASSCF or CAS-CI
+//! reference plus SC-NEVPT2 ([`nevpt2_on_rhf`](crate::driver::nevpt2_on_rhf)).
+//! The Python bindings (`ferric.run_casci`, `ferric.run_casscf`,
+//! `ferric.run_nevpt2`) and the CLI kinds (`method.kind = "casscf"`,
+//! `"nevpt2"`) call these functions, so the same input gives the same number
+//! on both surfaces.
+//!
+//! Every driver takes the [`PreparedSystem`] (molecule with the basis set's
+//! ECP applied, its prepared basis), so a frontend cannot hand the kernels a
+//! molecule and a basis that disagree about the ECP. The kernels underneath
+//! ([`run_casscf`], [`run_cas_ci`], [`sc_nevpt2`]) take the molecule and the
+//! basis separately.
 
 use crate::{
-    run_cas_ci, run_casscf, sc_nevpt2, CasCiConfig, CasScfConfig, Nevpt2Config, Nevpt2Integrals,
-    Nevpt2Reference, Nevpt2Result,
+    run_cas_ci, run_casscf, sc_nevpt2, CasCiConfig, CasCiResult, CasScfConfig, CasScfResult,
+    Nevpt2Config, Nevpt2Integrals, Nevpt2Reference, Nevpt2Result,
 };
-use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::{PreparedSystem, ScfResult};
 
@@ -134,8 +140,26 @@ pub fn casci_config_of(cas: &CasScfConfig) -> CasCiConfig {
     }
 }
 
-/// SC-NEVPT2 on the reference `on` built from the converged RHF `rhf`:
-/// [`run_casscf`] with `cas`, or [`run_cas_ci`] with [`casci_config_of`]
+/// Two-step CASSCF ([`run_casscf`]) on `sys` from its converged RHF `rhf`.
+pub fn casscf_on_rhf(
+    sys: &PreparedSystem,
+    rhf: &ScfResult,
+    cas: &CasScfConfig,
+) -> Result<CasScfResult, FerricError> {
+    run_casscf(sys.mol(), sys.basis(), rhf, cas)
+}
+
+/// CAS-CI ([`run_cas_ci`]) on `sys` from its converged RHF `rhf`.
+pub fn casci_on_rhf(
+    sys: &PreparedSystem,
+    rhf: &ScfResult,
+    cfg: CasCiConfig,
+) -> Result<CasCiResult, FerricError> {
+    run_cas_ci(sys.mol(), sys.basis(), rhf, cfg)
+}
+
+/// SC-NEVPT2 on `sys` and the reference `on` built from its converged RHF
+/// `rhf`: [`run_casscf`] with `cas`, or [`run_cas_ci`] with [`casci_config_of`]
 /// (`cas`'s orbital-optimization settings are then not read). The
 /// SC-NEVPT2 settings are the [`Nevpt2Config`] defaults with `cas`'s memory
 /// budget and the Hamiltonian of `cas.integrals`
@@ -143,8 +167,7 @@ pub fn casci_config_of(cas: &CasScfConfig) -> CasCiConfig {
 /// unconverged reference is an error, and so is the RI route on a CAS-CI
 /// reference (the CAS-CI runs on the exact integrals).
 pub fn nevpt2_on_rhf(
-    mol: &Molecule,
-    prep: &PreparedBasis,
+    sys: &PreparedSystem,
     rhf: &ScfResult,
     on: Nevpt2On,
     cas: &CasScfConfig,
@@ -154,6 +177,7 @@ pub fn nevpt2_on_rhf(
         integrals: Nevpt2Integrals::of_casscf(cas.integrals),
         ..Default::default()
     };
+    let (mol, prep) = (sys.mol(), sys.basis());
     if on == Nevpt2On::Casci && nev.integrals != Nevpt2Integrals::Dense {
         return Err(FerricError::General(
             "SC-NEVPT2: integrals = \"ri\" sets the CASSCF Hamiltonian; a CAS-CI reference \
