@@ -294,12 +294,10 @@ fn check_k_builder(
             "{kbk} = \"{kb}\" conflicts with {m} = \"rijk\": RI-K builds the exchange, so \
              {kbk} would be ignored. Remove {kbk}, or use {m} = \"rijcosx\" for COSX"
         )),
-        (ScfJkMode::RiJCosx, Some(kb)) if KBuilderKind::parse(kb) != Ok(KBuilderKind::Cosx) => {
-            Err(format!(
-                "{kbk} = \"{kb}\" conflicts with {m} = \"rijcosx\", whose exchange is COSX. \
+        (ScfJkMode::RiJCosx, Some(kb)) if !KBuilderKind::spells_cosx(kb) => Err(format!(
+            "{kbk} = \"{kb}\" conflicts with {m} = \"rijcosx\", whose exchange is COSX. \
              Remove {kbk}"
-            ))
-        }
+        )),
         _ => Ok(()),
     }
 }

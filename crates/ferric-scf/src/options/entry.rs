@@ -348,7 +348,8 @@ impl ScfEntryPoint {
         // named.
         let (df_j_aux, df_k_aux) = (df_j_aux.map(AuxBasis::parse), df_k_aux.map(AuxBasis::parse));
         let (df_j_aux, df_k_aux) = if ks {
-            ks_jk_fit_defaults(k_builder, df_j_aux, df_k_aux, AuxBasis::default_jk())
+            let (j, k) = ks_jk_fit_defaults(k_builder, df_j_aux, df_k_aux, AuxBasis::default_jk());
+            (Some(j), k)
         } else {
             (df_j_aux, df_k_aux)
         };

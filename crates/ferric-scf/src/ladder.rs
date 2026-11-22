@@ -714,12 +714,13 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
         if c.xc.is_some() {
             // The Kohn-Sham JK-fit defaults and the RIJCOSX rule, from their
             // one home in `crate::options` (what the KS entry points apply).
-            (c.df_j_aux, c.df_k_aux) = crate::options::ks_jk_fit_defaults(
+            let (j, k) = crate::options::ks_jk_fit_defaults(
                 c.k_builder,
                 c.df_j_aux.take(),
                 c.df_k_aux.take(),
                 crate::options::DEFAULT_JK_AUX.to_string(),
             );
+            (c.df_j_aux, c.df_k_aux) = (Some(j), k);
         }
         c
     };

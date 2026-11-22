@@ -135,6 +135,14 @@ impl KBuilderKind {
         }
     }
 
+    /// Whether `s` spells [`KBuilderKind::Cosx`] (through the one
+    /// whitelist). For the checks that read a spelling as typed, to quote it
+    /// in their messages, before the frontend's own parse reports an unknown
+    /// one: an unknown spelling is not COSX.
+    pub fn spells_cosx(s: &str) -> bool {
+        Self::parse(s) == Ok(Self::Cosx)
+    }
+
     /// [`KBuilderKind::parse`] of an optional keyword (`None` = not given).
     pub fn parse_opt(s: Option<&str>) -> Result<Option<Self>, UnknownKBuilder> {
         s.map(Self::parse).transpose()
@@ -148,6 +156,15 @@ impl KBuilderKind {
             Self::Link => "link",
             Self::Cosx => "cosx",
         }
+    }
+}
+
+impl std::str::FromStr for KBuilderKind {
+    type Err = UnknownKBuilder;
+
+    /// [`KBuilderKind::parse`].
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -182,18 +199,21 @@ pub fn df_k_aux_or_default<T>(
 /// The Kohn-Sham JK-fit defaults: RI-J on `jk` unless `df_j_aux` names a
 /// choice, and RI-K on `jk` under the RIJCOSX rule
 /// ([`df_k_aux_or_default`]: no RI-K default under COSX). The one home of
-/// both, for the Python KS entry points
+/// the Kohn-Sham JK-fit default, for the Python KS entry points
 /// ([`ScfEntryPoint::options`](crate::options::entry::ScfEntryPoint::options),
 /// over [`AuxBasis`]) and `ksdft_ladder` (over a lowered config's names).
-/// Returns `(df_j_aux, df_k_aux)`; `df_j_aux` is always `Some`.
+/// Returns `(df_j_aux, df_k_aux)`: RI-J always has a choice, RI-K may not.
+///
+/// The CLI's per-kind defaults are deliberately separate
+/// (`Config::scf_xc_and_aux_defaults`) and share only the RIJCOSX rule.
 pub fn ks_jk_fit_defaults<T: Clone>(
     k_builder: Option<KBuilderKind>,
     df_j_aux: Option<T>,
     df_k_aux: Option<T>,
     jk: T,
-) -> (Option<T>, Option<T>) {
+) -> (T, Option<T>) {
     let df_k_aux = df_k_aux_or_default(k_builder, df_k_aux, Some(jk.clone()));
-    (Some(df_j_aux.unwrap_or(jk)), df_k_aux)
+    (df_j_aux.unwrap_or(jk), df_k_aux)
 }
 
 /// A density-fitting auxiliary basis choice for [`RhfConfig::df_j_aux`] /
@@ -1331,6 +1351,11 @@ mod tests {
     fn k_builder_spellings_parse_once_with_the_solver_message() {
         for kind in KBuilderKind::ALL {
             assert_eq!(KBuilderKind::parse(kind.as_str()), Ok(kind));
+            assert_eq!(kind.as_str().parse::<KBuilderKind>(), Ok(kind));
+            assert_eq!(
+                KBuilderKind::spells_cosx(kind.as_str()),
+                kind == KBuilderKind::Cosx
+            );
             assert_eq!(kind.to_string(), kind.as_str());
         }
         assert_eq!(KBuilderKind::parse_opt(None), Ok(None));
@@ -1347,6 +1372,7 @@ mod tests {
                 format!("General error: {text}")
             );
             assert_eq!(KBuilderKind::parse_opt(Some(bad)).unwrap_err().0, bad);
+            assert!(!KBuilderKind::spells_cosx(bad), "{bad:?}");
         }
     }
 

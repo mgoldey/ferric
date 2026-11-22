@@ -3918,10 +3918,9 @@ impl ScfCfg {
     /// spelling is not COSX here, as it was when these checks compared
     /// strings.
     pub fn k_builder_is_cosx(&self) -> bool {
-        use ferric_scf::options::KBuilderKind;
         self.k_builder
             .as_deref()
-            .is_some_and(|s| KBuilderKind::parse(s) == Ok(KBuilderKind::Cosx))
+            .is_some_and(ferric_scf::options::KBuilderKind::spells_cosx)
     }
 
     /// `aurora` / `trah_trigger` scoping: AURORA is closed-shell RHF only, TRAH

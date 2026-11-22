@@ -164,8 +164,9 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
         return refuse("differentiates dense chi0 only: omit chi0_sparsity".into());
     }
     // The spelling as passed (the SCF config parses it after this check).
-    let cosx = ferric_scf::options::KBuilderKind::Cosx;
-    if s.k_builder.map(ferric_scf::options::KBuilderKind::parse) == Some(Ok(cosx)) {
+    if s.k_builder
+        .is_some_and(ferric_scf::options::KBuilderKind::spells_cosx)
+    {
         return refuse("has no COSX exchange response: use an exact k_builder or omit it".into());
     }
     if s.df_aux {
