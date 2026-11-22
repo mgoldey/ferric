@@ -114,8 +114,8 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
 
 ## Shared structure
 
-- **Traits are small and segregated.** `MethodResult` (energy, certificate,
-  timings) and `Reference` (spin, orbitals, eigenvalues, occupations) stay
+- **Traits are small and segregated.** `MethodResult` (total energy,
+  certificate) and `Reference` (spin, orbitals, eigenvalues, occupations) stay
   separate: an MP2 result is a `MethodResult` but not a `Reference`. Add a
   trait only when a second implementer exists. There is no `trait ScfMethod`:
   the RHF, UHF and ROHF iterations differ numerically.
@@ -286,25 +286,36 @@ Done:
       kernel next to another system's basis; that needs item 8c. As before,
       an aux set without ECP data carries the all-electron charge on an ECP
       atom (it matters only to a kernel that reads the aux basis's charges).
-9b. `ferric_core::method_result::MethodResult` (`total_energy`,
-    `certificate` as a `Cow<Certificate>`) and `result_getters!` in
-    ferric-python, which declares each result class's shared getters
-    (`certificate`, `timings`, the `energy`/`total_energy` alias) once, as
-    a second `#[pymethods]` block (pyo3's `multiple-pymethods` feature:
-    pyo3 rejects a macro item inside a `#[pymethods]` impl). Names,
-    docstrings, values and certificate keys are unchanged. Implementers are
-    the ferric-python result classes that hold one total energy and a
-    certificate: RHF/UHF/DFT/CDFT, the Gamma and k-point SCF and
-    correlation results, the RI-MP2 family, MP3, double hybrids, the two
-    RPA results and CASCI/CASSCF/NEVPT2. Not implementers: the kernel
-    result types (none carries a certificate; it is built from the result
-    plus inputs it does not keep); results with no single total energy
-    (CC, EOM-CCSD, GW, BSE, TDDFT, OP-MP3, CDFT coupling, MD) and task
-    results (optimize, saddle, frequencies, QM/MM, whose `energy` is the
-    embedded QM energy), which take `certificate: field ...` from the
-    macro instead; `SymmetricRhfResult`, which has no certificate.
-    `timings` is not in the trait: only periodic results carry them, as a
-    ferric-pbc `PbcTimings` ferric-core cannot name.
+9b. `MethodResult` (`total_energy`, `certificate` as a `Cow<Certificate>`)
+    and `result_getters!`, both `pub(crate)` in
+    `ferric-python/src/method_result.rs`. The macro declares each result
+    class's shared getters (`certificate`, `timings`, the
+    `energy`/`total_energy` alias) once, with explicit sources
+    (`certificate: via trait;`, `certificate: from field <name>;`, ...);
+    names, docstrings, values and certificate keys are unchanged, and
+    `tests/test_result_getters.py` pins the wiring.
+    - Its only consumer is that macro. It lives in ferric-python because
+      every implementer is a ferric-python result class (see the
+      `stored_method_result!`, `periodic_method_result!` and hand-written
+      `impl MethodResult` items); it moves to ferric-core when a kernel or
+      CLI result implements it or generic code consumes it. No kernel result
+      can today: none carries a certificate, which is built from the result
+      plus inputs it does not keep.
+    - Left out deliberately: results with no single total energy (CC,
+      EOM-CCSD, GW, BSE, TDDFT, OP-MP3, CDFT coupling, MD); task results
+      (optimize, saddle, frequencies, QM/MM optimize), which have a total
+      energy and a certificate but grade the task, not a method; QM/MM,
+      whose `energy` is the embedded QM energy; `SymmetricRhfResult`, which
+      has no certificate. These take `certificate: from field ...`.
+      `timings` is not in the trait: only periodic results carry it.
+    - The second `#[pymethods]` block needs pyo3's `multiple-pymethods`
+      feature (pyo3 rejects a macro item inside a `#[pymethods]` impl),
+      which adds the `inventory` crate. The alternative without a new
+      dependency is a generic helper plus a one-line hand-written getter
+      per class; the macro was preferred so a class names each shared
+      getter once.
+    - It does not provide the explicit serialize schema item 13 needs: that
+      schema is Python-side.
 -  COSX for `run_uks`/`run_roks`: they now apply
    `df_k_aux_or_default`. Before, they applied the RI-K default even under
    COSX, so a COSX call with HF exchange or a global hybrid (the functionals
@@ -357,8 +368,9 @@ Next, each as its own PR following the patterns above:
     the binaries' `main`, since Python calls `ferric_cli::run`.
 13. Python results store `Arc<ScfResult>` so passing a reference into a
     correlated method does not deep-copy arrays; result classes become
-    `frozen`; `ferric.serialize` reads an explicit `MethodResult` schema
-    instead of reflection.
+    `frozen`; `ferric.serialize` reads an explicit, Python-side result
+    schema instead of reflection (the Rust `MethodResult` trait of 9b does
+    not provide it).
 14. A shared `ferric-testkit` dev crate, file splits, and a clippy ratchet on
     `too_many_arguments`.
 15. Types still stringly or boolean at the boundary: a `KBuilder` enum parsed
