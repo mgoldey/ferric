@@ -384,7 +384,7 @@ pub(crate) fn run_double_hybrid(
 
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
 
     let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let cfg = rhf_config_conv(
@@ -408,9 +408,9 @@ pub(crate) fn run_double_hybrid(
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
     let r = if ks.spin == ferric_scf::Spin::Unrestricted {
-        u_mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
+        u_mp2_double_hybrid_on(&dfbs, &ks, &mp2_cfg)
     } else {
-        mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
+        mp2_double_hybrid_on(&dfbs, &ks, &mp2_cfg)
     }
     .map_err(make_err)?;
     let e_dispersion = match dh_kind.d3bj_functional() {

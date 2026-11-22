@@ -17,10 +17,9 @@ use ferric_core::basis;
 use ferric_core::certificate::BuildStamp;
 use ferric_core::mol::Molecule;
 use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
-use ferric_mp2::local_opmp3::{local_opmp3_on_reference, LocalOpmp3Result};
+use ferric_mp2::local_opmp3::{local_opmp3_on, LocalOpmp3Result};
 use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
-    Opmp3Result,
+    opmp3_on, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
 };
 use ferric_scf::PreparedSystem;
 use serde::Deserialize;
@@ -242,11 +241,10 @@ pub fn run_opmp3(cfg: &Config, gpu_flag: bool) {
         );
     }
     let scf = opmp3_scf(&sys, config).unwrap_or_else(|e| die(e));
-    let canonical = || opmp3_on_reference(&sys, &scf, integrals, config).unwrap_or_else(|e| die(e));
+    let canonical = || opmp3_on(&sys, &scf, integrals, config).unwrap_or_else(|e| die(e));
     let (r, local) = match (&plan.local, aux.as_ref()) {
         (Some((lcfg, with_reference)), Some(aux)) => {
-            let lr =
-                local_opmp3_on_reference(&bs, &scf, aux, config, lcfg).unwrap_or_else(|e| die(e));
+            let lr = local_opmp3_on(aux, &scf, config, lcfg).unwrap_or_else(|e| die(e));
             let reference = with_reference.then(canonical);
             (lr.opmp3.clone(), Some((lr, reference)))
         }

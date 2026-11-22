@@ -173,8 +173,7 @@ pub(crate) struct BundleJob<'a> {
     pub(crate) mol: &'a Molecule,
     pub(crate) bs: &'a BasisSet,
     pub(crate) aux_bs: &'a BasisSet,
-    pub(crate) prep: &'a PreparedBasis,
-    pub(crate) dfbs: &'a PreparedBasis,
+    pub(crate) dfbs: &'a PreparedAux<'a>,
     pub(crate) rhf: &'a ScfResult,
     pub(crate) op: Operator,
     pub(crate) rpa_cfg: &'a ferric_rpa::PdepRpaConfig,
@@ -231,13 +230,8 @@ pub(crate) fn run_property_bundle(
         let proatom =
             ferric_scf::properties::scf_proatom_provider(job.ctx, job.bs, job.op, job.scf_config);
         let inputs = PropertyInputs {
-            ctx: job.ctx,
-            mol: job.mol,
-            prep: job.prep,
-            bs: job.bs,
-            dfbs: job.dfbs,
+            aux: job.dfbs,
             result: job.rhf,
-            op: job.op,
             rpa_cfg: job.rpa_cfg,
             rhf_config: job.scf_config,
             proatom: &proatom,

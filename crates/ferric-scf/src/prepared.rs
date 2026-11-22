@@ -24,8 +24,6 @@
 //! config) cannot screen with two kinds. A driver that builds its own config
 //! sets `screening: sys.screening()`.
 
-use std::ops::Deref;
-
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -115,6 +113,7 @@ impl<'b> EcpMolecule<'b> {
         let bounds = SchwarzBounds::compute_for_screening(op, &basis, screening)?;
         Ok(PreparedSystem {
             mol: self.mol,
+            basis_set: self.basis.clone(),
             basis,
             bounds,
             ctx,
@@ -131,6 +130,7 @@ impl<'b> EcpMolecule<'b> {
 /// and the bounds of that basis cannot drift apart.
 pub struct PreparedSystem {
     mol: Molecule,
+    basis_set: BasisSet,
     basis: PreparedBasis,
     bounds: SchwarzBounds,
     ctx: ParallelContext,
@@ -162,6 +162,13 @@ impl PreparedSystem {
     /// The orbital basis prepared on [`Self::mol`].
     pub fn basis(&self) -> &PreparedBasis {
         &self.basis
+    }
+
+    /// The basis set [`Self::basis`] was prepared from (a copy of the one
+    /// [`EcpMolecule::new`] was given), for the kernels that also read the
+    /// shells by element (the local correlation models' atom domains).
+    pub fn basis_set(&self) -> &BasisSet {
+        &self.basis_set
     }
 
     /// The two-electron operator of the reference SCF and of the bounds:
@@ -213,6 +220,63 @@ impl PreparedSystem {
                 config.screening, built
             )))
         }
+    }
+
+    /// `Ok` when `scf` can be a reference on this system; otherwise an error
+    /// saying what does not fit. The one check behind every correlated
+    /// `*_on` entry point (see [`PreparedAux`]).
+    ///
+    /// An [`ScfResult`] carries no molecule, so this checks what a kernel
+    /// would index by the system: the AO dimension of each spin's MO
+    /// coefficients is [`Self::basis`]'s `nbasis`, each spin has one orbital
+    /// energy per MO, and the occupied orbitals of [`Self::mol`]'s electron
+    /// count and multiplicity fit in its MOs. A reference of another
+    /// molecule in a basis of the same size (or a different geometry) is
+    /// not detected.
+    pub fn check_reference(&self, scf: &ScfResult) -> Result<(), FerricError> {
+        let nbasis = self.basis.nbasis();
+        let nelec = i64::from(self.mol.nelec());
+        let mult = self.mol.multiplicity as i64;
+        let n_alpha = usize::try_from((nelec + mult - 1).max(0) / 2).unwrap_or(0);
+        let n_beta = usize::try_from((nelec - mult + 1).max(0) / 2).unwrap_or(0);
+        let mismatch = |what: String| {
+            Err(FerricError::General(format!(
+                "the reference SCF result does not belong to this system: {what}; pass the \
+                 result of an SCF on the same molecule and orbital basis"
+            )))
+        };
+        // A restricted result's beta orbitals are its alpha ones.
+        let spins = [
+            ("alpha", &scf.mos_alpha, &scf.eps_alpha, n_alpha),
+            (
+                "beta",
+                scf.mos_beta.as_ref().unwrap_or(&scf.mos_alpha),
+                scf.eps_beta.as_ref().unwrap_or(&scf.eps_alpha),
+                n_beta,
+            ),
+        ];
+        for (spin, mos, eps, n_occ) in spins {
+            let n_eps = eps.len();
+            let (rows, nmo) = mos.dim();
+            if rows != nbasis {
+                return mismatch(format!(
+                    "its {spin} MO coefficients have {rows} AO rows, but the system's orbital \
+                     basis has {nbasis} functions"
+                ));
+            }
+            if n_eps != nmo {
+                return mismatch(format!(
+                    "it has {n_eps} {spin} orbital energies for {nmo} {spin} MOs"
+                ));
+            }
+            if n_occ > nmo {
+                return mismatch(format!(
+                    "the system's molecule occupies {n_occ} {spin} orbitals, but the result \
+                     has {nmo} {spin} MOs"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// [`solve_rhf`](crate::rhf::solve_rhf) on this system; a config
@@ -286,16 +350,21 @@ impl PreparedSystem {
 /// It borrows the system, so it cannot outlive it, and [`Self::system`]
 /// returns that system: code handed a `&PreparedAux` reads the matching
 /// orbital basis and molecule from it rather than pairing the aux with a
-/// system of its own. It dereferences to the [`PreparedBasis`] that the
-/// fitting kernels take.
+/// system of its own. It does not dereference to its [`PreparedBasis`]: a
+/// loose fitting kernel is reached through [`Self::basis`], so a frontend
+/// goes through the `*_on` entry points.
 ///
 /// The correlated crates' `*_on(aux, ..)` entry points (`ri_mp2_on`,
 /// `ccsd_closed_shell_on`, `run_gw_on`, `run_tddft_on`, ...) take a
 /// `&PreparedAux` and read the molecule (with the ECP applied), the orbital
-/// basis and, where the kernel takes one, the Coulomb operator from
-/// [`Self::system`], with this basis as the fitting basis, so a frontend
-/// cannot pair the fitting basis of one system with the orbital basis of
-/// another.
+/// basis (and, where the kernel takes them, the basis set, bounds, context
+/// and the Coulomb operator) from [`Self::system`], with this basis as the
+/// fitting basis, so a frontend cannot pair the fitting basis of one system
+/// with the orbital basis of another. Each checks its reference SCF result
+/// against the system first ([`Self::check_reference`]), so a result of
+/// another system is an error rather than an out-of-bounds slice. An entry
+/// whose kernel runs on a correlation operator other than the system's
+/// Coulomb one takes that operator as an argument.
 ///
 /// The fitting basis takes its nuclear charges from its own basis set's ECP
 /// table ([`PreparedBasis::new`]), so on an ECP atom an aux set without ECP
@@ -316,6 +385,12 @@ impl<'s> PreparedAux<'s> {
     /// The prepared fitting basis.
     pub fn basis(&self) -> &PreparedBasis {
         &self.basis
+    }
+
+    /// [`PreparedSystem::check_reference`] on [`Self::system`]: `Ok` when
+    /// `scf` can be a reference on the system this basis was prepared on.
+    pub fn check_reference(&self, scf: &ScfResult) -> Result<(), FerricError> {
+        self.system.check_reference(scf)
     }
 
     /// The prepared fitting basis, for a kernel that also holds `sys`: an
@@ -339,14 +414,6 @@ impl std::fmt::Debug for PreparedAux<'_> {
         f.debug_struct("PreparedAux")
             .field("basis", &self.basis)
             .finish_non_exhaustive()
-    }
-}
-
-impl Deref for PreparedAux<'_> {
-    type Target = PreparedBasis;
-
-    fn deref(&self) -> &PreparedBasis {
-        &self.basis
     }
 }
 
@@ -411,7 +478,7 @@ mod tests {
         assert_eq!(sys.bounds().q, bounds.q);
         let aux = sys.prepare_aux(&aux_bs).unwrap();
         assert_eq!(
-            aux.nbasis(),
+            aux.basis().nbasis(),
             PreparedBasis::new(&mol, &aux_bs).unwrap().nbasis()
         );
     }
@@ -544,7 +611,86 @@ mod tests {
         assert!(aux.basis_for(&other).is_err());
         // The fitting basis, not the orbital one.
         let by_hand = PreparedBasis::new(&hi(), &aux_bs).unwrap();
-        assert_eq!(aux.nbasis(), by_hand.nbasis());
-        assert_ne!(aux.nbasis(), sys.basis().nbasis());
+        assert_eq!(aux.basis().nbasis(), by_hand.nbasis());
+        assert_ne!(aux.basis().nbasis(), sys.basis().nbasis());
+    }
+
+    fn water(basis_name: &str, charge: i32, mult: usize) -> PreparedSystem {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            charge,
+            mult,
+        )
+        .unwrap();
+        PreparedSystem::new(mol, &basis::bundled(basis_name).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_system_keeps_the_basis_set_it_was_prepared_from() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let sys = PreparedSystem::new(hi(), &bs).unwrap();
+        assert_eq!(sys.basis_set().name, bs.name);
+        assert_eq!(sys.basis_set().shells, bs.shells);
+        let via_stage = EcpMolecule::new(hi(), &bs)
+            .prepare(PrepareOptions::default())
+            .unwrap();
+        assert_eq!(via_stage.basis_set().shells, bs.shells);
+    }
+
+    #[test]
+    fn a_reference_of_the_system_passes_the_reference_check() {
+        let sys = water("sto-3g", 0, 1);
+        let rhf = sys.solve_rhf(&RhfConfig::default()).unwrap();
+        sys.check_reference(&rhf).unwrap();
+        let aux = sys
+            .prepare_aux(&basis::bundled("cc-pvdz-ri").unwrap())
+            .unwrap();
+        aux.check_reference(&rhf).unwrap();
+        // Open shell: UHF and ROHF of the cation.
+        let cation = water("sto-3g", 1, 2);
+        let uhf = cation.solve_uhf(&RhfConfig::default()).unwrap();
+        cation.check_reference(&uhf).unwrap();
+        let rohf = cation.solve_rohf(&RhfConfig::default()).unwrap();
+        cation.check_reference(&rohf).unwrap();
+    }
+
+    #[test]
+    fn a_reference_of_another_system_is_an_error_naming_what_does_not_fit() {
+        let small = water("sto-3g", 0, 1);
+        let large = water("6-31g", 0, 1);
+        let rhf_small = small.solve_rhf(&RhfConfig::default()).unwrap();
+        let rhf_large = large.solve_rhf(&RhfConfig::default()).unwrap();
+        for (sys, rhf, rows, nb) in [(&small, &rhf_large, 13, 7), (&large, &rhf_small, 7, 13)] {
+            let msg = sys.check_reference(rhf).unwrap_err().to_string();
+            assert!(msg.contains("does not belong to this system"), "{msg}");
+            assert!(
+                msg.contains(&format!("{rows} AO rows"))
+                    && msg.contains(&format!("{nb} functions")),
+                "{msg}"
+            );
+        }
+        // Orbital energies that do not match the MOs.
+        let mut short = rhf_small.clone();
+        short.eps_alpha.pop();
+        let msg = small.check_reference(&short).unwrap_err().to_string();
+        assert!(
+            msg.contains("6 alpha orbital energies for 7 alpha MOs"),
+            "{msg}"
+        );
+        // Fewer MOs than the molecule's occupied orbitals.
+        let mut few = rhf_small.clone();
+        few.mos_alpha = few.mos_alpha.slice(ndarray::s![.., ..4]).to_owned();
+        few.eps_alpha.truncate(4);
+        let msg = small.check_reference(&few).unwrap_err().to_string();
+        assert!(msg.contains("occupies 5 alpha orbitals"), "{msg}");
+        // A UHF result's beta channel is checked too.
+        let cation = water("sto-3g", 1, 2);
+        let mut uhf = cation.solve_uhf(&RhfConfig::default()).unwrap();
+        uhf.mos_beta = Some(rhf_large.mos_alpha.clone());
+        let msg = cation.check_reference(&uhf).unwrap_err().to_string();
+        assert!(
+            msg.contains("beta MO coefficients have 13 AO rows"),
+            "{msg}"
+        );
     }
 }

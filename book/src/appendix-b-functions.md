@@ -674,7 +674,7 @@ The text also has 1996 distinct backticked snake_case names that are not in this
 | `ferric-mp2/src/lmp2_direct.rs::pair_candidates` | function | [13.2](13-local-mp2/02-integral-direct.md) |
 | `ferric-mp2/src/lmp2_direct.rs::strips_and_metric` | function | [13.2](13-local-mp2/02-integral-direct.md) |
 | `ferric-mp2/src/lmp2_direct.rs::whiten` | function | [13.2](13-local-mp2/02-integral-direct.md) |
-| `ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference` | function | [13.4](13-local-mp2/04-local-opmp3.md) |
+| `ferric-mp2/src/local_opmp3.rs::local_opmp3_on` | function | [13.4](13-local-mp2/04-local-opmp3.md) |
 | `ferric-mp2/src/local_pno.rs::build_pno_transforms` | function | [13.3](13-local-mp2/03-pno-dlpno.md) |
 | `ferric-mp2/src/local_pno.rs::pno_for_pair` | function | [13.3](13-local-mp2/03-pno-dlpno.md) |
 | `ferric-mp2/src/local_pno.rs::pno_zero_threshold_keeps_everything` | test | [13.3](13-local-mp2/03-pno-dlpno.md) |
@@ -716,7 +716,7 @@ The text also has 1996 distinct backticked snake_case names that are not in this
 | `ferric-mp2/src/opmp3.rs::symmetrized_contraction` | function | [10.11](10-mp2/11-opmp3.md) |
 | `ferric-mp2/src/opmp3.rs::w_channels` | function | [10.11](10-mp2/11-opmp3.md) |
 | `ferric-mp2/src/opmp3.rs::w_matrices` | function | [10.11](10-mp2/11-opmp3.md) |
-| `ferric-mp2/src/opmp3_driver.rs::opmp3_on_reference` | function | [10.11](10-mp2/11-opmp3.md) |
+| `ferric-mp2/src/opmp3_driver.rs::opmp3_on` | function | [10.11](10-mp2/11-opmp3.md) |
 | `ferric-mp2/src/opmp3_driver.rs::run_opmp3` | function | [10.11](10-mp2/11-opmp3.md) |
 | `ferric-mp2/src/opmp3_reference.rs::opmp3_reference` | function | [10.11](10-mp2/11-opmp3.md) |
 | `ferric-mp2/src/opmp3_reference.rs::singles_energy` | function | [10.11](10-mp2/11-opmp3.md) |

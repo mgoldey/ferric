@@ -36,6 +36,7 @@ use ferric_rpa::property_bundle::{
 use ferric_rpa::PdepRpaConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedSystem;
 
 #[derive(Default)]
 struct Collect {
@@ -50,6 +51,10 @@ impl PropertyReporter for Collect {
 }
 
 struct Water {
+    /// The same molecule and orbital basis as `mol` / `obs`, for the bundle's
+    /// `PreparedAux` (`aux_bs` prepared on it).
+    sys: PreparedSystem,
+    aux_bs: ferric_core::basis::BasisSet,
     mol: Molecule,
     obs_bs: ferric_core::basis::BasisSet,
     obs: PreparedBasis,
@@ -82,6 +87,8 @@ fn water_with(charge: i32, mult: usize) -> Water {
         ferric_scf::uhf::solve_uhf(&ctx, &mol, &obs, &bounds, &rhf_cfg).unwrap()
     };
     Water {
+        sys: PreparedSystem::new(mol.clone(), &obs_bs).unwrap(),
+        aux_bs: aux,
         mol,
         obs_bs,
         obs,
@@ -105,14 +112,10 @@ fn run(w: &Water, req: &PdepPropertyRequest) -> Run {
         Operator::coulomb(),
         &w.rhf_cfg,
     );
+    let aux = w.sys.prepare_aux(&w.aux_bs).unwrap();
     let inputs = PropertyInputs {
-        ctx: &ctx,
-        mol: &w.mol,
-        prep: &w.obs,
-        bs: &w.obs_bs,
-        dfbs: &w.dfbs,
+        aux: &aux,
         result: &w.rhf,
-        op: Operator::coulomb(),
         rpa_cfg: &w.cfg,
         rhf_config: &w.rhf_cfg,
         proatom: &proatom,

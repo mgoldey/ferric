@@ -16,25 +16,23 @@
 //! venv caveat is under "Python bindings from source" in
 //! `site/src/using/installation.md`.
 
-use ferric_cc::ccd::ccd as run_ccd_inner;
+use ferric_cc::ccd::ccd_on;
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::att_vv10::{
-    att_mp2_vv10, att_mp2_vv10_scan, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
+    att_mp2_vv10_on, att_mp2_vv10_scan_on, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
     AttVv10SpinComponents,
 };
-use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
-use ferric_mp2::double_hybrid::{mp2_double_hybrid, u_mp2_double_hybrid, DoubleHybridKind};
-use ferric_mp2::laplace::{
-    laplace_ri_mp2, laplace_sos_mp2_with_basis, SosFormulation, SosMp2Config,
-};
-use ferric_mp2::mp3::mp3_energy;
-use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
-use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
-use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_mp2::attenuated::{attenuated_ri_mp2_on, AttenuatedMp2Config};
+use ferric_mp2::double_hybrid::{mp2_double_hybrid_on, u_mp2_double_hybrid_on, DoubleHybridKind};
+use ferric_mp2::laplace::{laplace_ri_mp2_on, laplace_sos_mp2_on, SosFormulation, SosMp2Config};
+use ferric_mp2::mp3::mp3_energy_on;
+use ferric_mp2::oo_rimp2::{oo_ri_mp2_on, OoRiMp2Config};
+use ferric_mp2::rimp2::{ri_mp2_with_op_on, RiMp2Config};
+use ferric_mp2::scs::{scs_mp2_2terfc_on, scs_mp2_on, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::noise_floor::SolverFamily;
 use ferric_scf::optimize::OptimizeConfig;
@@ -49,7 +47,7 @@ use ferric_scf::{EcpMolecule, PrepareOptions, PreparedAux, PreparedSystem};
 // solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
 // and `ferric_cc::u_ccsd_t` (see `cc.rs`).
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell_on;
-use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell as run_ccsd_t_cs_inner;
+use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell_on;
 use ferric_cc::CcConfig;
 use ndarray::{Array2, Array3};
 use numpy::{PyArray1, PyArray2, PyArray3};

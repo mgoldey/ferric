@@ -270,7 +270,7 @@ pub(crate) fn rimp2_energies(
 ) -> Result<Rimp2Energies, ferric_core::FerricError> {
     let sys = PreparedSystem::new(mol, basis_set)?;
     let dfbs = sys.prepare_aux(auxbasis)?;
-    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let (mol, op) = (sys.mol(), sys.op());
     let scf = sys.solve_reference(rhf_config)?;
     let (mp2_corr, total_energy, precision) = if scf.spin == ferric_scf::Spin::Unrestricted {
         let u = ferric_mp2::u_rimp2::u_ri_mp2_on(&dfbs, &scf, mp2_config)?;
@@ -282,12 +282,8 @@ pub(crate) fn rimp2_energies(
     // Closed shell only: `run_rimp2` refuses an open-shell gradient first.
     let gradient = with_gradient
         .then(|| {
-            ferric_mp2::gradient::rimp2_gradient_analytical(
-                mol,
-                prep,
+            ferric_mp2::gradient::rimp2_gradient_analytical_on(
                 &dfbs,
-                op,
-                sys.bounds(),
                 &scf,
                 mp2_config,
                 rhf_config.external_potential.as_ref(),
@@ -839,8 +835,8 @@ pub(crate) fn run_rimp2_local(
     model: &ferric_cli::LocalModel,
     att_keys: Option<&ferric_cli::Mp2Cfg>,
 ) -> PyResult<PyRiMp2Result> {
-    use ferric_mp2::lmp2_amplitude::amplitude_lmp2;
-    use ferric_mp2::lmp2_direct::amplitude_lmp2_direct;
+    use ferric_mp2::lmp2_amplitude::amplitude_lmp2_on;
+    use ferric_mp2::lmp2_direct::amplitude_lmp2_direct_on;
     if mol.inner.multiplicity > 1 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "run_rimp2: local=\"amplitude-threshold\" is closed-shell only (it localizes a \
@@ -862,7 +858,7 @@ pub(crate) fn run_rimp2_local(
         .solve_rhf(rhf_config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let eps = model.eps[0];
     // The same builder as the CLI's `[local]` run (`LocalModel::rimp2_configs`).
     let (lcfg, dcfg) = model.rimp2_configs(
@@ -871,14 +867,11 @@ pub(crate) fn run_rimp2_local(
     );
     let (r, st) = match &dcfg {
         None => (
-            amplitude_lmp2(mol, prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg)
-                .map_err(make_err)?,
+            amplitude_lmp2_on(&dfbs, op, &rhf, &lcfg).map_err(make_err)?,
             None,
         ),
         Some(dc) => {
-            let (r, st) =
-                amplitude_lmp2_direct(mol, prep, &basis_set.inner, &dfbs, op, &rhf, &lcfg, dc)
-                    .map_err(make_err)?;
+            let (r, st) = amplitude_lmp2_direct_on(&dfbs, op, &rhf, &lcfg, dc).map_err(make_err)?;
             (r, Some(st))
         }
     };
@@ -1055,7 +1048,7 @@ pub(crate) fn run_drpa(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_mp2::drpa_amplitude::{amplitude_drpa, exact_drpa_peak_bytes};
+    use ferric_mp2::drpa_amplitude::{amplitude_drpa_on, exact_drpa_peak_bytes};
     let model = local_model_from_kwargs(
         "run_drpa",
         ferric_cli::LocalCfg {
@@ -1118,16 +1111,7 @@ pub(crate) fn run_drpa(
         diis,
         eps_rtol_factor,
     );
-    let r = amplitude_drpa(
-        mol,
-        prep,
-        &basis_set.inner,
-        &dfbs,
-        Operator::coulomb(),
-        &rhf,
-        &cfg,
-    )
-    .map_err(make_err)?;
+    let r = amplitude_drpa_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     let d = drpa_result_to_dict(py, &r, rhf.energy, compute_reference)?;
     let local_v = match &model {
         None => None,
@@ -1197,7 +1181,7 @@ pub(crate) fn run_drpa_scan(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyList>> {
-    use ferric_mp2::drpa_amplitude::amplitude_drpa_scan_timed;
+    use ferric_mp2::drpa_amplitude::amplitude_drpa_scan_timed_on;
     // The same eps_sweep rules as the CLI's [local] eps_sweep (non-empty,
     // finite, >= 0); the points are evaluated in the order given.
     local_model_from_kwargs(
@@ -1210,7 +1194,6 @@ pub(crate) fn run_drpa_scan(
     )?;
     // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
     let compute_reference = compute_reference.unwrap_or(false);
-    let op = Operator::coulomb();
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf_config = rhf_config_conv(
@@ -1222,7 +1205,7 @@ pub(crate) fn run_drpa_scan(
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let base_cfg = drpa_config(
         None,
         frozen_core,
@@ -1231,17 +1214,8 @@ pub(crate) fn run_drpa_scan(
         diis,
         eps_rtol_factor,
     );
-    let (results, prefix_wall_s, per_point_walls) = amplitude_drpa_scan_timed(
-        mol,
-        prep,
-        &basis_set.inner,
-        &dfbs,
-        op,
-        &rhf,
-        &base_cfg,
-        &eps_list,
-    )
-    .map_err(make_err)?;
+    let (results, prefix_wall_s, per_point_walls) =
+        amplitude_drpa_scan_timed_on(&dfbs, &rhf, &base_cfg, &eps_list).map_err(make_err)?;
     let out = pyo3::types::PyList::empty(py);
     let scf_certificate = reference_certificate(
         mol,
@@ -1315,8 +1289,8 @@ pub(crate) fn run_linlccd(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
-    use ferric_cc::linlccd::{linlccd, LadderVariant};
-    use ferric_cc::linlccd_amplitude::{amplitude_linlccd, AmplitudeLinLccdConfig};
+    use ferric_cc::linlccd::{linlccd_on, LadderVariant};
+    use ferric_cc::linlccd_amplitude::{amplitude_linlccd_on, AmplitudeLinLccdConfig};
     let var = match variant {
         None => LadderVariant::Hh,
         Some(v) => LadderVariant::parse_config_str(v).map_err(|e| {
@@ -1341,22 +1315,18 @@ pub(crate) fn run_linlccd(
     }
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let rhf = local_rhf_reference(
         &sys,
         k_builder,
         memory_budget_gb,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
-    let op = Operator::coulomb();
     let fc = frozen_core.unwrap_or(0);
     let budget = budget_bytes_from_gb(memory_budget_gb);
     let exact = |var: LadderVariant| -> PyResult<f64> {
-        let cc = linlccd(
-            mol,
-            prep,
+        let cc = linlccd_on(
             &dfbs,
-            op,
             &rhf,
             &ferric_cc::CcConfig {
                 frozen_core: fc,
@@ -1379,12 +1349,8 @@ pub(crate) fn run_linlccd(
         }
         Some(m) => {
             let eps = m.eps[0];
-            let r = amplitude_linlccd(
-                mol,
-                prep,
-                &basis_set.inner,
+            let r = amplitude_linlccd_on(
                 &dfbs,
-                op,
                 &rhf,
                 &AmplitudeLinLccdConfig {
                     eps,
@@ -1727,7 +1693,7 @@ pub(crate) fn run_oo_rimp2(
     };
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
+    let (mol, op) = (sys.mol(), sys.op());
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1750,9 +1716,9 @@ pub(crate) fn run_oo_rimp2(
     // ExternalPotential, so `ext` is always None here. Adding QM/MM support to
     // this binding is out of Lane F1's scope; this just keeps behavior
     // unchanged after `oo_ri_mp2`'s hcore-bug fix.
-    let r = oo_ri_mp2(mol, prep, &dfbs, op, bounds, &rhf, &cfg, None).map_err(make_err)?;
+    let r = oo_ri_mp2_on(&dfbs, &rhf, &cfg, None).map_err(make_err)?;
     let gradient_data = with_gradient
-        .then(|| oo_rimp2_gradient(py, mol, prep, &dfbs, bounds, &r))
+        .then(|| oo_rimp2_gradient(py, &dfbs, &r))
         .transpose()?;
     let certificate_data = ferric_mp2::certificate::oo_rimp2_certificate(
         &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
@@ -1784,10 +1750,7 @@ pub(crate) fn run_oo_rimp2(
 /// unconverged loop raises; its accuracy follows `grad_conv`.
 pub(crate) fn oo_rimp2_gradient(
     py: Python<'_>,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    bounds: &SchwarzBounds,
+    dfbs: &PreparedAux<'_>,
     r: &ferric_mp2::oo_rimp2::OoRiMp2Result,
 ) -> PyResult<Array2<f64>> {
     if !r.converged {
@@ -1798,11 +1761,8 @@ pub(crate) fn oo_rimp2_gradient(
             r.iterations, r.grad_norm
         )));
     }
-    let op = Operator::coulomb();
-    py.allow_threads(|| {
-        ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient(mol, prep, dfbs, op, bounds, r, 0, None)
-    })
-    .map_err(make_err)
+    py.allow_threads(|| ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient_on(dfbs, r, 0, None))
+        .map_err(make_err)
 }
 
 // ── MP3 (spin-orbital, via einsum!) ──
@@ -1880,12 +1840,11 @@ pub(crate) fn run_mp3(
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     // The VVVV size guard inside mp3_energy used to resolve the budget itself
     // with a hardcoded `None` (env/auto-detect only), so a caller's budget
     // never reached it; it is now a parameter.
-    let mp3 = mp3_energy(mol, prep, &dfbs, op, &rhf, frozen_core.unwrap_or(0), budget)
-        .map_err(make_err)?;
+    let mp3 = mp3_energy_on(&dfbs, &rhf, frozen_core.unwrap_or(0), budget).map_err(make_err)?;
     Ok(PyMp3Result {
         e_hf: mp3.e_hf,
         e_mp2: mp3.e_mp2,
@@ -1998,12 +1957,9 @@ pub(crate) fn run_laplace_mp2(
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
-    let r = laplace_ri_mp2(
-        mol,
-        prep,
+    let mol = sys.mol();
+    let r = laplace_ri_mp2_on(
         &dfbs,
-        op,
         &rhf,
         n_quad.unwrap_or(7),
         frozen_core.unwrap_or(0),
@@ -2167,7 +2123,7 @@ pub(crate) fn run_laplace_sos_mp2(
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let form =
         SosFormulation::parse_config_str(formulation, domain_cutoff_bohr).map_err(make_err)?;
     let cfg = SosMp2Config {
@@ -2177,8 +2133,7 @@ pub(crate) fn run_laplace_sos_mp2(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         domain_cutoff_bohr,
     };
-    let r = laplace_sos_mp2_with_basis(mol, prep, &basis_set.inner, &dfbs, op, &rhf, &cfg, form)
-        .map_err(make_err)?;
+    let r = laplace_sos_mp2_on(&dfbs, &rhf, &cfg, form).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_mp2::certificate::sos_mp2_certificate(
             &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
@@ -2305,7 +2260,7 @@ pub(crate) fn run_attenuated_rimp2(
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     // omega is supplied in Å⁻¹; convert to Bohr⁻¹ for the operator.
     let cfg = AttenuatedMp2Config {
         omega: omega.unwrap_or(0.420) * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -2314,7 +2269,7 @@ pub(crate) fn run_attenuated_rimp2(
         screen_thresh: None,
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
-    let r = attenuated_ri_mp2(mol, prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = attenuated_ri_mp2_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_mp2::certificate::att_rimp2_certificate(
             &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
@@ -2387,7 +2342,7 @@ pub(crate) fn run_terfc_rimp2(
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     // r0 supplied in Å; convert to Bohr for the operator.
     let resolved = ferric_mp2::terfc_r0::resolve_terfc_r0(&basis_set.inner.name, r0)
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
@@ -2403,7 +2358,7 @@ pub(crate) fn run_terfc_rimp2(
     };
     // Open shell: the unrestricted RI-MP2 under the same terfc operator.
     let mp2 = if rhf.spin == ferric_scf::Spin::Unrestricted {
-        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, prep, &dfbs, terfc_op, &rhf, &mp2_config)
+        let u = ferric_mp2::u_rimp2::u_ri_mp2_with_op_on(&dfbs, terfc_op, &rhf, &mp2_config)
             .map_err(make_err)?;
         ferric_mp2::rimp2::RiMp2Result {
             mp2_corr: u.mp2_corr,
@@ -2411,7 +2366,7 @@ pub(crate) fn run_terfc_rimp2(
             precision: u.precision,
         }
     } else {
-        ri_mp2(mol, prep, &dfbs, terfc_op, &rhf, &mp2_config).map_err(make_err)?
+        ri_mp2_with_op_on(&dfbs, terfc_op, &rhf, &mp2_config).map_err(make_err)?
     };
     let certificate_data = ferric_mp2::certificate::ri_correlation_certificate(
         "att-rimp2",
@@ -2557,14 +2512,14 @@ pub(crate) fn run_scs_mp2(
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let cfg = ScsMp2Config {
         c_os: c_os.unwrap_or(6.0 / 5.0),
         c_ss: c_ss.unwrap_or(1.0 / 3.0),
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
-    let r = scs_mp2(mol, prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = scs_mp2_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::with_anchor_envelope(
         ferric_mp2::certificate::scs_mp2_certificate(
             &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
@@ -2629,7 +2584,7 @@ pub(crate) fn run_scs_mp2_2terfc(
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     const ANG2BOHR: f64 = ANGSTROM_TO_BOHR;
     let params = ferric_mp2::terfc_r0::resolve_scs_2terfc(
         &basis_set.inner.name,
@@ -2655,7 +2610,7 @@ pub(crate) fn run_scs_mp2_2terfc(
             "r0_nonbonded must be > r0_bonded",
         ));
     }
-    let r = scs_mp2_2terfc(mol, prep, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = scs_mp2_2terfc_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::scs_mp2_2terfc_certificate(
         &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
         &auxbasis.inner.name,
@@ -2790,7 +2745,7 @@ pub(crate) fn run_mp2_v(
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
 
     // Start from the published MP2-V(terfc, aTZ) parameterization and override
     // only what the caller set (same construction order as the CLI's
@@ -2839,7 +2794,7 @@ pub(crate) fn run_mp2_v(
     cfg.frozen_core = frozen_core.unwrap_or(0);
     cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
-    let r = att_mp2_vv10(mol, prep, &basis_set.inner, &dfbs, &rhf, &cfg).map_err(make_err)?;
+    let r = att_mp2_vv10_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     let (e_os, e_ss) = match &r.spin_components {
         AttVv10SpinComponents::Restricted(s) => (s.e_os, s.e_ss),
         AttVv10SpinComponents::Unrestricted(_) => unreachable!("closed-shell entry point"),
@@ -2917,7 +2872,7 @@ pub(crate) fn run_mp2_v_scan(
     }
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let mut rcfg = rhf_config_conv(
         k_builder,
@@ -2948,18 +2903,8 @@ pub(crate) fn run_mp2_v_scan(
             omega: w.map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
         })
         .collect();
-    let r = att_mp2_vv10_scan(
-        mol,
-        prep,
-        &basis_set.inner,
-        &dfbs,
-        &rhf,
-        &base,
-        &scan_arms,
-        &bs,
-        include_coulomb_mp2,
-    )
-    .map_err(make_err)?;
+    let r = att_mp2_vv10_scan_on(&dfbs, &rhf, &base, &scan_arms, &bs, include_coulomb_mp2)
+        .map_err(make_err)?;
     let out = PyDict::new(py);
     out.set_item("rhf_energy", r.e_hf)?;
     out.set_item("n_nlc_points", r.n_nlc_points)?;

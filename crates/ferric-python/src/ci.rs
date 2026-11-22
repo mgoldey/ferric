@@ -163,7 +163,7 @@ fn run_casci(
         compute_rdms,
     };
     let r = py
-        .allow_threads(|| ferric_ci::driver::casci_on_rhf(&sys, &rhf, &cfg))
+        .allow_threads(|| ferric_ci::driver::casci_on(&sys, &rhf, &cfg))
         .map_err(make_err)?;
 
     let mut cert = Certificate::ungraded(CAPABILITY).with_build(build_stamp());
@@ -378,7 +378,7 @@ fn run_casscf(
         ..Default::default()
     };
     let r = py
-        .allow_threads(|| ferric_ci::driver::casscf_on_rhf(&sys, &rhf, &cfg))
+        .allow_threads(|| ferric_ci::driver::casscf_on(&sys, &rhf, &cfg))
         .map_err(make_err)?;
 
     let cert = ferric_mp2::certificate::with_anchor_envelope(
@@ -599,7 +599,7 @@ fn run_nevpt2(
         ..Default::default()
     };
     let run = py
-        .allow_threads(|| ferric_ci::driver::nevpt2_on_rhf(&sys, &rhf, on, &cfg))
+        .allow_threads(|| ferric_ci::driver::nevpt2_on(&sys, &rhf, on, &cfg))
         .map_err(make_err)?;
     let cert = ferric_mp2::certificate::with_anchor_envelope(
         ferric_ci::certificate::nevpt2_certificate(on, &cfg, run.reference_stability.as_ref())

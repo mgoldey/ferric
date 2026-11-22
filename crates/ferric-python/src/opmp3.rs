@@ -1,11 +1,10 @@
 //! `run_opmp3`: orbital-partitioned Padé MP3 (`ferric_mp2::opmp3_driver`).
 
 use super::*;
-use ferric_mp2::local_opmp3::{local_opmp3_on_reference, LocalOpmp3Result};
+use ferric_mp2::local_opmp3::{local_opmp3_on, LocalOpmp3Result};
 use ferric_mp2::opmp3::WChannels;
 use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
-    Opmp3Result,
+    opmp3_on, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
 };
 
 #[pyclass]
@@ -230,10 +229,10 @@ pub(crate) fn run_opmp3(
     let (scf, inner, local_run) = py
         .allow_threads(|| {
             let scf = opmp3_scf(&sys, &config)?;
-            let canonical = || opmp3_on_reference(&sys, &scf, integrals, &config);
+            let canonical = || opmp3_on(&sys, &scf, integrals, &config);
             match (&lcfg, aux.as_ref()) {
                 (Some((lc, with_reference)), Some(aux)) => {
-                    let lr = local_opmp3_on_reference(&basis_set.inner, &scf, aux, &config, lc)?;
+                    let lr = local_opmp3_on(aux, &scf, &config, lc)?;
                     let reference = with_reference.then(canonical).transpose()?;
                     let r = lr.opmp3.clone();
                     Ok::<_, ferric_core::FerricError>((scf, r, Some((lr, reference))))

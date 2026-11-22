@@ -211,12 +211,13 @@ pub fn opmp3_scf(sys: &PreparedSystem, config: &Opmp3Config) -> Result<ScfResult
 }
 
 /// OP-MP3 on an existing converged reference `scf` (any spin type).
-pub fn opmp3_on_reference(
+pub fn opmp3_on(
     sys: &PreparedSystem,
     scf: &ScfResult,
     integrals: Opmp3Integrals<'_>,
     config: &Opmp3Config,
 ) -> Result<Opmp3Result, FerricError> {
+    sys.check_reference(scf)?;
     let x_ss = config.resolved_x_ss()?;
     let eri = match integrals {
         Opmp3Integrals::Exact => UMp3Eri::Exact,
@@ -267,7 +268,7 @@ pub fn opmp3_on_reference(
     })
 }
 
-/// The whole run: [`opmp3_scf`], then [`opmp3_on_reference`].
+/// The whole run: [`opmp3_scf`], then [`opmp3_on`].
 pub fn run_opmp3(
     sys: &PreparedSystem,
     integrals: Opmp3Integrals<'_>,
@@ -275,5 +276,5 @@ pub fn run_opmp3(
 ) -> Result<Opmp3Result, FerricError> {
     config.resolved_x_ss()?;
     let scf = opmp3_scf(sys, config)?;
-    opmp3_on_reference(sys, &scf, integrals, config)
+    opmp3_on(sys, &scf, integrals, config)
 }

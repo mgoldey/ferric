@@ -23,6 +23,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::result::{ScfResult, Spin};
 use ferric_scf::rhf::RhfConfig;
+use ferric_scf::PreparedAux;
 use ndarray::Array2;
 
 use crate::config::PdepRpaConfig;
@@ -131,26 +132,46 @@ impl Default for PdepPropertyRequest {
 
 /// Everything the property computation reads.
 pub struct PropertyInputs<'a> {
-    /// Parallel context (free-atom SCFs).
-    pub ctx: &'a ParallelContext,
-    /// The molecule.
-    pub mol: &'a Molecule,
-    /// Prepared orbital basis.
-    pub prep: &'a PreparedBasis,
-    /// Orbital basis set (Hirshfeld grids, free-atom SCFs).
-    pub bs: &'a BasisSet,
-    /// Prepared auxiliary basis.
-    pub dfbs: &'a PreparedBasis,
-    /// The reference SCF.
+    /// The prepared auxiliary basis; its system ([`PreparedAux::system`])
+    /// gives the parallel context (free-atom SCFs), the molecule, the
+    /// prepared orbital basis, the orbital basis set (Hirshfeld grids,
+    /// free-atom SCFs) and the Coulomb operator of the reference.
+    pub aux: &'a PreparedAux<'a>,
+    /// The reference SCF, checked against `aux`'s system
+    /// ([`PreparedAux::check_reference`]) before any property.
     pub result: &'a ScfResult,
-    /// Coulomb operator of the reference.
-    pub op: Operator,
     /// The PDEP-RPA settings the property responses reuse.
     pub rpa_cfg: &'a PdepRpaConfig,
     /// SCF settings of the reference (free-atom SCFs).
     pub rhf_config: &'a RhfConfig,
     /// Same-basis Hirshfeld proatom provider.
     pub proatom: &'a dyn Fn(i32, i32) -> Option<RadialProatom>,
+}
+
+impl PropertyInputs<'_> {
+    fn ctx(&self) -> &ParallelContext {
+        self.aux.system().ctx()
+    }
+
+    fn mol(&self) -> &Molecule {
+        self.aux.system().mol()
+    }
+
+    fn prep(&self) -> &PreparedBasis {
+        self.aux.system().basis()
+    }
+
+    fn bs(&self) -> &BasisSet {
+        self.aux.system().basis_set()
+    }
+
+    fn dfbs(&self) -> &PreparedBasis {
+        self.aux.basis()
+    }
+
+    fn op(&self) -> Operator {
+        self.aux.system().op()
+    }
 }
 
 /// The C6 / dynamic-α block of the bundle with its provenance.
@@ -239,7 +260,7 @@ fn compute_site_properties(
     rep: &mut dyn PropertyReporter,
     out: &mut PdepProperties,
 ) {
-    let (mol, prep, d) = (inp.mol, inp.prep, inp.result.density_total());
+    let (mol, prep, d) = (inp.mol(), inp.prep(), inp.result.density_total());
     if req.esp {
         match esp_at_atoms(mol, prep, d) {
             Ok(v) => out.esp_atoms = Some(v),
@@ -293,11 +314,11 @@ fn compute_polarizabilities(
 ) {
     if req.polarizability {
         match pdep_polarizability_static(
-            inp.mol,
-            inp.prep,
-            inp.dfbs,
+            inp.mol(),
+            inp.prep(),
+            inp.dfbs(),
             inp.result,
-            inp.op,
+            inp.op(),
             inp.rpa_cfg,
         ) {
             Ok(p) => {
@@ -315,12 +336,12 @@ fn compute_polarizabilities(
     }
     if req.alpha_atomic {
         match pdep_polarizability_becke(
-            inp.mol,
-            inp.prep,
-            inp.bs,
-            inp.dfbs,
+            inp.mol(),
+            inp.prep(),
+            inp.bs(),
+            inp.dfbs(),
             inp.result,
-            inp.op,
+            inp.op(),
             inp.rpa_cfg,
         ) {
             Ok(v) => {
@@ -376,7 +397,7 @@ fn compute_charges_and_dipole(
     rep: &mut dyn PropertyReporter,
     out: &mut PdepProperties,
 ) {
-    let (mol, prep, d) = (inp.mol, inp.prep, inp.result.density_total());
+    let (mol, prep, d) = (inp.mol(), inp.prep(), inp.result.density_total());
     // Molecular dipole μ = −Tr(P·D) + Σ_A Z_A R_A of the total density
     // (QC ground truth vs partition-derived Löwdin/Hirshfeld dipoles).
     // Origin [0,0,0]; neutral molecules are origin-independent.
@@ -403,7 +424,7 @@ fn compute_charges_and_dipole(
     if req.hirshfeld {
         out.hirshfeld = charge_scheme(
             "Hirshfeld",
-            hirshfeld_charges(mol, inp.bs, d, Some(inp.proatom)),
+            hirshfeld_charges(mol, inp.bs(), d, Some(inp.proatom)),
             rep,
         );
     }
@@ -442,12 +463,12 @@ fn ts_or_mbd_c6(
     rep: &mut dyn PropertyReporter,
 ) -> Option<C6Result> {
     let (mol, prep, bs, dfbs, result, op, rpa_cfg) = (
-        inp.mol,
-        inp.prep,
-        inp.bs,
-        inp.dfbs,
+        inp.mol(),
+        inp.prep(),
+        inp.bs(),
+        inp.dfbs(),
         inp.result,
-        inp.op,
+        inp.op(),
         inp.rpa_cfg,
     );
     let alpha_res = if partition == DispersionPartition::Hirshfeld {
@@ -545,9 +566,13 @@ fn ts_volume_ratios(
     let mut vol_free_computed: std::collections::HashMap<usize, f64> =
         std::collections::HashMap::new();
     for &zi in z.iter().collect::<std::collections::HashSet<_>>() {
-        if let Ok(vf) =
-            crate::dispersion::live_free_atom_volume(inp.ctx, zi, inp.bs, inp.op, inp.rhf_config)
-        {
+        if let Ok(vf) = crate::dispersion::live_free_atom_volume(
+            inp.ctx(),
+            zi,
+            inp.bs(),
+            inp.op(),
+            inp.rhf_config,
+        ) {
             vol_free_computed.insert(zi, vf);
         }
     }
@@ -621,12 +646,12 @@ fn compute_c6_block(
         // shared same-basis Hirshfeld proatom so the per-atom partition is
         // basis-consistent.
         match pdep_dynamic_polarizability(
-            inp.mol,
-            inp.prep,
-            inp.bs,
-            inp.dfbs,
+            inp.mol(),
+            inp.prep(),
+            inp.bs(),
+            inp.dfbs(),
             inp.result,
-            inp.op,
+            inp.op(),
             inp.rpa_cfg,
             partition,
             Some(inp.proatom),
@@ -635,7 +660,7 @@ fn compute_c6_block(
                 let res = casimir_polder_c6(&dp);
                 rep.info(&format!(
                     "Computed PDEP-RPA C6: {} atoms, {} freqs; molecular C6 = {:.3} a.u.",
-                    inp.mol.atoms.len(),
+                    inp.mol().atoms.len(),
                     dp.freqs.len(),
                     res.c6_molecular_iso
                 ));
@@ -695,7 +720,7 @@ fn compute_c6_block(
 fn compute_moments(inp: &PropertyInputs, req: &PdepPropertyRequest, out: &mut PdepProperties) {
     if inp.result.spin == Spin::Restricted {
         if let Ok((c, s)) =
-            ferric_integrals::oneelectron::orbital_moments(inp.prep, inp.result.mos_r())
+            ferric_integrals::oneelectron::orbital_moments(inp.prep(), inp.result.mos_r())
         {
             out.orbital_centers = Some(c);
             out.orbital_spreads = Some(s);
@@ -703,7 +728,7 @@ fn compute_moments(inp: &PropertyInputs, req: &PdepPropertyRequest, out: &mut Pd
     }
     if req.density_matrix {
         out.density_second_moment = ferric_integrals::oneelectron::density_second_moment(
-            inp.prep,
+            inp.prep(),
             inp.result.density_total(),
             [0.0; 3],
         )
@@ -722,7 +747,10 @@ pub fn compute_pdep_properties(
     req: &PdepPropertyRequest,
     rep: &mut dyn PropertyReporter,
 ) -> Result<PdepProperties, String> {
-    let mol = inp.mol;
+    inp.aux
+        .check_reference(inp.result)
+        .map_err(|e| e.to_string())?;
+    let mol = inp.mol();
     let mut out = PdepProperties {
         coords: {
             let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));

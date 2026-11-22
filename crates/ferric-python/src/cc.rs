@@ -62,7 +62,7 @@ fn run_u_ccsd_inner(
     let sys = PreparedSystem::new(mol, basis)?;
     let dfbs = sys.prepare_aux(aux)?;
     let scf_config = &with_k_builder(scf_config, k_builder)?;
-    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let mol = sys.mol();
     let uhf = sys.solve_uhf(scf_config)?.into_converged()?;
     let cc = ferric_cc::u_ccsd::u_ccsd_on(&dfbs, &uhf, cfg)?;
     let mut comps = std::collections::HashMap::from([
@@ -71,7 +71,7 @@ fn run_u_ccsd_inner(
         ("e_bb".to_string(), cc.e_bb),
     ]);
     let t_correction = if level == CcLevel::CcsdT {
-        let t = ferric_cc::u_ccsd_t::u_ccsd_t(mol, prep, &dfbs, op, &uhf, &cc, cfg)?;
+        let t = ferric_cc::u_ccsd_t::u_ccsd_t_on(&dfbs, &uhf, &cc, cfg)?;
         comps.extend([
             ("t_aaa".to_string(), t.aaa),
             ("t_aab".to_string(), t.aab),
@@ -175,7 +175,6 @@ pub(crate) fn run_ccd(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCcResult> {
-    let op = Operator::coulomb();
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf_config = rhf_config_conv(
@@ -187,13 +186,13 @@ pub(crate) fn run_ccd(
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let cfg = CcConfig {
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         ..Default::default()
     };
-    let r = run_ccd_inner(mol, prep, &dfbs, op, &rhf, &cfg).map_err(make_err)?;
+    let r = ccd_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_cc::certificate::cc_certificate(
         "ccd",
         &reference_certificate(mol, &rhf, &rhf_config, &basis_set.inner),
@@ -290,11 +289,11 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
             let aux = sys.prepare_aux(&eaux)?;
             let rhf_config = with_k_builder(&rhf_config, k_builder)?;
             let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
-            let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+            let mol = sys.mol();
             let r = ccsd_closed_shell_on(&aux, &rhf, &cfg)?;
             let e_t = match level {
                 CcLevel::Ccsd => None,
-                CcLevel::CcsdT => Some(run_ccsd_t_cs_inner(mol, prep, &aux, op, &rhf, &r, &cfg)?),
+                CcLevel::CcsdT => Some(ccsd_t_closed_shell_on(&aux, &rhf, &r, &cfg)?),
             };
             let reference = reference_certificate(mol, &rhf, &rhf_config, &ebasis);
             let certificate = ferric_cc::certificate::cc_certificate(
@@ -530,13 +529,10 @@ pub(crate) fn run_eom_ccsd(
             let dfbs = sys.prepare_aux(&eaux)?;
             let rhf_config = with_k_builder(&rhf_config, k_builder)?;
             let rhf = sys.solve_rhf(&rhf_config)?.into_converged()?;
-            let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+            let mol = sys.mol();
             let cc = ccsd_closed_shell_on(&dfbs, &rhf, &cfg)?;
-            let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets(
-                mol,
-                prep,
+            let eom = ferric_cc::eom_ccsd::eom_ccsd_singlets_on(
                 &dfbs,
-                op,
                 &rhf,
                 &cc,
                 cfg.frozen_core,

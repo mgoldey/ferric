@@ -953,6 +953,7 @@ pub fn u_ccsd_on(
     scf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<UCcsdResult, FerricError> {
+    aux.check_reference(scf)?;
     let sys = aux.system();
     u_ccsd(sys.mol(), sys.basis(), aux.basis(), sys.op(), scf, cfg)
 }
