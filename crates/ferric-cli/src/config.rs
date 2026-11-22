@@ -3912,10 +3912,10 @@ impl ScfCfg {
 }
 
 impl ScfCfg {
-    /// `[scf] k_builder` parsed (`KBuilderKind::parse`). Checked last at
-    /// load (`validate_loaded`), so every other load-time error reports
-    /// first, as when the solver refused an unknown spelling; read again by
-    /// `try_scf_config`.
+    /// `[scf] k_builder` parsed (`KBuilderKind::parse`), by
+    /// `try_scf_config` as its last fallible step: after loading and the
+    /// run's other checks, close to where the solver refused an unknown
+    /// spelling.
     pub fn k_builder_kind(&self) -> Result<Option<ferric_scf::options::KBuilderKind>, String> {
         ferric_scf::options::KBuilderKind::parse_opt(self.k_builder.as_deref())
             .map_err(|e| format!("[scf] k_builder: {e}"))
@@ -7555,10 +7555,7 @@ fn validate_loaded(cfg: &mut Config, text: &str) -> Result<(), String> {
         let raw: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
         cfg.periodic = periodic_plan(cfg, &raw)?;
     }
-    resolve_kind_plans(cfg, text)?;
-    // Last: an unknown spelling was the solver's refusal, after every other
-    // check, before the CLI parsed it.
-    cfg.scf.k_builder_kind().map(|_| ())
+    resolve_kind_plans(cfg, text)
 }
 
 /// The plans of the kind-specific sections that need the raw TOML text: the
@@ -11004,41 +11001,6 @@ json = [1, 2]
         )
         .unwrap();
         load_config(p.to_str().unwrap()).expect("valid [scf] strings must load");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// An unknown `[scf] k_builder` fails at load, after every other
-    /// load-time check, in the `<file>: [scf] <key>: ...` form of its
-    /// siblings; the three spellings load.
-    #[test]
-    fn load_config_refuses_an_unknown_k_builder_last() {
-        let dir = std::env::temp_dir().join(format!("ferric-cli-kb-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for kb in ["Link", "COSX", "", "bogus"] {
-            let p = dir.join("kb.toml");
-            let path = p.to_str().unwrap();
-            std::fs::write(&p, format!("{MINIMAL}[scf]\nk_builder = {kb:?}\n")).unwrap();
-            assert_eq!(
-                load_config(path).err().unwrap(),
-                format!(
-                    "{path}: [scf] k_builder: unknown k_builder '{kb}': valid options are \
-                     'direct', 'link', 'cosx'"
-                )
-            );
-            std::fs::write(
-                &p,
-                format!("{MINIMAL}[scf]\nk_builder = {kb:?}\ndiis = \"cdiis\"\n"),
-            )
-            .unwrap();
-            let e = load_config(path).err().unwrap();
-            assert!(e.contains("[scf] diis"), "{kb:?}: {e}");
-        }
-        for kb in ["direct", "link", "cosx"] {
-            let p = dir.join("kb.toml");
-            std::fs::write(&p, format!("{MINIMAL}[scf]\nk_builder = {kb:?}\n")).unwrap();
-            let c = load_config(p.to_str().unwrap()).unwrap();
-            assert_eq!(c.scf.k_builder_kind().unwrap().unwrap().as_str(), kb);
-        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -418,6 +418,9 @@ fn resolve_grid_prune(cfg: &Config) -> Option<ferric_dft::prune::PruneScheme> {
 /// resolved. Passed in, never read from globals, so the lowering is a function
 /// of its arguments.
 struct ScfConfigInputs<'a> {
+    /// The input file, named in a refused `[scf] k_builder` as load-time
+    /// errors name it.
+    input_path: &'a str,
     /// `method.task`: selects the RI-J precision default ([`ri_j_task_for`]).
     task: &'a str,
     /// The `[gpu]` side of the COSX fp64 router: `precision = "mixed"` with
@@ -451,6 +454,7 @@ struct ScfConfigInputs<'a> {
 fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig, CliError> {
     use ferric_scf::options::{df_k_aux_or_default, AuxBasis, Guess, ScfOptions, TrahTrigger};
     let ScfConfigInputs {
+        input_path,
         task,
         cosx_router_allowed,
         grid_prune,
@@ -532,10 +536,12 @@ fn try_scf_config(cfg: &Config, inputs: ScfConfigInputs<'_>) -> Result<RhfConfig
     // ("exact"/"none"/"off"/... mean no density fitting, as in the Python
     // bindings); the kind default is already an `AuxBasis`.
     let df_j_aux = s.df_j_aux.as_deref().map(AuxBasis::parse).or(df_j_default);
-    // `[scf] k_builder`, already refused at load if unknown
-    // (`ScfCfg::k_builder_kind`, the last load-time check); last of the
-    // fallible steps here too.
-    let k_builder = s.k_builder_kind()?;
+    // `[scf] k_builder` (`ScfCfg::k_builder_kind`), the last fallible step
+    // here: an unknown spelling was the solver's refusal, after everything
+    // else. Named with the file, in the form of the load-time errors.
+    let k_builder = s
+        .k_builder_kind()
+        .map_err(|e| format!("{input_path}: {e}"))?;
     // RIJCOSX: `k_builder = "cosx"` replaces RI-K, so the RI-K default is not
     // applied under it (the shared rule; an explicit `df_k_aux` next to COSX
     // is refused by the SCF as a conflict).
@@ -978,6 +984,7 @@ pub fn run(args: Vec<String>) {
     let mut rhf_config = try_scf_config(
         &cfg,
         ScfConfigInputs {
+            input_path: toml_path,
             task,
             cosx_router_allowed: ferric_core::gpu::settings()
                 .mixed_allows(ferric_core::gpu::MixedKernel::CosxKern),
@@ -9187,17 +9194,23 @@ mod scf_config_lowering_tests {
                 ferric_scf::incore_jk::EriMode::parse_config_str(eri)
                     .map_err(|e| format!("[scf] eri: {e}"))?;
             }
-            text(cfg.scf.relativistic_resolved())?; // relativistic
-                                                    // k_builder: copied verbatim by the literal and refused by the
-                                                    // solver after everything else; now refused at load
-                                                    // (`ScfCfg::k_builder_kind`, its last check) and by the
-                                                    // lowering as its last fallible step.
-            text(cfg.scf.k_builder_kind())
+            // relativistic
+            text(cfg.scf.relativistic_resolved())?;
+            // k_builder: copied verbatim by the literal and refused by the
+            // solver after everything else; now refused by the lowering as
+            // its last fallible step, naming the file.
+            cfg.scf
+                .k_builder_kind()
+                .map(|_| ())
+                .map_err(|e| format!("{INPUT}: {e}"))
         };
         first().err()
     }
 
     // ── the new path, fed exactly what `run` now passes ──
+
+    /// The input file name the tests' lowering is given.
+    const INPUT: &str = "in.toml";
 
     fn new_lowering(
         cfg: &Config,
@@ -9214,6 +9227,7 @@ mod scf_config_lowering_tests {
         Some(try_scf_config(
             cfg,
             ScfConfigInputs {
+                input_path: INPUT,
                 task,
                 cosx_router_allowed: router_allowed,
                 grid_prune,
@@ -9653,7 +9667,8 @@ solvent = \"water\"
     fn unknown_k_builder_is_the_lowerings_last_error() {
         for kb in ["Link", "COSX", "Direct", "", " cosx", "bogus"] {
             let unknown = format!(
-                "[scf] k_builder: unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'"
+                "{INPUT}: [scf] k_builder: unknown k_builder '{kb}': valid options are 'direct', \
+                 'link', 'cosx'"
             );
             let alone = parse(&header("rhf", &format!("[scf]\nk_builder = {kb:?}\n")));
             for task in TASKS {

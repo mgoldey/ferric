@@ -365,10 +365,11 @@ Done:
       `rhf_config_conv`; the CC drivers that prepare inside a GIL-released
       closure through `with_k_builder` there), except the MP2 family,
       which parses it in `mp2_reference_config` before its method
-      keywords; `run_cdft` before its config; the CLI as the last
-      load-time check (`ScfCfg::k_builder_kind`: `error: <file>: [scf]
-      k_builder: unknown k_builder ...`, the form of the sibling keys),
-      read again by `try_scf_config`.
+      keywords; `run_cdft` before its config; the CLI in `try_scf_config`
+      as its last fallible step (`ScfCfg::k_builder_kind`), after loading
+      and the run's validation, naming the file in the form of the
+      load-time errors (`error: <file>: [scf] k_builder: unknown k_builder
+      ...`).
     - Re-reads of the raw spelling, through the same whitelist
       (`KBuilderKind::spells_cosx`), where a message quotes what was typed
       and runs before the parse: the CLI load-time COSX checks
@@ -376,14 +377,14 @@ Done:
       gradient scope and `ScfJk::resolve`'s conflicts. They go when that
       message constraint does.
     - Behaviour change, for an unknown spelling only: same class and text
-      (CLI: the new prefix above), but raised at the boundary rather than
+      (CLI: the file-naming form above), but raised at the boundary rather than
       by the solver. Checks that ran between the two now run after it: the
       pre-SCF noise-floor warning and `run_dft`'s ladder banner (no longer
       printed), the `with_gradient` / hook / symmetry refusals and the
       libxc functional lookup, the MP2 family's method keywords, and in the
-      CLI every run-time check after loading, the banners and run-log
-      header (and the per-kind "SCF ladder failed: General(...)" /
-      "General error: ..." wrappers). So with two bad inputs the reported
+      CLI the system preparation, the banners and run-log header (and the
+      per-kind "SCF ladder failed: General(...)" / "General error: ..."
+      wrappers). So with two bad inputs the reported
       error can switch, including from a `ValueError` to the
       `RuntimeError`; with one, nothing changes.
       `tests/test_k_builder_parse_order.py` pins both sides of the line.
