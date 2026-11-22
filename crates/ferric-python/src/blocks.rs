@@ -64,6 +64,7 @@ use ferric_scf::df_j::{DfJ, RiJPrecision};
 use ferric_scf::df_k::DfK;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedSystem;
 use ndarray::{Array2, Array3, Array4, Axis};
 use numpy::{PyArray2, PyArray3, PyArray4, PyArrayDyn, PyReadonlyArray2, PyReadonlyArrayDyn};
 use provenance::certificate_from_blocks;
@@ -3034,20 +3035,16 @@ pub(crate) enum OpenShell {
 /// Unsupported settings are a `ValueError` before any work. GIL released
 /// for the SCF. Returns the result, with the hook's noise-floor term added
 /// to its exit report, and that term (0 without a hook).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_open_shell(
     py: Python<'_>,
     kind: OpenShell,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     config: &ferric_scf::rhf::RhfConfig,
     fock_hook: Option<&Bound<'_, PyAny>>,
     dm0: Option<&(Array2<f64>, Array2<f64>)>,
 ) -> PyResult<(ferric_scf::result::ScfResult, f64)> {
     use ferric_scf::{rohf, uhf};
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let solve = |hook: Option<ferric_scf::fock::SpinFockHook<'_>>| match (kind, dm0, hook) {
         (OpenShell::Uhf, Some((a, b)), h) => {
             uhf::solve_uhf_from_spin_densities(ctx, mol, prep, bounds, config, (a, b), h)
@@ -3085,17 +3082,13 @@ pub(crate) fn solve_open_shell(
 /// for the SCF. Unsupported settings are a `ValueError` before any work.
 /// Returns the result, with the hook's noise-floor term added to its exit
 /// report, and that term.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_rhf_hooked(
     py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     config: &ferric_scf::rhf::RhfConfig,
     hook: &Bound<'_, PyAny>,
 ) -> PyResult<(ferric_scf::result::ScfResult, f64)> {
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     ferric_scf::rhf::validate_fock_hook(config)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
@@ -3117,14 +3110,9 @@ pub(crate) fn solve_rhf_hooked(
 /// would lack the hook's explicit term) and `dispersion is not None` (the
 /// dispersion terms would not include the hook); both are refused before the
 /// SCF.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_ks_ladder(
     py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     ladder: &[ferric_scf::ladder::Rung],
     hooked: Option<(&Bound<'_, PyAny>, bool, bool)>,
 ) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
@@ -3136,9 +3124,7 @@ pub(crate) fn solve_ks_ladder(
     match hooked {
         None => {
             let lr = py
-                .allow_threads(|| {
-                    ferric_scf::ladder::solve_rhf_ladder(ctx, mol, prep, op, bounds, ladder)
-                })
+                .allow_threads(|| sys.solve_rhf_ladder(ladder))
                 .map_err(make_err)?;
             let cfg = ladder
                 .get(lr.rung_reached)
@@ -3148,9 +3134,7 @@ pub(crate) fn solve_ks_ladder(
         }
         Some((_, true, _)) => refuse(KS_HOOK_GRADIENT_REFUSAL),
         Some((_, _, true)) => refuse("dispersion"),
-        Some((hook, false, false)) => {
-            solve_hooked_ladder(py, ctx, mol, prep, op, bounds, ladder, hook)
-        }
+        Some((hook, false, false)) => solve_hooked_ladder(py, sys, ladder, hook),
     }
 }
 
@@ -3176,17 +3160,13 @@ fn hooked_rung_config(rung: &ferric_scf::ladder::Rung) -> ferric_scf::rhf::RhfCo
 /// result, or the lowest-energy rung's when none converges (as the plain
 /// ladder does), with that rung's [`hooked_rung_config`]. Rung 0 is the call
 /// `solve_rhf_hooked` makes, so a run that converges there is unchanged.
-#[allow(clippy::too_many_arguments)]
 fn solve_hooked_ladder(
     py: Python<'_>,
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    sys: &PreparedSystem,
     ladder: &[ferric_scf::ladder::Rung],
     hook: &Bound<'_, PyAny>,
 ) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let configs: Vec<_> = ladder.iter().map(hooked_rung_config).collect();
     for cfg in &configs {
         ferric_scf::rhf::validate_fock_hook(cfg)

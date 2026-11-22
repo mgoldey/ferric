@@ -179,7 +179,8 @@ pub(crate) fn run_ccd(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)

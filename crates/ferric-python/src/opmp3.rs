@@ -221,7 +221,7 @@ pub(crate) fn run_opmp3(
         .transpose()
         .map_err(make_err)?;
     let integrals = aux
-        .as_ref()
+        .as_deref()
         .map_or(Opmp3Integrals::Exact, Opmp3Integrals::Ri);
     let (ctx, prep, bounds) = (sys.ctx(), sys.basis(), sys.bounds());
     // the same builder as the CLI's [local] run (`LocalModel::amplitude_config`)

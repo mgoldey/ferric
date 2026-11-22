@@ -1,7 +1,7 @@
 //! Molecule-to-energy drivers for CASSCF and SC-NEVPT2.
 //!
 //! Each driver runs the exact-J/K Coulomb RHF that starts the calculation
-//! ([`rhf_start`](crate::driver::rhf_start)), then two-step CASSCF
+//! ([`rhf_start_prepared`](crate::driver::rhf_start_prepared)), then two-step CASSCF
 //! ([`run_casscf`]) or a CASSCF or CAS-CI reference plus
 //! SC-NEVPT2 ([`nevpt2_on_rhf`](crate::driver::nevpt2_on_rhf)). The Python
 //! bindings (`ferric.run_casscf`, `ferric.run_nevpt2`) and the CLI kinds
@@ -13,12 +13,9 @@ use crate::{
     Nevpt2Reference, Nevpt2Result,
 };
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::rhf::RhfConfig;
 use ferric_scf::{PreparedSystem, ScfResult};
 
 /// Convergence settings of the RHF start; `None` keeps the [`RhfConfig`]
@@ -33,24 +30,11 @@ pub struct ScfStart {
     pub density_conv: Option<f64>,
 }
 
-/// The exact-J/K Coulomb RHF of `mol` in `prep` with Schwarz screening and
-/// the [`RhfConfig`] defaults, `start`'s overrides and the memory budget
+/// The exact-J/K Coulomb RHF of `sys` (its molecule with the basis set's
+/// ECP applied, its prepared basis and Schwarz bounds) with the
+/// [`RhfConfig`] defaults, `start`'s overrides and the memory budget
 /// (`three_index_budget_bytes`; `None` is the auto-detected budget). An
 /// unconverged SCF is a [`FerricError::ScfConvergence`].
-pub fn rhf_start(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    start: ScfStart,
-    memory_budget_bytes: Option<usize>,
-) -> Result<ScfResult, FerricError> {
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, prep)?;
-    let cfg = start_config(start, memory_budget_bytes);
-    solve_rhf(ctx, mol, prep, op, &bounds, &cfg)?.into_converged()
-}
-
-/// [`rhf_start`] on a [`PreparedSystem`], reusing its Schwarz bounds.
 pub fn rhf_start_prepared(
     sys: &PreparedSystem,
     start: ScfStart,

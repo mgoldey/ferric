@@ -200,7 +200,8 @@ pub(crate) fn run_tddft(
              roots are not spin-adapted. Run the default and read TddftResult.s2.",
         ));
     }
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let mol = sys.mol();
 
     let tddft_method = match method.to_lowercase().as_str() {

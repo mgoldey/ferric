@@ -15,7 +15,7 @@
 //! * `cli_casscf_equals_the_driver_bit_for_bit`: H2O CAS(4,4), N2 CAS(6,6)
 //!   at 1.0977 and 1.6 Å and O2 CAS(8,6) in the `(5, 3)` sector, 6-31G
 //!   (`testdata/reference/casscf_*_pyscf.json`). The logged total equals
-//!   `ferric_ci::driver::rhf_start` + `run_casscf` called in-process with
+//!   `ferric_ci::driver::rhf_start_prepared` + `run_casscf` called in-process with
 //!   the same settings, bit for bit (both run the same deterministic code on
 //!   the same rayon width), and it lies within 1e-9 Ha of PySCF (measured
 //!   gaps are at most 1.5e-11 Ha; the derived bar is in `casscf_vs_pyscf.rs`).
@@ -46,12 +46,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
+use ferric_ci::driver::{nevpt2_on_rhf, rhf_start_prepared, Nevpt2On, ScfStart};
 use ferric_ci::{run_casscf, CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_scf::PreparedSystem;
 use serde_json::Value;
 
 #[path = "support/cli_bin.rs"]
@@ -167,22 +166,14 @@ fn pool() -> rayon::ThreadPool {
         .unwrap()
 }
 
-/// Molecule (singlet RHF start), prepared basis and converged RHF exactly as
+/// The prepared system (singlet RHF start) and converged RHF exactly as
 /// `ferric_cli::cas::run_cas` builds them.
-fn library_start(xyz: &str, basis_name: &str) -> (Molecule, PreparedBasis, ferric_scf::ScfResult) {
-    let mut mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+fn library_start(xyz: &str, basis_name: &str) -> (PreparedSystem, ferric_scf::ScfResult) {
+    let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let bs = basis::bundled(basis_name).unwrap();
-    mol.apply_ecp(&bs);
-    let prep = PreparedBasis::new(&mol, &bs).unwrap();
-    let rhf = rhf_start(
-        &ParallelContext::default(),
-        &mol,
-        &prep,
-        ScfStart::default(),
-        None,
-    )
-    .unwrap();
-    (mol, prep, rhf)
+    let sys = PreparedSystem::new(mol, &bs).unwrap();
+    let rhf = rhf_start_prepared(&sys, ScfStart::default(), None).unwrap();
+    (sys, rhf)
 }
 
 fn usize_of(v: &Value) -> usize {
@@ -224,14 +215,14 @@ fn cli_casscf_equals_the_driver_bit_for_bit() {
         let total = res["total"].as_f64().unwrap();
 
         let lib = pool().install(|| {
-            let (mol, prep, rhf) = library_start(xyz, basis_name);
+            let (sys, rhf) = library_start(xyz, basis_name);
             let cfg = CasScfConfig {
                 n_active,
                 n_elec_active: (na, nb),
                 n_core,
                 ..Default::default()
             };
-            run_casscf(&mol, &prep, &rhf, &cfg).unwrap()
+            run_casscf(sys.mol(), sys.basis(), &rhf, &cfg).unwrap()
         });
         assert!(lib.converged, "{name}");
         assert_eq!(
@@ -285,7 +276,7 @@ fn cli_nevpt2_equals_the_driver_bit_for_bit() {
         assert_eq!(res["kind"], "nevpt2");
         let comp = &res["components"];
         let lib = pool().install(|| {
-            let (mol, prep, rhf) = library_start(xyz, basis_name);
+            let (sys, rhf) = library_start(xyz, basis_name);
             let cfg = CasScfConfig {
                 n_active,
                 n_elec_active: (na, nb),
@@ -293,7 +284,7 @@ fn cli_nevpt2_equals_the_driver_bit_for_bit() {
                 grad_tol,
                 ..Default::default()
             };
-            nevpt2_on_rhf(&mol, &prep, &rhf, Nevpt2On::Casscf, &cfg).unwrap()
+            nevpt2_on_rhf(sys.mol(), sys.basis(), &rhf, Nevpt2On::Casscf, &cfg).unwrap()
         });
         let r = &lib.result;
         let total = res["total"].as_f64().unwrap();

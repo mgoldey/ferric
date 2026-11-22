@@ -369,7 +369,8 @@ pub(crate) fn run_double_hybrid(
     };
     let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
 
     let cfg = rhf_config_conv(
@@ -561,17 +562,14 @@ pub(crate) fn run_dft(
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
     // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
-    // Owned clone so the compute closure below never borrows the PyMolecule
-    // pyclass field across the allow_threads boundary. The basis set's ECP
-    // core counts are applied (no-op without an ECP basis), so `nelec()` is
-    // the valence count the SCF occupies and `dm0` is checked against it, as
-    // in `run_rhf`; every later step uses this molecule.
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let ctx = ParallelContext::default();
+    // The system owns a clone of the molecule, so the compute closures below
+    // never borrow the PyMolecule pyclass field across the allow_threads
+    // boundary. The basis set's ECP core counts are applied (no-op without an
+    // ECP basis), so `nelec()` is the valence count the SCF occupies and
+    // `dm0` is checked against it, as in `run_rhf`; every later step uses
+    // this molecule.
+    let sys = prepare(mol, basis_set)?;
+    let (ctx, emol, prep, op) = (sys.ctx(), sys.mol(), sys.basis(), sys.op());
     // Parse the string/PyO3 kwargs in the order the pre-`ScfOptions`
     // construction evaluated them, so a call with several bad kwargs raises
     // the same (first) error.
@@ -582,7 +580,7 @@ pub(crate) fn run_dft(
         .expect("run_dft always resolves a functional")
         .to_string();
     // Rung 0 starts from dm0; later rungs carry the previous rung's density.
-    let init_guess_density = blocks::checked_dm0(dm0, &prep, emol.nelec() as f64, "run_dft")?;
+    let init_guess_density = blocks::checked_dm0(dm0, prep, emol.nelec() as f64, "run_dft")?;
     // Resolve `dispersion=` BEFORE the SCF: an unknown spelling or a
     // functional with no published parameters must not cost an SCF first.
     let dispersion = dispersion
@@ -660,7 +658,7 @@ pub(crate) fn run_dft(
     let options = scf_options_from_kwargs(ScfEntryPoint::Dft, kw)?;
     let mut cfg = options.into_rhf_config().py()?;
     if cfg.symmetry {
-        return solve_symmetric_outcome(py, "run_dft", &ctx, &emol, &prep, op, &bounds, &cfg);
+        return solve_symmetric_outcome(py, "run_dft", &sys, &cfg);
     }
     // The gradient below goes through `restricted_scf_gradient`, which
     // differentiates `cfg.dft_grid` (pruned or not), the grid the SCF runs on.
@@ -692,17 +690,13 @@ pub(crate) fn run_dft(
     // a convergence error if the whole ladder fails to converge.
     let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
     // Release the GIL for the duration of the SCF ladder. Every argument
-    // below is an owned Rust value (`emol` is a clone; `ctx`/`prep`/`bounds`/
-    // `ladder` are built above), so nothing Python-borrowed crosses the
+    // below is an owned Rust value (`sys` holds a clone of the molecule;
+    // `ladder` is built above), so nothing Python-borrowed crosses the
     // closure boundary.
     let fock_hooked = fock_hook.is_some();
     let (rhf, rung_cfg) = blocks::solve_ks_ladder(
         py,
-        &ctx,
-        &emol,
-        &prep,
-        op,
-        &bounds,
+        &sys,
         &ladder,
         fock_hook.map(|h| {
             (
@@ -737,8 +731,8 @@ pub(crate) fn run_dft(
                 py.allow_threads(|| {
                     evaluate_dispersion(
                         spec,
-                        &ctx,
-                        &emol,
+                        ctx,
+                        emol,
                         &bs_owned,
                         op,
                         &cfg,
@@ -754,18 +748,18 @@ pub(crate) fn run_dft(
     let gradient_data = if with_gradient {
         // Exactly `ks_gradient_closed` unless the SCF's exchange was COSX.
         let mut g = ferric_scf::gradient::restricted_scf_gradient(
-            &emol,
-            &prep,
+            emol,
+            prep,
             &basis_set.inner,
             op,
-            &bounds,
+            sys.bounds(),
             &cfg,
             &rhf,
         )
         .map_err(make_err)?;
         // The hook's explicit term (its Pulay term is already in `g`).
         if let Some(h) = &hook_grad {
-            g = h.add_to(py, g, &rhf, false, &emol)?;
+            g = h.add_to(py, g, &rhf, false, emol)?;
         }
         // Dispersion is additive in the ENERGY, so it is additive in the
         // gradient. Adding it here rather than returning the bare KS gradient
@@ -809,7 +803,7 @@ pub(crate) fn run_dft(
         dispersion_model,
         volume_ratios,
         converged: rhf.converged,
-        xc_mol: emol,
+        xc_mol: sys.into_mol(),
         xc_basis: basis_set.inner.clone(),
         xc_cache: std::sync::OnceLock::new(),
         xc_lock: std::sync::Mutex::new(()),
@@ -1254,15 +1248,13 @@ fn run_open_ks(
     } = kw;
     refuse_dm0_with_guess(who, dm0.is_some(), guess, guess_basis)?;
     let use_sad_guess = parse_guess(guess)?;
-    let mut emol = mol.inner.clone();
-    emol.apply_ecp(&basis_set.inner);
+    let ecp = EcpMolecule::new(mol.inner.clone(), &basis_set.inner);
     // Refuse a molecule whose electron count cannot carry the multiplicity
     // before any integral work (an odd count with multiplicity 1, ...).
-    let n_spin = spin_counts(&emol, who)?;
-    let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
-    let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
-    let dm0 = blocks::checked_dm0_spin(dm0, &prep, n_spin, who)?;
+    let n_spin = spin_counts(ecp.mol(), who)?;
+    let sys = ecp.prepare(PrepareOptions::default()).map_err(make_err)?;
+    let (emol, prep) = (sys.mol(), sys.basis());
+    let dm0 = blocks::checked_dm0_spin(dm0, prep, n_spin, who)?;
     // Parsed in the order the pre-`ScfOptions` construction evaluated them;
     // the keywords added later (6b) after them.
     let relativistic = crate::scf::parse_relativistic(relativistic)?;
@@ -1337,19 +1329,8 @@ fn run_open_ks(
             return crate::scf::refuse_hook_without_grad(who);
         }
     }
-    let ctx = ParallelContext::default();
-    let (r, hook_term) = blocks::solve_open_shell(
-        py,
-        solver,
-        &ctx,
-        &emol,
-        &prep,
-        op,
-        &bounds,
-        &config,
-        fock_hook,
-        dm0.as_ref(),
-    )?;
+    let (r, hook_term) =
+        blocks::solve_open_shell(py, solver, &sys, &config, fock_hook, dm0.as_ref())?;
     // As run_uhf / run_rohf: the hook's noise-floor term can put a
     // user-set energy_conv below the floor (a zero term never warns).
     crate::scf::warn_hook_noise_floor(
@@ -1357,22 +1338,22 @@ fn run_open_ks(
         who,
         SolverFamily::OpenShell,
         energy_conv.is_some(),
-        &emol,
-        &prep,
+        emol,
+        prep,
         &config,
         hook_term,
     );
     let gradient = with_gradient
         .then(|| {
-            let g = scf_gradient(py, gradient_kind, &emol, &prep, &bounds, &config, &r)?;
+            let g = scf_gradient(py, gradient_kind, &sys, &config, &r)?;
             // The hook's explicit term (its Pulay term is already in `g`).
             match &hook_grad {
-                Some(h) => h.add_to(py, g, &r, true, &emol),
+                Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }
         })
         .transpose()?;
-    let mut result = PyUhfResult::from_scf(r, &emol, &config, &prep, fock_hook.is_some());
+    let mut result = PyUhfResult::from_scf(r, emol, &config, prep, fock_hook.is_some());
     result.gradient_data = gradient;
     Ok(result)
 }

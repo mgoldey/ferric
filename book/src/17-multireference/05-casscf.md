@@ -1155,7 +1155,7 @@ $\lVert g\rVert = 9.2\times10^{-5}$ after 1000 macro iterations. That point
 is the minimum of section @sec:casscf-proven-stationary.
 
 **Davidson forcing** (2026-11-13). Harness `crates/ferric-ci/examples/casscf_ah_bench.rs`
-(exact-J/K RHF of `driver::rhf_start`, `CasScfConfig` defaults,
+(exact-J/K RHF of `driver::rhf_start_prepared`, `CasScfConfig` defaults,
 `FERRIC_TIMING=1` for the product count); base build 8833755a8 (the same
 harness without the forcing argument) in a separate target directory; 12
 rayon threads, dense route. Wall times are of `run_casscf` only.

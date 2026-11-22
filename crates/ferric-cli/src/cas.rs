@@ -12,13 +12,12 @@
 use crate::config::Config;
 use crate::error::die;
 use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer, CasScfStabilityMode};
-use ferric_ci::driver::{nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
+use ferric_ci::driver::{nevpt2_on_rhf, rhf_start_prepared, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::certificate::BuildStamp;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_scf::{EcpMolecule, PrepareOptions};
 use serde::Deserialize;
 
 /// `[cas]`: the active space of `method.kind = "casscf"` / `"nevpt2"` and the
@@ -360,7 +359,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             "--gpu is not read by method.kind = \"{kind}\", which runs on the CPU"
         ));
     }
-    let mut mol = Molecule::load_xyz_with_charge(
+    let mol = Molecule::load_xyz_with_charge(
         &cfg.molecule.xyz,
         cfg.molecule.charge,
         cfg.molecule.multiplicity,
@@ -372,19 +371,25 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
         (None, None) => Err(ferric_core::FerricError::Basis("no basis specified".into())),
     }
     .unwrap_or_else(|e| die(e));
-    mol.apply_ecp(&bs);
+    let ecp = EcpMolecule::new(mol, &bs);
     let mut cas = plan.cas;
     cas.n_core = match plan.n_core {
         Some(n) => n,
-        None => ferric_ci::driver::default_n_core(mol.nelec() as usize, cas.n_elec_active, "[cas]")
-            .unwrap_or_else(|e| die(e)),
+        None => {
+            let nelec = ecp.mol().nelec() as usize;
+            ferric_ci::driver::default_n_core(nelec, cas.n_elec_active, "[cas]")
+                .unwrap_or_else(|e| die(e))
+        }
     };
     let resolution = ferric_core::memory::resolve_budget(cas.memory_budget_bytes);
     ferric_core::memory::pool::install_global(
         ferric_core::memory::pool::MemoryPool::with_capacity_bytes(resolution.bytes),
     );
     eprintln!("[ferric] {}", resolution.audit_line());
-    let prep = PreparedBasis::new(&mol, &bs).unwrap_or_else(|e| die(e));
+    let sys = ecp
+        .prepare(PrepareOptions::default())
+        .unwrap_or_else(|e| die(e));
+    let (mol, prep) = (sys.mol(), sys.basis());
     if let Some(rl) = ferric_scf::runlog::log() {
         ferric_scf::runlog::set_build_identity(
             ferric_build_info::VERSION,
@@ -416,9 +421,8 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             }),
         );
     }
-    let ctx = ParallelContext::default();
     let rhf =
-        rhf_start(&ctx, &mol, &prep, plan.scf, cas.memory_budget_bytes).unwrap_or_else(|e| die(e));
+        rhf_start_prepared(&sys, plan.scf, cas.memory_budget_bytes).unwrap_or_else(|e| die(e));
     let (na, nb) = cas.n_elec_active;
     let header = |name: &str| {
         println!("{name}/{} on {}", bs.name, cfg.molecule.xyz);
@@ -433,11 +437,11 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
     };
     let (energy, converged) = match plan.nevpt2 {
         None => {
-            let r = ferric_ci::run_casscf(&mol, &prep, &rhf, &cas).unwrap_or_else(|e| die(e));
+            let r = ferric_ci::run_casscf(mol, prep, &rhf, &cas).unwrap_or_else(|e| die(e));
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::casscf_certificate(&r, &cas).with_build(build_stamp()),
                 "CASSCF",
-                &mol,
+                mol,
                 &bs,
                 None,
             );
@@ -480,7 +484,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
             (r.e_total, r.converged)
         }
         Some(on) => {
-            let run = nevpt2_on_rhf(&mol, &prep, &rhf, on, &cas).unwrap_or_else(|e| die(e));
+            let run = nevpt2_on_rhf(mol, prep, &rhf, on, &cas).unwrap_or_else(|e| die(e));
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::nevpt2_certificate(
                     on,
@@ -489,7 +493,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) {
                 )
                 .with_build(build_stamp()),
                 "SC-NEVPT2",
-                &mol,
+                mol,
                 &bs,
                 None,
             );
