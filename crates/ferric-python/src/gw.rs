@@ -594,9 +594,9 @@ pub(crate) fn run_u_gw(
     let r = run_u_gw_on(
         &dfbs,
         &scf,
+        vxc_diag.as_ref().map(|(a, b)| (a, b)),
         &pdep_cfg,
         &gw_cfg,
-        vxc_diag.as_ref().map(|(a, b)| (a, b)),
     )
     .map_err(make_err)?;
     if !r.outer_converged {

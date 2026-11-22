@@ -3630,6 +3630,22 @@ mod tests {
             "rimp2_gradient_analytical_on",
             crate::gradient::rimp2_gradient_analytical_on(&aux_small, &rhf_large, &cfg, None),
         );
+        // The OO-RI-MP2 gradient checks the optimised orbitals it is given.
+        let oo_large = crate::oo_rimp2::oo_ri_mp2_on(
+            &aux_large,
+            &rhf_large,
+            &crate::oo_rimp2::OoRiMp2Config::default(),
+            None,
+        )
+        .unwrap();
+        let msg = crate::oo_rimp2_gradient::oo_ri_mp2_gradient_on(&aux_small, &oo_large, 0, None)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("the orbitals do not belong to this system") && msg.contains("13 AO rows"),
+            "oo_ri_mp2_gradient_on: {msg}"
+        );
         // What the check replaces: the loose kernel on the same pair panics.
         let loose = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             ri_mp2(

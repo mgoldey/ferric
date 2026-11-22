@@ -290,9 +290,9 @@ impl std::fmt::Display for UGwResult {
 pub fn run_u_gw_on(
     aux: &PreparedAux<'_>,
     scf: &ScfResult,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
     pdep_cfg: &PdepRpaConfig,
     gw_cfg: &GwConfig,
-    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
 ) -> Result<UGwResult, FerricError> {
     let sys = aux.system();
     aux.check_reference(scf)?;

@@ -1518,22 +1518,22 @@ pub fn run_u_pdep_rpa(
 }
 
 /// [`run_u_pdep_rpa_fitted`] on the system `aux` was prepared on (see [`PreparedAux`]):
-/// `rhf` is checked against that system first
+/// `scf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
 pub fn run_u_pdep_rpa_fitted_on(
     aux: &PreparedAux<'_>,
-    rhf: &ScfResult,
+    scf: &ScfResult,
     config: &PdepRpaConfig,
     fit: &RiFit,
 ) -> Result<PdepRpaResult, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_reference(scf)?;
     run_u_pdep_rpa_fitted(
         sys.mol(),
         sys.basis(),
         aux.basis(),
         sys.op(),
-        rhf,
+        scf,
         config,
         fit,
     )

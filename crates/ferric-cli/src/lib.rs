@@ -5679,7 +5679,9 @@ fn export_pdep_npz_bundle(
     rpa_cert: &Certificate,
     npz_path: &str,
 ) {
-    use ferric_rpa::property_bundle::{compute_pdep_properties, write_pdep_npz, StdReporter};
+    use ferric_rpa::property_bundle::{
+        compute_pdep_properties, write_pdep_npz, PropertyBundleError, StdReporter,
+    };
     // Properties that were REQUESTED and did not make it into the bundle are
     // `props.gaps`; the bundle is written regardless with the gaps as absent
     // arrays, which used to leave the process exiting 0 on an incomplete file.
@@ -5689,7 +5691,10 @@ fn export_pdep_npz_bundle(
     // (`compute_c6 = false`) from reading as a failure.
     let props = compute_pdep_properties(inputs, &pdep_property_request(cfg), &mut StdReporter)
         .unwrap_or_else(|e| {
-            eprintln!("config error: [rpa] {e}");
+            match e {
+                PropertyBundleError::Config(e) => eprintln!("config error: [rpa] {e}"),
+                PropertyBundleError::Reference(e) => eprintln!("error: {e}"),
+            }
             std::process::exit(1);
         });
     let rpa_cert_json = rpa_cert.to_json().to_string();
@@ -5902,9 +5907,9 @@ fn run_gw(
         let gw_result = ferric_gw::run_u_gw_on(
             &dfbs,
             &result_u,
+            vxc_diag.as_ref().map(|(a, b)| (a, b)),
             &rpa_cfg,
             &gw_cfg,
-            vxc_diag.as_ref().map(|(a, b)| (a, b)),
         )
         .or_exit();
         println!(

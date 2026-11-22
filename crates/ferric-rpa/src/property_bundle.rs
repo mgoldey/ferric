@@ -16,6 +16,7 @@
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::FerricError;
 use ferric_export::ml::{
     C6Export, C6Provenance, ChargeSchemes, DispersionBundle, NpzBundle, PolarizabilityBundle,
 };
@@ -737,19 +738,45 @@ fn compute_moments(inp: &PropertyInputs, req: &PdepPropertyRequest, out: &mut Pd
     }
 }
 
+/// Why [`compute_pdep_properties`] returned no bundle.
+#[derive(Debug)]
+pub enum PropertyBundleError {
+    /// An unparseable `c6_source` / `c6_partition`: a configuration error,
+    /// its text the request's (`unknown c6_source ...`).
+    Config(String),
+    /// The reference SCF result does not fit `aux`'s system
+    /// ([`PreparedAux::check_reference`]): a run error, not a configuration
+    /// one.
+    Reference(FerricError),
+}
+
+impl std::fmt::Display for PropertyBundleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropertyBundleError::Config(msg) => f.write_str(msg),
+            PropertyBundleError::Reference(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PropertyBundleError {}
+
 /// Compute the property bundle for a PDEP-RPA reference.
 ///
-/// `Err` only for an unparseable `c6_source` / `c6_partition` (reported after
-/// the properties that precede C6 have been computed, as the CLI always did);
-/// per-property failures land in [`PdepProperties::gaps`].
+/// [`PropertyBundleError::Reference`] when [`PropertyInputs::result`] does
+/// not fit `aux`'s system, checked before any property;
+/// [`PropertyBundleError::Config`] for an unparseable `c6_source` /
+/// `c6_partition` (reported after the properties that precede C6 have been
+/// computed, as the CLI always did). Per-property failures land in
+/// [`PdepProperties::gaps`].
 pub fn compute_pdep_properties(
     inp: &PropertyInputs,
     req: &PdepPropertyRequest,
     rep: &mut dyn PropertyReporter,
-) -> Result<PdepProperties, String> {
+) -> Result<PdepProperties, PropertyBundleError> {
     inp.aux
         .check_reference(inp.result)
-        .map_err(|e| e.to_string())?;
+        .map_err(PropertyBundleError::Reference)?;
     let mol = inp.mol();
     let mut out = PdepProperties {
         coords: {
@@ -769,7 +796,7 @@ pub fn compute_pdep_properties(
     compute_polarizabilities(inp, req, rep, &mut out);
     compute_charges_and_dipole(inp, req, rep, &mut out);
     if req.c6 {
-        compute_c6_block(inp, req, rep, &mut out)?;
+        compute_c6_block(inp, req, rep, &mut out).map_err(PropertyBundleError::Config)?;
     }
     compute_moments(inp, req, &mut out);
     Ok(out)

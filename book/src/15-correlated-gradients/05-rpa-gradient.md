@@ -37,7 +37,7 @@ section @sec:rimp2-gradient is reused unchanged.
 
 | Entry point | Location |
 |---|---|
-| Rust | `ferric-rpa/src/gradient_analytic.rs::{rpa_analytic_gradient,rpa_analytic_gradient_warm,rpa_analytic_gradient_on}` |
+| Rust | `ferric-rpa/src/gradient_analytic.rs::{rpa_analytic_gradient,rpa_analytic_gradient_warm,rpa_analytic_gradient_on,rpa_analytic_gradient_from_rhf}` |
 | CLI | `method.kind = "pdep-rpa"`, `task = "optimize"`, `[rpa] gradient = "analytic"` |
 | Python | `run_optimize(..., method="pdep-rpa", rpa_gradient="analytic")`; `run_frequencies(..., method="pdep-rpa")` |
 

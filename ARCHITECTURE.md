@@ -344,10 +344,13 @@ Done:
       through `PrepareOptions`.
     - `ferric_ci::driver::rhf_start_prepared` is `rhf_start` again.
     - Drivers taking the system: `ferric_ci::driver::{nevpt2_on_rhf,
-      casscf_on_rhf, casci_on_rhf}` (`&PreparedSystem`);
+      casscf_on_rhf, casci_on_rhf}` (`&PreparedSystem`; renamed
+      `nevpt2_on` / `casscf_on` / `casci_on` in 8d);
       `opmp3_driver::{opmp3_scf, opmp3_on_reference, run_opmp3}`
-      (`&PreparedSystem`, `Opmp3Integrals::Ri(&PreparedAux)`);
-      `local_opmp3::{local_opmp3_on_reference, run_local_opmp3}`,
+      (`&PreparedSystem`, `Opmp3Integrals::Ri(&PreparedAux)`;
+      `opmp3_on_reference` renamed `opmp3_on` in 8d);
+      `local_opmp3::{local_opmp3_on_reference, run_local_opmp3}` (renamed
+      `local_opmp3_on` in 8d),
       `rimp2::{ri_mp2_on, ri_mp2_fitted_on}`, `u_rimp2::u_ri_mp2_on`,
       `ccsd_closed_shell_on`, `u_ccsd_on`, `ferric_gw::run_gw_on`,
       `ferric_rpa::run_pdep_rpa_on`, `ferric_tddft::run_tddft_on`
@@ -448,19 +451,35 @@ Done:
       `PreparedAux::check_reference`, the same on `aux.system()`): the one
       check that a reference SCF result fits the system, a
       `FerricError::General` ("the reference SCF result does not belong to
-      this system: ...") naming what does not fit: each spin's MO
-      coefficients have `basis().nbasis()` AO rows, one orbital energy per
-      MO, and at least the occupied orbitals of the molecule's electron
-      count and multiplicity. Every `*_on` entry calls it first (the new
-      ones below and `ri_mp2_fitted_on`, `u_ri_mp2_on`,
-      `ccsd_closed_shell_on`, `u_ccsd_on`, `run_gw_on`, `run_pdep_rpa_on`,
-      `run_tddft_on`, `opmp3_on`, `local_opmp3_on`, `casscf_on`,
-      `casci_on`, `nevpt2_on`), as does `compute_pdep_properties`, so
+      this system: ...") naming what does not fit: the β fields match
+      `ScfResult::spin` (`Restricted`: no β MOs or orbital energies;
+      `Unrestricted`: both; `RestrictedOpen`: both or neither), the total
+      density is `nbasis × nbasis`, each spin's MO coefficients have
+      `basis().nbasis()` AO rows and one orbital energy per MO, and the
+      occupied orbitals of the molecule's electron count and multiplicity
+      fit. `PreparedSystem::check_closed_shell_orbitals(mos, eps)` is the
+      per-spin part for orbitals that are not an `ScfResult` ("the
+      orbitals do not belong ..."). Every `*_on` entry that takes a
+      reference calls one of them first: the new ones below (with
+      `oo_ri_mp2_gradient_on` checking `OoRiMp2Result::{mos,
+      orbital_energies}`) and `ri_mp2_fitted_on` (so `ri_mp2_on`),
+      `u_ri_mp2_on`, `ccsd_closed_shell_on`, `u_ccsd_on`, `run_gw_on`,
+      `run_pdep_rpa_on`, `run_tddft_on`, `opmp3_on`, `local_opmp3_on`,
+      `casscf_on`, `casci_on`, `nevpt2_on`. The two that take none,
+      `aux_route_charge_bytes_on` (a budget estimate) and
+      `run_wb97x_l_v_on` (it solves its own reference), check nothing.
+      `compute_pdep_properties` checks too and returns a typed
+      `PropertyBundleError { Config(String), Reference(FerricError) }`: a
+      mismatch is a run error (CLI `error: ...`, Python `RuntimeError`),
+      while the `c6_source` / `c6_partition` errors keep their text and
+      class (CLI `config error: [rpa] ...`, Python `ValueError`). So
       `ri_mp2_on(&a_aux, &b_rhf, ..)` with another basis size is an error
       where the loose kernel panics slicing the MOs (the
       `on_entries_refuse_a_reference_of_another_system` tests in ferric-mp2,
       ferric-cc, ferric-gw, ferric-rpa, ferric-ci and ferric-tddft, the
-      mp2 one pinning that the loose `ri_mp2` panics on the same pair). An
+      mp2 one pinning that the loose `ri_mp2` panics on the same pair, and
+      ferric-rpa's `a_reference_of_another_system_is_a_reference_error`
+      for the property bundle). An
       `ScfResult` carries no molecule, so a reference of another molecule
       or geometry in a basis of the same size passes. The check cannot be
       reached from Python or the CLI: every binding and CLI arm solves its
@@ -495,13 +514,19 @@ Done:
       OP-MP3 drivers that need no fitting basis, the `&PreparedSystem`)
       first and reads the molecule, orbital basis, its basis set, bounds,
       context and Coulomb operator from the system; the reference result
-      is an argument and is checked. An entry takes an `op` (right after
+      is an argument and is checked; arguments after it keep the kernel's
+      order, except that `run_u_gw_on` takes `vxc_diag` right after the
+      reference, as `run_gw_on` does. An entry takes an `op` (right after
       `aux`) only where a caller runs the kernel on another correlation
       operator: `amplitude_lmp2_on` / `amplitude_lmp2_direct_on` (the
       attenuated local MP2), `ri_mp2_spin_components_any_on`, and
-      `ri_mp2_with_op_on` / `u_ri_mp2_with_op_on` (terfc RI-MP2; `_with_op`
-      because the Coulomb `ri_mp2_on` / `u_ri_mp2_on` exist). The kernel
-      name is kept, `run_` prefix and all. Renamed to fit:
+      `ri_mp2_with_op_on` / `u_ri_mp2_with_op_on` (terfc RI-MP2). The
+      rule: an op-taking entry ends `_with_op_on` exactly when a Coulomb
+      `_on` entry of the same kernel exists (`ri_mp2_on`, `u_ri_mp2_on`),
+      and plain `_on` otherwise. The entry is the kernel name plus `_on`,
+      `run_` prefix and all, except `laplace_sos_mp2_on` for
+      `laplace_sos_mp2_with_basis` (the basis set it adds comes from the
+      system). Renamed to fit:
       `casscf_on_rhf`, `casci_on_rhf`, `nevpt2_on_rhf` → `casscf_on`,
       `casci_on`, `nevpt2_on`; `opmp3_on_reference` → `opmp3_on`;
       `local_opmp3_on_reference(obs_bs, scf, aux, ..)` →
@@ -509,8 +534,9 @@ Done:
       `obs_bs`; the loose `rpa_analytic_gradient_on(mol, obs, dfbs, op,
       bounds, ..)` → `rpa_analytic_gradient_from_rhf`, the name now being
       the entry. No Python name or signature changes.
-    - `PreparedSystem::basis_set()`: the system keeps a copy of the
-      `BasisSet` it was prepared from, which the entries of the kernels that
+    - `PreparedSystem::basis_set()`: the system keeps a copy (a clone at
+      `prepare`; an `Arc<BasisSet>` would need callers to hand one in, as
+      `EcpMolecule` borrows the set) of the `BasisSet` it was prepared from, which the entries of the kernels that
       read shells by element (the amplitude-threshold LMP2 / LinLCCD /
       dRPA, MP2-V, Laplace SOS-MP2, local OP-MP3, the property bundle) read
       instead of a loose `obs_bs`.
@@ -544,11 +570,16 @@ Next, each as its own PR following the patterns above:
     - One public entry per kernel: the loose kernels under the `*_on`
       entries are still `pub` (see the first part); make them
       `pub(crate)` crate by crate, moving their tests to the entries.
+    - Slim ferric-python's `BundleJob` (pdep_properties.rs) to its
+      `PreparedAux`, and remove the CLI's loose `bs` arguments (below).
     - Rename ferric-mp2's `total_*_gradient_on` / `optimize_geometry_*_on`
       (`_on` = "on the J/K route `scf_jk`") so `_on` means one thing.
     - `ScfResult` carries no molecule, so `check_reference` cannot see a
       reference of another molecule or geometry in a basis of the same
-      size; results could carry a brand of the system they were solved on.
+      size. `check_reference` should return a `CheckedReference<'s>` that
+      the `*_on` entries take, carrying the brand of the system the result
+      was solved on (set by the system's solve methods), so such a
+      reference is caught at the type level and checked once.
     - The `bs` argument of ~40 CLI functions is `sys.basis_set()` (purely
       mechanical, left to avoid colliding with item 12's rewrite of the
       same functions); consider an `ArmCtx` for the CLI arms' shared tail.

@@ -207,7 +207,8 @@ pub(crate) fn run_property_bundle(
     cert_json: &str,
 ) -> PyResult<BundleOutput> {
     use ferric_rpa::property_bundle::{
-        compute_pdep_properties, export_eigenpotential_cubes, write_pdep_npz, PropertyInputs,
+        compute_pdep_properties, export_eigenpotential_cubes, write_pdep_npz, PropertyBundleError,
+        PropertyInputs,
     };
     let mut rep = CollectingReporter::default();
     let mut out = BundleOutput::default();
@@ -236,8 +237,10 @@ pub(crate) fn run_property_bundle(
             rhf_config: job.scf_config,
             proatom: &proatom,
         };
-        let props = compute_pdep_properties(&inputs, request, &mut rep)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let props = compute_pdep_properties(&inputs, request, &mut rep).map_err(|e| match e {
+            PropertyBundleError::Config(msg) => pyo3::exceptions::PyValueError::new_err(msg),
+            PropertyBundleError::Reference(e) => make_err(e),
+        })?;
         for w in &rep.warnings[n_cube_warnings..] {
             crate::scf::emit_runtime_warning(py, w.clone());
         }

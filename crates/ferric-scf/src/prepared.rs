@@ -224,57 +224,110 @@ impl PreparedSystem {
 
     /// `Ok` when `scf` can be a reference on this system; otherwise an error
     /// saying what does not fit. The one check behind every correlated
-    /// `*_on` entry point (see [`PreparedAux`]).
+    /// `*_on` entry point that takes a reference (see [`PreparedAux`]).
     ///
     /// An [`ScfResult`] carries no molecule, so this checks what a kernel
-    /// would index by the system: the AO dimension of each spin's MO
-    /// coefficients is [`Self::basis`]'s `nbasis`, each spin has one orbital
-    /// energy per MO, and the occupied orbitals of [`Self::mol`]'s electron
-    /// count and multiplicity fit in its MOs. A reference of another
-    /// molecule in a basis of the same size (or a different geometry) is
-    /// not detected.
+    /// would index by the system:
+    /// - the β fields match [`ScfResult::spin`]: a `Restricted` result has
+    ///   no β MOs or orbital energies, an `Unrestricted` one has both (a
+    ///   `RestrictedOpen` result may have either);
+    /// - the total density is `nbasis × nbasis` ([`Self::basis`]);
+    /// - each spin's MO coefficients have `nbasis` AO rows and one orbital
+    ///   energy per MO, and the occupied orbitals of [`Self::mol`]'s
+    ///   electron count and multiplicity fit in its MOs (a result without β
+    ///   fields is checked for both spins on its α ones).
+    ///
+    /// A reference of another molecule in a basis of the same size (or of
+    /// another geometry) is not detected.
     pub fn check_reference(&self, scf: &ScfResult) -> Result<(), FerricError> {
+        use crate::result::Spin;
+        let beta = (scf.mos_beta.is_some(), scf.eps_beta.is_some());
+        let spin_fields_ok = match scf.spin {
+            Spin::Restricted => beta == (false, false),
+            Spin::Unrestricted => beta == (true, true),
+            Spin::RestrictedOpen => beta.0 == beta.1,
+        };
+        if !spin_fields_ok {
+            return reference_mismatch(format!(
+                "it is {:?} but has beta MO coefficients: {}, beta orbital energies: {}",
+                scf.spin, beta.0, beta.1
+            ));
+        }
         let nbasis = self.basis.nbasis();
+        let (rows, cols) = scf.density_total.dim();
+        if (rows, cols) != (nbasis, nbasis) {
+            return reference_mismatch(format!(
+                "its total density is {rows}x{cols}, but the system's orbital basis has \
+                 {nbasis} functions"
+            ));
+        }
+        let (n_alpha, n_beta) = self.occupied_counts();
+        let subject = "the reference SCF result does";
+        self.check_spin_orbitals(subject, "alpha", &scf.mos_alpha, &scf.eps_alpha, n_alpha)?;
+        self.check_spin_orbitals(
+            subject,
+            "beta",
+            scf.mos_beta.as_ref().unwrap_or(&scf.mos_alpha),
+            scf.eps_beta.as_ref().unwrap_or(&scf.eps_alpha),
+            n_beta,
+        )
+    }
+
+    /// The per-spin part of [`Self::check_reference`] for closed-shell
+    /// orbitals that are not an [`ScfResult`] (e.g. the optimised orbitals
+    /// of an orbital-optimised MP2): `mos` has `nbasis` AO rows, `eps` one
+    /// entry per MO, and the system's doubly occupied orbitals fit.
+    pub fn check_closed_shell_orbitals(
+        &self,
+        mos: &ndarray::Array2<f64>,
+        eps: &[f64],
+    ) -> Result<(), FerricError> {
+        let (n_alpha, _) = self.occupied_counts();
+        self.check_spin_orbitals("the orbitals do", "alpha", mos, eps, n_alpha)
+    }
+
+    /// `(n_alpha, n_beta)` of [`Self::mol`]'s electron count and multiplicity.
+    fn occupied_counts(&self) -> (usize, usize) {
         let nelec = i64::from(self.mol.nelec());
         let mult = self.mol.multiplicity as i64;
-        let n_alpha = usize::try_from((nelec + mult - 1).max(0) / 2).unwrap_or(0);
-        let n_beta = usize::try_from((nelec - mult + 1).max(0) / 2).unwrap_or(0);
-        let mismatch = |what: String| {
-            Err(FerricError::General(format!(
-                "the reference SCF result does not belong to this system: {what}; pass the \
-                 result of an SCF on the same molecule and orbital basis"
-            )))
-        };
-        // A restricted result's beta orbitals are its alpha ones.
-        let spins = [
-            ("alpha", &scf.mos_alpha, &scf.eps_alpha, n_alpha),
-            (
-                "beta",
-                scf.mos_beta.as_ref().unwrap_or(&scf.mos_alpha),
-                scf.eps_beta.as_ref().unwrap_or(&scf.eps_alpha),
-                n_beta,
-            ),
-        ];
-        for (spin, mos, eps, n_occ) in spins {
-            let n_eps = eps.len();
-            let (rows, nmo) = mos.dim();
-            if rows != nbasis {
-                return mismatch(format!(
+        let count = |n: i64| usize::try_from(n.max(0) / 2).unwrap_or(0);
+        (count(nelec + mult - 1), count(nelec - mult + 1))
+    }
+
+    fn check_spin_orbitals(
+        &self,
+        subject: &str,
+        spin: &str,
+        mos: &ndarray::Array2<f64>,
+        eps: &[f64],
+        n_occ: usize,
+    ) -> Result<(), FerricError> {
+        let nbasis = self.basis.nbasis();
+        let n_eps = eps.len();
+        let (rows, nmo) = mos.dim();
+        if rows != nbasis {
+            return orbitals_mismatch(
+                subject,
+                format!(
                     "its {spin} MO coefficients have {rows} AO rows, but the system's orbital \
-                     basis has {nbasis} functions"
-                ));
-            }
-            if n_eps != nmo {
-                return mismatch(format!(
-                    "it has {n_eps} {spin} orbital energies for {nmo} {spin} MOs"
-                ));
-            }
-            if n_occ > nmo {
-                return mismatch(format!(
-                    "the system's molecule occupies {n_occ} {spin} orbitals, but the result \
-                     has {nmo} {spin} MOs"
-                ));
-            }
+                 basis has {nbasis} functions"
+                ),
+            );
+        }
+        if n_eps != nmo {
+            return orbitals_mismatch(
+                subject,
+                format!("it has {n_eps} {spin} orbital energies for {nmo} {spin} MOs"),
+            );
+        }
+        if n_occ > nmo {
+            return orbitals_mismatch(
+                subject,
+                format!(
+                    "the system's molecule occupies {n_occ} {spin} orbitals, but the result has \
+                 {nmo} {spin} MOs"
+                ),
+            );
         }
         Ok(())
     }
@@ -342,6 +395,21 @@ impl PreparedSystem {
             ladder,
         )
     }
+}
+
+/// The error of [`PreparedSystem::check_reference`]: `what` does not fit.
+fn reference_mismatch(what: String) -> Result<(), FerricError> {
+    orbitals_mismatch("the reference SCF result does", what)
+}
+
+/// `subject` (with its verb: "the reference SCF result does", or "the
+/// orbitals do" for orbitals passed in its place) does not fit the system:
+/// `what`.
+fn orbitals_mismatch(subject: &str, what: String) -> Result<(), FerricError> {
+    Err(FerricError::General(format!(
+        "{subject} not belong to this system: {what}; pass the result of an SCF on \
+         the same molecule and orbital basis"
+    )))
 }
 
 /// A fitting basis prepared on a [`PreparedSystem`]'s molecule by
@@ -690,6 +758,49 @@ mod tests {
         let msg = cation.check_reference(&uhf).unwrap_err().to_string();
         assert!(
             msg.contains("beta MO coefficients have 13 AO rows"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn the_reference_check_wants_beta_fields_matching_the_spin_and_a_square_density() {
+        let sys = water("sto-3g", 0, 1);
+        let rhf = sys.solve_rhf(&RhfConfig::default()).unwrap();
+        // A restricted result with beta orbitals.
+        let mut r = rhf.clone();
+        r.mos_beta = Some(rhf.mos_alpha.clone());
+        r.eps_beta = Some(rhf.eps_alpha.clone());
+        let msg = sys.check_reference(&r).unwrap_err().to_string();
+        assert!(
+            msg.contains("it is Restricted but has beta MO coefficients: true"),
+            "{msg}"
+        );
+        // An unrestricted result without beta orbital energies.
+        let cation = water("sto-3g", 1, 2);
+        let mut u = cation.solve_uhf(&RhfConfig::default()).unwrap();
+        u.eps_beta = None;
+        let msg = cation.check_reference(&u).unwrap_err().to_string();
+        assert!(msg.contains("it is Unrestricted but has beta MO coefficients: true, beta orbital energies: false"), "{msg}");
+        // A density of the wrong size.
+        let mut d = rhf.clone();
+        d.density_total = ndarray::Array2::zeros((6, 6));
+        let msg = sys.check_reference(&d).unwrap_err().to_string();
+        assert!(
+            msg.contains("its total density is 6x6") && msg.contains("7 functions"),
+            "{msg}"
+        );
+        // Orbitals that are not an SCF result.
+        sys.check_closed_shell_orbitals(&rhf.mos_alpha, &rhf.eps_alpha)
+            .unwrap();
+        let large = water("6-31g", 0, 1)
+            .solve_rhf(&RhfConfig::default())
+            .unwrap();
+        let msg = sys
+            .check_closed_shell_orbitals(&large.mos_alpha, &large.eps_alpha)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.starts_with("General error: the orbitals do not belong to this system"),
             "{msg}"
         );
     }
