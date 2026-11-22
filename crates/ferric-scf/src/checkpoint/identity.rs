@@ -395,7 +395,12 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
         ("relativistic", format!("{relativistic:?}")),
     ];
     let route = [
-        ("k_builder", format!("{k_builder:?}")),
+        // The spelling's Debug (`Some("cosx")`), as when the field was a
+        // string, so identities written before the enum still match.
+        (
+            "k_builder",
+            format!("{:?}", k_builder.map(crate::options::KBuilderKind::as_str)),
+        ),
         ("cosx", format!("{cosx:?}")),
         ("df_j_aux", format!("{df_j_aux:?}")),
         ("df_k_aux", format!("{df_k_aux:?}")),

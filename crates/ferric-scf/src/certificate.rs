@@ -197,11 +197,12 @@ fn approximations(
     }
     // The pluggable exchange builder the solver ran: the route's decision,
     // so a `k_builder` that density fitting overrode is not certified.
-    let pluggable =
-        scf_jk_route(result, config).and_then(|r| r.pluggable_k(config.k_builder.as_deref()));
+    let pluggable = scf_jk_route(result, config).and_then(|r| r.pluggable_k(config.k_builder));
     match pluggable {
-        Some("link") => out.push(("link", "LinK screened exchange".to_string())),
-        Some(crate::options::COSX_K_BUILDER) => {
+        Some(crate::options::KBuilderKind::Link) => {
+            out.push(("link", "LinK screened exchange".to_string()))
+        }
+        Some(crate::options::KBuilderKind::Cosx) => {
             let fin = result.cosx_final.map_or_else(
                 || "no final pass".to_string(),
                 |f| format!("final pass on {} points reported", f.npts_final),

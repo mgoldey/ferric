@@ -3805,10 +3805,7 @@ impl Config {
             (s.smearing_sigma.is_some(), "[scf] smearing_sigma"),
             (s.mom_after_iter > 0, "[scf] mom_after_iter"),
             (s.mom_reference.is_some(), "[scf] mom_reference"),
-            (
-                s.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER),
-                "[scf] k_builder = \"cosx\"",
-            ),
+            (s.k_builder_is_cosx(), "[scf] k_builder = \"cosx\""),
         ];
         if let Some((_, key)) = unsupported.iter().find(|(set, _)| *set) {
             return refuse(format!(
@@ -3915,6 +3912,18 @@ impl ScfCfg {
 }
 
 impl ScfCfg {
+    /// Whether `k_builder` spells COSX, for the load-time checks that read
+    /// it as written. `try_scf_config` is where the key is parsed
+    /// (`KBuilderKind::parse`, refusing an unknown spelling); an unknown
+    /// spelling is not COSX here, as it was when these checks compared
+    /// strings.
+    pub fn k_builder_is_cosx(&self) -> bool {
+        use ferric_scf::options::KBuilderKind;
+        self.k_builder
+            .as_deref()
+            .is_some_and(|s| KBuilderKind::parse(s) == Ok(KBuilderKind::Cosx))
+    }
+
     /// `aurora` / `trah_trigger` scoping: AURORA is closed-shell RHF only, TRAH
     /// is wired for RHF and UHF; anything else would silently ignore the key.
     pub fn validate_accelerators(&self, kind: &str, mult: usize) -> Result<(), String> {
@@ -4084,8 +4093,7 @@ impl ScfCfg {
         router_allowed: bool,
     ) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
-        let is_cosx = self.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
-            || self.jk.as_deref() == Some("rijcosx");
+        let is_cosx = self.k_builder_is_cosx() || self.jk.as_deref() == Some("rijcosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_final_pass.is_some()
             || self.cosx_final_grid.is_some()
@@ -5080,9 +5088,7 @@ impl Config {
             ));
         }
         self.validate_cli_wired_keys()?;
-        if task != "energy"
-            && self.scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER)
-            && !COSX_GRADIENT_KINDS.contains(&kind)
+        if task != "energy" && self.scf.k_builder_is_cosx() && !COSX_GRADIENT_KINDS.contains(&kind)
         {
             return Err(format!(
                 "[scf] k_builder = \"cosx\" is not supported with method.kind = \"{kind}\", \
@@ -6623,7 +6629,10 @@ mod compat_guard_tests {
         .unwrap()
         .apply(&mut rc);
         assert_eq!(rc.df_j_aux.as_deref(), Some("cc-pvtz-jkfit"));
-        assert_eq!((rc.df_k_aux, rc.k_builder.as_deref()), (None, Some("cosx")));
+        assert_eq!(
+            (rc.df_k_aux, rc.k_builder),
+            (None, Some(ferric_scf::options::KBuilderKind::Cosx))
+        );
         let mut rs = ferric_scf::rhf::RhfConfig {
             df_j_aux: Some("def2-universal-jkfit".into()),
             df_k_aux: Some("def2-universal-jkfit".into()),

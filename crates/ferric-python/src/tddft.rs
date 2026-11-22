@@ -234,7 +234,7 @@ pub(crate) fn run_tddft(
              Kohn-Sham grid, and functional=None (an HF reference) builds none",
         ));
     }
-    let mut scf_cfg = rhf_config(None);
+    let mut scf_cfg = rhf_config();
     let (scf, grid) = if let Some(xc_name) = functional {
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
         scf_cfg = ks_jkfit_config(scf_cfg, xc_name, scf_ri_j_precision)?;

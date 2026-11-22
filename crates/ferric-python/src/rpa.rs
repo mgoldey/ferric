@@ -163,7 +163,9 @@ fn refuse_pdep_rpa_gradient(s: &GradientScope<'_>) -> PyResult<()> {
     ) {
         return refuse("differentiates dense chi0 only: omit chi0_sparsity".into());
     }
-    if s.k_builder == Some(ferric_scf::options::COSX_K_BUILDER) {
+    // The spelling as passed (the SCF config parses it after this check).
+    let cosx = ferric_scf::options::KBuilderKind::Cosx;
+    if s.k_builder.map(ferric_scf::options::KBuilderKind::parse) == Some(Ok(cosx)) {
         return refuse("has no COSX exchange response: use an exact k_builder or omit it".into());
     }
     if s.df_aux {
@@ -357,7 +359,7 @@ pub(crate) fn run_rs_mp2_rpa(
             e_delta_drpa_full: r.e_delta_drpa_full,
             e_delta_drpa_sr: r.e_delta_drpa_sr,
             scf_jk: jk.mode.as_str().to_string(),
-            jk_label: jk.label(),
+            jk_label: jk.label(cfg_rhf.k_builder),
             jk_auxbasis: jk.aux.clone(),
             certificate_data,
         });
@@ -927,7 +929,7 @@ pub(crate) fn run_pdep_rpa(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     if with_gradient && scf_density_conv.is_none() {
         // The analytic gradient's reference setting (`rpa_analytic_gradient`,
         // the CLI optimize path): an energy-grade density threshold leaves

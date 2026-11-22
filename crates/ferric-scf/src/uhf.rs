@@ -914,13 +914,13 @@ fn solve_uhf_impl(
     // exact-exchange path — exactly where the combined `DirectJK` would
     // otherwise run; J then comes from `DirectJ`.
     let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(),
+        config.k_builder,
         df_j.is_some(),
         jk_route.k_df_routed,
         df_k.is_some(),
         need_k,
         k_mix.omega,
-    )?;
+    );
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
     // `LinkBound::SchwarzRef` applies whichever refinement the caller's
@@ -1199,7 +1199,7 @@ struct UhfInputs<'r, 'e> {
     fractional_blocks_second_order: bool,
     /// The cDFT (or other external) Fock modifier.
     fock_mod: Option<UhfFockMod<'r>>,
-    pluggable_k_kind: Option<&'r str>,
+    pluggable_k_kind: Option<crate::options::KBuilderKind>,
     /// The builders that produced the energy, for the analytic gradient.
     df_jk_route: Option<crate::result::DfJkRoute>,
 }
@@ -1661,7 +1661,7 @@ impl UhfState {
         // COSX final-grid pass (opt-in, `CosxConfig::final_grid`):
         // `k_a_buf`/`k_b_buf` hold K_scf(D_σ) from this iteration's build.
         let (energy, cosx_final) = match (inp.pluggable_k_kind, config.cosx.final_grid.as_ref()) {
-            (Some(crate::options::COSX_K_BUILDER), Some(fg)) => {
+            (Some(crate::options::KBuilderKind::Cosx), Some(fg)) => {
                 let rec = crate::cosx_k::run_final_pass(
                     ctx,
                     inp.mol,

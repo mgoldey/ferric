@@ -449,7 +449,7 @@ fn roks_zvector_refuses_unsupported_references() {
         assert_eq!(unsupported_reason_roks(&ks(xc)), None, "{xc}");
     }
     let fit_off = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         cosx: ferric_scf::cosx_k::CosxConfig {
             overlap_fit: false,
             ..Default::default()
@@ -462,7 +462,7 @@ fn roks_zvector_refuses_unsupported_references() {
         (
             "PBE0 fitted cosx",
             RhfConfig {
-                k_builder: Some("cosx".into()),
+                k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
                 ..ks("PBE0")
             },
             "overlap_fit",
@@ -500,7 +500,7 @@ fn roks_zvector_refuses_unsupported_references() {
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let r = roks(&mol, &bs, &cfg, None);
     let cosx = RhfConfig {
-        k_builder: Some("cosx".into()),
+        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
         ..cfg
     };
     let err = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cosx, &r, &mbd_cfg)

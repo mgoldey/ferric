@@ -241,7 +241,7 @@ pub(crate) fn run_gw(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let (scf, cfg, vxc_diag) = if let Some(xc_name) = xc {
         // KS reference through the level-shift ladder.
         let cfg = ks_jkfit_config(cfg, xc_name, scf_ri_j_precision)?;
@@ -517,7 +517,7 @@ pub(crate) fn run_u_gw(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms
     // (same precedent as the CLI's "pdep-rpa"/"gw" open-shell dispatch).
     cfg.mom_after_iter = 5;
@@ -786,7 +786,7 @@ pub(crate) fn run_bse_tda(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let scf = sys
@@ -955,7 +955,7 @@ pub(crate) fn run_tdhf_static_polarizability(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let cfg = ks_jkfit_config(cfg, xc, scf_ri_j_precision)?;
     let (scf, cfg) = ks_ladder_reference(&sys, cfg)?;
 

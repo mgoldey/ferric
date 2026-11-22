@@ -1512,7 +1512,6 @@ fn mp2_gradient_scf_jk(
         ScfJkMode::RiJk => Ok(ScfJk {
             mode: ScfJkMode::RiJk,
             aux: jk.aux.clone(),
-            k_builder: None,
         }),
         _ => Err(value_error(format!(
             "run_optimize: method=\"{who}\" differentiates a four-centre or an RI-JK \

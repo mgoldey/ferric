@@ -490,7 +490,7 @@ mod tests {
         assert!(oo_rimp2_gradient_label(&rijk).ends_with("RI-JK reference (def2-universal-jkfit)"));
         let rijcosx = RhfConfig {
             df_j_aux: Some("def2-universal-jkfit".into()),
-            k_builder: Some("cosx".into()),
+            k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
             ..RhfConfig::default()
         };
         refused(&rijcosx, &oo, "\"rijcosx\"");

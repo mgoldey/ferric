@@ -158,7 +158,6 @@ fn child_runs_one_u_fitted_gradient() {
     let scf_jk = ScfJk {
         mode: ScfJkMode::RiJk,
         aux: Some(JK_AUX.into()),
-        k_builder: None,
     };
     let config = RiMp2Config {
         memory_budget_bytes: explicit,

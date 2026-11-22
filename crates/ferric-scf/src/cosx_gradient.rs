@@ -235,7 +235,7 @@ pub fn scf_exchange_is_cosx(
     open_shell: bool,
 ) -> Result<bool, FerricError> {
     let _ = open_shell;
-    if config.k_builder.as_deref() != Some(crate::options::COSX_K_BUILDER) {
+    if config.k_builder != Some(crate::options::KBuilderKind::Cosx) {
         return Ok(false);
     }
     let has_xc = config.xc.is_some();
@@ -249,7 +249,7 @@ pub fn scf_exchange_is_cosx(
     // Exact exchange consumed from a plain (omega = 0) K matrix at all.
     let need_k = !has_xc || k_mix.sr != 0.0;
     crate::fock_assembly::cosx_replaces_df_k(
-        config.k_builder.as_deref(),
+        config.k_builder,
         config.df_k_aux.as_deref(),
         need_k && k_mix.omega == 0.0,
     )

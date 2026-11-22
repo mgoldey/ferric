@@ -70,6 +70,7 @@
 use crate::df_j::{DfJ, ResolvedRiJPrecision, RiJPrecision};
 use crate::df_k::DfK;
 use crate::fock::KBuilder;
+use crate::options::KBuilderKind;
 use crate::split_rij::RiJ;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -161,8 +162,7 @@ fn rsh_pair_aux(df_k_aux: Option<&str>) -> &str {
 /// `Spin::RestrictedOpen` resolve identically.
 ///
 /// `Err` for `k_builder = "cosx"` next to a named `df_k_aux` (two builders
-/// for one exchange matrix, `cosx_replaces_df_k`). An unknown `k_builder`
-/// is reported by the solver (`resolve_k_builder`).
+/// for one exchange matrix, `cosx_replaces_df_k`).
 pub fn resolve_jk_route(
     config: &crate::rhf::RhfConfig,
     exchange: JkExchange,
@@ -187,7 +187,7 @@ pub fn resolve_jk_route(
     // from the SR/LR pair, a pure functional takes none.
     let k_single_consumed = k_consumed && omega == 0.0;
     let cosx_k = cosx_replaces_df_k(
-        config.k_builder.as_deref(),
+        config.k_builder,
         config.df_k_aux.as_deref(),
         k_single_consumed,
     )?;
@@ -249,16 +249,10 @@ impl JkRoute {
     /// The pluggable exchange builder (`"link"` / `"cosx"`) this route runs
     /// for `k_builder`, or `None`: the decision of `resolve_k_builder` and
     /// `narrow_k_builder_to_supported` without their warnings, for readers
-    /// that describe a finished run (the certificate). An unknown name is
-    /// `None` (the solver refused it).
-    pub fn pluggable_k(&self, k_builder: Option<&str>) -> Option<&'static str> {
-        let kind = match k_builder {
-            Some("link") => "link",
-            Some(crate::options::COSX_K_BUILDER) => crate::options::COSX_K_BUILDER,
-            _ => return None,
-        };
-        let overridden =
-            self.k_df_routed || (self.j_aux.is_some() && kind != crate::options::COSX_K_BUILDER);
+    /// that describe a finished run (the certificate).
+    pub fn pluggable_k(&self, k_builder: Option<KBuilderKind>) -> Option<KBuilderKind> {
+        let kind = k_builder.filter(|k| *k != KBuilderKind::Direct)?;
+        let overridden = self.k_df_routed || (self.j_aux.is_some() && kind != KBuilderKind::Cosx);
         (!overridden && self.k_consumed && self.omega <= 0.0).then_some(kind)
     }
 }
@@ -765,18 +759,20 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 /// K-sized scratch matrices are live (allocated here, dropped on return) —
 /// never a retained k_total clone.
 ///
-/// Validate `config.k_builder` and say which pluggable builder (if any) the
-/// caller should construct.
+/// Say which pluggable builder (if any) the caller should construct for
+/// `config.k_builder` (already parsed at the frontend, by
+/// [`KBuilderKind::parse`]).
 ///
-/// Shared by `solve_rhf`, `solve_uhf` and `solve_rohf` so the whitelist, the
-/// error text and the DF-J/DF-K precedence rule live in ONE place. Before this
-/// existed only `solve_rhf` read the field at all, so `k_builder = "link"` /
-/// `"cosx"` was silently ignored for every open-shell run.
+/// Shared by `solve_rhf`, `solve_uhf` and `solve_rohf` so the DF-J/DF-K
+/// precedence rule lives in ONE place. Before this existed only `solve_rhf`
+/// read the field at all, so `k_builder = "link"` / `"cosx"` was silently
+/// ignored for every open-shell run.
 ///
-/// * `Err` — the value is not one of `direct` / `link` / `cosx`.
-/// * `Ok(None)` — no pluggable builder: the field is unset, is `"direct"`, or
-///   is overridden by an active density-fitted path (warned about, below).
-/// * `Ok(Some(kind))` — construct that builder.
+/// * `None` — no pluggable builder: the field is unset, is
+///   [`KBuilderKind::Direct`], or is overridden by an active density-fitted
+///   path (warned about, below).
+/// * `Some(kind)` — construct that builder ([`KBuilderKind::Link`] or
+///   [`KBuilderKind::Cosx`]).
 ///
 /// The precedence rule (RIJCOSX):
 ///
@@ -805,30 +801,23 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 /// exact exchange at all) and `omega` only pick the wording — see
 /// [`exchange_route_when_df_active`].
 pub(crate) fn resolve_k_builder(
-    k_builder: Option<&str>,
+    k_builder: Option<KBuilderKind>,
     df_j_active: bool,
     df_k_active: bool,
     df_k_present: bool,
     need_k: bool,
     omega: f64,
-) -> Result<Option<&str>, FerricError> {
-    let Some(kb) = k_builder else {
-        return Ok(None);
-    };
-    if kb != "direct" && kb != "link" && kb != crate::options::COSX_K_BUILDER {
-        return Err(FerricError::General(format!(
-            "unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'"
-        )));
-    }
-    let pluggable = matches!(kb, "link" | crate::options::COSX_K_BUILDER).then_some(kb);
-    let overridden = df_k_active || (df_j_active && kb != crate::options::COSX_K_BUILDER);
+) -> Option<KBuilderKind> {
+    let kb = k_builder?;
+    let pluggable = (kb != KBuilderKind::Direct).then_some(kb);
+    let overridden = df_k_active || (df_j_active && kb != KBuilderKind::Cosx);
     if overridden {
         if let Some(msg) = k_builder_ignored_warning(kb, df_k_active, df_k_present, need_k, omega) {
             eprintln!("{msg}");
         }
-        return Ok(None);
+        return None;
     }
-    Ok(pluggable)
+    pluggable
 }
 
 /// The IGNORED warning [`resolve_k_builder`] prints for a validated `kb` that
@@ -844,14 +833,14 @@ pub(crate) fn resolve_k_builder(
 ///
 /// Pure so the decision is testable without capturing stderr.
 pub(crate) fn k_builder_ignored_warning(
-    kb: &str,
+    kb: KBuilderKind,
     df_k_active: bool,
     df_k_present: bool,
     need_k: bool,
     omega: f64,
 ) -> Option<String> {
     let direct_k_runs = !df_k_active && need_k && omega <= 0.0;
-    if kb == "direct" && direct_k_runs {
+    if kb == KBuilderKind::Direct && direct_k_runs {
         return None;
     }
     if !need_k {
@@ -886,11 +875,11 @@ pub(crate) fn k_builder_ignored_warning(
 ///   hard error rather than a silent pick, per the config-honesty convention;
 ///   `df_k_aux = ""` (the exact sentinel) or unset are accepted.
 pub(crate) fn cosx_replaces_df_k(
-    k_builder: Option<&str>,
+    k_builder: Option<KBuilderKind>,
     df_k_aux: Option<&str>,
     k_consumed_w0: bool,
 ) -> Result<bool, FerricError> {
-    if k_builder != Some(crate::options::COSX_K_BUILDER) || !k_consumed_w0 {
+    if k_builder != Some(KBuilderKind::Cosx) || !k_consumed_w0 {
         return Ok(false);
     }
     if let Some(name) = df_k_aux.filter(|s| !s.is_empty()) {
@@ -954,7 +943,7 @@ pub(crate) fn exchange_route_when_df_active(
 /// The `link_bound` reference is the caller's own `SchwarzBounds`, kept alive
 /// by the caller for the builder's lifetime.
 pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
-    kind: Option<&str>,
+    kind: Option<KBuilderKind>,
     ctx: &'a ParallelContext,
     mol: &'a Molecule,
     prep: &'a PreparedBasis,
@@ -965,7 +954,7 @@ pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
     ooc_budget: usize,
 ) -> Result<Option<Box<dyn KBuilder + 'a>>, FerricError> {
     match kind {
-        Some("link") => Ok(Some(Box::new(crate::link_k::LinkK::new(
+        Some(KBuilderKind::Link) => Ok(Some(Box::new(crate::link_k::LinkK::new(
             ctx,
             prep,
             link_bound,
@@ -973,7 +962,7 @@ pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
             integral_thresh,
             ooc_budget,
         )) as Box<dyn KBuilder + 'a>)),
-        Some(crate::options::COSX_K_BUILDER) => {
+        Some(KBuilderKind::Cosx) => {
             // Seminumerical exchange is defined against the 1/r kernel only;
             // an attenuated (erf/erfc) or geminal operator has no COSX form
             // here. Refused rather than silently computing Coulomb exchange.
@@ -985,7 +974,7 @@ pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
             let ck = crate::cosx_k::CosxK::new(ctx, mol, prep, cosx_cfg.clone(), ooc_budget)?;
             Ok(Some(Box::new(ck) as Box<dyn KBuilder + 'a>))
         }
-        _ => Ok(None),
+        Some(KBuilderKind::Direct) | None => Ok(None),
     }
 }
 
@@ -1004,10 +993,10 @@ pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
 ///   caller that reaches it otherwise, so an RSH run never skips the builder
 ///   silently.
 pub(crate) fn narrow_k_builder_to_supported(
-    kind: Option<&str>,
+    kind: Option<KBuilderKind>,
     need_k: bool,
     omega: f64,
-) -> Option<&str> {
+) -> Option<KBuilderKind> {
     let kind = kind?;
     let reason = if !need_k {
         "the functional uses no exact exchange"
@@ -1239,8 +1228,14 @@ mod tests {
             ("direct", true, false, true, 0.3, "SR/LR density-fitted"),
         ];
         for (kb, k_active, k_present, need_k, omega, route) in cases {
-            let msg = k_builder_ignored_warning(kb, k_active, k_present, need_k, omega)
-                .unwrap_or_else(|| panic!("{kb} {k_active} {need_k} {omega}: no warning"));
+            let msg = k_builder_ignored_warning(
+                KBuilderKind::parse(kb).unwrap(),
+                k_active,
+                k_present,
+                need_k,
+                omega,
+            )
+            .unwrap_or_else(|| panic!("{kb} {k_active} {need_k} {omega}: no warning"));
             // A pure functional builds no exchange fitter, so the lead names
             // the missing exact exchange rather than active density fitting.
             let lead = if need_k {
@@ -1267,10 +1262,10 @@ mod tests {
     #[test]
     fn direct_beside_df_j_alone_is_honoured_and_silent() {
         assert_eq!(
-            k_builder_ignored_warning("direct", false, false, true, 0.0),
+            k_builder_ignored_warning(KBuilderKind::Direct, false, false, true, 0.0),
             None
         );
-        let link = k_builder_ignored_warning("link", false, false, true, 0.0)
+        let link = k_builder_ignored_warning(KBuilderKind::Link, false, false, true, 0.0)
             .expect("link under DF-J alone is skipped, so it must warn");
         assert!(link.contains("direct 4-centre builder"), "{link}");
     }
@@ -1282,14 +1277,13 @@ mod tests {
     fn direct_without_density_fitting_resolves_unchanged() {
         for need_k in [true, false] {
             assert_eq!(
-                resolve_k_builder(Some("direct"), false, false, false, need_k, 0.0).unwrap(),
+                resolve_k_builder(Some(KBuilderKind::Direct), false, false, false, need_k, 0.0),
                 None
             );
         }
         assert_eq!(
-            resolve_k_builder(Some("link"), false, false, false, true, 0.0).unwrap(),
-            Some("link")
+            resolve_k_builder(Some(KBuilderKind::Link), false, false, false, true, 0.0),
+            Some(KBuilderKind::Link)
         );
-        assert!(resolve_k_builder(Some("bogus"), true, true, true, true, 0.0).is_err());
     }
 }

@@ -1037,7 +1037,6 @@ pub fn exact_scf_jk() -> ScfJk {
     ScfJk {
         mode: ScfJkMode::Exact,
         aux: None,
-        k_builder: None,
     }
 }
 

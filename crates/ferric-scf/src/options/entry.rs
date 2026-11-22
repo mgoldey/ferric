@@ -28,7 +28,9 @@ use std::fmt;
 
 use ndarray::Array2;
 
-use super::{df_k_aux_or_default, AuxBasis, Guess, ScfOptions, Stability, TrahTrigger};
+use super::{
+    df_k_aux_or_default, AuxBasis, Guess, KBuilderKind, ScfOptions, Stability, TrahTrigger,
+};
 
 /// `run_dft`'s functional when the caller names none.
 pub const DEFAULT_DFT_FUNCTIONAL: &str = "LDA";
@@ -367,7 +369,7 @@ impl ScfEntryPoint {
             diis_size,
             diis_flavor,
             integral_thresh,
-            k_builder: k_builder.map(str::to_string),
+            k_builder,
             cosx,
             df_j_aux,
             df_k_aux,
@@ -427,8 +429,8 @@ pub struct ScfKwargs<'a> {
     pub diis_flavor: Option<crate::diis::DiisFlavor>,
     /// `integral_thresh=`.
     pub integral_thresh: Option<f64>,
-    /// `k_builder=` (verbatim).
-    pub k_builder: Option<&'a str>,
+    /// `k_builder=` (parsed by [`KBuilderKind::parse`]).
+    pub k_builder: Option<KBuilderKind>,
     /// The resolved `cosx_*` keywords (the default COSX settings when the
     /// entry point offers them and none is passed).
     pub cosx: Option<crate::cosx_k::CosxConfig>,

@@ -159,7 +159,7 @@ pub fn validate(cfg: &Config) -> Result<(), String> {
             cfg.method.task
         ));
     }
-    if cfg.scf.k_builder.as_deref() == Some(ferric_scf::options::COSX_K_BUILDER) {
+    if cfg.scf.k_builder_is_cosx() {
         return Err("[cdft] does not support [scf] k_builder = \"cosx\"".to_string());
     }
     if cfg.qmmm.is_some() || cfg.cosmo.is_some() || cfg.pcm.is_some() || cfg.cell.is_some() {

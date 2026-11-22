@@ -179,7 +179,7 @@ pub(crate) fn run_ccd(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
@@ -249,7 +249,7 @@ fn run_ccsd_level(py: Python<'_>, a: CcsdArgs<'_>, level: CcLevel) -> PyResult<P
         a.k_builder,
         budget_bytes_from_gb(a.memory_budget_gb),
         a.conv,
-    );
+    )?;
     let cfg = cc_config(a.frozen_core, a.memory_budget_gb, a.ladder)?;
     refuse_open_shell_ladder(&raw_mol, a.ladder)?;
     if raw_mol.multiplicity > 1 {
@@ -500,7 +500,7 @@ pub(crate) fn run_eom_ccsd(
         k_builder,
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let cfg = CcConfig {
         energy_conv: ferric_cc::eom_ccsd::EOM_CCSD_ENERGY_CONV,
         ..cc_config(frozen_core, memory_budget_gb, ladder)?

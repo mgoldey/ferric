@@ -139,7 +139,10 @@ pub fn estimate_total_energy_abs(mol: &Molecule) -> f64 {
 /// embedding, and non-default `screening` (CSB, CSAM).
 pub fn is_characterised(config: &crate::rhf::RhfConfig) -> bool {
     config.xc.is_none()
-        && matches!(config.k_builder.as_deref(), None | Some("direct"))
+        && matches!(
+            config.k_builder,
+            None | Some(crate::options::KBuilderKind::Direct)
+        )
         && config.pcm.is_none()
         && config.cosmo.is_none()
         && config.polarizable.is_none()
@@ -496,9 +499,9 @@ mod tests {
     fn characterised_scope_excludes_functionals_and_pluggable_k() {
         let mut c = RhfConfig::default();
         assert!(is_characterised(&c));
-        c.k_builder = Some("direct".into());
+        c.k_builder = Some(crate::options::KBuilderKind::Direct);
         assert!(is_characterised(&c));
-        c.k_builder = Some("link".into());
+        c.k_builder = Some(crate::options::KBuilderKind::Link);
         assert!(!is_characterised(&c));
         assert!(floor_for_config(&c, 100.0, 50, true).is_none());
         c.k_builder = None;

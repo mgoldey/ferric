@@ -933,7 +933,7 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
             s.config.cdft_stability_descent = false
         }),
         ("k_builder", Route, |s| {
-            s.config.k_builder = Some("link".to_string())
+            s.config.k_builder = Some(crate::options::KBuilderKind::Link)
         }),
         ("cosx", Route, |s| {
             s.config.cosx.overlap_fit = !s.config.cosx.overlap_fit
@@ -974,7 +974,7 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
 fn a_change_between_two_values_is_seen_not_only_presence() {
     let mut base = Scenario::water(Spin::Restricted);
     base.config.xc = Some("PBE".to_string());
-    base.config.k_builder = Some("link".to_string());
+    base.config.k_builder = Some(crate::options::KBuilderKind::Link);
     base.config.df_j_aux = Some("def2-universal-jkfit".to_string());
     base.config.df_k_aux = Some("def2-universal-jkfit".to_string());
     base.config.xc_omega = Some(0.3);
@@ -982,7 +982,7 @@ fn a_change_between_two_values_is_seen_not_only_presence() {
     let table: [(&str, Mutator); 6] = [
         ("xc", |s| s.config.xc = Some("B3LYP".to_string())),
         ("k_builder", |s| {
-            s.config.k_builder = Some("cosx".to_string())
+            s.config.k_builder = Some(crate::options::KBuilderKind::Cosx)
         }),
         ("df_j_aux", |s| {
             s.config.df_j_aux = Some("cc-pvdz-jkfit".to_string())
@@ -1167,6 +1167,30 @@ fn every_identity_field_has_a_row() {
     // Covered by its own test: it moves with the basis in any real change.
     rows.insert("nao".to_string());
     assert_eq!(fields, rows);
+}
+
+/// The `k_builder` identity value is the spelling's `Debug` text, exactly
+/// as when the field was an `Option<String>`, so a checkpoint written before
+/// `KBuilderKind` still matches its run.
+#[test]
+fn k_builder_identity_value_is_the_pre_enum_spelling() {
+    use crate::options::KBuilderKind;
+    let value = |kb: Option<KBuilderKind>| {
+        let mut s = Scenario::water(Spin::Restricted);
+        s.config.k_builder = kb;
+        s.identity()
+            .fields
+            .into_iter()
+            .find(|f| f.name == "k_builder")
+            .unwrap()
+            .value
+    };
+    assert_eq!(value(None), format!("{:?}", None::<String>));
+    for kind in KBuilderKind::ALL {
+        let old: Option<String> = Some(kind.as_str().to_string());
+        assert_eq!(value(Some(kind)), format!("{old:?}"), "{kind:?}");
+    }
+    assert_eq!(value(Some(KBuilderKind::Cosx)), "Some(\"cosx\")");
 }
 
 #[test]
@@ -1975,7 +1999,7 @@ fn full_config() -> RhfConfig {
         nlc_grid: Some(Default::default()),
         smearing_sigma: Some(1e-3),
         irrep_nelec: Some(vec![("A1".to_string(), 8), ("B2".to_string(), 2)]),
-        k_builder: Some("cosx".to_string()),
+        k_builder: Some(crate::options::KBuilderKind::Cosx),
         df_j_aux: Some("def2-universal-jkfit".to_string()),
         df_k_aux: Some("def2-universal-jkfit".to_string()),
         external_potential: Some(ExternalPotential {

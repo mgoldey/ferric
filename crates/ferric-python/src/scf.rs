@@ -681,6 +681,9 @@ pub(crate) fn run_rhf(
     let trah_trigger = check_trah_trigger(trah_trigger)?;
     // Defaults come from ferric_scf::options, the lowering the CLI `[scf]`
     // section also goes through.
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1526,6 +1529,9 @@ pub(crate) fn run_uhf(
     let eri = parse_eri(eri)?;
     let relativistic = parse_relativistic(relativistic)?;
     let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1671,6 +1677,9 @@ pub(crate) fn run_rohf(
     )?;
     let use_sad_guess = parse_guess(guess)?;
     let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,

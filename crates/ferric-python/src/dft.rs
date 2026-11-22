@@ -378,7 +378,7 @@ pub(crate) fn run_double_hybrid(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
-    );
+    )?;
     let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
 
     let (ks, cfg) = if open_shell {
@@ -618,6 +618,9 @@ pub(crate) fn run_dft(
     }
     // run_dft's policy (RI-J / RI-K on by default, the RIJCOSX rule, the
     // "LDA" default) is `ScfEntryPoint::Dft`'s (ferric_scf::options::entry).
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,
@@ -1285,6 +1288,9 @@ fn run_open_ks(
     // run_uks / run_roks policy (run_dft's KS defaults, including the
     // RIJCOSX rule) is `ScfEntryPoint::Uks` / `Roks`'s
     // (ferric_scf::options::entry).
+    // Parsed last of the keywords: an unknown spelling was the solver's
+    // refusal before the binding parsed it (same class and text).
+    let k_builder = crate::parse_k_builder(k_builder)?;
     let kw = ScfKwargs {
         max_iter,
         energy_conv,

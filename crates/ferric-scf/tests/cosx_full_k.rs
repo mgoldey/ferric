@@ -242,7 +242,8 @@ fn cosx_full_k_cell() {
             // "direct": the plain direct J+K SCF (incremental Fock), no
             // 3-index tensors — the exact, low-memory route for nbf >= ~400.
             "link" | "cosx" | "direct" => RhfConfig {
-                k_builder: (scf_mode != "direct").then(|| scf_mode.clone()),
+                k_builder: (scf_mode != "direct")
+                    .then(|| ferric_scf::options::KBuilderKind::parse(&scf_mode).expect("mode")),
                 density_conv: env_num("COSX_FK_SCF_DCONV", 1e-5),
                 max_iter: env_num("COSX_FK_SCF_MAXITER", RhfConfig::default().max_iter),
                 verbose: true,

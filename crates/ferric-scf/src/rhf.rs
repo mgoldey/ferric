@@ -53,8 +53,10 @@ pub struct RhfConfig {
     /// Integral screening threshold for the integral-driven J/K builds.
     /// Default 1e-12.
     pub integral_thresh: f64,
-    /// Choose K matrix builder: "direct" (default), "link", or "cosx"
-    /// (seminumerical exchange, see [`crate::cosx_k`]). Honoured by
+    /// Choose K matrix builder: direct (the default, also `None`), LinK, or
+    /// COSX (seminumerical exchange, see [`crate::cosx_k`]); the frontends
+    /// parse the user's spelling with
+    /// [`KBuilderKind::parse`](crate::options::KBuilderKind::parse). Honoured by
     /// `solve_rhf`, `solve_uhf` AND `solve_rohf` (before 2026-09-08 only
     /// `solve_rhf` read it, so it was a silent no-op for open-shell runs).
     /// The open-shell solvers build K_α and K_β from ONE builder instance,
@@ -63,9 +65,9 @@ pub struct RhfConfig {
     /// auto-defaulted for a functional), the functional uses no exact exchange,
     /// or the functional is range-separated (exchange then comes from the
     /// SR/LR density-fitted fitters).
-    pub k_builder: Option<String>,
+    pub k_builder: Option<crate::options::KBuilderKind>,
     /// COSX knobs (grid, overlap fit, screen); only read when
-    /// `k_builder == Some("cosx")`.
+    /// `k_builder == Some(KBuilderKind::Cosx)`.
     pub cosx: crate::cosx_k::CosxConfig,
     /// Optional auxiliary basis for density-fitted Coulomb (RI-J). When set, J is
     /// built from precomputed 3-center ERIs in O(N^2 · naux) per iteration instead
@@ -666,9 +668,9 @@ impl RhfConfig {
         self.level_shift = shift;
         self
     }
-    /// Set the K-matrix builder strategy ("direct", "link" or "cosx").
-    pub fn with_k_builder(mut self, builder: impl Into<String>) -> Self {
-        self.k_builder = Some(builder.into());
+    /// Set the K-matrix builder strategy.
+    pub fn with_k_builder(mut self, builder: crate::options::KBuilderKind) -> Self {
+        self.k_builder = Some(builder);
         self
     }
     /// Set the COSX knobs (only read when the builder is "cosx").
@@ -2225,20 +2227,6 @@ fn solve_rhf_impl(
         config.diis_flavor != crate::diis::DiisFlavor::Pulay && config.diis_switch_thresh > 0.0,
         env.ooc_budget,
     );
-    // Validate `k_builder` BEFORE any expensive setup, so an unknown value is
-    // rejected even on a run whose DF-J/DF-K path would later override it
-    // (`df_active = false` here is only about which branch reports the error;
-    // the whitelist check is unconditional). The DF-vs-pluggable decision is
-    // re-resolved in `RhfRoute::resolve` once `build_df_jk` has said what is
-    // actually active.
-    crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(),
-        false,
-        false,
-        false,
-        true,
-        0.0,
-    )?;
     let (route, df_j, df_k) = RhfRoute::resolve(
         &mut phases,
         (ctx, mol, op, prep, config),
@@ -2425,12 +2413,12 @@ fn rhf_initial_density(
 /// `screening = "csam"` + an RSH functional a clean, actionable error rather
 /// than a silent substitution.
 fn link_screen(
-    kind: Option<&str>,
+    kind: Option<crate::options::KBuilderKind>,
     op: Operator,
     prep: &PreparedBasis,
     config: &RhfConfig,
 ) -> Result<Option<SchwarzBounds>, FerricError> {
-    if kind == Some("link") {
+    if kind == Some(crate::options::KBuilderKind::Link) {
         Ok(Some(SchwarzBounds::compute_for_screening(
             op,
             prep,
@@ -2475,7 +2463,7 @@ fn prime_k_builders(
 /// 33 s, most of it the unused K. With `k_builder = "cosx"` COSX replaces the
 /// ω = 0 DF-K (RIJCOSX; a named `df_k_aux` next to it is refused) and DF-J
 /// keeps its own resolution.
-struct RhfRoute<'c> {
+struct RhfRoute {
     /// Whether the K written into `k_buf` ever reaches F. Narrower than
     /// `k_consumed`: an RSH functional consumes exact exchange, but from its
     /// own SR/LR fitters (`dfk_sr`/`dfk_lr`, built by `driver::prepare`), so
@@ -2489,12 +2477,12 @@ struct RhfRoute<'c> {
     /// and skips construction.
     df_any: bool,
     /// The pluggable K builder this run constructs, if any.
-    pluggable_k: Option<&'c str>,
+    pluggable_k: Option<crate::options::KBuilderKind>,
     /// The builders that produced the energy, for the analytic gradient.
     df_jk_route: Option<crate::result::DfJkRoute>,
 }
 
-impl<'c> RhfRoute<'c> {
+impl RhfRoute {
     /// Resolve the route and build its density-fitted Coulomb (RI-J) /
     /// exchange (RI-K): 3-center tensor(s) + metric(s) once, sharing one
     /// `PreparedBasis` when the J and K aux names agree (see `build_df_jk`) —
@@ -2510,7 +2498,7 @@ impl<'c> RhfRoute<'c> {
             &Molecule,
             Operator,
             &PreparedBasis,
-            &'c RhfConfig,
+            &RhfConfig,
         ),
         env: &crate::driver::ScfEnv<'_>,
         k_mix: ferric_dft::xc_trait::KMix,
@@ -2559,13 +2547,13 @@ impl<'c> RhfRoute<'c> {
         // an active or dropped DF-K does. A pure / RSH functional cannot consume
         // a pluggable K at all (`narrow_k_builder_to_supported` warns).
         let pluggable_k = crate::fock_assembly::resolve_k_builder(
-            config.k_builder.as_deref(),
+            config.k_builder,
             df_j.is_some(),
             df_k.is_some() || df_k_skipped,
             df_k.is_some(),
             k_consumed,
             k_mix.omega,
-        )?;
+        );
         let pluggable_k = crate::fock_assembly::narrow_k_builder_to_supported(
             pluggable_k,
             k_consumed,
@@ -2600,7 +2588,7 @@ struct RhfInputs<'r, 'e> {
     /// Meta-GGA default virtual-block level shift (see
     /// `driver::effective_level_shift`).
     effective_level_shift: f64,
-    route: RhfRoute<'r>,
+    route: RhfRoute,
 }
 
 /// The J/K and XC builders of one RHF solve and the buffers they fill.
@@ -2650,7 +2638,7 @@ impl<'a> RhfJk<'a> {
         ),
         env: &crate::driver::ScfEnv<'_>,
         k_mix: ferric_dft::xc_trait::KMix,
-        route: &RhfRoute<'_>,
+        route: &RhfRoute,
         (df_j, df_k): (
             Option<crate::split_rij::RiJ<'a>>,
             Option<crate::df_k::DfK<'a>>,
@@ -3558,7 +3546,7 @@ impl RhfState {
         // `k_buf` holds K_scf(d) from this iteration's build, so only
         // the final grid is built here.
         let (energy, cosx_final) = match (inp.route.pluggable_k, config.cosx.final_grid.as_ref()) {
-            (Some(crate::options::COSX_K_BUILDER), Some(fg)) => {
+            (Some(crate::options::KBuilderKind::Cosx), Some(fg)) => {
                 let rec = crate::cosx_k::run_final_pass(
                     ctx,
                     inp.mol,

@@ -70,8 +70,88 @@ pub const DEFAULT_INTEGRAL_THRESH: f64 = 1e-12;
 pub const SOSCF_NEWTON_TRIGGER: f64 = 1e-3;
 /// Default JK-fit auxiliary basis wherever RI-J/RI-K is auto-selected.
 pub const DEFAULT_JK_AUX: &str = "def2-universal-jkfit";
-/// The [`RhfConfig::k_builder`] spelling that selects COSX exchange.
-pub const COSX_K_BUILDER: &str = "cosx";
+/// The exchange (K) builder an exact-exchange SCF uses
+/// ([`RhfConfig::k_builder`]; `None` there is the default, [`Direct`]).
+///
+/// The frontends receive it as a string (Python `k_builder=`, CLI
+/// `[scf] k_builder`) and parse it once with [`KBuilderKind::parse`]; past
+/// that boundary it is never a string. Named `...Kind` because
+/// [`crate::fock::KBuilder`] is the trait the builders implement.
+///
+/// [`Direct`]: KBuilderKind::Direct
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KBuilderKind {
+    /// The direct four-centre builder (`"direct"`, the default). Spelled
+    /// out, it is still a request: the solvers warn when density fitting
+    /// overrides it.
+    Direct,
+    /// LinK screened exchange (`"link"`, [`crate::link_k`]).
+    Link,
+    /// Seminumerical chain-of-spheres exchange (`"cosx"`,
+    /// [`crate::cosx_k`]), the K of the RIJCOSX composite.
+    Cosx,
+}
+
+/// [`KBuilderKind::parse`]'s refusal: the spelling given. Its `Display` is
+/// the user-facing message, and it lowers to [`FerricError::General`] (the
+/// error the solvers raised for it before the frontends parsed it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownKBuilder(pub String);
+
+impl std::fmt::Display for UnknownKBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown k_builder '{}': valid options are 'direct', 'link', 'cosx'",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnknownKBuilder {}
+
+impl From<UnknownKBuilder> for FerricError {
+    fn from(e: UnknownKBuilder) -> Self {
+        FerricError::General(e.to_string())
+    }
+}
+
+impl KBuilderKind {
+    /// Every kind, in the order the error message lists them.
+    pub const ALL: [KBuilderKind; 3] = [Self::Direct, Self::Link, Self::Cosx];
+
+    /// Strict, case-sensitive parse of a user spelling: exactly `"direct"`,
+    /// `"link"` or `"cosx"`.
+    pub fn parse(s: &str) -> Result<Self, UnknownKBuilder> {
+        match s {
+            "direct" => Ok(Self::Direct),
+            "link" => Ok(Self::Link),
+            "cosx" => Ok(Self::Cosx),
+            other => Err(UnknownKBuilder(other.to_string())),
+        }
+    }
+
+    /// [`KBuilderKind::parse`] of an optional keyword (`None` = not given).
+    pub fn parse_opt(s: Option<&str>) -> Result<Option<Self>, UnknownKBuilder> {
+        s.map(Self::parse).transpose()
+    }
+
+    /// The canonical spelling (what [`KBuilderKind::parse`] accepts), used
+    /// in messages, labels and the checkpoint identity.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Link => "link",
+            Self::Cosx => "cosx",
+        }
+    }
+}
+
+impl std::fmt::Display for KBuilderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// The RIJCOSX rule for the RI-K auxiliary basis: an `explicit` choice
 /// always wins; otherwise the frontend's `default` applies, except under
@@ -84,11 +164,11 @@ pub const COSX_K_BUILDER: &str = "cosx";
 /// Generic over the aux representation; the Python KS entry points and the
 /// CLI `[scf]` lowering both pass [`AuxBasis`].
 pub fn df_k_aux_or_default<T>(
-    k_builder: Option<&str>,
+    k_builder: Option<KBuilderKind>,
     explicit: Option<T>,
     default: Option<T>,
 ) -> Option<T> {
-    explicit.or(if k_builder == Some(COSX_K_BUILDER) {
+    explicit.or(if k_builder == Some(KBuilderKind::Cosx) {
         None
     } else {
         default
@@ -235,8 +315,8 @@ pub struct ScfOptions {
     pub diis_flavor: Option<crate::diis::DiisFlavor>,
     /// [`RhfConfig::integral_thresh`].
     pub integral_thresh: Option<f64>,
-    /// [`RhfConfig::k_builder`] (passed through verbatim).
-    pub k_builder: Option<String>,
+    /// [`RhfConfig::k_builder`].
+    pub k_builder: Option<KBuilderKind>,
     /// [`RhfConfig::cosx`].
     pub cosx: Option<crate::cosx_k::CosxConfig>,
     /// [`RhfConfig::df_j_aux`] (see [`AuxBasis::parse`]).
@@ -598,6 +678,13 @@ mod tests {
         }
     }
 
+    /// The `k_builder` spelling an oracle passed through verbatim, as the
+    /// frontend now parses it (every spelling the oracles use is valid; the
+    /// unknown ones are `k_builder_spellings_parse_once_with_the_solver_message`).
+    fn kb(spelling: Option<&str>) -> Option<KBuilderKind> {
+        KBuilderKind::parse_opt(spelling).unwrap()
+    }
+
     // ── oracles: the pre-refactor literals ──
 
     fn old_run_rhf(k: Kw) -> RhfConfig {
@@ -608,7 +695,7 @@ mod tests {
             density_conv: k.density_conv.unwrap_or(1e-6),
             diis_size: k.diis_size.unwrap_or(8),
             integral_thresh: k.integral_thresh.unwrap_or(1e-12),
-            k_builder: k.k_builder.map(|s| s.to_string()),
+            k_builder: kb(k.k_builder),
             cosx: k.cosx.unwrap(),
             df_j_aux: k.df_j_aux.map(crate::rhf::normalize_df_aux),
             df_k_aux: k.df_k_aux.map(crate::rhf::normalize_df_aux),
@@ -648,7 +735,7 @@ mod tests {
             density_conv: k.density_conv.unwrap_or(1e-6),
             diis_size: k.diis_size.unwrap_or(8),
             integral_thresh: k.integral_thresh.unwrap_or(1e-12),
-            k_builder: k.k_builder.map(|s| s.to_string()),
+            k_builder: kb(k.k_builder),
             cosx: k.cosx.unwrap(),
             df_j_aux: k.df_j_aux.map(crate::rhf::normalize_df_aux),
             df_k_aux: k.df_k_aux.map(crate::rhf::normalize_df_aux),
@@ -678,7 +765,7 @@ mod tests {
             density_conv: k.density_conv.unwrap_or(1e-6),
             diis_size: k.diis_size.unwrap_or(8),
             integral_thresh: k.integral_thresh.unwrap_or(1e-12),
-            k_builder: k.k_builder.map(|s| s.to_string()),
+            k_builder: kb(k.k_builder),
             df_j_aux: k.df_j_aux.map(crate::rhf::normalize_df_aux),
             df_k_aux: k.df_k_aux.map(crate::rhf::normalize_df_aux),
             ri_j_precision: k.ri_j_precision,
@@ -732,7 +819,7 @@ mod tests {
             diis_size: if hf { k.diis_size } else { None },
             diis_flavor: is(&[E::Rhf]).then(|| k.diis.unwrap_or(DiisFlavor::Pulay)),
             integral_thresh: if hf { k.integral_thresh } else { None },
-            k_builder: k.k_builder,
+            k_builder: kb(k.k_builder),
             // The bindings always resolve the `cosx_*` kwargs: the default
             // COSX settings when none is passed.
             cosx: Some(if is(&[E::Rhf, E::Uhf, E::Dft]) {
@@ -1028,7 +1115,7 @@ mod tests {
 
     fn old_rhf_config_budgeted(k_builder: Option<&str>, budget_bytes: Option<usize>) -> RhfConfig {
         RhfConfig {
-            k_builder: k_builder.map(|s| s.to_string()),
+            k_builder: kb(k_builder),
             three_index_budget_bytes: budget_bytes.unwrap_or(0),
             ..Default::default()
         }
@@ -1176,18 +1263,18 @@ mod tests {
     /// the RI-K default regardless, so COSX always met a df_k_aux conflict
     /// the caller never set; it now takes the RIJCOSX rule, as `run_dft`.
     fn open_ks_takes_rijcosx_rule(k: &Kw) -> bool {
-        k.k_builder == Some(COSX_K_BUILDER) && k.df_k_aux.is_none()
+        k.k_builder == Some("cosx") && k.df_k_aux.is_none()
     }
 
     #[test]
     fn open_ks_cosx_drops_the_ri_k_default() {
         let k = Kw {
-            k_builder: Some(COSX_K_BUILDER),
+            k_builder: Some("cosx"),
             ..Kw::default()
         };
         for sad in [true, false] {
             let c = new_run_open_ks(k.clone(), "PBE0", sad);
-            assert_eq!(c.k_builder.as_deref(), Some(COSX_K_BUILDER));
+            assert_eq!(c.k_builder, Some(KBuilderKind::Cosx));
             assert_eq!(c.df_k_aux, None);
             assert_eq!(c.df_j_aux.as_deref(), Some(DEFAULT_JK_AUX));
             // The old construction kept the RI-K default (the bug).
@@ -1211,6 +1298,34 @@ mod tests {
             };
             let c = new_run_open_ks(k, "PBE0", true);
             assert_eq!(c.df_k_aux.as_deref(), Some(DEFAULT_JK_AUX), "{kb:?}");
+        }
+    }
+
+    /// `KBuilderKind::parse` is the one home of the `k_builder` whitelist:
+    /// exactly the three spellings, case-sensitive, untrimmed, and every
+    /// other spelling refused with the message the solvers raised before the
+    /// frontends parsed it (`FerricError::General`, so Python's text is
+    /// unchanged: "General error: unknown k_builder ...").
+    #[test]
+    fn k_builder_spellings_parse_once_with_the_solver_message() {
+        for kind in KBuilderKind::ALL {
+            assert_eq!(KBuilderKind::parse(kind.as_str()), Ok(kind));
+            assert_eq!(kind.to_string(), kind.as_str());
+        }
+        assert_eq!(KBuilderKind::parse_opt(None), Ok(None));
+        for bad in [
+            "Link", "COSX", "Direct", " cosx", "cosx ", "", "bogus", "cosxx", "exact",
+        ] {
+            let e = KBuilderKind::parse(bad).unwrap_err();
+            assert_eq!(e, UnknownKBuilder(bad.to_string()));
+            let text =
+                format!("unknown k_builder '{bad}': valid options are 'direct', 'link', 'cosx'");
+            assert_eq!(e.to_string(), text);
+            assert_eq!(
+                FerricError::from(e).to_string(),
+                format!("General error: {text}")
+            );
+            assert_eq!(KBuilderKind::parse_opt(Some(bad)).unwrap_err().0, bad);
         }
     }
 
@@ -1428,16 +1543,19 @@ mod tests {
     fn rijcosx_rule_drops_only_the_ri_k_default() {
         let named = |s: &str| Some(AuxBasis::named(s));
         let d = named(DEFAULT_JK_AUX);
-        assert_eq!(df_k_aux_or_default(Some("cosx"), None, d.clone()), None);
         assert_eq!(
-            df_k_aux_or_default(Some("cosx"), named("x"), d.clone()),
+            df_k_aux_or_default(Some(KBuilderKind::Cosx), None, d.clone()),
+            None
+        );
+        assert_eq!(
+            df_k_aux_or_default(Some(KBuilderKind::Cosx), named("x"), d.clone()),
             named("x")
         );
         assert_eq!(
-            df_k_aux_or_default(Some("cosx"), Some(AuxBasis::Off), d.clone()),
+            df_k_aux_or_default(Some(KBuilderKind::Cosx), Some(AuxBasis::Off), d.clone()),
             Some(AuxBasis::Off)
         );
-        for kb in [None, Some("direct"), Some("link"), Some("COSX")] {
+        for kb in [None, Some(KBuilderKind::Direct), Some(KBuilderKind::Link)] {
             assert_eq!(df_k_aux_or_default(kb, None, d.clone()), d, "{kb:?}");
             assert_eq!(df_k_aux_or_default::<String>(kb, None, None), None);
         }
