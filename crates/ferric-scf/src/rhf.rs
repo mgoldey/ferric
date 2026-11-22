@@ -9,6 +9,7 @@ use crate::direct_jk::DirectJK;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
+use crate::options::KBuilderKind;
 use crate::result::{ScfExit, ScfResult, Spin};
 use ferric_dft::cdft::Constraint;
 
@@ -65,7 +66,7 @@ pub struct RhfConfig {
     /// auto-defaulted for a functional), the functional uses no exact exchange,
     /// or the functional is range-separated (exchange then comes from the
     /// SR/LR density-fitted fitters).
-    pub k_builder: Option<crate::options::KBuilderKind>,
+    pub k_builder: Option<KBuilderKind>,
     /// COSX knobs (grid, overlap fit, screen); only read when
     /// `k_builder == Some(KBuilderKind::Cosx)`.
     pub cosx: crate::cosx_k::CosxConfig,
@@ -472,7 +473,7 @@ pub struct RhfConfig {
     /// irreps share the remaining electrons by aufbau. `None` = plain aufbau.
     pub irrep_nelec: Option<Vec<(String, usize)>>,
     /// Which screening bound to build for the LinK-specific pair list when
-    /// `k_builder == Some("link")`. Default
+    /// `k_builder == Some(KBuilderKind::Link)`. Default
     /// [`crate::screening::ScreeningKind::Schwarz`] — byte-identical to every
     /// pre-CSB build. `Csb` selects [`crate::screening::CsbBounds`], the
     /// RIGOROUS `min{Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ}` bound of Thompson &
@@ -493,7 +494,7 @@ pub struct RhfConfig {
     /// typed error naming `screening = "csb"`.
     ///
     /// SCOPE OF THIS FIELD: read ONLY at the `link_schwarz_opt` construction
-    /// site in [`solve_rhf`] (i.e. only when `k_builder == "link"`), where it
+    /// site in [`solve_rhf`] (i.e. only when `k_builder == Some(KBuilderKind::Link)`), where it
     /// selects whether the FRESH LinK table gets an `M` or `X` table. It does
     /// NOT by itself affect the dense direct `build_jk`/`DirectJ`/`DirectK`/
     /// `DirectJK` path (the default, `k_builder` unset), nor
@@ -669,11 +670,12 @@ impl RhfConfig {
         self
     }
     /// Set the K-matrix builder strategy.
-    pub fn with_k_builder(mut self, builder: crate::options::KBuilderKind) -> Self {
+    pub fn with_k_builder(mut self, builder: KBuilderKind) -> Self {
         self.k_builder = Some(builder);
         self
     }
-    /// Set the COSX knobs (only read when the builder is "cosx").
+    /// Set the COSX knobs (only read when the builder is
+    /// [`KBuilderKind::Cosx`]).
     pub fn with_cosx(mut self, cosx: crate::cosx_k::CosxConfig) -> Self {
         self.cosx = cosx;
         self
@@ -2396,7 +2398,7 @@ fn rhf_initial_density(
     Ok(d)
 }
 
-/// The LinK screening bound for `k_builder = "link"`, else `None`.
+/// The LinK screening bound for `KBuilderKind::Link`, else `None`.
 ///
 /// `config.screening` selects Schwarz (default — byte-identical to the
 /// pre-CSB/CSAM behaviour of always building a fresh `SchwarzBounds` here),
@@ -2413,12 +2415,12 @@ fn rhf_initial_density(
 /// `screening = "csam"` + an RSH functional a clean, actionable error rather
 /// than a silent substitution.
 fn link_screen(
-    kind: Option<crate::options::KBuilderKind>,
+    kind: Option<KBuilderKind>,
     op: Operator,
     prep: &PreparedBasis,
     config: &RhfConfig,
 ) -> Result<Option<SchwarzBounds>, FerricError> {
-    if kind == Some(crate::options::KBuilderKind::Link) {
+    if kind == Some(KBuilderKind::Link) {
         Ok(Some(SchwarzBounds::compute_for_screening(
             op,
             prep,
@@ -2470,14 +2472,14 @@ struct RhfRoute {
     /// the F assembly never reads `k_buf` when ω > 0. True exactly for pure
     /// HF (k_mix = {1, 1, 0}) and ω = 0 hybrids.
     k_buf_consumed: bool,
-    /// A pluggable K builder ("link" / "cosx") is only consumed on the non-DF
+    /// A pluggable K builder (LinK or COSX) is only consumed on the non-DF
     /// path (see the branch structure of [`RhfJk::build_fock`]): when DF-J or
     /// DF-K is active it would be built and then silently ignored — a
     /// pre-existing silent no-op for "link" — so `resolve_k_builder` warns
     /// and skips construction.
     df_any: bool,
     /// The pluggable K builder this run constructs, if any.
-    pluggable_k: Option<crate::options::KBuilderKind>,
+    pluggable_k: Option<KBuilderKind>,
     /// The builders that produced the energy, for the analytic gradient.
     df_jk_route: Option<crate::result::DfJkRoute>,
 }
@@ -3546,7 +3548,7 @@ impl RhfState {
         // `k_buf` holds K_scf(d) from this iteration's build, so only
         // the final grid is built here.
         let (energy, cosx_final) = match (inp.route.pluggable_k, config.cosx.final_grid.as_ref()) {
-            (Some(crate::options::KBuilderKind::Cosx), Some(fg)) => {
+            (Some(KBuilderKind::Cosx), Some(fg)) => {
                 let rec = crate::cosx_k::run_final_pass(
                     ctx,
                     inp.mol,

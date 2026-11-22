@@ -57,6 +57,7 @@
 //! The functions here are pure and nothing in the solvers reads them back, so
 //! energies and iteration counts are unchanged.
 
+use crate::options::KBuilderKind;
 use ferric_core::mol::Molecule;
 
 /// Coefficient of the screening term `SCREEN_COEFF * integral_thresh * nbf^SCREEN_EXP`.
@@ -139,10 +140,7 @@ pub fn estimate_total_energy_abs(mol: &Molecule) -> f64 {
 /// embedding, and non-default `screening` (CSB, CSAM).
 pub fn is_characterised(config: &crate::rhf::RhfConfig) -> bool {
     config.xc.is_none()
-        && matches!(
-            config.k_builder,
-            None | Some(crate::options::KBuilderKind::Direct)
-        )
+        && matches!(config.k_builder, None | Some(KBuilderKind::Direct))
         && config.pcm.is_none()
         && config.cosmo.is_none()
         && config.polarizable.is_none()
@@ -499,9 +497,9 @@ mod tests {
     fn characterised_scope_excludes_functionals_and_pluggable_k() {
         let mut c = RhfConfig::default();
         assert!(is_characterised(&c));
-        c.k_builder = Some(crate::options::KBuilderKind::Direct);
+        c.k_builder = Some(KBuilderKind::Direct);
         assert!(is_characterised(&c));
-        c.k_builder = Some(crate::options::KBuilderKind::Link);
+        c.k_builder = Some(KBuilderKind::Link);
         assert!(!is_characterised(&c));
         assert!(floor_for_config(&c, 100.0, 50, true).is_none());
         c.k_builder = None;

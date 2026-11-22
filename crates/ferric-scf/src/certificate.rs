@@ -9,6 +9,7 @@
 //! `None`: only `ferric-cli` and `ferric-python` link `ferric-build-info`
 //! and stamp it (see the `ferric_core::certificate` module doc).
 
+use crate::options::KBuilderKind;
 use ferric_core::certificate::{energy_anchor, Certificate, EnergyAnchor, Grade, RunEnvelope};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -199,10 +200,8 @@ fn approximations(
     // so a `k_builder` that density fitting overrode is not certified.
     let pluggable = scf_jk_route(result, config).and_then(|r| r.pluggable_k(config.k_builder));
     match pluggable {
-        Some(crate::options::KBuilderKind::Link) => {
-            out.push(("link", "LinK screened exchange".to_string()))
-        }
-        Some(crate::options::KBuilderKind::Cosx) => {
+        Some(KBuilderKind::Link) => out.push(("link", "LinK screened exchange".to_string())),
+        Some(KBuilderKind::Cosx) => {
             let fin = result.cosx_final.map_or_else(
                 || "no final pass".to_string(),
                 |f| format!("final pass on {} points reported", f.npts_final),
