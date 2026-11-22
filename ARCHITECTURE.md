@@ -45,8 +45,8 @@ ferric-core
   `Default`, so a new *config* field takes its default, exactly as the old
   `..Default::default()` literals did.
 - Parse at the boundary. An options type uses enums and validated newtypes
-  (`AuxBasis { Off, Named }`, `Stability`, `Guess`, `TrahTrigger::new`), not
-  the strings and bools the frontends receive.
+  (`AuxBasis { Off, Named }`, `Stability`, `Guess`, `KBuilderKind`,
+  `TrahTrigger::new`), not the strings and bools the frontends receive.
 - No sentinel values (`0`, `""`, `0.0`, NaN) for "unset", "auto" or "off".
   Use `Option` or an enum. Existing sentinels in `RhfConfig`
   (`three_index_budget_bytes = 0`, `newton_trigger = 0.0`, the empty-string
@@ -341,6 +341,43 @@ Done:
       `run_omega_ri` called the `prepare_with_aux` helper #690 removed);
       fixed as `prepare` + `prepare_aux` (#691).
 
+15. (first part) Types parsed at the boundary, bitwise unchanged for
+    valid input (compared against the 8c build on Python SCF/correlated
+    calls and CLI inputs, every `k_builder` spelling and error case
+    included):
+    - `ferric_scf::options::KBuilderKind { Direct, Link, Cosx }` (named
+      `...Kind`: `fock::KBuilder` is the trait). `RhfConfig::k_builder` is
+      `Option<KBuilderKind>`; `KBuilderKind::parse` is the one whitelist,
+      refusing with the solvers' old text (`FerricError::General`, so
+      Python still raises `RuntimeError("General error: unknown k_builder
+      ...")`). Parsed once per frontend: the six SCF entry points last of
+      their keywords, the correlated entry points when they build their
+      reference config (`rhf_config_budgeted` / `rhf_config_conv`),
+      `run_cdft` before its config, the CLI in `try_scf_config` as its last
+      fallible step. `COSX_K_BUILDER` and the solver-side check are gone;
+      `df_k_aux_or_default`, the J/K route, the certificate, `EffectiveJk`
+      and the COSX schedule take the enum. `ScfJk` no longer copies the
+      builder (`ScfJk::label` takes the config's; `ScfJk::resolve` checks
+      the spelling as typed so its conflicts quote it). The checkpoint
+      identity keeps the old `Debug` text (`Some("cosx")`).
+      Behaviour change, for an unknown spelling only: same class and text,
+      but raised at the boundary rather than by the solver, so whatever ran
+      in between now runs after it (the pre-SCF noise-floor warning, the
+      `with_gradient` / hook / symmetry refusals, in some correlated
+      bindings the basis preparation; the CLI's banners, run-log header and
+      its "SCF ladder failed: General(...)" wrapper are replaced by
+      `error: unknown k_builder ...`).
+    - `options::ks_jk_fit_defaults`: the one home of the Kohn-Sham JK-fit
+      default and the RIJCOSX rule, used by `ScfEntryPoint::options` and by
+      `ksdft_ladder` (which had its own copy).
+    - `ri_j_task` is the argument of `ScfOptions::into_rhf_config`, not an
+      option.
+    - `ferric-python`: `parse_fock_hook` returns one
+      `Option<Hook { fock, grad }>` (same messages and order), carried by
+      the open-shell entry (`OpenShellEntry`, `run_open_ks`).
+    - `ferric.pyi`: the `run_dft` / `run_ksdft` `symmetry=True` overloads
+      type `with_gradient` as `Literal[False]` and `dispersion` as `None`.
+
 Next, each as its own PR following the patterns above:
 
 8d. What 8c left loose: (a) the kernels under the drivers still take a
@@ -427,18 +464,35 @@ Next, each as its own PR following the patterns above:
     instead of reflection.
 14. A shared `ferric-testkit` dev crate, file splits, and a clippy ratchet on
     `too_many_arguments`.
-15. Types still stringly or boolean at the boundary: a `KBuilder` enum parsed
-    once (replacing `k_builder: Option<String>` and `COSX_K_BUILDER`
-    comparisons), a `Functional` newtype for `xc`, `ri_j_task` as an argument
-    to the lowering rather than a user option, and one
-    `Option<Hook { fock, grad }>` instead of the two independent hook
-    options in the open-shell entry.
-    Follow-ups from the 6b review: a `KBuilder` enum parsed at the binding,
-    which `df_k_aux_or_default` then takes; `Option<Symmetry { irrep_nelec }>`
-    instead of `symmetry` + `irrep_nelec`; one solver-capability table in
-    ferric-scf shared by `ScfEntryPoint::refused` and the CLI's
-    `validate_open_shell_scf_keys` / `validate_accelerators`; `ScfKwargs`
-    fields grouped (convergence, J/K route, guess, environment, accelerators,
-    Kohn-Sham); `ksdft_ladder`'s own copy of the KS JK-fit default and the
-    RIJCOSX rule; `run_dft`'s `symmetry=True` overload typing in
-    `ferric.pyi`.
+15. (rest) Still stringly or boolean at the boundary, after the first
+    part above:
+    - `Option<Symmetry { irrep_nelec }>` instead of `symmetry` +
+      `irrep_nelec` in `ScfKwargs` / `ScfOptions` / `RhfConfig`. Not done
+      because `run_rhf` refuses `irrep_nelec` without `symmetry` at three
+      points of its solve path, each reading `RhfConfig` (the
+      `with_gradient` refusal in `scf_gradient_config`, the hooked solve's
+      `validate_fock_hook`, and `solve_rhf_outcome` after the noise-floor
+      warning, each with its own message), while `run_dft` refuses it in
+      the binding. Making it unrepresentable after parsing either changes
+      which message such a call gets, or moves those three refusals into
+      the binding against a parse-time marker; it belongs with 11(b)/(c),
+      where `RhfConfig` itself drops the pair.
+    - A `Functional` newtype for `xc` (`ScfKwargs::functional`,
+      `ScfOptions::xc`, `RhfConfig::xc`). Not contained: the name is
+      validated by libxc in the solver (and by `resolve_dispersion` /
+      the ladder's grid choice before it), so validating it at the
+      boundary moves the unknown-functional error ahead of the dispersion,
+      symmetry and gradient refusals, as `KBuilderKind` did for
+      `k_builder`, and `RhfConfig::xc` is read as a string across the
+      workspace (KS gradients, TDDFT, GW, the CLI's per-kind defaults).
+    - One solver-capability table shared by `ScfEntryPoint::refused` and
+      the CLI's `validate_open_shell_scf_keys` / `validate_accelerators`.
+      Not done: only the open-shell `diis` / `smearing_sigma` refusals are
+      solver capabilities on both sides; the CLI's `aurora` and
+      `trah_trigger` gates are by `method.kind` (refusing `ksdft`, which
+      `run_dft` accepts), so sharing the decision changes CLI behaviour,
+      and the messages differ word for word (Python names the entry point
+      and the solver field, the CLI the `[scf]` key and the multiplicity).
+    - `ScfKwargs` fields grouped (convergence, J/K route, guess,
+      environment, accelerators, Kohn-Sham): mechanical, deferred to keep
+      this PR reviewable; the oracle tests' `kwargs()` mirror moves with it.
