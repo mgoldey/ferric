@@ -1196,7 +1196,7 @@ impl OptimizeCfg {
         ),
         crate::error::CliError,
     > {
-        let err = |e: String| crate::error::CliError::Report(format!("error in [optimize]: {e}"));
+        let err = |e: String| crate::error::CliError::verbatim(format!("error in [optimize]: {e}"));
         let ih = self
             .initial_hessian
             .as_deref()

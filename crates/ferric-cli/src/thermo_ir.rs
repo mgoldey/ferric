@@ -42,7 +42,7 @@ pub(crate) fn thermo_config(cfg: &Config) -> Result<ThermoConfig, CliError> {
         symmetry_number: f.symmetry_number.unwrap_or(d.symmetry_number),
     };
     if let Err(e) = tc.validate() {
-        return Err(CliError::Msg(format!("[frequencies]: {e}")));
+        return Err(CliError::msg(format!("[frequencies]: {e}")));
     }
     Ok(tc)
 }
@@ -56,7 +56,7 @@ pub(crate) fn ir_requested(
 ) -> Result<bool, CliError> {
     match (reference, cfg.frequencies.ir_intensities) {
         (Some(_), want) => Ok(want.unwrap_or(true)),
-        (None, Some(true)) => Err(CliError::Msg(format!(
+        (None, Some(true)) => Err(CliError::msg(format!(
             "[frequencies] ir_intensities = true: IR intensities need the dipole \
              derivative, which ferric computes for the SCF kinds (rhf, uhf, rohf, ksdft) \
              only; method.kind = \"{method}\" has none"
@@ -99,7 +99,7 @@ pub(crate) fn frequency_extras(
             match ir_spectrum(ctx, mol, &bs.name, op, rhf_config, r, res, DEFAULT_IR_FIELD) {
                 Ok(s) => (Some(s), None),
                 Err(e) if cfg.frequencies.ir_intensities == Some(true) => {
-                    return Err(CliError::Report(format!(
+                    return Err(CliError::verbatim(format!(
                         "error computing IR intensities: {e}"
                     )));
                 }

@@ -160,7 +160,8 @@ fn try_main() -> Result<bool, String> {
             let out_log_path = out_dir.join(format!("{}.out", file_stem));
             let err_log_path = out_dir.join(format!("{}.err", file_stem));
 
-            fs::write(&toml_path, config_content).unwrap();
+            fs::write(&toml_path, config_content)
+                .map_err(|e| format!("Failed to write {}: {}", toml_path.display(), e))?;
 
             jobs.push(Job {
                 file_stem,

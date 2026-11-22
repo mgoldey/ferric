@@ -24,7 +24,7 @@ use std::path::Path;
 
 /// `error{what}: {e}` (`what` is empty or starts with a space).
 fn md_error(what: &str, e: impl std::fmt::Display) -> CliError {
-    CliError::Report(format!("error{what}: {e}"))
+    CliError::verbatim(format!("error{what}: {e}"))
 }
 
 /// Prints one table row per recorded frame.
