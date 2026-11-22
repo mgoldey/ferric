@@ -146,6 +146,10 @@ pub enum FreeAtomVolumeQuadrature {
 ///   — the single-atom Hirshfeld integral with the Slater proatom weight
 ///   (1 wherever the Slater ρ⁰ is above the 1e-12 floor).
 ///
+/// The free atom carries `bs`'s effective core potential for `z`, if any
+/// (`Molecule::apply_ecp`), as the molecule's SCF does, so an ECP atom's free
+/// volume is the valence-density volume its molecular volume is compared to.
+///
 /// The free atom is ISOLATED: the molecule's environment (point charges and
 /// field, COSMO/PCM solvent, polarizable sites, cDFT constraints) is not
 /// applied to it, as for the proatoms of [`scf_proatom_provider`]. Otherwise
@@ -186,7 +190,11 @@ pub fn live_free_atom_volume_with(
     })?;
     let free_xyz = format!("1\n{sym}\n{sym} 0 0 0\n");
     let mult = proatom_ground_state_mult(zi);
-    let free_mol = Molecule::parse_xyz(&free_xyz, 0, mult)?;
+    let mut free_mol = Molecule::parse_xyz(&free_xyz, 0, mult)?;
+    // The basis set's ECP, as the molecule's SCF and `scf_proatom_provider`
+    // apply it: an ECP molecule's volumes come from its valence density, so
+    // the free-atom reference must too. A no-op for an all-electron basis.
+    free_mol.apply_ecp(bs);
     let free_obs = PreparedBasis::new(&free_mol, bs)?;
     let free_bounds = SchwarzBounds::compute(op, &free_obs)?;
     let mut free_cfg = rhf_config.clone();

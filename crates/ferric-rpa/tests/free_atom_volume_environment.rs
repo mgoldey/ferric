@@ -111,3 +111,16 @@ fn free_atom_volume_ignores_the_molecular_starting_density() {
         assert_eq!(vac.to_bits(), dm0.to_bits(), "Z={z}: {vac} vs {dm0}");
     }
 }
+
+/// Catches: the free atom solved without the basis set's ECP. Iodine in
+/// def2-SVP has a 28-electron ECP; solved with all 53 electrons in the valence
+/// basis the free-atom UHF panicked (occupied block past the basis dimension).
+/// With the ECP applied it is the 25-electron valence atom, whose volume is a
+/// finite positive number.
+#[test]
+fn free_atom_volume_of_an_ecp_atom_uses_the_ecp() {
+    let ctx = ParallelContext::default();
+    let bs = basis::bundled("def2-svp").expect("def2-svp");
+    let v = live_free_atom_volume(&ctx, 53, &bs, Operator::coulomb(), &base()).expect("iodine");
+    assert!(v.is_finite() && v > 0.0, "iodine free volume {v}");
+}

@@ -1067,6 +1067,11 @@ pub fn scf_proatom_radii() -> Vec<f64> {
 ///   `config.xc` is set, fractional (ensemble) occupation of the degenerate
 ///   frontier orbitals so the open-shell GGA atom stays spherical and converges.
 ///
+/// When `bs` carries an effective core potential for `z`, the free atom gets
+/// it ([`Molecule::apply_ecp`]), exactly as the molecule's SCF does: the
+/// proatom is then the valence density, integrating to `z - n_core`, and
+/// consistent with the (valence) molecular density it partitions.
+///
 /// The total density is spherically averaged by [`spherically_averaged_proatom`]
 /// onto [`scf_proatom_radii`]. It returns `None` — so the Hirshfeld routine
 /// falls back to the Slater proatom of [`slater_xi_for_z`] for that atom — for a
@@ -1088,7 +1093,12 @@ pub fn scf_proatom_provider<'a>(
         let mult = proatom_ground_state_mult(z);
         let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
         let axyz = format!("1\n{sym}\n{sym} 0 0 0\n");
-        let amol = Molecule::parse_xyz(&axyz, 0, mult).ok()?;
+        let mut amol = Molecule::parse_xyz(&axyz, 0, mult).ok()?;
+        // The basis set's ECP, as the molecule's own SCF applies it: the
+        // molecular density of an ECP basis is the valence density, so the
+        // proatom must be the valence density too (and an all-electron count
+        // in an ECP basis overfills it). A no-op for an all-electron basis.
+        amol.apply_ecp(bs);
         let aobs = PreparedBasis::new(&amol, bs).ok()?;
         let abounds = crate::screening::SchwarzBounds::compute(op, &aobs).ok()?;
         let mut acfg = config.clone();
@@ -2137,6 +2147,40 @@ mod tests {
             assert_eq!(pa.radii, pb.radii);
             assert_eq!(pa.rho, pb.rho, "Z={z}");
         }
+    }
+
+    /// An ECP element's free atom carries the basis set's ECP, like the
+    /// molecule's SCF: iodine in def2-SVP (28-electron core) is solved with its
+    /// 25 valence electrons, so the proatom integrates to Z - n_core = 25. It
+    /// used to be solved with all 53 electrons in the valence basis and panicked
+    /// in `UhfState::new` (occupied block past the basis dimension).
+    #[test]
+    fn proatom_provider_applies_the_basis_ecp() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let n_core = bs
+            .ecp_for_element(53)
+            .expect("def2-SVP has an I ECP")
+            .n_core;
+        let ctx = ParallelContext::default();
+        let cfg = RhfConfig::default();
+        let provider = scf_proatom_provider(&ctx, &bs, Operator::coulomb(), &cfg);
+        let pa = provider(53, 0).expect("iodine SCF proatom");
+        // 4 pi Int r^2 rho dr by the trapezoid rule on the 0.05 Bohr table
+        // (the [0, 0.05] Bohr sliver carries ~r^3 of the density: negligible).
+        let (r, rho) = (pa.radii(), pa.rho());
+        let n: f64 = (1..r.len())
+            .map(|k| {
+                let f = |i: usize| r[i] * r[i] * rho[i];
+                0.5 * (f(k - 1) + f(k)) * (r[k] - r[k - 1])
+            })
+            .sum::<f64>()
+            * 4.0
+            * std::f64::consts::PI;
+        let valence = f64::from(53 - n_core);
+        assert!(
+            (n - valence).abs() < 0.05,
+            "iodine proatom holds {n} electrons, expected the {valence} valence ones"
+        );
     }
 
     fn build_h2() -> (
