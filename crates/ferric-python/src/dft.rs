@@ -45,10 +45,8 @@ pub(crate) struct PyDftResult {
     /// `(E_xc, V_xc)` of the converged density, computed on the first
     /// `vxc()` / `e_xc` call and cached. Lazy so a caller who never asks for
     /// it does not pay a grid build + XC evaluation per `run_dft`.
-    pub(crate) xc_cache: std::sync::OnceLock<(f64, Array2<f64>)>,
-    /// Serializes the first evaluation so concurrent first calls build the
-    /// grid once (`OnceLock::get_or_try_init` is not stable).
-    pub(crate) xc_lock: std::sync::Mutex<()>,
+    /// Concurrent first calls build the grid once.
+    pub(crate) xc_cache: crate::compute_once::ComputeOnce<(f64, Array2<f64>)>,
     /// Analytic nuclear gradient (natoms × 3) in Ha/Bohr, when computed
     /// (i.e. `with_gradient=True` was passed to `run_ksdft`). Closed-shell
     /// LDA / GGA / hybrid / RSH only; VV10 nonlocal piece is excluded.
@@ -75,20 +73,13 @@ impl PyDftResult {
             &self.scf_config,
             &self.scf_data.density_total,
         );
-        let (cache, lock) = (&self.xc_cache, &self.xc_lock);
-        // One evaluation even under concurrent first calls: the guard is taken
-        // INSIDE allow_threads, so a waiting thread has released the GIL and
-        // cannot deadlock the thread computing (which needs the GIL back).
+        let cache = &self.xc_cache;
+        // The cache's lock is taken INSIDE allow_threads, so a waiting thread
+        // has released the GIL and cannot deadlock the thread computing.
         py.allow_threads(|| {
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.get().is_none() {
-                let pair = ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d)?;
-                let _ = cache.set(pair);
-            }
-            Ok::<(), ferric_core::FerricError>(())
+            cache.get_or_try_init(|| ferric_scf::rhf::ks_vxc_closed(mol, bs, cfg, d))
         })
-        .map_err(make_err)?;
-        Ok(cache.get().expect("xc_cache is set under xc_lock above"))
+        .map_err(make_err)
     }
 }
 
@@ -826,8 +817,7 @@ pub(crate) fn run_dft(
         converged: rhf.converged,
         xc_mol: sys.into_mol(),
         xc_basis: basis_set.inner.clone(),
-        xc_cache: std::sync::OnceLock::new(),
-        xc_lock: std::sync::Mutex::new(()),
+        xc_cache: crate::compute_once::ComputeOnce::new(),
         gradient_data,
         scf_data: Arc::new(rhf),
         scf_config: Arc::new(rung_cfg),

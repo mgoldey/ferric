@@ -74,6 +74,7 @@ mod blocks;
 mod cc;
 mod cdft;
 mod ci;
+mod compute_once;
 mod conformers;
 mod dft;
 mod gamma;

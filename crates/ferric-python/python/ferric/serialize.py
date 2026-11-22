@@ -20,14 +20,22 @@ ferric class, the ones its schema entry lists) as nested lists. A
 ``molecule_from_dict`` reverses it.
 
 ``RESULT_SCHEMA`` maps each ferric class name to the getters (``fields``) and
-array accessors (``arrays``) ``to_dict`` reads, in output order: a getter added
-to a class is not serialized until it is added there, and a ferric class with
-no entry raises ``TypeError``. A field is written when its value is a scalar
-(above), so a getter that returns a dict or list (``cosx_final_pass``...)
-appears only when it is ``None``, and one that raises ``AttributeError`` or
-``NotImplementedError`` is left out. Any other object (one ferric does not
-define, or a ferric exception) is read by reflection: its public non-callable
-attributes.
+array accessors (``arrays``) ``to_dict`` reads, in output order; a ferric class
+with no entry raises ``TypeError``. It is not free-form: a drift test
+(``tests/test_serialize_schema.py``) keeps each entry equal to its class's
+public getters, minus that class's names in ``NOT_SERIALIZED``. So a getter
+added to a class must be added to its entry (and is then serialized) or, to
+keep it out on purpose, to ``NOT_SERIALIZED`` (empty today).
+
+A field is written only when its value is a scalar (above). Fields listed in
+the schema whose getters return a list or dict (``frequencies``,
+``normal_modes``, ``weights``, ``dm1``, ``ci_vector``...) are therefore filtered
+out and never emitted, and an optional dict (``cosx_final_pass``,
+``guess_basis``...) appears only when it is ``None``; changing that is an
+output change left for its own release. A getter that raises
+``AttributeError`` or ``NotImplementedError`` is left out. Any other object
+(one ferric does not define, or a ferric exception) is read by reflection: its
+public non-callable attributes.
 
 ``read_run_log`` parses the CLI's JSON Lines run log (``--json`` /
 ``<input>.ferric.jsonl``): one object per line, each with ``record`` (kind),
@@ -79,10 +87,16 @@ def _s(fields: str, arrays: str = "") -> ResultSchema:
     return ResultSchema(tuple(fields.split()), tuple(arrays.split()))
 
 
-# The explicit result schema (roadmap item 13). Generated once from the
-# reflected field set of each class, so the output is unchanged; edit it by
-# hand from now on. tests/test_serialize_schema.py checks it is sorted, covers
-# every exported ferric class, and names only attributes the class has.
+# Getters deliberately kept out of a class's schema: class name -> names. The
+# drift test checks RESULT_SCHEMA[cls] == the class's public getters minus
+# these, so this is the one place to exclude a getter. Empty today.
+NOT_SERIALIZED: dict[str, frozenset[str]] = {}
+
+# The result schema (roadmap item 13), generated from the reflected field set
+# of each class so the output did not change. tests/test_serialize_schema.py
+# keeps every entry sorted and equal to its class's public getters minus
+# NOT_SERIALIZED, and requires an entry for every exported ferric class. List-
+# and dict-valued fields in it are filtered out by to_dict (module docstring).
 RESULT_SCHEMA: dict[str, ResultSchema] = {
     "AoIntegrals": _s("nao nelec"),
     "AttenuatedMp2Result": _s(

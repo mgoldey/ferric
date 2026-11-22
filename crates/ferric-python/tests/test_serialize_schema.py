@@ -3,9 +3,10 @@
 Roadmap item 13 replaced the `dir()`/`getattr` scan of `to_dict` with
 `ferric.serialize.RESULT_SCHEMA`. These cases pin that the change is
 output-preserving: the schema of every exported class names exactly the
-attributes the reflection read (so a getter added later must be added to the
-schema, or to `NOT_SERIALIZED` here, on purpose), and `to_dict` / `to_json`
-of real results are byte-identical to the reflection rule, kept below as
+attributes the reflection read, minus the library's exclusion set
+`ferric.serialize.NOT_SERIALIZED` (so a getter added later must be added to
+the schema, or to that set on purpose), and `to_dict` / `to_json` of real
+results are byte-identical to the reflection rule, kept below as
 `_reflected_to_dict` (a verbatim copy of the old `to_dict`). The key order of
 each case was recorded from the pre-schema build in
 `tests/data/serialize_keys.json`.
@@ -28,9 +29,6 @@ import ferric.serialize as fs  # noqa: E402
 from ferric._util import _plain  # noqa: E402
 
 KEYS = json.loads((Path(__file__).parent / "data" / "serialize_keys.json").read_text())
-
-# Getters deliberately left out of a class's schema (none yet): class -> names.
-NOT_SERIALIZED: dict[str, set[str]] = {}
 
 WATER = "3\n\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n"
 OH = "2\n\nO 0 0 0\nH 0 0 0.97\n"
@@ -112,10 +110,17 @@ def _reflected_fields(cls: type) -> list[str]:
 def test_schema_names_the_reflected_attributes(cls):
     entry = fs.RESULT_SCHEMA.get(cls.__name__)
     assert entry is not None, f"RESULT_SCHEMA has no entry for {cls.__name__}"
-    skipped = NOT_SERIALIZED.get(cls.__name__, set())
+    skipped = fs.NOT_SERIALIZED.get(cls.__name__, frozenset())
     assert list(entry.fields) == [f for f in _reflected_fields(cls) if f not in skipped]
     assert list(entry.fields) == sorted(entry.fields)
     assert list(entry.arrays) == [a for a in fs._ARRAY_ACCESSORS if hasattr(cls, a)]
+
+
+def test_exclusions_name_real_getters():
+    classes = {c.__name__: c for c in _exported_classes()}
+    for name, skipped in fs.NOT_SERIALIZED.items():
+        assert name in classes, name
+        assert skipped <= set(_reflected_fields(classes[name])), (name, skipped)
 
 
 def test_schema_has_no_stale_classes():

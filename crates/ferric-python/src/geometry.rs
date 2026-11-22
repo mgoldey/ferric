@@ -1704,12 +1704,9 @@ pub(crate) struct PyFrequencyResult {
     pub(crate) molecule: ferric_core::mol::Molecule,
     /// What `ir_intensities` differentiates, or why it cannot.
     pub(crate) ir_source: Result<IrSource, String>,
-    /// `ir_intensities` after its first call (the class is frozen, so the
-    /// cache is set through a shared reference).
-    pub(crate) ir_cache: std::sync::OnceLock<Vec<f64>>,
-    /// Serializes the first `ir_intensities` evaluation so concurrent first
-    /// calls run the six field SCFs once (as `DftResult::xc_lock`).
-    pub(crate) ir_lock: std::sync::Mutex<()>,
+    /// `ir_intensities` after its first successful call; concurrent first
+    /// calls run the six field SCFs once.
+    pub(crate) ir_cache: crate::compute_once::ComputeOnce<Vec<f64>>,
 }
 
 /// The SCF of a frequency run, kept so `FrequencyResult.ir_intensities` can
@@ -1767,7 +1764,10 @@ impl PyFrequencyResult {
 
     /// IR intensity of each mode in km/mol, in the order of `frequencies`
     /// (the field route: six SCF + gradient evaluations in a field of
-    /// +-1e-3 a.u., computed on the first call and cached).
+    /// +-1e-3 a.u., computed on the first call and cached; concurrent first
+    /// calls compute once). A failed evaluation is not cached, so the next
+    /// call retries: if it fails while other threads wait, each of them
+    /// re-runs the six field SCFs in turn before raising.
     fn ir_intensities(&self, py: Python<'_>) -> PyResult<Vec<f64>> {
         if let Some(a) = self.ir_cache.get() {
             return Ok(a.clone());
@@ -1778,31 +1778,26 @@ impl PyFrequencyResult {
             .map_err(|why| value_error(why.clone()))?;
         let ctx = ParallelContext::default();
         let mol = &self.molecule;
-        let (cache, lock) = (&self.ir_cache, &self.ir_lock);
-        // One evaluation even under concurrent first calls: the guard is taken
-        // INSIDE allow_threads, so a waiting thread has released the GIL.
-        py.allow_threads(|| {
-            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-            if cache.get().is_none() {
-                let apt = ferric_scf::infrared::dipole_derivatives_field(
-                    &ctx,
-                    mol,
-                    &src.basis_name,
-                    Operator::coulomb(),
-                    &src.scf_cfg,
-                    src.reference,
-                    ferric_scf::infrared::DEFAULT_IR_FIELD,
-                )?;
-                let a = ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes)?;
-                let _ = cache.set(a);
-            }
-            Ok::<(), ferric_core::FerricError>(())
-        })
-        .map_err(make_err)?;
-        Ok(cache
-            .get()
-            .expect("ir_cache is set under ir_lock above")
-            .clone())
+        let cache = &self.ir_cache;
+        // The cache's lock is taken INSIDE allow_threads, so a waiting thread
+        // has released the GIL.
+        let a = py
+            .allow_threads(|| {
+                cache.get_or_try_init(|| {
+                    let apt = ferric_scf::infrared::dipole_derivatives_field(
+                        &ctx,
+                        mol,
+                        &src.basis_name,
+                        Operator::coulomb(),
+                        &src.scf_cfg,
+                        src.reference,
+                        ferric_scf::infrared::DEFAULT_IR_FIELD,
+                    )?;
+                    ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes)
+                })
+            })
+            .map_err(make_err)?;
+        Ok(a.clone())
     }
 
     fn __repr__(&self) -> String {
@@ -2852,8 +2847,7 @@ fn frequency_result_to_py(
         certificate_data,
         molecule,
         ir_source,
-        ir_cache: std::sync::OnceLock::new(),
-        ir_lock: std::sync::Mutex::new(()),
+        ir_cache: crate::compute_once::ComputeOnce::new(),
     }
 }
 
@@ -3037,8 +3031,7 @@ pub(crate) fn run_xtb_frequencies(
                             in ferric"
                     .to_string(),
             ),
-            ir_cache: std::sync::OnceLock::new(),
-            ir_lock: std::sync::Mutex::new(()),
+            ir_cache: crate::compute_once::ComputeOnce::new(),
         })
     }
     #[cfg(not(feature = "xtb"))]

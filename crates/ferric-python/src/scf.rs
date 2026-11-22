@@ -1162,28 +1162,38 @@ impl PySymmetricRhfResult {
     fn from_solution(sym: ferric_scf::symmetric::SymmetricRhf) -> Self {
         let mol = sym.molecule();
         let (rotation, origin_bohr) = sym.frame_transform();
-        let scf = sym.scf_in_frame();
+        let symbols = mol.atoms.iter().map(|a| a.symbol.clone()).collect();
+        let coords_angstrom = mol
+            .atoms
+            .iter()
+            .map(|a| {
+                (
+                    a.x / ANGSTROM_TO_BOHR,
+                    a.y / ANGSTROM_TO_BOHR,
+                    a.zpos / ANGSTROM_TO_BOHR,
+                )
+            })
+            .collect();
+        let energy = sym.energy();
+        let point_group = sym.group().to_string();
+        let orbital_irreps = sym.orbital_irreps().to_vec();
+        let max_symmetrization_shift = sym.max_symmetrization_shift();
+        let irrep_occupations = sym.irrep_occupations();
+        // The class keeps no `ScfResult` (its AO matrices are in the rotated
+        // frame and are never returned), so the orbital energies are its only
+        // copy: moved out of the solve, not cloned.
+        let scf = sym.into_scf_in_frame();
         PySymmetricRhfResult {
-            energy: sym.energy(),
+            energy,
             converged: scf.converged,
             iterations: scf.iterations,
-            point_group: sym.group().to_string(),
-            orbital_irreps: sym.orbital_irreps().to_vec(),
-            max_symmetrization_shift: sym.max_symmetrization_shift(),
-            orbital_energies_data: scf.eps_alpha.clone(),
-            irrep_occupations: sym.irrep_occupations(),
-            symbols: mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
-            coords_angstrom: mol
-                .atoms
-                .iter()
-                .map(|a| {
-                    (
-                        a.x / ANGSTROM_TO_BOHR,
-                        a.y / ANGSTROM_TO_BOHR,
-                        a.zpos / ANGSTROM_TO_BOHR,
-                    )
-                })
-                .collect(),
+            point_group,
+            orbital_irreps,
+            max_symmetrization_shift,
+            orbital_energies_data: scf.eps_alpha,
+            irrep_occupations,
+            symbols,
+            coords_angstrom,
             rotation,
             origin_angstrom: origin_bohr.map(|x| x / ANGSTROM_TO_BOHR),
         }

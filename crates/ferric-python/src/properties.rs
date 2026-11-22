@@ -30,12 +30,25 @@ impl<'py> DensitySource<'py> {
 
     /// The solve and its settings as shared handles, for work that runs
     /// with the GIL released: cloning the `Arc`s copies no arrays.
-    fn shared(&self) -> (Arc<ScfResult>, Arc<RhfConfig>) {
-        match self {
-            DensitySource::Rhf(r) => (Arc::clone(&r.scf_data), Arc::clone(&r.scf_config)),
-            DensitySource::Dft(d) => (Arc::clone(&d.scf_data), Arc::clone(&d.scf_config)),
+    fn shared(&self) -> SharedReference {
+        let (scf, config) = match self {
+            DensitySource::Rhf(r) => (&r.scf_data, &r.scf_config),
+            DensitySource::Dft(d) => (&d.scf_data, &d.scf_config),
+        };
+        SharedReference {
+            scf: Arc::clone(scf),
+            config: Arc::clone(config),
         }
     }
+}
+
+/// A reference result's solve and SCF settings, shared with the result
+/// (`DensitySource::shared`).
+pub(crate) struct SharedReference {
+    /// The converged solve (density, orbitals, energies).
+    pub(crate) scf: Arc<ScfResult>,
+    /// The settings it was solved with.
+    pub(crate) config: Arc<RhfConfig>,
 }
 
 impl<'py> FromPyObject<'py> for DensitySource<'py> {
@@ -187,8 +200,7 @@ pub(crate) fn hirshfeld_charges(
 pub(crate) struct HirshfeldJob {
     pub(crate) mol: ferric_core::mol::Molecule,
     pub(crate) bs: ferric_core::basis::BasisSet,
-    pub(crate) scf: Arc<ScfResult>,
-    pub(crate) config: Arc<RhfConfig>,
+    pub(crate) reference: SharedReference,
     pub(crate) use_scf: bool,
 }
 
@@ -199,13 +211,11 @@ impl HirshfeldJob {
         result: &DensitySource,
         proatom: &str,
     ) -> PyResult<Self> {
-        let (scf, config) = result.shared();
         Ok(Self {
             use_scf: parse_proatom(proatom)?,
             mol: ecp_molecule(mol, basis_set),
             bs: basis_set.inner.clone(),
-            scf,
-            config,
+            reference: result.shared(),
         })
     }
 
@@ -213,8 +223,8 @@ impl HirshfeldJob {
         hirshfeld_with_proatoms(
             &self.mol,
             &self.bs,
-            &self.scf.density_total,
-            &self.config,
+            &self.reference.scf.density_total,
+            &self.reference.config,
             self.use_scf,
         )
     }

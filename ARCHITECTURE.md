@@ -449,14 +449,20 @@ Done:
     - `RhfResult` / `DftResult` hold `scf_data: Arc<ScfResult>` and
       `scf_config: Arc<RhfConfig>`; `density()` / `orbital_energies()` read
       the `ScfResult`, and `HirshfeldJob` holds clones of the two `Arc`s
-      (`DensitySource::shared`). Kernels still take `&ScfResult`. Getters
+      (`DensitySource::shared`, a `SharedReference`). `SymmetricRhfResult`
+      keeps no `ScfResult`; its orbital energies are moved out of the solve
+      rather than cloned. Kernels still take `&ScfResult`. Getters
       still return fresh, writable numpy copies.
     - Every result class (and `ResponseModes`, `BoysResult`, `IrcBranch`,
       the conformer statistics classes) is `#[pyclass(frozen)]`.
       `FrequencyResult.ir_intensities`, the one `&mut self` result method,
-      caches in a `OnceLock` behind a `Mutex` like `DftResult::xc_cache`,
-      so concurrent first calls compute once instead of raising
-      `RuntimeError("Already borrowed")`. Assignment to a getter still
+      and `DftResult`'s XC cache use `compute_once::ComputeOnce<T>` (a
+      `OnceLock` set only under its `Mutex`, `get_or_try_init` called inside
+      `allow_threads` with no Python calls in the closure), so concurrent
+      first calls compute once instead of raising
+      `RuntimeError("Already borrowed")`. Errors are not cached (as on
+      main): after a failed first `ir_intensities`, each waiting thread
+      re-runs the six field SCFs in turn. Assignment to a getter still
       raises the same `AttributeError` ("not writable"). Not frozen:
       `ConformerEnsemble` (`set_energy` mutates it) and the `blocks`
       handles (`DfJk`, `XcFunctional` have `&mut self` methods; also
@@ -468,9 +474,14 @@ Done:
       from the reflected field set so the output is byte-identical
       (`tests/test_serialize_schema.py` compares against the old rule kept
       as an oracle, with key orders recorded from the old build in
-      `tests/data/serialize_keys.json`). The value filter is unchanged, so a
-      dict-valued getter (`cosx_final_pass`, `precision`...) still appears
-      only when it is `None`, and `DftResult`'s `e_xc` is still evaluated
+      `tests/data/serialize_keys.json`). It is not free-form: the drift test
+      keeps each entry equal to its class's public getters minus that
+      class's names in `ferric.serialize.NOT_SERIALIZED`, the library's
+      exclusion set (empty), which is where a getter is kept out on purpose.
+      The value filter is unchanged, so list- and dict-valued fields in the
+      schema (`frequencies`, `normal_modes`, `weights`, `dm1`...) are never
+      emitted, an optional dict (`cosx_final_pass`...) appears only when it
+      is `None`, and `DftResult`'s `e_xc` is still evaluated
       (a grid build) by `to_dict`. A ferric class with no entry raises
       `TypeError`; objects ferric does not define (and ferric exceptions)
       are still read by reflection.
@@ -485,8 +496,12 @@ Done:
       `ScfResult` into separate fields; nothing consumes them as a
       reference, so they were not changed. Results are not picklable and
       do not support `copy.deepcopy`, before and after (no `__reduce__`).
-      `to_dict` should stop evaluating `e_xc` (drop it from the schema), a
-      visible output change left for its own PR.
+      `to_dict` should stop evaluating `e_xc` (drop it from the schema) and
+      decide what to do with the list/dict fields: visible output changes
+      left for their own PR. The other `DensitySource` consumers (ESP,
+      CHELPG, RESP, Löwdin/Mulliken, `write_cube`) hold the GIL throughout;
+      they could release it using `DensitySource::shared` as
+      `hirshfeld_charges` does.
 
 Next, each as its own PR following the patterns above:
 
