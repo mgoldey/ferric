@@ -653,7 +653,8 @@ pub(crate) fn run_rhf(
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_rhf", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad = parse_fock_hook_grad("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = parse_fock_hook("run_rhf", fock_hook, fock_hook_grad, with_gradient)?;
+    let fock_hook = hook.as_ref().map(|h| h.fock);
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // The molecule with the basis set's ECP core counts applied (no-op
     // without an ECP basis), so nelec() gives the valence count; the
@@ -726,7 +727,7 @@ pub(crate) fn run_rhf(
     let mut config = options.into_rhf_config().py()?;
     if with_gradient {
         config = scf_gradient_config("run_rhf", ScfGradientKind::Rhf, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
+        if hook.as_ref().is_some_and(|h| h.grad.is_none()) {
             return refuse_hook_without_grad("run_rhf");
         }
     }
@@ -749,13 +750,13 @@ pub(crate) fn run_rhf(
     );
     let user_set = energy_conv.is_some();
     if with_gradient {
-        let hooked = fock_hook
-            .zip(hook_grad.as_ref())
-            .map(|(hook, grad)| RhfGradientHook {
-                hook,
+        let hooked = hook.as_ref().and_then(|h| {
+            h.grad.as_ref().map(|grad| RhfGradientHook {
+                hook: h.fock,
                 grad,
                 user_set_energy_conv: user_set,
-            });
+            })
+        });
         let args = RhfGradientArgs {
             sys: &sys,
             config,
@@ -916,9 +917,30 @@ pub(crate) fn solve_rhf_with_gradient(
     Ok(Py::new(py, result)?.into_any())
 }
 
-/// The `fock_hook_grad` kwarg of `who`, checked: it needs a `fock_hook` and
+/// A `fock_hook=` with the `fock_hook_grad=` that goes with it: a gradient
+/// term without a hook is not representable (see [`parse_fock_hook`]).
+pub(crate) struct Hook<'a, 'py> {
+    /// The hook.
+    pub(crate) fock: &'a Bound<'py, PyAny>,
+    /// Its explicit nuclear derivative (only with `with_gradient=True`).
+    pub(crate) grad: Option<blocks::PyFockHookGrad>,
+}
+
+/// The `fock_hook` / `fock_hook_grad` kwargs of `who`, parsed into one
+/// optional [`Hook`]: `fock_hook_grad` needs a `fock_hook` and
 /// `with_gradient=True` (otherwise it is never read, which raises).
-pub(crate) fn parse_fock_hook_grad(
+pub(crate) fn parse_fock_hook<'a, 'py>(
+    who: &str,
+    fock_hook: Option<&'a Bound<'py, PyAny>>,
+    fock_hook_grad: Option<&Bound<'_, PyAny>>,
+    with_gradient: bool,
+) -> PyResult<Option<Hook<'a, 'py>>> {
+    let grad = parse_fock_hook_grad(who, fock_hook, fock_hook_grad, with_gradient)?;
+    Ok(fock_hook.map(|fock| Hook { fock, grad }))
+}
+
+/// The `fock_hook_grad` half of [`parse_fock_hook`].
+fn parse_fock_hook_grad(
     who: &str,
     fock_hook: Option<&Bound<'_, PyAny>>,
     fock_hook_grad: Option<&Bound<'_, PyAny>>,
@@ -1500,7 +1522,7 @@ pub(crate) fn run_uhf(
     pcm_lebedev_order: Option<usize>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_uhf", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad = parse_fock_hook_grad("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = parse_fock_hook("run_uhf", fock_hook, fock_hook_grad, with_gradient)?;
     let mom_reference =
         parse_mom_reference("run_uhf", mom_reference, mom_after_iter, stability_descent)?;
     let trah_trigger = check_trah_trigger(trah_trigger)?;
@@ -1571,8 +1593,7 @@ pub(crate) fn run_uhf(
         OpenShellEntry {
             sys: &sys,
             config,
-            fock_hook,
-            hook_grad,
+            hook,
             dm0,
             with_gradient,
             user_set_energy_conv: energy_conv.is_some(),
@@ -1654,7 +1675,7 @@ pub(crate) fn run_rohf(
     cosx_overlap_fit: Option<bool>,
 ) -> PyResult<PyUhfResult> {
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad = parse_fock_hook_grad("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = parse_fock_hook("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let sys = prepare(py, mol, basis_set)?;
     let dm0 = match dm0 {
@@ -1716,8 +1737,7 @@ pub(crate) fn run_rohf(
         OpenShellEntry {
             sys: &sys,
             config,
-            fock_hook,
-            hook_grad,
+            hook,
             dm0,
             with_gradient,
             user_set_energy_conv: energy_conv.is_some(),
@@ -1726,15 +1746,14 @@ pub(crate) fn run_rohf(
 }
 
 /// The per-call inputs of [`solve_open_shell_entry`]: the prepared system,
-/// the lowered config, the optional `fock_hook` (and its gradient term), the
+/// the lowered config, the optional [`Hook`] (with its gradient term), the
 /// optional `dm0` and the run switches. There is no separate orbital basis:
 /// the gradient uses the system's ([`PreparedBasis::basis_set`]), so the
 /// solve and the gradient cannot be handed different bases.
 struct OpenShellEntry<'a, 'py> {
     sys: &'a PreparedSystem,
     config: RhfConfig,
-    fock_hook: Option<&'a Bound<'py, PyAny>>,
-    hook_grad: Option<blocks::PyFockHookGrad>,
+    hook: Option<Hook<'a, 'py>>,
     dm0: Option<(Array2<f64>, Array2<f64>)>,
     /// `with_gradient=True`: also return the analytic nuclear gradient.
     with_gradient: bool,
@@ -1759,15 +1778,15 @@ fn solve_open_shell_entry(
     let OpenShellEntry {
         sys,
         mut config,
-        fock_hook,
-        hook_grad,
+        hook,
         dm0,
         with_gradient,
         user_set_energy_conv,
     } = args;
+    let fock_hook = hook.as_ref().map(|h| h.fock);
     if with_gradient {
         config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
+        if hook.as_ref().is_some_and(|h| h.grad.is_none()) {
             return refuse_hook_without_grad(who);
         }
     }
@@ -1800,7 +1819,7 @@ fn solve_open_shell_entry(
         .then(|| {
             let k = gradient_kind;
             let g = scf_gradient(py, k, sys, &config, &r)?;
-            match &hook_grad {
+            match hook.as_ref().and_then(|h| h.grad.as_ref()) {
                 Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }

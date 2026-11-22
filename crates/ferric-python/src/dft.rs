@@ -557,8 +557,9 @@ pub(crate) fn run_dft(
     trah_trigger: Option<f64>,
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), guess, guess_basis)?;
-    let hook_grad =
-        crate::scf::parse_fock_hook_grad("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = crate::scf::parse_fock_hook("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
+    let fock_hook = hook.as_ref().map(|h| h.fock);
+    let hook_grad = hook.as_ref().and_then(|h| h.grad.as_ref());
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -762,7 +763,7 @@ pub(crate) fn run_dft(
         )
         .map_err(make_err)?;
         // The hook's explicit term (its Pulay term is already in `g`).
-        if let Some(h) = &hook_grad {
+        if let Some(h) = hook_grad {
             g = h.add_to(py, g, &rhf, false, emol)?;
         }
         // Dispersion is additive in the ENERGY, so it is additive in the
@@ -1266,8 +1267,7 @@ fn run_open_ks(
     let ri_k_precision = parse_ri_k_precision(ri_k_precision)?;
     let dft_grid =
         resolve_dft_grid_with_cut(grid_radial, grid_angular, grid_prune, grid_weight_cut)?;
-    let hook_grad =
-        crate::scf::parse_fock_hook_grad(who, fock_hook, fock_hook_grad, with_gradient)?;
+    let hook = crate::scf::parse_fock_hook(who, fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     let eri = crate::scf::parse_eri(eri)?;
     let cosx = resolve_cosx_kwargs(
@@ -1330,9 +1330,10 @@ fn run_open_ks(
         OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),
         OpenKs::Roks => (blocks::OpenShell::Rohf, ScfGradientKind::Rohf),
     };
+    let fock_hook = hook.as_ref().map(|h| h.fock);
     if with_gradient {
         config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
-        if fock_hook.is_some() && hook_grad.is_none() {
+        if hook.as_ref().is_some_and(|h| h.grad.is_none()) {
             return crate::scf::refuse_hook_without_grad(who);
         }
     }
@@ -1354,7 +1355,7 @@ fn run_open_ks(
         .then(|| {
             let g = scf_gradient(py, gradient_kind, &sys, &config, &r)?;
             // The hook's explicit term (its Pulay term is already in `g`).
-            match &hook_grad {
+            match hook.as_ref().and_then(|h| h.grad.as_ref()) {
                 Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }
