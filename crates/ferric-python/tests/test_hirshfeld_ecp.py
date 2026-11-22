@@ -17,10 +17,7 @@ Checks (no magic numbers):
   charge is negative and H's positive, and both stay well below 1 e in
   magnitude (a bare-Z pairing would be off by the 28-electron core);
 * the same sign and sum on the Slater-proatom path, which never panicked.
-  Its magnitude is not bounded: the Slater proatom is normalized to the full
-  Z (53 for iodine) while the density is the valence one, which inflates the
-  iodine share (q(I) = -0.67 e here, -1.56 e in CH3I). That normalization is
-  unchanged by this fix.
+  Its ECP-atom proatom is covered by `test_hirshfeld_slater_ecp.py`.
 
 Run:
     OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest \\

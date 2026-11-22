@@ -93,6 +93,7 @@ pub fn hirshfeld_margin() -> f64 {
 }
 
 mod hirshfeld_grid;
+mod slater_proatom;
 pub use hirshfeld_grid::{
     atomic_effective_volumes_hirshfeld, atomic_effective_volumes_hirshfeld_on_grid,
     estimate_hirshfeld_grid_scan_bytes, estimate_hirshfeld_volume_gradient_bytes,
@@ -102,6 +103,7 @@ pub use hirshfeld_grid::{
     preflight_hirshfeld_grid_scan_reserved, HIRSHFELD_GRAD_CHUNK_POINTS,
     HIRSHFELD_VOLUME_CHUNK_POINTS,
 };
+pub use slater_proatom::SlaterProatom;
 
 /// Evaluate the electrostatic potential V(R_A) at each nuclear position,
 /// excluding the divergent self-interaction Z_A/|R_A − R_A|.
@@ -2037,7 +2039,10 @@ fn solve_resp_restrained_with_max_iter(
 /// qualitative: on H2O, CO and CH3OH they differ from the free-atom SCF
 /// proatom charges by 0.23–0.72 e and flip the sign of the CH3OH carbon
 /// (`crates/ferric-rpa/tests/validation_hirshfeld.rs`).
-/// [`scf_proatom_provider`] supplies the free-atom SCF proatoms. The additive per-atom
+/// [`scf_proatom_provider`] supplies the free-atom SCF proatoms. An atom
+/// carrying an ECP does not use this exponent: [`SlaterProatom::for_atom`]
+/// gives it a valence-shell proatom instead (a single exponential has no core
+/// to remove). The additive per-atom
 /// polarizability partition in `pdep_polarizability_hirshfeld` is less
 /// sensitive to the proatom shape, since its sum rule is enforced numerically.
 pub fn slater_xi_for_z(z: i32) -> f64 {
@@ -2181,6 +2186,39 @@ mod tests {
             (n - valence).abs() < 0.05,
             "iodine proatom holds {n} electrons, expected the {valence} valence ones"
         );
+    }
+
+    /// The Slater fallback proatom of an ECP atom holds the valence electrons
+    /// of the density it partitions: iodine with def2-SVP's ECP applied (as
+    /// every Hirshfeld caller passes the molecule) integrates to 53 - 28 = 25,
+    /// numerically as well as by construction, and H keeps the single
+    /// exponential normalized to 1.
+    #[test]
+    fn slater_fallback_proatom_of_an_ecp_atom_is_the_valence_one() {
+        let bs = basis::bundled("def2-svp").unwrap();
+        let mut mol = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 3.3\n", 0, 1).unwrap();
+        mol.apply_ecp(&bs);
+        assert_eq!(mol.atoms[1].n_core_ecp, 28);
+        let quad = |p: &SlaterProatom| -> f64 {
+            let h = 1e-3;
+            (1..=40_000)
+                .map(|k| {
+                    let r = k as f64 * h;
+                    r * r * p.at(r) * h
+                })
+                .sum::<f64>()
+                * 4.0
+                * std::f64::consts::PI
+        };
+        let i = SlaterProatom::for_atom(&mol.atoms[1]);
+        assert!(
+            (i.n_electrons() - 25.0).abs() < 1e-12,
+            "{}",
+            i.n_electrons()
+        );
+        assert!((quad(&i) - 25.0).abs() < 1e-6, "{}", quad(&i));
+        let h = SlaterProatom::for_atom(&mol.atoms[0]);
+        assert!((quad(&h) - 1.0).abs() < 1e-6, "{}", quad(&h));
     }
 
     fn build_h2() -> (
