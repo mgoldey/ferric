@@ -16,7 +16,14 @@
 //! [`PreparedSystem::prepare_aux`], which returns a [`PreparedAux`] that
 //! borrows the system it was prepared for and names it
 //! ([`PreparedAux::system`]).
+//!
+//! The system owns its screening: the bounds were built for one
+//! [`ScreeningKind`] ([`PrepareOptions::screening`]), and the solve methods
+//! run every config with that kind ([`PreparedSystem::screening`]), whatever
+//! its `RhfConfig::screening` says, so direct J/K (which reads the bounds'
+//! tables) and LinK (which reads the config) cannot screen with two kinds.
 
+use std::borrow::Cow;
 use std::ops::Deref;
 
 use ferric_core::basis::BasisSet;
@@ -40,7 +47,8 @@ pub struct PrepareOptions {
     /// ([`SchwarzBounds::compute_for_screening`]): `Schwarz` leaves both
     /// refinement tables unset, `Csb` / `Csam` attach theirs. A solver whose
     /// `RhfConfig::screening` should agree reads it back through
-    /// [`PreparedSystem::screening`], which derives it from the bounds.
+    /// [`PreparedSystem::screening`], which derives it from the bounds; the
+    /// system's own solve methods apply it to every config they run.
     pub screening: ScreeningKind,
     /// The parallel execution context the system's solvers run in.
     pub ctx: ParallelContext,
@@ -182,7 +190,25 @@ impl PreparedSystem {
         &self.ctx
     }
 
-    /// [`solve_rhf`](crate::rhf::solve_rhf) on this system.
+    /// `config` with [`Self::screening`] in place of its own
+    /// `RhfConfig::screening`: borrowed when the two agree (every caller
+    /// today), else a copy. A copy shares the original's internal records
+    /// (`eri_route`, `raw_handoff` are shared handles), so what the solver
+    /// writes there is still read through `config`.
+    pub fn screened<'c>(&self, config: &'c RhfConfig) -> Cow<'c, RhfConfig> {
+        let screening = self.screening();
+        if config.screening == screening {
+            Cow::Borrowed(config)
+        } else {
+            Cow::Owned(RhfConfig {
+                screening,
+                ..config.clone()
+            })
+        }
+    }
+
+    /// [`solve_rhf`](crate::rhf::solve_rhf) on this system, with the
+    /// system's screening ([`Self::screened`]).
     pub fn solve_rhf(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {
         crate::rhf::solve_rhf(
             &self.ctx,
@@ -190,16 +216,24 @@ impl PreparedSystem {
             &self.basis,
             self.op(),
             &self.bounds,
-            config,
+            &self.screened(config),
         )
     }
 
-    /// [`solve_uhf`](crate::uhf::solve_uhf) on this system.
+    /// [`solve_uhf`](crate::uhf::solve_uhf) on this system, with the
+    /// system's screening ([`Self::screened`]).
     pub fn solve_uhf(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {
-        crate::uhf::solve_uhf(&self.ctx, &self.mol, &self.basis, &self.bounds, config)
+        crate::uhf::solve_uhf(
+            &self.ctx,
+            &self.mol,
+            &self.basis,
+            &self.bounds,
+            &self.screened(config),
+        )
     }
 
-    /// [`solve_rohf`](crate::rohf::solve_rohf) on this system.
+    /// [`solve_rohf`](crate::rohf::solve_rohf) on this system, with the
+    /// system's screening ([`Self::screened`]).
     pub fn solve_rohf(&self, config: &RhfConfig) -> Result<ScfResult, FerricError> {
         crate::rohf::solve_rohf(
             &self.ctx,
@@ -207,7 +241,7 @@ impl PreparedSystem {
             &self.basis,
             self.op(),
             &self.bounds,
-            config,
+            &self.screened(config),
         )
     }
 
@@ -224,15 +258,30 @@ impl PreparedSystem {
         scf.into_converged()
     }
 
-    /// [`solve_rhf_ladder`](crate::ladder::solve_rhf_ladder) on this system.
+    /// [`solve_rhf_ladder`](crate::ladder::solve_rhf_ladder) on this system,
+    /// every rung with the system's screening ([`Self::screened`]).
     pub fn solve_rhf_ladder(&self, ladder: &[Rung]) -> Result<LadderResult, FerricError> {
+        let screening = self.screening();
+        let ladder: Cow<'_, [Rung]> = if ladder.iter().all(|r| r.config.screening == screening) {
+            Cow::Borrowed(ladder)
+        } else {
+            Cow::Owned(
+                ladder
+                    .iter()
+                    .map(|r| Rung {
+                        config: self.screened(&r.config).into_owned(),
+                        restart: r.restart,
+                    })
+                    .collect(),
+            )
+        };
         crate::ladder::solve_rhf_ladder(
             &self.ctx,
             &self.mol,
             &self.basis,
             self.op(),
             &self.bounds,
-            ladder,
+            &ladder,
         )
     }
 }
@@ -377,6 +426,55 @@ mod tests {
             assert_eq!(sys.bounds().csb_m.is_some(), kind == ScreeningKind::Csb);
             assert_eq!(sys.bounds().csam_x.is_some(), kind == ScreeningKind::Csam);
         }
+    }
+
+    #[test]
+    fn the_solve_methods_run_with_the_systems_screening() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let options = PrepareOptions {
+            screening: ScreeningKind::Csb,
+            ..Default::default()
+        };
+        let sys = EcpMolecule::new(mol, &bs).prepare(options).unwrap();
+        let agreeing = RhfConfig {
+            screening: ScreeningKind::Csb,
+            ..Default::default()
+        };
+        assert!(matches!(sys.screened(&agreeing), Cow::Borrowed(_)));
+        // A config that disagrees runs as the agreeing one: the same
+        // energy, bit for bit, as the loose solver with the system's kind.
+        let disagreeing = RhfConfig::default();
+        assert_eq!(disagreeing.screening, ScreeningKind::Schwarz);
+        let screened = sys.screened(&disagreeing);
+        assert!(matches!(screened, Cow::Owned(_)));
+        assert_eq!(screened.screening, ScreeningKind::Csb);
+        let want = crate::rhf::solve_rhf(
+            sys.ctx(),
+            sys.mol(),
+            sys.basis(),
+            sys.op(),
+            sys.bounds(),
+            &agreeing,
+        )
+        .unwrap();
+        let got = sys.solve_rhf(&disagreeing).unwrap();
+        assert_eq!(got.energy.to_bits(), want.energy.to_bits());
+        let rung = |config: RhfConfig| Rung {
+            config,
+            restart: false,
+        };
+        let lr = sys.solve_rhf_ladder(&[rung(disagreeing.clone())]).unwrap();
+        let lw = sys.solve_rhf_ladder(&[rung(agreeing)]).unwrap();
+        assert_eq!(lr.result.energy.to_bits(), lw.result.energy.to_bits());
+        // The solver's route record is still read through the caller's config.
+        let route = disagreeing.eri_route.get().expect("an in-core route");
+        assert_eq!(route.nbasis, sys.basis().nbasis());
     }
 
     #[test]
