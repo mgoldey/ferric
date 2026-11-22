@@ -231,11 +231,11 @@ impl PreparedSystem {
     /// - the β fields match [`ScfResult::spin`]: a `Restricted` result has
     ///   no β MOs or orbital energies, an `Unrestricted` one has both (a
     ///   `RestrictedOpen` result may have either);
-    /// - the total density is `nbasis × nbasis` ([`Self::basis`]);
-    /// - each spin's MO coefficients have `nbasis` AO rows and one orbital
-    ///   energy per MO, and the occupied orbitals of [`Self::mol`]'s
-    ///   electron count and multiplicity fit in its MOs (a result without β
-    ///   fields is checked for both spins on its α ones).
+    /// - each spin's MO coefficients have `nbasis` AO rows ([`Self::basis`])
+    ///   and one orbital energy per MO, and the occupied orbitals of
+    ///   [`Self::mol`]'s electron count and multiplicity fit in its MOs (a
+    ///   result without β fields is checked for both spins on its α ones);
+    /// - the total density is `nbasis × nbasis`.
     ///
     /// A reference of another molecule in a basis of the same size (or of
     /// another geometry) is not detected.
@@ -253,14 +253,6 @@ impl PreparedSystem {
                 scf.spin, beta.0, beta.1
             ));
         }
-        let nbasis = self.basis.nbasis();
-        let (rows, cols) = scf.density_total.dim();
-        if (rows, cols) != (nbasis, nbasis) {
-            return reference_mismatch(format!(
-                "its total density is {rows}x{cols}, but the system's orbital basis has \
-                 {nbasis} functions"
-            ));
-        }
         let (n_alpha, n_beta) = self.occupied_counts();
         let subject = "the reference SCF result does";
         self.check_spin_orbitals(subject, "alpha", &scf.mos_alpha, &scf.eps_alpha, n_alpha)?;
@@ -270,7 +262,16 @@ impl PreparedSystem {
             scf.mos_beta.as_ref().unwrap_or(&scf.mos_alpha),
             scf.eps_beta.as_ref().unwrap_or(&scf.eps_alpha),
             n_beta,
-        )
+        )?;
+        let nbasis = self.basis.nbasis();
+        let (rows, cols) = scf.density_total.dim();
+        if (rows, cols) != (nbasis, nbasis) {
+            return reference_mismatch(format!(
+                "its total density is {rows}x{cols}, but the system's orbital basis has \
+                 {nbasis} functions"
+            ));
+        }
+        Ok(())
     }
 
     /// The per-spin part of [`Self::check_reference`] for closed-shell
