@@ -606,11 +606,11 @@ pub(crate) fn run_qmmm(
         ));
     }
 
-    let sys = &system.inner;
+    let mm_sys = &system.inner;
     let bs = basis::bundled(basis_name).map_err(make_err)?;
-    let qm = PreparedSystem::new(sys.to_qm_molecule(), &bs).map_err(make_err)?;
-    let (ctx, mol, prep, op, bounds) = (qm.ctx(), qm.mol(), qm.basis(), qm.op(), qm.bounds());
-    let polarizable = if sys.to_polarizable_sites().is_empty() {
+    let sys = PreparedSystem::new(mm_sys.to_qm_molecule(), &bs).map_err(make_err)?;
+    let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
+    let polarizable = if mm_sys.to_polarizable_sites().is_empty() {
         None
     } else {
         let scheme =
@@ -618,7 +618,7 @@ pub(crate) fn run_qmmm(
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let bonds: Option<Vec<(usize, usize)>> =
             mm_topology.map(|t| t.inner.bonds.iter().map(|b| (b.i, b.j)).collect());
-        let ids = sys
+        let ids = mm_sys
             .polarization_molecule_ids(scheme, bonds.as_deref())
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let thole_a = match thole_a {
@@ -626,7 +626,8 @@ pub(crate) fn run_qmmm(
             Some(a) if a > 0.0 => Some(a),
             Some(_) => None,
         };
-        sys.polarizable_embedding(thole_a, ids.as_deref())
+        mm_sys
+            .polarizable_embedding(thole_a, ids.as_deref())
             .map_err(make_err)?
     };
     let mut config = RhfConfig {
@@ -636,7 +637,7 @@ pub(crate) fn run_qmmm(
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         use_sad_guess: parse_guess(guess)?,
-        external_potential: sys.to_external_potential(),
+        external_potential: mm_sys.to_external_potential(),
         polarizable,
         ..Default::default()
     };
@@ -784,23 +785,24 @@ pub(crate) fn run_qmmm(
     };
     let (e_pol, induced_dipoles_data) = e_pol;
 
-    let forces = mm_forces(sys, mol, prep, r.density_total()).map_err(make_err)?;
+    let forces = mm_forces(mm_sys, mol, prep, r.density_total()).map_err(make_err)?;
 
     let (mm_energy, mut full) = match mm_topology {
         Some(top) => {
-            let n = sys.atoms.len();
+            let n = mm_sys.atoms.len();
             let mut coords_full = Array2::<f64>::zeros((n, 3));
-            for (i, a) in sys.atoms.iter().enumerate() {
+            for (i, a) in mm_sys.atoms.iter().enumerate() {
                 coords_full[(i, 0)] = a.x;
                 coords_full[(i, 1)] = a.y;
                 coords_full[(i, 2)] = a.z_pos;
             }
-            let (e_mm, g_mm) = qmmm_mm_terms(sys, &top.inner, &coords_full).map_err(make_err)?;
-            let full = full_gradient_with_mm(sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
+            let (e_mm, g_mm) = qmmm_mm_terms(mm_sys, &top.inner, &coords_full).map_err(make_err)?;
+            let full = full_gradient_with_mm(mm_sys, &qm_grad, &forces, &g_mm).map_err(make_err)?;
             (e_mm, full)
         }
         None => {
-            let full = ferric_scf::qmmm::full_gradient(sys, &qm_grad, &forces).map_err(make_err)?;
+            let full =
+                ferric_scf::qmmm::full_gradient(mm_sys, &qm_grad, &forces).map_err(make_err)?;
             (ferric_mm::MmEnergy::default(), full)
         }
     };
@@ -820,7 +822,7 @@ pub(crate) fn run_qmmm(
             .as_ref()
             .expect("polarizable config always produces dipoles");
         let site_rows = ferric_scf::qmmm::polarizable_site_gradient(
-            sys,
+            mm_sys,
             mol,
             prep,
             r.density_total(),
@@ -836,7 +838,7 @@ pub(crate) fn run_qmmm(
         }
         if let Some(ext) = ext {
             let charge_rows =
-                ferric_scf::qmmm::polarizable_charge_gradient_rows(sys, ext, pol, dipoles);
+                ferric_scf::qmmm::polarizable_charge_gradient_rows(mm_sys, ext, pol, dipoles);
             for (full_idx, g) in charge_rows {
                 for k in 0..3 {
                     full[(full_idx, k)] += g[k];
@@ -848,7 +850,7 @@ pub(crate) fn run_qmmm(
     let certificate_data = ferric_scf::certificate::qmmm_certificate(
         method,
         &reference_certificate(mol, &r, &config, &bs),
-        sys,
+        mm_sys,
         mm_topology.map(|t| t.inner.n_atoms()),
         r.converged,
     );
