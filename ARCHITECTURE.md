@@ -286,6 +286,25 @@ Done:
       kernel next to another system's basis; that needs item 8c. As before,
       an aux set without ECP data carries the all-electron charge on an ECP
       atom (it matters only to a kernel that reads the aux basis's charges).
+9b. `ferric_core::method_result::MethodResult` (`total_energy`,
+    `certificate` as a `Cow<Certificate>`) and `result_getters!` in
+    ferric-python, which declares each result class's shared getters
+    (`certificate`, `timings`, the `energy`/`total_energy` alias) once, as
+    a second `#[pymethods]` block (pyo3's `multiple-pymethods` feature:
+    pyo3 rejects a macro item inside a `#[pymethods]` impl). Names,
+    docstrings, values and certificate keys are unchanged. Implementers are
+    the ferric-python result classes that hold one total energy and a
+    certificate: RHF/UHF/DFT/CDFT, the Gamma and k-point SCF and
+    correlation results, the RI-MP2 family, MP3, double hybrids, the two
+    RPA results and CASCI/CASSCF/NEVPT2. Not implementers: the kernel
+    result types (none carries a certificate; it is built from the result
+    plus inputs it does not keep); results with no single total energy
+    (CC, EOM-CCSD, GW, BSE, TDDFT, OP-MP3, CDFT coupling, MD) and task
+    results (optimize, saddle, frequencies, QM/MM, whose `energy` is the
+    embedded QM energy), which take `certificate: field ...` from the
+    macro instead; `SymmetricRhfResult`, which has no certificate.
+    `timings` is not in the trait: only periodic results carry them, as a
+    ferric-pbc `PbcTimings` ferric-core cannot name.
 -  COSX for `run_uks`/`run_roks`: they now apply
    `df_k_aux_or_default`. Before, they applied the RI-K default even under
    COSX, so a COSX call with HF exchange or a global hybrid (the functionals
@@ -321,8 +340,6 @@ Next, each as its own PR following the patterns above:
     the Python bindings still prepare the basis and bounds with the GIL
     held; (g) with `rhf_start` gone, `rhf_start_prepared` can take its
     name back.
-9b. A `MethodResult` trait (`total_energy`, `certificate`, `timings`) and a
-   declarative macro for the shared Python result getters.
 10. A Python exception hierarchy rooted in today's classes.
 11. `RhfConfig` in steps, each with a field-by-field oracle test:
     (a) route every literal site through an options lowering, then mark it
