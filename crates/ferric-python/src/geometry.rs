@@ -34,9 +34,8 @@ impl PyOptimizeResult {
     /// approximations, and a run with `converged = False` is `not graded`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::certificate_dict(py, &self.certificate_data)
     }
-
     /// The optimized geometry as a new `Molecule`.
     fn mol(&self) -> PyMolecule {
         PyMolecule {
@@ -1720,6 +1719,16 @@ pub(crate) struct IrSource {
 
 #[pymethods]
 impl PyFrequencyResult {
+    /// Validation certificate of this result (dict form of
+    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
+    /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
+    /// is the reference whose grade, approximations and warnings it inherits,
+    /// the Hessian construction is recorded as the `hessian` approximation,
+    /// and each imaginary frequency count is a warning.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::certificate_dict(py, &self.certificate_data)
+    }
     /// RRHO thermochemistry (dict; see the .pyi). Imaginary modes are left
     /// out with a `RuntimeWarning`.
     #[pyo3(signature = (temperature=298.15, pressure=101325.0, symmetry_number=1))]
@@ -1781,17 +1790,6 @@ impl PyFrequencyResult {
         let a = ferric_scf::infrared::ir_intensities(&apt, &src.normal_modes).map_err(make_err)?;
         self.ir_cache = Some(a.clone());
         Ok(a)
-    }
-
-    /// Validation certificate of this result (dict form of
-    /// `ferric_core::certificate::Certificate`; see `RhfResult.certificate`).
-    /// `capability` is `"frequencies:<kind>"`; the SCF at the input geometry
-    /// is the reference whose grade, approximations and warnings it inherits,
-    /// the Hessian construction is recorded as the `hessian` approximation,
-    /// and each imaginary frequency count is a warning.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
     }
 
     fn __repr__(&self) -> String {

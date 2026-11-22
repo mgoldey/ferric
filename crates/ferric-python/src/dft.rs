@@ -1,8 +1,11 @@
 //! KS-DFT and double-hybrid bindings: moved verbatim from `lib.rs`.
 
 use super::*;
+use crate::method_result::MethodResult;
 use crate::scf::{scf_options_from_kwargs, FockHook};
+use ferric_core::certificate::Certificate;
 use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
+use std::borrow::Cow;
 
 // ── KS-DFT ──
 
@@ -88,14 +91,39 @@ impl PyDftResult {
     }
 }
 
-#[pymethods]
-impl PyDftResult {
-    /// Alias of `total_energy` (the same value), so callers can read either spelling.
-    #[getter]
-    fn energy(&self) -> f64 {
+impl MethodResult for PyDftResult {
+    fn total_energy(&self) -> f64 {
         self.total_energy
     }
+    fn certificate(&self) -> Cow<'_, Certificate> {
+        let c = scf_kind_certificate(
+            &self.xc_mol,
+            &self.scf_data,
+            &self.scf_config,
+            &self.xc_basis,
+            self.fock_hooked,
+        );
+        Cow::Owned(match self.dispersion_model.as_deref() {
+            Some(m) => c.with_approximation("dispersion", m),
+            None => c,
+        })
+    }
+}
 
+#[pymethods]
+impl PyDftResult {
+    #[doc = alias_doc!(total_energy)]
+    #[getter]
+    fn energy(&self) -> f64 {
+        crate::method_result::total_energy_getter(self)
+    }
+    /// Validation certificate of this result (see `RhfResult.certificate`),
+    /// with a `dispersion` approximation when a correction was added to
+    /// `total_energy`.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
+        crate::method_result::certificate_getter(py, self)
+    }
     /// Precision provenance of this KS-DFT SCF (see `RhfResult.precision`;
     /// the `xc-vxc` kernel carries a `ladder` record).
     #[getter]
@@ -114,24 +142,6 @@ impl PyDftResult {
     #[getter]
     fn ri_k_precision(&self) -> Option<&'static str> {
         self.scf_data.ri_k_precision().map(|p| p.as_str())
-    }
-    /// Validation certificate of this result (see `RhfResult.certificate`),
-    /// with a `dispersion` approximation when a correction was added to
-    /// `total_energy`.
-    #[getter]
-    fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let c = scf_kind_certificate(
-            &self.xc_mol,
-            &self.scf_data,
-            &self.scf_config,
-            &self.xc_basis,
-            self.fock_hooked,
-        );
-        let c = match self.dispersion_model.as_deref() {
-            Some(m) => c.with_approximation("dispersion", m),
-            None => c,
-        };
-        certificate_dict(py, &c)
     }
     /// Exchange-correlation potential V_xc[D] of the converged density `D`
     /// (`density()`), as an AO matrix (n_bf x n_bf), on the SCF's own XC grid.
@@ -279,6 +289,8 @@ pub(crate) struct PyDoubleHybridResult {
     pub(crate) certificate_data: ferric_core::certificate::Certificate,
 }
 
+stored_method_result!(PyDoubleHybridResult, total_energy: total_energy, certificate: certificate_data);
+
 #[pymethods]
 impl PyDoubleHybridResult {
     /// Validation certificate (see `RhfResult.certificate`): capability
@@ -290,7 +302,7 @@ impl PyDoubleHybridResult {
     /// `spin-component-scaling`.
     #[getter]
     fn certificate(&self, py: Python<'_>) -> PyResult<PyObject> {
-        certificate_dict(py, &self.certificate_data)
+        crate::method_result::certificate_getter(py, self)
     }
     fn __repr__(&self) -> String {
         format!(
