@@ -1,7 +1,7 @@
 //! KS-DFT and double-hybrid bindings: moved verbatim from `lib.rs`.
 
 use super::*;
-use crate::scf::scf_options_from_kwargs;
+use crate::scf::{scf_options_from_kwargs, FockHook};
 use ferric_scf::options::entry::{ScfEntryPoint, ScfKwargs};
 
 // ── KS-DFT ──
@@ -558,8 +558,8 @@ pub(crate) fn run_dft(
 ) -> PyResult<PyObject> {
     refuse_dm0_with_guess("run_dft", dm0.is_some(), guess, guess_basis)?;
     let hook = crate::scf::parse_fock_hook("run_dft", fock_hook, fock_hook_grad, with_gradient)?;
-    let fock_hook = hook.as_ref().map(|h| h.fock);
-    let hook_grad = hook.as_ref().and_then(|h| h.grad.as_ref());
+    let fock_hook = hook.as_ref().map(FockHook::callable);
+    let hook_grad = hook.as_ref().and_then(FockHook::grad);
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -1334,10 +1334,10 @@ fn run_open_ks(
         OpenKs::Uks => (blocks::OpenShell::Uhf, ScfGradientKind::Uhf),
         OpenKs::Roks => (blocks::OpenShell::Rohf, ScfGradientKind::Rohf),
     };
-    let fock_hook = hook.as_ref().map(|h| h.fock);
+    let fock_hook = hook.as_ref().map(FockHook::callable);
     if with_gradient {
         config = scf_gradient_config(who, gradient_kind, &config, fock_hook)?;
-        if hook.as_ref().is_some_and(|h| h.grad.is_none()) {
+        if hook.as_ref().is_some_and(FockHook::lacks_grad) {
             return crate::scf::refuse_hook_without_grad(who);
         }
     }
@@ -1359,7 +1359,7 @@ fn run_open_ks(
         .then(|| {
             let g = scf_gradient(py, gradient_kind, &sys, &config, &r)?;
             // The hook's explicit term (its Pulay term is already in `g`).
-            match hook.as_ref().and_then(|h| h.grad.as_ref()) {
+            match hook.as_ref().and_then(FockHook::grad) {
                 Some(h) => h.add_to(py, g, &r, true, emol),
                 None => Ok(g),
             }
