@@ -118,7 +118,8 @@ pub(crate) fn run_omega_ri(
     )?;
     let budget = budget_bytes_from_gb(memory_budget_gb);
     let fc = frozen_core.unwrap_or(0);
-    let (sys, dfbs) = prepare_with_aux(mol, basis_set, auxbasis)?;
+    let sys = prepare(mol, basis_set)?;
+    let dfbs = prepare_aux(&sys, auxbasis)?;
     // RHF for a singlet, UHF otherwise; non-convergence is an error.
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
     let (emol, prep) = (sys.mol(), sys.basis());
