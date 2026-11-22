@@ -1,4 +1,4 @@
-//! [`MethodResult`]: what every method result with a total energy and a
+//! [`MethodResult`](crate::method_result::MethodResult): what every method result with a total energy and a
 //! validation certificate offers, whatever the method.
 //!
 //! The trait is deliberately small (ARCHITECTURE.md, "Shared structure"): it
