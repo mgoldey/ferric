@@ -334,6 +334,7 @@ impl PyDoubleHybridResult {
 #[pyo3(signature = (mol, basis_set, auxbasis, kind="b2plyp", frozen_core=None, k_builder=None, memory_budget_gb=None, scf_max_iter=None, scf_energy_conv=None, scf_density_conv=None, scf_ri_j_precision=None, dispersion=None, unrestricted=false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_double_hybrid(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -369,8 +370,8 @@ pub(crate) fn run_double_hybrid(
     };
     let open_shell = unrestricted || mol.inner.multiplicity > 1;
 
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
 
     let cfg = rhf_config_conv(
@@ -568,7 +569,7 @@ pub(crate) fn run_dft(
     // ECP basis), so `nelec()` is the valence count the SCF occupies and
     // `dm0` is checked against it, as in `run_rhf`; every later step uses
     // this molecule.
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let (ctx, emol, prep, op) = (sys.ctx(), sys.mol(), sys.basis(), sys.op());
     // Parse the string/PyO3 kwargs in the order the pre-`ScfOptions`
     // construction evaluated them, so a call with several bad kwargs raises
@@ -1252,7 +1253,7 @@ fn run_open_ks(
     // Refuse a molecule whose electron count cannot carry the multiplicity
     // before any integral work (an odd count with multiplicity 1, ...).
     let n_spin = spin_counts(ecp.mol(), who)?;
-    let sys = prepare_ecp(ecp)?;
+    let sys = prepare_ecp(py, ecp)?;
     let (emol, prep) = (sys.mol(), sys.basis());
     let dm0 = blocks::checked_dm0_spin(dm0, prep, n_spin, who)?;
     // Parsed in the order the pre-`ScfOptions` construction evaluated them;

@@ -233,8 +233,8 @@ pub(crate) fn run_gw(
 
     let gw_method = parse_gw_method(method)?;
 
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let mol = sys.mol();
 
     let cfg = rhf_config_conv(
@@ -470,6 +470,7 @@ impl PyUGwResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_u_gw(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -508,8 +509,8 @@ pub(crate) fn run_u_gw(
         }
     };
 
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     let mut cfg = rhf_config_conv(
@@ -762,6 +763,7 @@ impl PyBseResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_bse_tda(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -785,8 +787,8 @@ pub(crate) fn run_bse_tda(
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     );
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let scf = sys
         .solve_rhf(&cfg)
         .and_then(ScfResult::into_converged)
@@ -921,6 +923,7 @@ impl PyTdhfStaticPolarizabilityResult {
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tdhf_static_polarizability(
+    py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     auxbasis: &PyBasisSet,
@@ -942,8 +945,8 @@ pub(crate) fn run_tdhf_static_polarizability(
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
     use ferric_gw::bse::run_rpax_static_polarizability;
 
-    let sys = prepare(mol, basis_set)?;
-    let dfbs = prepare_aux(&sys, auxbasis)?;
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
 
     // KS reference (required — see doc comment above), same ladder path

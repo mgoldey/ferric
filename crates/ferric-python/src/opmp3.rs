@@ -214,9 +214,9 @@ pub(crate) fn run_opmp3(
         ..Opmp3Config::new(kind)
     };
     let x = config.resolved_x_ss().map_err(make_err)?;
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let mol = sys.mol();
-    let aux = auxbasis.map(|a| prepare_aux(&sys, a)).transpose()?;
+    let aux = auxbasis.map(|a| prepare_aux(py, &sys, a)).transpose()?;
     let integrals = aux
         .as_ref()
         .map_or(Opmp3Integrals::Exact, Opmp3Integrals::Ri);

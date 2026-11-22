@@ -659,7 +659,7 @@ pub(crate) fn run_rhf(
     // without an ECP basis), so nelec() gives the valence count; the
     // effective nuclear charge is set inside PreparedBasis::new from
     // basis_set.ecps.
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let (emol, prep) = (sys.mol(), sys.basis());
     let init_guess_density = blocks::checked_dm0(dm0, prep, emol.nelec() as f64, "run_rhf")?;
     // Parse the string/PyO3 kwargs in the order the pre-`ScfOptions` literal
@@ -1506,7 +1506,7 @@ pub(crate) fn run_uhf(
     // silently select a different SCF state (on O2/STO-3G the two guesses
     // land on states 0.255 Ha apart).
     let use_sad_guess = parse_guess(guess)?;
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let dm0 = match dm0 {
         Some(d) => {
             let n_spin = spin_counts(sys.mol(), "run_uhf")?;
@@ -1650,7 +1650,7 @@ pub(crate) fn run_rohf(
     refuse_dm0_with_guess("run_rohf", dm0.is_some(), guess, guess_basis)?;
     let hook_grad = parse_fock_hook_grad("run_rohf", fock_hook, fock_hook_grad, with_gradient)?;
     let guess_basis = parse_guess_basis(guess_basis, guess_projection)?;
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let dm0 = match dm0 {
         Some(d) => {
             let n_spin = spin_counts(sys.mol(), "run_rohf")?;

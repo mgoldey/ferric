@@ -31,30 +31,35 @@ pub(crate) fn ecp_molecule(mol: &PyMolecule, basis_set: &PyBasisSet) -> Molecule
     EcpMolecule::new(mol.inner.clone(), &basis_set.inner).into_mol()
 }
 
-/// `f` with the GIL released, from a binding that holds it (the integral
-/// work of preparing a system or a fitting basis touches no Python object).
-fn without_gil<T: Send>(f: impl FnOnce() -> T + Send) -> T {
-    Python::with_gil(|py| py.allow_threads(f))
+/// `f` with the GIL released (the integral work of preparing a system or a
+/// fitting basis touches no Python object).
+fn without_gil<T: Send>(py: Python<'_>, f: impl FnOnce() -> T + Send) -> T {
+    py.allow_threads(f)
 }
 
 /// `PreparedSystem::new` on a copy of `mol`, for a binding returning
 /// `PyResult`.
-pub(crate) fn prepare(mol: &PyMolecule, basis: &PyBasisSet) -> PyResult<PreparedSystem> {
+pub(crate) fn prepare(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    basis: &PyBasisSet,
+) -> PyResult<PreparedSystem> {
     let mol = mol.inner.clone();
-    without_gil(|| PreparedSystem::new(mol, &basis.inner)).map_err(make_err)
+    without_gil(py, || PreparedSystem::new(mol, &basis.inner)).map_err(make_err)
 }
 
 /// `EcpMolecule::prepare` with the default options, for a binding that
 /// checked the ECP molecule first.
-pub(crate) fn prepare_ecp(ecp: EcpMolecule<'_>) -> PyResult<PreparedSystem> {
-    without_gil(|| ecp.prepare(PrepareOptions::default())).map_err(make_err)
+pub(crate) fn prepare_ecp(py: Python<'_>, ecp: EcpMolecule<'_>) -> PyResult<PreparedSystem> {
+    without_gil(py, || ecp.prepare(PrepareOptions::default())).map_err(make_err)
 }
 
 /// `PreparedSystem::prepare_aux` of the fitting basis `aux` on `sys`'s
 /// molecule, for a binding returning `PyResult`.
 pub(crate) fn prepare_aux<'s>(
+    py: Python<'_>,
     sys: &'s PreparedSystem,
     aux: &PyBasisSet,
 ) -> PyResult<PreparedAux<'s>> {
-    without_gil(|| sys.prepare_aux(&aux.inner)).map_err(make_err)
+    without_gil(py, || sys.prepare_aux(&aux.inner)).map_err(make_err)
 }

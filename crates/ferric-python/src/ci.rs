@@ -125,7 +125,7 @@ fn run_casci(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyCasCiResult> {
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let mol = sys.mol();
     let nelec = mol.nelec() as usize;
     let n_act_el = n_elec_active.0 + n_elec_active.1;
@@ -337,7 +337,7 @@ fn run_casscf(
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
     let stability = ferric_ci::CasScfStabilityMode::parse_config_str(casscf_stability)
         .map_err(|e| make_err(format!("run_casscf: casscf_{e}")))?;
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let mol = sys.mol();
     let n_core = match n_core {
         Some(s) => s,
@@ -557,7 +557,7 @@ fn run_nevpt2(
         .map_err(|e| make_err(format!("run_nevpt2: casscf_{e}")))?;
     let on = ferric_ci::driver::Nevpt2On::parse_config_str(reference)
         .map_err(|e| make_err(format!("run_nevpt2: {e}")))?;
-    let sys = prepare(mol, basis_set)?;
+    let sys = prepare(py, mol, basis_set)?;
     let mol = sys.mol();
     let n_core = match n_core {
         Some(s) => s,
