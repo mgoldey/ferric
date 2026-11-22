@@ -926,6 +926,8 @@ pub(crate) fn run_pdep_rpa(
     // computed from it is that of an isolated molecule. Screening a
     // ligand-pocket interaction needs the response of the ligand AS IT SITS
     // IN THE POCKET, so the point charges have to reach this SCF.
+    // Parsed before the reference config, which parses `k_builder` last.
+    let pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
     let mut scf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
@@ -942,7 +944,7 @@ pub(crate) fn run_pdep_rpa(
     scf_config.df_j_aux = df_j_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.df_k_aux = df_k_aux.map(ferric_scf::rhf::normalize_df_aux);
     scf_config.external_potential = build_external_potential(point_charges, external_field);
-    scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    scf_config.pcm = pcm;
     let rhf = sys
         .solve_rhf(&scf_config)
         .and_then(ScfResult::into_converged)

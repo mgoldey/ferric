@@ -706,7 +706,9 @@ pub(crate) fn run_rimp2_exact(
 /// rule (`ferric_scf::scf_jk::ScfJk`), so "rijk" means the same `RhfConfig`
 /// in every function. `default` is the entry point's historical J/K mode,
 /// which keeps an unset `scf_jk` bit-identical to before. Errors are
-/// `ValueError` naming `who`, raised before any integral is computed.
+/// `ValueError` naming `who` (an unknown `k_builder` is
+/// [`parse_k_builder`]'s `RuntimeError`), raised before any integral is
+/// computed.
 pub(crate) fn mp2_reference_config(
     who: &str,
     k_builder: Option<&str>,
@@ -728,10 +730,14 @@ pub(crate) fn mp2_reference_config(
     if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::PYTHON) {
         eprintln!("[ferric] warning: {who}: {w}");
     }
+    let ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    // `k_builder` is parsed here, last of this helper's keywords but before
+    // the calling entry point's method keywords (an unknown spelling was the
+    // SCF's refusal, after those, before the bindings parsed it).
     let mut cfg = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb))?;
     jk.apply(&mut cfg);
     conv.apply(&mut cfg);
-    cfg.ri_j_precision = parse_ri_j_precision(ri_j_precision)?;
+    cfg.ri_j_precision = ri_j_precision;
     Ok((cfg, jk))
 }
 
@@ -767,13 +773,13 @@ pub(crate) fn mp2_exact_default_config(
 pub(crate) fn ks_jkfit_config(
     mut cfg: RhfConfig,
     xc: &str,
-    scf_ri_j_precision: Option<&str>,
-) -> PyResult<RhfConfig> {
+    ri_j_precision: Option<ferric_scf::df_j::RiJPrecision>,
+) -> RhfConfig {
     cfg.xc = Some(xc.to_string());
     cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    cfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    cfg.ri_j_precision = ri_j_precision;
     cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
-    Ok(cfg)
+    cfg
 }
 
 /// The converged closed-shell KS reference run through the KS-DFT
@@ -1203,13 +1209,13 @@ pub(crate) fn run_drpa_scan(
     // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
     let compute_reference = compute_reference.unwrap_or(false);
     let op = Operator::coulomb();
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf_config = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
-    let sys = prepare(py, mol, basis_set)?;
-    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -1857,13 +1863,13 @@ pub(crate) fn run_mp3(
 ) -> PyResult<PyMp3Result> {
     let op = Operator::coulomb();
     let budget = budget_bytes_from_gb(memory_budget_gb);
+    let sys = prepare(py, mol, basis_set)?;
+    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf_config = rhf_config_conv(
         k_builder,
         budget,
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
-    let sys = prepare(py, mol, basis_set)?;
-    let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys
         .solve_rhf(&rhf_config)
         .and_then(ScfResult::into_converged)
@@ -2896,13 +2902,14 @@ pub(crate) fn run_mp2_v_scan(
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
+    let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let mut rcfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
     rcfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
-    rcfg.ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
+    rcfg.ri_j_precision = ri_j_precision;
     rcfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
     let rhf = sys
         .solve_rhf(&rcfg)

@@ -374,12 +374,13 @@ pub(crate) fn run_double_hybrid(
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let (mol, prep) = (sys.mol(), sys.basis());
 
+    let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let cfg = rhf_config_conv(
         k_builder,
         budget_bytes_from_gb(memory_budget_gb),
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv),
     )?;
-    let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), scf_ri_j_precision)?;
+    let cfg = ks_jkfit_config(cfg, dh_kind.xc_name(), ri_j_precision);
 
     let (ks, cfg) = if open_shell {
         let ks = sys.solve_uhf(&cfg).and_then(ScfResult::into_converged);

@@ -234,10 +234,10 @@ pub(crate) fn run_tddft(
              Kohn-Sham grid, and functional=None (an HF reference) builds none",
         ));
     }
-    let mut scf_cfg = rhf_config();
+    let mut scf_cfg = RhfConfig::default();
     let (scf, grid) = if let Some(xc_name) = functional {
         ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
-        scf_cfg = ks_jkfit_config(scf_cfg, xc_name, scf_ri_j_precision)?;
+        scf_cfg = ks_jkfit_config(scf_cfg, xc_name, parse_ri_j_precision(scf_ri_j_precision)?);
         let cfg = &mut scf_cfg;
         // Explicit grid kwargs win; with none, a meta-GGA gets the finer
         // response grid, everything else the production grid.

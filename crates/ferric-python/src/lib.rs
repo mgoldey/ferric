@@ -544,10 +544,6 @@ impl ScfConv {
     }
 }
 
-fn rhf_config() -> RhfConfig {
-    RhfConfig::default()
-}
-
 /// A `k_builder=` keyword parsed once (`KBuilderKind::parse`). An unknown
 /// spelling is the `RuntimeError` the solver raised for it before the
 /// bindings parsed it ("General error: unknown k_builder ...").
@@ -557,8 +553,28 @@ fn parse_k_builder(k_builder: Option<&str>) -> PyResult<Option<ferric_scf::optio
         .py()
 }
 
+/// `cfg` with the `k_builder=` spelling `raw` parsed into it, for a
+/// binding that prepares its system inside a GIL-released closure: called
+/// there after the preparation, where the SCF refused an unknown spelling
+/// before the bindings parsed it (same error, `FerricError::General`).
+fn with_k_builder(
+    cfg: &RhfConfig,
+    raw: Option<&str>,
+) -> Result<RhfConfig, ferric_core::FerricError> {
+    Ok(RhfConfig {
+        k_builder: ferric_scf::options::KBuilderKind::parse_opt(raw)?,
+        ..cfg.clone()
+    })
+}
+
 /// The reference-SCF config of a correlated entry point: its `k_builder=`
 /// (parsed by [`parse_k_builder`]) and the caller's resolved memory budget.
+/// The entry points call it after their other keyword checks and, where the
+/// basis is prepared outside the SCF, after the preparation, which is where
+/// the SCF refused an unknown spelling before the bindings parsed it; the
+/// MP2 family goes through `mp2_reference_config`, before its method
+/// keywords, and the CC drivers that prepare in a GIL-released closure use
+/// [`with_k_builder`] there.
 ///
 /// # Why this exists
 ///
