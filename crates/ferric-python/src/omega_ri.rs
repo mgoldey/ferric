@@ -7,7 +7,7 @@ use super::*;
 use ferric_mp2::omega_ri::RiFit;
 use ferric_mp2::omega_ri_cdd::{omega_ri_cdd_mp2_on, CddEnergy, OmegaRiCddConfig, PseudoOrbitals};
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "OmegaRiResult")]
 pub(crate) struct PyOmegaRiResult {
     #[pyo3(get)]

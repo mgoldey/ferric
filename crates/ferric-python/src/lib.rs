@@ -42,6 +42,7 @@ use ferric_scf::rohf::RohfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
 use ferric_scf::{EcpMolecule, PrepareOptions, PreparedAux, PreparedSystem};
+use std::sync::Arc;
 // NOTE: the spin-orbital `ferric_cc::ccsd::ccsd` is deliberately NOT imported
 // here. A closed-shell `run_ccsd` / `run_ccsd_t` takes the spin-adapted
 // solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
@@ -71,6 +72,7 @@ mod blocks;
 mod cc;
 mod cdft;
 mod ci;
+mod compute_once;
 mod conformers;
 mod dft;
 mod gamma;
@@ -1226,7 +1228,7 @@ fn build_external_potential_with_smeared(
 // ── Module ──
 
 /// One direction of an IRC walk.
-#[pyclass(name = "IrcBranch")]
+#[pyclass(frozen, name = "IrcBranch")]
 #[derive(Clone)]
 struct PyIrcBranch {
     /// Symbols at the endpoint.
@@ -1250,7 +1252,7 @@ struct PyIrcBranch {
 }
 
 /// Both directions of an IRC, plus the saddle they came from.
-#[pyclass(name = "IrcResult")]
+#[pyclass(frozen, name = "IrcResult")]
 #[derive(Clone)]
 struct PyIrcResult {
     /// The `+mode` direction.
@@ -1287,7 +1289,7 @@ impl PyIrcResult {
 }
 
 /// Outcome of a P-RFO transition-state search.
-#[pyclass(name = "SaddleResult")]
+#[pyclass(frozen, name = "SaddleResult")]
 #[derive(Clone)]
 struct PySaddleResult {
     /// Symbols of the geometry the search arrived at.

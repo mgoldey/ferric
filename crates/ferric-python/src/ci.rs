@@ -24,7 +24,7 @@ fn build_stamp() -> BuildStamp {
     )
 }
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CasCiResult")]
 struct PyCasCiResult {
     #[pyo3(get)]
@@ -205,7 +205,7 @@ fn run_casci(
     })
 }
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CasScfResult")]
 struct PyCasScfResult {
     #[pyo3(get)]
@@ -435,7 +435,7 @@ fn run_casscf(
     })
 }
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Nevpt2Result")]
 struct PyNevpt2Result {
     #[pyo3(get)]

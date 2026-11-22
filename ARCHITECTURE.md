@@ -549,6 +549,74 @@ Done:
       J/K route `scf_jk`": they take loose `BasisSet`s and prepare per
       geometry, and have ~110 call sites outside ferric-mp2.
 
+13. Result storage, bitwise unchanged (old-vs-new over the 15
+    `result=`-taking functions and the array getters, on two RHF and two
+    KS references: 84 values):
+    - Survey: no Python API passes a result into a correlated method (those
+      run their own SCF), and the functions that take `result=`
+      (`DensitySource` in properties.rs, `response_modes`, `cdft_coupling`)
+      already borrowed it through a `PyRef`; nothing deep-copied an
+      `ScfResult`. The copies were smaller: `RhfResult` / `DftResult` kept
+      the density (and `RhfResult` the orbital energies) twice, beside the
+      `ScfResult` they came from, and `hirshfeld_charges` cloned the density
+      and `RhfConfig` to release the GIL.
+    - `RhfResult` / `DftResult` hold `scf_data: Arc<ScfResult>` and
+      `scf_config: Arc<RhfConfig>`; `density()` / `orbital_energies()` read
+      the `ScfResult`, and `HirshfeldJob` holds clones of the two `Arc`s
+      (`DensitySource::shared`, a `SharedReference`). `SymmetricRhfResult`
+      keeps no `ScfResult`; its orbital energies are moved out of the solve
+      rather than cloned. Kernels still take `&ScfResult`. Getters
+      still return fresh, writable numpy copies.
+    - Every result class (and `ResponseModes`, `BoysResult`, `IrcBranch`,
+      the conformer statistics classes) is `#[pyclass(frozen)]`.
+      `FrequencyResult.ir_intensities`, the one `&mut self` result method,
+      and `DftResult`'s XC cache use `compute_once::ComputeOnce<T>` (a
+      `OnceLock` set only under its `Mutex`, `get_or_try_init` called inside
+      `allow_threads` with no Python calls in the closure), so concurrent
+      first calls compute once instead of raising
+      `RuntimeError("Already borrowed")`. Errors are not cached (as on
+      main): after a failed first `ir_intensities`, each waiting thread
+      re-runs the six field SCFs in turn. Assignment to a getter still
+      raises the same `AttributeError` ("not writable"). Not frozen:
+      `ConformerEnsemble` (`set_energy` mutates it) and the `blocks`
+      handles (`DfJk`, `XcFunctional` have `&mut self` methods; also
+      `AoIntegrals`, `Cphf`, `Ucphf`); and, as inputs rather than results,
+      `BasisSet`, `QmmmSystem`, `MmTopology` and `CdftConstraint`, which
+      have no mutating method and could be frozen in a follow-up.
+    - `ferric.serialize.RESULT_SCHEMA` (class name -> getters and array
+      accessors) replaces the `dir()` scan for ferric classes, generated
+      from the reflected field set so the output is byte-identical
+      (`tests/test_serialize_schema.py` compares against the old rule kept
+      as an oracle, with key orders recorded from the old build in
+      `tests/data/serialize_keys.json`). It is not free-form: the drift test
+      keeps each entry equal to its class's public getters minus that
+      class's names in `ferric.serialize.NOT_SERIALIZED`, the library's
+      exclusion set (empty), which is where a getter is kept out on purpose.
+      The value filter is unchanged, so list- and dict-valued fields in the
+      schema (`frequencies`, `normal_modes`, `weights`, `dm1`...) are never
+      emitted, an optional dict (`cosx_final_pass`...) appears only when it
+      is `None`, and `DftResult`'s `e_xc` is still evaluated
+      (a grid build) by `to_dict`. A ferric class with no entry raises
+      `TypeError`; objects ferric does not define (and ferric exceptions)
+      are still read by reflection.
+    - Measured (naphthalene RHF/cc-pVTZ, 412 basis functions, a 1.36 MB
+      density): `hirshfeld_charges(proatom="slater")`, best of 5, 4.09 s
+      before and 4.06 s after, peak RSS rising 36 kB and 0 kB over the
+      calls; at cc-pVDZ 2.73 s and 2.48 s (a loaded machine, so within
+      noise). The removed copies are one `nbf x nbf` f64 array per held
+      `RhfResult` / `DftResult` (plus the orbital energies for
+      `RhfResult`) and one per `hirshfeld_charges` call: memory, not time.
+    - Left: `UhfResult` (and `CdftResult`) copy their arrays out of the
+      `ScfResult` into separate fields; nothing consumes them as a
+      reference, so they were not changed. Results are not picklable and
+      do not support `copy.deepcopy`, before and after (no `__reduce__`).
+      `to_dict` should stop evaluating `e_xc` (drop it from the schema) and
+      decide what to do with the list/dict fields: visible output changes
+      left for their own PR. The other `DensitySource` consumers (ESP,
+      CHELPG, RESP, Löwdin/Mulliken, `write_cube`) hold the GIL throughout;
+      they could release it using `DensitySource::shared` as
+      `hirshfeld_charges` does.
+
 Next, each as its own PR following the patterns above:
 
 8d. (rest) What 8c and the first part of 8d left loose: (b) the ferric-scf
@@ -624,11 +692,6 @@ Next, each as its own PR following the patterns above:
     then return a typed `OptionError`.
 12. CLI run functions return `Result<_, CliError>`; `process::exit` only in
     the binaries' `main`, since Python calls `ferric_cli::run`.
-13. Python results store `Arc<ScfResult>` so passing a reference into a
-    correlated method does not deep-copy arrays; result classes become
-    `frozen`; `ferric.serialize` reads an explicit, Python-side result
-    schema instead of reflection (the Rust `MethodResult` trait of 9b does
-    not provide it).
 14. A shared `ferric-testkit` dev crate, file splits, and a clippy ratchet on
     `too_many_arguments`.
 15. (rest) Still stringly or boolean at the boundary, after the first

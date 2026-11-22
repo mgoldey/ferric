@@ -105,7 +105,7 @@ pub(crate) fn compute_eri3_mo<'py>(
 
 /// Result of Boys localization: localized coefficients, orbital centers,
 /// and convergence info.
-#[pyclass(name = "BoysResult")]
+#[pyclass(frozen, name = "BoysResult")]
 pub(crate) struct PyBoysResult {
     pub(crate) c_loc_data: ndarray::Array2<f64>,
     pub(crate) centers_data: ndarray::Array2<f64>,

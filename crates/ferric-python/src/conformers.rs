@@ -91,7 +91,7 @@ pub(crate) fn molecule_from_coords(
 /// spread cannot distinguish "one dominant conformer, the ensemble was
 /// unnecessary" from "fifty comparable conformers, any single-conformer number
 /// is simply wrong". `min`/`max` are the unweighted range, for context.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "WeightedStats")]
 #[derive(Clone, Copy)]
 pub(crate) struct PyWeightedStats {
@@ -137,7 +137,7 @@ impl PyWeightedStats {
 /// mattered. `effective_n_conformers` is the inverse participation ratio
 /// `1 / Σ w_i²` — 1.0 when one conformer carries everything, N when N are
 /// degenerate.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "EnsembleDiagnostics")]
 pub(crate) struct PyEnsembleDiagnostics {
     #[pyo3(get)]
@@ -206,7 +206,7 @@ impl From<ferric_core::conformers::EnsembleDiagnostics> for PyEnsembleDiagnostic
 }
 
 /// Boltzmann populations of an ensemble at one temperature.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "BoltzmannWeights")]
 pub(crate) struct PyBoltzmannWeights {
     /// Normalized populations in ensemble order. Sum to 1.

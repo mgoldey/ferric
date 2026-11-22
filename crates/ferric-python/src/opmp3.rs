@@ -7,7 +7,7 @@ use ferric_mp2::opmp3_driver::{
     opmp3_on, opmp3_scf, opmp3_scf_config, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
 };
 
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Opmp3Result")]
 pub(crate) struct PyOpmp3Result {
     inner: Opmp3Result,
