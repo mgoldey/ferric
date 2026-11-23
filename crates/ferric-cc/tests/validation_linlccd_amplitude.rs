@@ -88,6 +88,7 @@ use ferric_mp2::lmp2_direct::DirectConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::s;
 use serde_json::Value;
 
@@ -160,12 +161,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
@@ -256,7 +251,7 @@ impl Case {
             &ctx,
             "E_nuc",
             mol.nuclear_repulsion(),
-            num(&r, "/nuclear_repulsion", &ctx),
+            num_ctx(&r, "/nuclear_repulsion", &ctx),
             TOL_ENUC,
         );
         let obs_bs = basis::bundled(basis_name).unwrap();
@@ -299,7 +294,7 @@ impl Case {
             &ctx,
             "E_RHF",
             scf.energy,
-            num(&r, "/e_scf", &ctx),
+            num_ctx(&r, "/e_scf", &ctx),
             TOL_E_SCF,
         );
         Case {
@@ -314,7 +309,7 @@ impl Case {
     }
 
     fn reference_e(&self, variant: LadderVariant) -> f64 {
-        num(&self.r, ref_ptr(variant), &self.ctx)
+        num_ctx(&self.r, ref_ptr(variant), &self.ctx)
     }
 
     fn global(&self, variant: LadderVariant, eps: f64) -> f64 {

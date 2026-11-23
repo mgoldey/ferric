@@ -50,6 +50,7 @@ use ferric_scf::frequencies::{
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 /// Near-equilibrium water (Angstrom).
@@ -80,10 +81,6 @@ fn fd_config() -> FrequencyConfig {
         hessian: HessianMethod::FiniteDifference,
         ..Default::default()
     }
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn to_array(rows: &[[f64; 3]]) -> Array2<f64> {

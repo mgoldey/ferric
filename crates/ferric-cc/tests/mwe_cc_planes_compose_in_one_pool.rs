@@ -33,8 +33,6 @@
 //! 4. Charging is not decoration: the pool's `peak_bytes()` after a run is
 //!    nonzero and at least the plan's projected peak.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_cc::ccsd::{ccsd, ccsd_memory_plan, CcsdShape};
 use ferric_cc::{ccsd_t::ccsd_t, CcConfig};
 use ferric_core::basis;
@@ -46,30 +44,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 struct Fixture {
     mol: Molecule,

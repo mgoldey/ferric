@@ -295,6 +295,7 @@ pub fn t_per_triple_bytes(nv2: usize) -> usize {
 /// `raw_w[a,b,c] = Σ_e t2[j,k,a,e]·bcei[b,c,e,i]  −  Σ_m t2[i,m,b,c]·majk[m,a,j,k]`
 /// for a FIXED (possibly unordered) occupied triple `(i,j,k)`. Both
 /// contractions are BLAS3 GEMMs on `nv2`-scale reshapes.
+#[allow(clippy::too_many_arguments)]
 fn raw_w_block(
     t2: &ArrayD<f64>,
     bcei: &ArrayD<f64>,

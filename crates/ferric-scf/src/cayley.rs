@@ -66,6 +66,7 @@ pub(crate) fn apply_cayley_ov(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferric_testkit::compare::max_abs_diff;
     use ndarray_linalg::Solve;
 
     /// The construction every call site used before: one `solve` (fresh LU)
@@ -106,10 +107,6 @@ mod tests {
         let l = s.cholesky(UPLO::Lower).unwrap();
         let c = l.t().to_owned().inv().unwrap();
         (s, c)
-    }
-
-    fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-        (a - b).iter().fold(0.0_f64, |m, v| m.max(v.abs()))
     }
 
     fn orthonormality_error(c: &Array2<f64>, s: &Array2<f64>) -> f64 {

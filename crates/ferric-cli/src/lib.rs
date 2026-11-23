@@ -2056,6 +2056,7 @@ impl DispersionGradientModel {
 /// set. Every failure is an error before any molecular SCF: an unknown functional,
 /// or (MBD@rsSCS) a configuration whose exact gradient is unavailable, which
 /// would otherwise fail after the first SCF.
+#[allow(clippy::too_many_arguments)]
 fn dispersion_gradient_model(
     cfg: &Config,
     ctx: &ParallelContext,
@@ -8386,6 +8387,7 @@ fn tddft_grid_line(xc: &str, g: &ferric_dft::grid::AtomicGridConfig, explicit: b
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_tddft_arm(
     cfg: &Config,
     sys: &PreparedSystem,

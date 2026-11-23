@@ -35,8 +35,6 @@
 //! The pool is process-global, so these tests serialize on `GLOBAL_LOCK` and
 //! clear the slot on entry and exit.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
@@ -47,32 +45,7 @@ use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit so one test's pool can
-/// never leak into another's "unbudgeted" assertions.
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 /// A PDEP-RPA correlation energy on water/cc-pVDZ with the cc-pvdz-ri aux
 /// basis. Big enough that the preflight, the Lanczos panel and the frequency

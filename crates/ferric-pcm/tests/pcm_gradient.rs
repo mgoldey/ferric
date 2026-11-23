@@ -25,15 +25,11 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_pcm::matrices::SdKind;
 use ferric_pcm::{pcm_gradient_parts, pcm_step, PcmConfig, PcmContext, ProbeKind};
+use ferric_testkit::molecules::water_xyz;
 use ndarray::Array2;
 
 const H: f64 = 1e-3;
 const ROUNDOFF_FLOOR: f64 = 1e-9;
-
-/// Water (testdata geometry) in Bohr.
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-}
 
 /// Methanol with one methyl H moved off the mirror plane: no symmetry, so
 /// no gradient component is zero by construction.
@@ -131,7 +127,7 @@ fn cfg(sd: SdKind, probe: ProbeKind, order: usize) -> PcmConfig {
 fn fixed_density_gradient_matches_fd_water_default() {
     check_fd(
         "water default",
-        &water(),
+        &water_xyz(),
         &cfg(SdKind::GaussianSmeared, ProbeKind::Point, 110),
     );
 }
@@ -157,7 +153,7 @@ fn fixed_density_gradient_matches_fd_methanol_both_probes() {
 fn fixed_density_gradient_matches_fd_water_point_charge_sd() {
     check_fd_h(
         "water PointCharge S/D",
-        &water(),
+        &water_xyz(),
         &cfg(SdKind::PointCharge, ProbeKind::Point, 110),
         2.5e-4,
     );
@@ -194,7 +190,7 @@ fn each_part_is_translationally_invariant() {
 /// of its ε = 78.4 value relative to `f(78.4)`.
 #[test]
 fn gradient_vanishes_linearly_as_eps_goes_to_one() {
-    let mol = water();
+    let mol = water_xyz();
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let d = model_density(prep.nbasis());
@@ -222,7 +218,7 @@ fn gradient_vanishes_linearly_as_eps_goes_to_one() {
 /// An injected cavity has no recorded geometry dependence: refused.
 #[test]
 fn injected_cavity_is_refused() {
-    let mol = water();
+    let mol = water_xyz();
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let d = model_density(prep.nbasis());

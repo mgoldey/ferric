@@ -324,6 +324,7 @@ pub fn amplitude_drpa_with_virtuals(
 /// through `amplitude_drpa_from_basis` on the same `LocalizedBasis`);
 /// the only difference is the prefix (RHF/localization/VV-HV/assemble_basis)
 /// is paid once instead of once per eps.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_drpa_scan(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -387,6 +388,7 @@ pub fn amplitude_drpa_scan_timed_on(
 /// function is called) and one wall time per eps point (ragged assembly +
 /// solve only). Same per-point `AmplitudeDrpaResult`s as
 /// `amplitude_drpa_scan` — this wrapper adds timing, nothing else.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_drpa_scan_timed(
     mol: &Molecule,
     obs: &PreparedBasis,

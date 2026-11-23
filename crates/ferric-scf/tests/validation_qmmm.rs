@@ -107,6 +107,7 @@ use ferric_scf::qmmm::{mm_forces, QmSelection, QmmmAtom, QmmmSystem};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -171,12 +172,6 @@ fn reference(file_stem: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
 }
 
 fn xyz3(v: &Value) -> [f64; 3] {

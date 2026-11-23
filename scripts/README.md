@@ -49,7 +49,7 @@ scripts/ci-gate.sh
 these are numerical/formatting idioms this codebase already tolerates
 elsewhere per its "prod lib is 0-warning except numerical lints" policy, not
 guessed): `excessive_precision`, `neg_multiply`, `needless_range_loop`,
-`doc_lazy_continuation`, `too_many_arguments`, `derivable_impls`,
+`doc_lazy_continuation`, `derivable_impls`,
 `field_reassign_with_default`, `redundant_pattern_matching`,
 `unnecessary_map_or`, `unnecessary_min_or_max`, `type_complexity`,
 `needless_borrows_for_generic_args`, `if_same_then_else`, and the
@@ -83,7 +83,7 @@ and compare them against a checked-in snapshot (`complexity_baseline.json`).
 This is deliberately a **regression tracker, not an absolute threshold** --
 this repo already tolerates high-CC numerical kernels that mirror the
 underlying physics (`solve_rhf` CC=134, etc. -- see the `too_many_arguments`
-allow-list rationale above), so an absolute ceiling would either catch
+ratchet below), so an absolute ceiling would either catch
 nothing or immediately fail on already-accepted code. The gate instead fails
 only when a function gets *worse* than its baseline by more than a small
 noise tolerance, or when a brand-new function appears with complexity far

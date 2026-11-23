@@ -58,9 +58,9 @@
 
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
-use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_dft::ks::KsXc;
+use ferric_testkit::molecules::water_xyz;
 
 /// CALIBRATED to the RSS-sensitive regime, not guessed.
 ///
@@ -81,12 +81,8 @@ use ferric_dft::ks::KsXc;
 /// bearing: M8 survived at 50 MB and is killed here.
 const TIGHT_BUDGET: usize = 30_000_000;
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 fn build(budget: usize) -> KsXc {
-    let mol = water();
+    let mol = water_xyz();
     let bs = basis::bundled("cc-pvdz").expect("cc-pvdz");
     let main = AtomicGridConfig::default();
     let nlc = AtomicGridConfig {

@@ -725,11 +725,8 @@ pub fn cosmo_reaction_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferric_core::mol::Molecule;
 
-    fn water() -> Molecule {
-        Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-    }
+    use ferric_testkit::molecules::water_xyz;
 
     #[test]
     fn bondi_radius_known_elements() {
@@ -809,7 +806,7 @@ mod tests {
 
     #[test]
     fn cavity_build_water_nonzero_segments() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CosmoConfig::default();
         let cavity = CosmoCavity::build(&mol, &cfg).unwrap();
         assert!(cavity.n_segments() > 0);
@@ -826,7 +823,7 @@ mod tests {
 
     #[test]
     fn cavity_build_ghost_only_errors() {
-        let mut mol = water();
+        let mut mol = water_xyz();
         for atom in mol.atoms.iter_mut() {
             atom.ghost = true;
         }
@@ -836,7 +833,7 @@ mod tests {
 
     #[test]
     fn s_matrix_symmetric_and_diagonal_positive_point_charge() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CosmoConfig {
             lebedev_order: 26,
             ..Default::default()
@@ -857,7 +854,7 @@ mod tests {
 
     #[test]
     fn s_matrix_symmetric_and_diagonal_positive_gaussian_smeared() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CosmoConfig {
             lebedev_order: 26,
             ..Default::default()

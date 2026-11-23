@@ -67,6 +67,7 @@ pub(crate) fn resolve_operator(
 
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, aux_basis_set, c_left, c_right, memory_budget_gb=2.0, operator="coulomb", omega=None, r0=None))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_eri3_mo<'py>(
     py: Python<'py>,
     mol: &PyMolecule,
@@ -315,6 +316,7 @@ pub(crate) fn configure_precision<'py>(
 /// mixed_kernels=...)`. Returns `gpu_status()`.
 #[pyfunction]
 #[pyo3(signature = (preset=None, mode=None, precision=None, mixed_kernels=None, device=None, memory_gb=None, min_flops=None))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn configure_gpu<'py>(
     py: Python<'py>,
     preset: Option<&str>,

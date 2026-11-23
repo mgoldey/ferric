@@ -45,6 +45,7 @@ use ferric_rpa::{run_pdep_rpa, run_u_pdep_rpa, PdepRpaConfig, PdepRpaResult};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::{Array2, Axis};
 
 const TOL: f64 = 1e-9;
@@ -142,13 +143,9 @@ fn check(label: &str, res: &PdepRpaResult, v: &Array2<f64>, pi: &Array2<f64>) {
     );
 }
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-}
-
 fn closed_shell_case(label: &str, obs_name: &str, op: Operator) {
     let ctx = ParallelContext::default();
-    let mol = water();
+    let mol = water_xyz();
     let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     // Full-Coulomb RHF reference; `op` only enters the RI/RPA kernel.

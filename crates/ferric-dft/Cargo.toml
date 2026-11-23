@@ -24,6 +24,7 @@ gpu = ["ferric-core/gpu"]
 test-seams = ["gpu", "ferric-core/test-seams"]
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 ferric-scf = { path = "../ferric-scf" }
 # Used by tests/grid_prune_live_scf.rs to read the same PySCF reference JSONs
 # the ferric-scf DFT reference suites gate on, so the pruned-SCF validation

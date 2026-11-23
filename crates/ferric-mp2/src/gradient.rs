@@ -172,6 +172,7 @@ pub fn rimp2_gradient_analytical_on(
 /// block 6); block 5 runs on `bounds.op`, the reference SCF's operator. They
 /// are the same operator for RI-MP2; [`crate::att_rimp2_gradient`] passes erfc
 /// on a Coulomb reference.
+#[allow(clippy::too_many_arguments)]
 pub fn rimp2_gradient_analytical(
     mol: &Molecule,
     obs: &PreparedBasis,

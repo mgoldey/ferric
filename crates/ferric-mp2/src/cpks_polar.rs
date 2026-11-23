@@ -414,6 +414,7 @@ pub fn debug_dd_traces(
 }
 
 /// DIAGNOSTIC: E_MP2 at a single field along `axis` (for parabola/sign checks).
+#[allow(clippy::too_many_arguments)]
 pub fn debug_emp2_at_field(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -480,6 +481,7 @@ fn veff_vo_mo(
 /// energy (`cpks_static_relaxed_dipole_vs_pyscf`). `build_relaxed_density_ao`
 /// takes P one-sided, so feeding it `solve_zvector`'s z does not give this
 /// density; pass it `P + Pᵀ` instead.
+#[allow(clippy::too_many_arguments)]
 pub fn static_relaxed_density_ao(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -1071,6 +1073,7 @@ pub fn dynamic_cphf_alpha_iw(
 /// Molecular isotropic C6 from dynamic CPHF α(iω) via Casimir-Polder:
 ///   C6 = (3/π) Σ_k w_k α_iso(iω_k)²   on a Gauss-Legendre [0,∞) grid.
 /// Returns (c6, α_iso at each freq) for the given operator.
+#[allow(clippy::too_many_arguments)]
 pub fn cphf_c6_molecular(
     ctx: &ParallelContext,
     mol: &Molecule,

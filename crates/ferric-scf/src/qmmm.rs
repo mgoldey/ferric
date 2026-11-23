@@ -1775,6 +1775,7 @@ enum BoundaryTarget {
 /// With no polarizable sites (`sites.sites.is_empty()`), both terms are
 /// empty and this is bit-identical to plain [`full_gradient`] — see
 /// `full_gradient_with_polarizable_matches_plain_full_gradient_when_not_polarizable`.
+#[allow(clippy::too_many_arguments)]
 pub fn full_gradient_with_polarizable(
     system: &QmmmSystem,
     qm_gradient: &Array2<f64>,

@@ -30,7 +30,8 @@ use ferric_scf::result::ScfExit;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::rohf::{solve_rohf, solve_rohf_best_effort, ROHF_MAX_AUFBAU_RESTARTS_OVERRIDE};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::{s, Array2};
+use ferric_testkit::compare::max_abs;
+use ndarray::s;
 
 /// The σ-hole OH/6-31G ROHF stationary point the hcore guess converges to
 /// (pinned in `rohf_state_selection.rs`).
@@ -45,10 +46,6 @@ fn cfg(guard: bool) -> RhfConfig {
         rohf_occupation_guard: guard,
         ..Default::default()
     }
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 #[test]

@@ -21,11 +21,8 @@ use ferric_scf::rohf::{solve_rohf, RohfConfig};
 use ferric_scf::rohf_newton::RohfNewtonInputs;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf_newton::UhfNewtonInputs;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
-}
 
 /// A smooth deterministic rotation block (rows × cols), max ~0.1.
 fn kappa(rows: usize, cols: usize, phase: f64) -> Array2<f64> {

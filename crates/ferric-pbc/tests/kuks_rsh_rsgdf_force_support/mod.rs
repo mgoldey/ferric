@@ -28,6 +28,8 @@ use ferric_pbc::kxcgrad::{KRksGradConfig, KXcGrid};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsh::{resolve_periodic_functional_rsh, RshParams};
+#[allow(unused_imports)]
+pub use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use num_complex::Complex64 as C64;
 
@@ -94,10 +96,6 @@ pub fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
 
 pub fn diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     (a - b).iter().fold(0.0_f64, |m, x| m.max(x.abs()))
-}
-
-pub fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 /// `Σ_k Σ |D_α − D_β|`.

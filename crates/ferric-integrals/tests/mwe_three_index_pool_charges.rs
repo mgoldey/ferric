@@ -26,6 +26,7 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_testkit::molecules::water_xyz;
 
 /// Serializes the tests in THIS binary, which all install the process-global
 /// pool, and clears the slot on entry and exit.
@@ -56,12 +57,8 @@ impl Drop for GlobalPoolGuard {
     }
 }
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 fn bases() -> (Molecule, PreparedBasis, PreparedBasis) {
-    let mol = water();
+    let mol = water_xyz();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").expect("cc-pvdz")).expect("obs");
     let dfbs =
         PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri")).expect("dfbs");

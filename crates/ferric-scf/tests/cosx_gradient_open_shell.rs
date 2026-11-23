@@ -47,6 +47,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf_with_guess;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use rayon::prelude::*;
 
@@ -111,10 +112,6 @@ fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
 enum Reference {
     Uks,
     Roks,
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn displaced(mol: &Molecule, atom: usize, c: usize, d: f64) -> Molecule {

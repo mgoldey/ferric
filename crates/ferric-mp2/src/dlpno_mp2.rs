@@ -350,6 +350,7 @@ fn pair_energy_in_pno_basis(
 ///
 /// [`FerricError::General`] when `g`'s dimensions disagree with `nocc`/`nvir`, or
 /// on any error from the PNO construction.
+#[allow(clippy::too_many_arguments)]
 pub fn dlpno_mp2_spin_components(
     g: &Array2<f64>,
     eps: &[f64],

@@ -37,4 +37,5 @@ default = []
 mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi", "ferric-mp2/mpi", "ferric-rpa/mpi"]
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde_json = { workspace = true }

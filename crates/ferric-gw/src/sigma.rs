@@ -574,6 +574,7 @@ pub(crate) fn pade_support_omegas(pade_npts: usize) -> Vec<f64> {
 /// in `n_quad` for states away from the frontier (H2O/cc-pVDZ G0W0@PBE
 /// HOMO−2: +136, −102, −9.7 meV from the exact-Σc QP at 40, 100, 200
 /// points), the product rule is within 0.004 meV from 40 points on.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn solve_qp_for_mo(
     m_loc: usize,
     eps_m_mf: f64,
@@ -772,6 +773,7 @@ pub(crate) fn qp_root_by_weight(pade: &PadeCF, eps_m_mf: f64, static_shift: f64)
 /// Run G0W0. `vxc_diag`, if given (KS reference), is the absolute-MO-indexed
 /// diagonal v_xc; the QP equation then includes Σ_x − v_xc inside the
 /// self-consistency. `None` ⇒ HF reference (no shift, unchanged behavior).
+#[allow(clippy::too_many_arguments)]
 pub fn run_g0w0(
     mol: &Molecule,
     rhf: &ScfResult,
@@ -933,6 +935,7 @@ pub fn run_g0w0(
 /// (and would just reproduce the same fixed value at extra cost, since it
 /// does not depend on `eps_prop`). `None` ⇒ HF reference (no shift,
 /// unchanged behavior).
+#[allow(clippy::too_many_arguments)]
 pub fn run_evgw0(
     mol: &Molecule,
     rhf: &ScfResult,
@@ -1107,6 +1110,7 @@ pub fn run_evgw0(
 /// *starting* KS orbitals, not of the evolving QP/W self-consistency, so
 /// this matches `run_g0w0`/`run_evgw0`'s treatment. `None` ⇒ HF reference
 /// (no shift, unchanged behavior).
+#[allow(clippy::too_many_arguments)]
 pub fn run_evgw(
     mol: &Molecule,
     obs: &ferric_integrals::basis_bridge::PreparedBasis,

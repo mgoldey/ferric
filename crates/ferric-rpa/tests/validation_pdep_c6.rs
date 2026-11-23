@@ -149,6 +149,7 @@ use ferric_rpa::PdepRpaConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -209,12 +210,6 @@ fn reference(system: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn text<'a>(v: &'a Value, ptr: &str, ctx: &str) -> &'a str {
@@ -338,7 +333,7 @@ fn setup(system: &str) -> Case {
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, 1)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
     assert!(
-        (mol.nuclear_repulsion() - num(&r, "/nuclear_repulsion", &ctx)).abs() < TOL_ENUC,
+        (mol.nuclear_repulsion() - num_ctx(&r, "/nuclear_repulsion", &ctx)).abs() < TOL_ENUC,
         "{ctx}: nuclear repulsion mismatch — geometry/unit slip"
     );
     let bs = basis::bundled(BASIS).unwrap();
@@ -368,7 +363,7 @@ fn setup(system: &str) -> Case {
     check(
         &ctx,
         "RHF energy |d|",
-        (own.energy - num(&r, "/scf/energy", &ctx)).abs(),
+        (own.energy - num_ctx(&r, "/scf/energy", &ctx)).abs(),
         TOL_E_SCF,
     );
 
@@ -498,7 +493,7 @@ fn molecular_row(system: &str) {
     // tensor contraction is only applied to `per_atom` in ferric, so the
     // molecular tensor is routed through it as a one-site system.
     let c6 = casimir_polder_c6(&dp);
-    let c6_ref = num(r, "/molecular/c6_iso", ctx);
+    let c6_ref = num_ctx(r, "/molecular/c6_iso", ctx);
     check(
         ctx,
         "C6 molecular iso same-C (rel)",
@@ -527,7 +522,7 @@ fn molecular_row(system: &str) {
         ((c6_one.c6_iso_pair[(0, 0)] - c6.c6_molecular_iso) / c6.c6_molecular_iso).abs(),
         1e-14,
     );
-    let exact = num(r, "/molecular/c6_iso_exact_integral", ctx);
+    let exact = num_ctx(r, "/molecular/c6_iso_exact_integral", ctx);
     eprintln!(
         "{ctx}: [measurement] C6 iso {:.8} ; exact Casimir-Polder integral {exact:.8} ; \
          ferric quadrature error {:.2e} (rel)",
@@ -536,8 +531,8 @@ fn molecular_row(system: &str) {
     );
     eprintln!(
         "{ctx}: [scope] C6 dRPA exact-ERI {:.8}  TDHF exact-ERI {:.8}",
-        num(r, "/scope/c6_iso_drpa_exact_eri", ctx),
-        num(r, "/scope/c6_iso_tdhf_exact_eri", ctx)
+        num_ctx(r, "/scope/c6_iso_drpa_exact_eri", ctx),
+        num_ctx(r, "/scope/c6_iso_tdhf_exact_eri", ctx)
     );
 
     // Control: orbital energies are read at every node.
@@ -598,7 +593,7 @@ fn molecular_row(system: &str) {
     );
 
     // Scope: ferric's C6 is the direct-RPA one, not TDHF.
-    let tdhf = num(r, "/scope/c6_iso_tdhf_exact_eri", ctx);
+    let tdhf = num_ctx(r, "/scope/c6_iso_tdhf_exact_eri", ctx);
     let tdhf_miss = ((c6_2 - tdhf) / tdhf).abs();
     eprintln!("{ctx}: [scope] ferric C6 vs TDHF C6 {tdhf_miss:.2e} (rel)");
     assert!(

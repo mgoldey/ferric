@@ -43,6 +43,7 @@ research = []
 mpi = ["dep:mpi", "ferric-core/mpi", "ferric-scf/mpi", "ferric-mp2/mpi"]
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 ferric-pcm = { path = "../ferric-pcm" }
 serde = { workspace = true }
 serde_json = { workspace = true }

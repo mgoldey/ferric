@@ -81,6 +81,7 @@ use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/udh_pyscf";
@@ -148,12 +149,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 /// The KS config of `run_mp2_double_hybrid_arm`, pinned to the settings the
@@ -230,8 +225,8 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
     for (set, kind) in SETS {
         let ctx = format!("{ctx0}/{set}");
         let s = format!("/sets/{set}");
-        let c_os = num(&r, &format!("{s}/c_os"), &ctx);
-        let c_ss = num(&r, &format!("{s}/c_ss"), &ctx);
+        let c_os = num_ctx(&r, &format!("{s}/c_os"), &ctx);
+        let c_ss = num_ctx(&r, &format!("{s}/c_ss"), &ctx);
         let published = kind.mp2_config();
         assert_eq!(
             (published.c_os, published.c_ss),
@@ -239,18 +234,18 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
             "{ctx}: scalings"
         );
         let run = solve_uks(system, basis_name, aux, ks_config(kind, false));
-        let enuc_ref = num(&r, "/nuclear_repulsion", &ctx);
+        let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &ctx);
         assert!(
             (run.mol.nuclear_repulsion() - enuc_ref).abs() < TOL_ENUC,
             "{ctx}: nuclear repulsion differs: geometry/unit mismatch"
         );
-        let rep = |k: &str| num(&r, &format!("{s}/reproduction/{k}"), &ctx);
+        let rep = |k: &str| num_ctx(&r, &format!("{s}/reproduction/{k}"), &ctx);
         let bar_ks = SAFETY * (CONV_E_KS + rep("e_ks") + FLOOR);
         check(
             &ctx,
             "E_KS",
             run.ks.energy,
-            num(&r, &format!("{s}/ks/energy"), &ctx),
+            num_ctx(&r, &format!("{s}/ks/energy"), &ctx),
             bar_ks,
         );
         for fc in [0usize, 1] {
@@ -265,21 +260,21 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
                 &tag,
                 "E_OS",
                 out.spin_components.e_os,
-                num(&r, &format!("{k}/e_os"), &tag),
+                num_ctx(&r, &format!("{k}/e_os"), &tag),
                 bar_os,
             );
             check(
                 &tag,
                 "E_SS",
                 out.spin_components.e_ss,
-                num(&r, &format!("{k}/e_ss"), &tag),
+                num_ctx(&r, &format!("{k}/e_ss"), &tag),
                 bar_ss,
             );
             check(
                 &tag,
                 "total",
                 out.total_energy,
-                num(&r, &format!("{k}/total"), &tag),
+                num_ctx(&r, &format!("{k}/total"), &tag),
                 bar_t,
             );
             // The PT2 term is not negligible; the total is the definition.
@@ -303,7 +298,7 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
                 &ctx,
                 "E_D3(BJ)",
                 d3,
-                num(&r, &format!("{s}/d3bj/energy"), &ctx),
+                num_ctx(&r, &format!("{s}/d3bj/energy"), &ctx),
                 TOL_D3,
             );
             let out = udh(&run, kind, 0);
@@ -311,7 +306,7 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
                 &ctx,
                 "total+D3",
                 out.total_energy + d3,
-                num(&r, &format!("{s}/fc0/total_with_d3bj"), &ctx),
+                num_ctx(&r, &format!("{s}/fc0/total_with_d3bj"), &ctx),
                 SAFETY * (CONV_TOTAL + FLOOR) + TOL_D3,
             );
         }
@@ -329,7 +324,7 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
         &ctx,
         "E_D3(BJ)",
         d3,
-        num(&r, "/sets/b2plyp-d3bj/d3bj/energy", &ctx),
+        num_ctx(&r, "/sets/b2plyp-d3bj/d3bj/energy", &ctx),
         TOL_D3,
     );
     for fc in [0usize, 1] {
@@ -339,7 +334,7 @@ fn run_case(system: &str, basis_name: &str, aux: &str) {
             &tag,
             "total+D3",
             out.total_energy + d3,
-            num(
+            num_ctx(
                 &r,
                 &format!("/sets/b2plyp-d3bj/fc{fc}/total_with_d3bj"),
                 &tag,

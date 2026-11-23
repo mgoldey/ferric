@@ -298,10 +298,7 @@ pub fn build_cavity(mol: &Molecule, cfg: &CavityConfig) -> Result<Vec<Tessera>, 
 mod tests {
     use super::*;
     use ferric_core::mol::Molecule;
-
-    fn water() -> Molecule {
-        Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-    }
+    use ferric_testkit::molecules::water_xyz;
 
     #[test]
     fn switch_h_boundary_values() {
@@ -327,7 +324,7 @@ mod tests {
 
     #[test]
     fn water_cavity_has_positive_tesserae_and_area() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CavityConfig::default();
         let tess = build_cavity(&mol, &cfg).unwrap();
         assert!(!tess.is_empty());
@@ -344,7 +341,7 @@ mod tests {
 
     #[test]
     fn every_tessera_normal_is_unit_length() {
-        let mol = water();
+        let mol = water_xyz();
         let cfg = CavityConfig::default();
         let tess = build_cavity(&mol, &cfg).unwrap();
         for t in &tess {
@@ -403,7 +400,7 @@ mod tests {
             lebedev_order: 100,
             ..CavityConfig::default()
         };
-        let err = build_cavity(&water(), &cfg).unwrap_err().to_string();
+        let err = build_cavity(&water_xyz(), &cfg).unwrap_err().to_string();
         assert!(
             err.contains("build_cavity: unsupported lebedev_order 100"),
             "{err}"

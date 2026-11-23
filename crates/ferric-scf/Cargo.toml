@@ -56,6 +56,7 @@ test-seams = ["gpu", "ferric-core/test-seams", "ferric-dft/test-seams"]
 cfmm-incomplete = []
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 ferric-dft = { path = "../ferric-dft" }
 serde = { workspace = true }
 serde_json = { workspace = true }
