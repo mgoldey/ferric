@@ -25,9 +25,12 @@ ferric-core
   options type; the Python bindings turn keyword arguments into the same type.
   Neither is a second source of truth. `ferric_scf::options` is the first such
   lowering; new SCF entry points go through it.
-- **Python does not reach into ferric-cli** except through `ferric_cli::run`
-  (the bundled `ferric` command). CLI helpers may call `process::exit`, which
-  would kill the interpreter. Existing uses (`LocalCfg`, `LocalModel`, `LocalScheme`, `Mp2Cfg`) are slated
+- **Python does not reach into ferric-cli** except through
+  `ferric_cli::try_run` (the bundled `ferric` console script, `_cli_main`),
+  which turns a returned `CliError` into the CLI's stderr text and
+  `SystemExit(status)`, as a command should. Nothing in ferric-cli exits
+  below `ferric_cli::run`, the native binaries' entry point.
+  Existing uses (`LocalCfg`, `LocalModel`, `LocalScheme`, `Mp2Cfg`) are slated
   to move into ferric-mp2.
 - **Python imports nothing above it.** The package under
   `crates/ferric-python/python/ferric/` never imports `smeltery` or
@@ -86,12 +89,16 @@ ferric-core
 
 - Library crates return `Result<_, FerricError>`. No new `Result<_, String>`
   across a crate boundary.
-- **CLI:** `ferric-cli/src/error.rs` holds `CliError` and the `OrExit`
-  extension trait. `OrExit` replaces the hand-written
-  `unwrap_or_else(|e| { eprintln!(...); exit(1) })` closures. It is a
-  transitional step: run functions should move to `Result<_, CliError>` with
-  `?`, so that `process::exit` appears only in `main`/`run`. Its first
-  producer is `try_scf_config` (the `[scf]` lowering).
+- **CLI:** run functions return `Result<_, CliError>`
+  (`ferric-cli/src/error.rs`) and propagate with `?`; `std::process::exit`
+  appears only in `ferric_cli::run` (and `ferric-batch`'s `main`). Each
+  `CliError` variant fixes the stderr bytes and the exit status:
+  `Ferric`/`Msg` print `error: {msg}` (status 1), `Verbatim` prints its
+  text as written (a message that does not start with `error: `, or a
+  multi-line one; status 1), `Usage` prints its text as written with status
+  2. A new error site builds the variant whose output it wants
+  (`CliError::msg` / `verbatim` / `usage`; there is no `From<String>`, so a
+  site cannot get a prefix by accident) and never prints the error itself.
 - **Python:** convert a `FerricError` with the crate-local `IntoPyResult`
   extension trait (`.py()?`), not a fresh `map_err` per call site. A blanket
   `From<FerricError> for PyErr` is not possible (orphan rule). Older
@@ -155,7 +162,7 @@ Done:
 
 1. Python API signature/default snapshot test.
 2. `ferric_scf::options` lowering used by `run_rhf`, `run_uhf`, `run_rohf`.
-3. `CliError` and `OrExit` in ferric-cli.
+3. `CliError` and `OrExit` in ferric-cli (`OrExit` removed again by 12).
 4. `IntoPyResult` in ferric-python.
 5. Optional Python integrations: `ferric.rdkit`, `ferric.serialize`,
    `ferric.units`, public QCSchema molecule helpers, ASE dipole and charges,
@@ -435,6 +442,71 @@ Done:
     - `ferric.pyi`: the `run_dft` / `run_ksdft` `symmetry=True` overloads
       type `with_gradient` as `Literal[False]` and `dispersion` as `None`.
 
+12. CLI run functions return `Result<_, CliError>`. `ferric_cli::try_run`
+    is the whole CLI in-process: it returns `Ok(())` for a finished run and
+    for `--help`/`--version` (text already printed), and every failure as a
+    not-yet-printed `CliError`. `ferric_cli::run` (the `ferric`/`ferric-cli`
+    binaries) does process init (`init_threading`), calls it, and on an
+    error prints it (`CliError::eprint`) and `process::exit`s with
+    `exit_code()`; the caller of `try_run` owns process init. Python's
+    `_cli_main` (the `ferric` console script; `init_threading` already ran
+    at import) prints the error the same way and raises
+    `SystemExit(status)`, so the status, stderr and absence of a traceback
+    are unchanged but Python shuts down normally (atexit, stream flush;
+    `tests/test_cli_main_exit.py`). The value is maintainability and a
+    testable CLI (`tests/try_run_in_process.rs`), not a Python crash fix:
+    exiting with the status is the console script's correct behaviour.
+    - Output is byte-identical: the variants (`Msg`/`Ferric` `error: ...`,
+      `Verbatim` as written, `Usage` as written with status 2) reproduce each old
+      `eprintln!` + `exit`, multi-line messages (the exact-dRPA memory hint,
+      the incomplete-NPZ list) are one `Verbatim`, and nothing runs between an
+      error site and the top level, so warnings printed before an error
+      still come first. Checked against an origin/main build on 112
+      invocations, 90 of them failing (81 with status 1, 9 with status 2:
+      usage, config loading, the validation families, ECP, periodic, md,
+      thermo/IR, frequencies, optimize, per-arm refusals) and 22 exiting 0
+      (`--help`/`--version` and small runs): stdout, stderr, status and
+      JSON run logs equal (masks: build identity, the periodic stage-table
+      timings, timing keys and record order in the log).
+    - The JSON run log is unchanged: its sink is a process static written
+      and flushed per record, so returning instead of exiting writes the
+      same records (no `run_end` on an error, as before). Returning now runs
+      the destructors `exit` skipped (the prepared system, basis handles,
+      memory-pool reservations, MD writers); none prints or writes (the MD
+      writers flush every frame already).
+    - Closures that used to exit became fallible (`.transpose()`, `Ok`
+      closures) without moving any check. Two helpers changed shape for
+      it: `task_reference_certificate` returns `Result<RefCert, CliError>`
+      (`RefCert::Stamped`, or `RefCert::Ungraded` with the warning for a
+      failed final-point SCF; `Err`: a dispersion error, which ends the
+      run), and `frequencies_maybe_dispersion` wraps its own driver
+      errors as `error computing frequencies: ...` so its dispersion errors
+      keep their text. One internal-invariant check moved: the periodic
+      Gamma-point correlation's `[cell]` denominators lookup (never absent
+      after `load_config`) now runs before that route's SCF instead of
+      inside its driver.
+    - `OrExit` and `die` are gone; no exit is left inside a closure, rayon
+      task or handler. `ferric-batch` exits only in `main` (over
+      `try_main`); one failing molecule still does not stop the batch,
+      which exits 1 at the end, as before. A per-molecule TOML that cannot
+      be written is now a setup error (`Failed to write <path>: ...`,
+      status 1) instead of a panic. `ferric-batch` does not call
+      `init_threading`: it runs no calculation, only child `ferric`
+      processes, which initialise themselves.
+    - `run`'s dispatch moved into `try_run` with two helpers
+      (`parse_args`, `load_and_install`), keeping it under the complexity
+      gate's new-function ceiling (CC 131; `run` was 127); the baseline
+      was regenerated for the arms that gained `?` branches.
+    Follow-ups: `try_run` still installs process-wide, first-call-wins
+    state (run-log sink, memory pool, GPU and integral settings), so a
+    second in-process run past config loading is not isolated; many sites
+    flatten typed errors into `Msg` strings (`CliError::msg`), which a
+    later pass could keep as `Ferric`, starting with cas.rs, opmp3.rs,
+    periodic.rs and cdft.rs, whose driver errors are all `FerricError`;
+    `CliError` construction should move out of `config.rs`
+    (`OptimizeCfg::search_options`) and `md.rs` (`md_error`) into their
+    callers, so the config layer returns plain errors; `ferric-batch`
+    could report a child's error class from its exit status (2 vs 1).
 13. Result storage, bitwise unchanged (old-vs-new over the 15
     `result=`-taking functions and the array getters, on two RHF and two
     KS references: 84 values):
@@ -583,8 +655,6 @@ Next, each as its own PR following the patterns above:
     `&RhfConfig`) into `ScfResult`, so the config can derive `PartialEq`;
     (e) one `RhfConfig::validate` called at solver entry. Cross-field rules
     then return a typed `OptionError`.
-12. CLI run functions return `Result<_, CliError>`; `process::exit` only in
-    the binaries' `main`, since Python calls `ferric_cli::run`.
 14. A shared `ferric-testkit` dev crate, file splits, and a clippy ratchet on
     `too_many_arguments`.
 15. (rest) Still stringly or boolean at the boundary, after the first

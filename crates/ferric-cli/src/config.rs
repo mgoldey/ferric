@@ -1182,30 +1182,35 @@ pub fn parse_trust_update(s: &str) -> Result<ferric_scf::optimize::TrustUpdate, 
 }
 
 impl OptimizeCfg {
-    /// The `initial_hessian` and `trust_update` keys, parsed; exits with the
-    /// parser's message on a bad value.
-    #[must_use]
+    /// The `initial_hessian` and `trust_update` keys, parsed.
+    ///
+    /// # Errors
+    ///
+    /// The parser's message, as `error in [optimize]: ...`, on a bad value.
     pub fn search_options(
         &self,
-    ) -> (
-        Option<ferric_scf::optimize::InitialHessian>,
-        ferric_scf::optimize::TrustUpdate,
-    ) {
-        let die = |e: String| -> ! {
-            eprintln!("error in [optimize]: {e}");
-            std::process::exit(1);
-        };
+    ) -> Result<
+        (
+            Option<ferric_scf::optimize::InitialHessian>,
+            ferric_scf::optimize::TrustUpdate,
+        ),
+        crate::error::CliError,
+    > {
+        let err = |e: String| crate::error::CliError::verbatim(format!("error in [optimize]: {e}"));
         let ih = self
             .initial_hessian
             .as_deref()
-            .map(|s| parse_initial_hessian(s).unwrap_or_else(|e| die(e)));
+            .map(parse_initial_hessian)
+            .transpose()
+            .map_err(err)?;
         let tu = self
             .trust_update
             .as_deref()
-            .map_or_else(Default::default, |s| {
-                parse_trust_update(s).unwrap_or_else(|e| die(e))
-            });
-        (ih, tu)
+            .map(parse_trust_update)
+            .transpose()
+            .map_err(err)?
+            .unwrap_or_default();
+        Ok((ih, tu))
     }
 }
 
@@ -2846,7 +2851,8 @@ pub struct RpaCfg {
     /// properties that DID work would be worse. What the default changes is
     /// only that the run stops claiming success. Set this to `true` to opt back
     /// in when gaps are acceptable — the honest form of what used to be
-    /// implicit.
+    /// implicit. It forgives gaps in a bundle that was written; a bundle that
+    /// could not be written at all still fails the run.
     pub allow_partial_npz: Option<bool>,
     /// C6 polarizability source. One of:
     ///   "ts"   — Tkatchenko-Scheffler single-pole model (default)
@@ -13205,7 +13211,7 @@ max_iter = 42
             );
         }
         let cfg = super::OptimizeCfg::default();
-        assert_eq!(cfg.search_options(), (None, TrustUpdate::Ratio));
+        assert_eq!(cfg.search_options().unwrap(), (None, TrustUpdate::Ratio));
     }
 
     /// The `coordinates` key must actually reach the parsed [`Config`], and an
