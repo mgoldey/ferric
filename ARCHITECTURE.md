@@ -542,10 +542,10 @@ Done:
       re-runs the six field SCFs in turn. Assignment to a getter still
       raises the same `AttributeError` ("not writable"). Not frozen:
       `ConformerEnsemble` (`set_energy` mutates it) and the `blocks`
-      handles (`DfJk`, `XcFunctional` have `&mut self` methods; also
-      `AoIntegrals`, `Cphf`, `Ucphf`); and, as inputs rather than results,
-      `BasisSet`, `QmmmSystem`, `MmTopology` and `CdftConstraint`, which
-      have no mutating method and could be frozen in a follow-up.
+      handles `DfJk` and `XcFunctional` (`&mut self` methods). Done since:
+      the inputs `BasisSet`, `QmmmSystem`, `MmTopology`, `CdftConstraint`
+      and the handles `AoIntegrals`, `Cphf`, `Ucphf` (no setter, `&mut
+      self` or `PyRefMut` use) are frozen too (`tests/test_frozen_inputs.py`).
     - `ferric.serialize.RESULT_SCHEMA` (class name -> getters and array
       accessors) replaces the `dir()` scan for ferric classes, generated
       from the reflected field set so the output is byte-identical
