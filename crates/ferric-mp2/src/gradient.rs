@@ -93,6 +93,8 @@ pub fn rimp2_gradient_fd(
 /// [`rimp2_gradient_analytical`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn rimp2_gradient_analytical_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -100,7 +102,7 @@ pub fn rimp2_gradient_analytical_on(
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     rimp2_gradient_analytical(
         sys.mol(),
         sys.basis(),

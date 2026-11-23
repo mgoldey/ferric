@@ -1059,6 +1059,8 @@ pub fn require_hf_reference(rhf: &ScfResult, who: &str) -> Result<(), FerricErro
 /// ([`PreparedAux::check_reference`]).
 /// `op` is the correlation operator (the system's Coulomb operator
 /// unless the caller attenuates it).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn amplitude_lmp2_on(
     aux: &PreparedAux<'_>,
     op: Operator,
@@ -1066,7 +1068,7 @@ pub fn amplitude_lmp2_on(
     cfg: &AmplitudeLmp2Config,
 ) -> Result<AmplitudeLmp2Result, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     amplitude_lmp2(
         sys.mol(),
         sys.basis(),

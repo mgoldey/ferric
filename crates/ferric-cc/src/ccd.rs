@@ -19,13 +19,15 @@ use super::helpers::{p_ab, p_ij, p_ij_ab};
 /// [`ccd`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn ccd_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     ccd(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, cfg)
 }
 

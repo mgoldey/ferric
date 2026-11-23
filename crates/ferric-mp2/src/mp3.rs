@@ -141,6 +141,8 @@ fn mp3_peak_bytes(naux: usize, nbas: usize, no: usize, nv: usize) -> usize {
 /// [`mp3_energy`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn mp3_energy_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -148,7 +150,7 @@ pub fn mp3_energy_on(
     memory_budget_bytes: Option<usize>,
 ) -> Result<Mp3Result, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     mp3_energy(
         sys.mol(),
         sys.basis(),

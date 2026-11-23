@@ -1031,6 +1031,8 @@ pub fn ri_mp2_spin_components(
 /// [`ri_mp2_spin_components_fitted`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn ri_mp2_spin_components_fitted_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -1038,7 +1040,7 @@ pub fn ri_mp2_spin_components_fitted_on(
     fit: &RiFit,
 ) -> Result<(SpinComponents, Array2<f64>), FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     ri_mp2_spin_components_fitted(
         sys.mol(),
         sys.basis(),
@@ -1607,6 +1609,8 @@ pub fn spin_components_from_signed_b_ov(
 /// ([`PreparedAux::check_reference`]).
 /// `op` is the correlation operator (the system's Coulomb operator
 /// unless the caller attenuates it).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn ri_mp2_with_op_on(
     aux: &PreparedAux<'_>,
     op: Operator,
@@ -1614,7 +1618,7 @@ pub fn ri_mp2_with_op_on(
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     ri_mp2(sys.mol(), sys.basis(), aux.basis(), op, rhf, config)
 }
 
@@ -1666,13 +1670,15 @@ pub fn ri_mp2_on(
 
 /// [`ri_mp2_fitted`] on the system `aux` was prepared on; see [`PreparedAux`] for
 /// what such an entry point reads from the system.
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn ri_mp2_fitted_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
     fit: &RiFit,
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     let sys = aux.system();
     ri_mp2_fitted(
         sys.mol(),

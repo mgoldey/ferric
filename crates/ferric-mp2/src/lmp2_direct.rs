@@ -3366,6 +3366,8 @@ pub fn assemble_pp_fitted_direct(
 /// ([`PreparedAux::check_reference`]).
 /// `op` is the correlation operator (the system's Coulomb operator
 /// unless the caller attenuates it).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn amplitude_lmp2_direct_on(
     aux: &PreparedAux<'_>,
     op: Operator,
@@ -3374,7 +3376,7 @@ pub fn amplitude_lmp2_direct_on(
     dcfg: &DirectConfig,
 ) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     amplitude_lmp2_direct(
         sys.mol(),
         sys.basis(),

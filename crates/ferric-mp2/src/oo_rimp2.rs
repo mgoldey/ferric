@@ -1478,6 +1478,8 @@ fn integral_response_kernel(
 /// [`oo_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn oo_ri_mp2_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -1485,7 +1487,7 @@ pub fn oo_ri_mp2_on(
     ext: Option<&ExternalPotential>,
 ) -> Result<OoRiMp2Result, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     oo_ri_mp2(
         sys.mol(),
         sys.basis(),

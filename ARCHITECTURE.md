@@ -515,10 +515,25 @@ Done:
       this system: ...") naming what does not fit: the β fields match
       `ScfResult::spin` (`Restricted`: no β MOs or orbital energies;
       `Unrestricted`: both; `RestrictedOpen`: both or neither), the total
-      density is `nbasis × nbasis`, each spin's MO coefficients have
-      `basis().nbasis()` AO rows and one orbital energy per MO, and the
-      occupied orbitals of the molecule's electron count and multiplicity
-      fit. `PreparedSystem::check_closed_shell_orbitals(mos, eps)` is the
+      density is `nbasis × nbasis`, each spin's MO coefficients are
+      `nbasis × nbasis` (every solver, linear-dependency removal included,
+      pads the MO space to the basis size, and the fixed-width kernels size
+      their virtual space from `nbasis`) with one orbital energy per MO,
+      and the occupied orbitals of the molecule's electron count and
+      multiplicity fit. Two narrower checks sit on top of it:
+      `check_restricted_reference` (the closed-shell entries whose kernels
+      read `ScfResult::mos_r` and the other restricted accessors, which
+      assert the spin: the restricted `ri_mp2*`, MP3, OO-MP2, the double
+      hybrid, ω-RI-CDD, Laplace, the RI-MP2 gradient, the amplitude
+      LMP2 / dRPA / LinLCCD, CCD, LinLCCD, PDEP-RPA and the RPA gradient)
+      and `check_virtual_orbitals` (the entries whose kernels read the
+      lowest virtual orbital: ω-RI-CDD, Laplace, PDEP-RPA, RS-MP2-RPA, and
+      for closed-shell references GW, BSE-TDA and RPAx). The entries that
+      already refused another spin with their own message (attenuated
+      MP2-V, CCSD, GW, BSE, RPAx) keep it. ferric-cli's
+      `on_entries_never_panic` sweeps every reference-taking entry over
+      UHF, ROHF, rectangular-MO, He / STO-3G and H-atom UHF references
+      under `catch_unwind`. `PreparedSystem::check_closed_shell_orbitals(mos, eps)` is the
       per-spin part for orbitals that are not an `ScfResult` ("the
       orbitals do not belong ..."). Every `*_on` entry that takes a
       reference calls one of them first: the new ones below (with
