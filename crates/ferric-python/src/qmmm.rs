@@ -39,7 +39,7 @@ impl PyMmTopology {
         torsions: Vec<(usize, usize, usize, usize, u32, f64, f64)>,
     ) -> PyResult<Self> {
         if sigmas_angstrom.len() != charges.len() || epsilons_kcal.len() != charges.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "MmTopology.from_amber_units: charges ({}), sigmas_angstrom ({}) and \
                  epsilons_kcal ({}) must have the same length",
                 charges.len(),
@@ -135,7 +135,7 @@ impl PyQmmmSystem {
     ) -> PyResult<Self> {
         use ferric_scf::qmmm::{QmSelection, QmmmAtom, QmmmSystem};
         if symbols.len() != coords_angstrom.len() || symbols.len() != charges.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "symbols ({}), coords_angstrom ({}) and charges ({}) must have the same length",
                 symbols.len(),
                 coords_angstrom.len(),
@@ -144,7 +144,7 @@ impl PyQmmmSystem {
         }
         if let Some(w) = &widths_angstrom {
             if w.len() != symbols.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "widths_angstrom ({}) must have one entry per atom ({})",
                     w.len(),
                     symbols.len()
@@ -153,7 +153,7 @@ impl PyQmmmSystem {
         }
         if let Some(a) = &polarizabilities_angstrom3 {
             if a.len() != symbols.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "polarizabilities_angstrom3 ({}) must have one entry per atom ({})",
                     a.len(),
                     symbols.len()
@@ -165,7 +165,7 @@ impl PyQmmmSystem {
             .enumerate()
             .find(|(_, c)| c.len() != 3)
         {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "coords_angstrom[{i}] has {} components, expected 3",
                 bad.len()
             )));
@@ -215,7 +215,7 @@ impl PyQmmmSystem {
                 }
             }
             _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::errors::input_err(
                     "select the QM region with EITHER qm_indices OR qm_seeds + \
                      qm_radius_angstrom (+ optional residue_ids)",
                 ))
@@ -235,7 +235,7 @@ impl PyQmmmSystem {
             // picked a bad atom" from "your radius is too large", which the
             // bare index did not.
             let n_bare = atoms.iter().filter(|a| a.z == 0).count();
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "QM atom {bad} has symbol {:?}, which is not an element, so it \
                  cannot be in the QM region -- a bare-charge site (z = 0) has no \
                  basis functions. This structure has {n_bare} such site(s), which \
@@ -271,7 +271,7 @@ impl PyQmmmSystem {
     /// find the M2 shell. Returns a new system.
     fn with_boundary_charges(&self, bonds: Vec<(usize, usize)>, scheme: &str) -> PyResult<Self> {
         let scheme = ferric_scf::qmmm::BoundaryChargeScheme::parse_config_str(scheme)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            .map_err(crate::errors::input_err)?;
         Ok(Self {
             inner: self
                 .inner
@@ -596,12 +596,12 @@ pub(crate) fn run_qmmm(
     let method = method.unwrap_or("rhf");
     let is_ks = matches!(method, "rks" | "uks");
     if xc.is_some() && !is_ks {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method:?}"
         )));
     }
     if is_ks && xc.is_none() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_qmmm: method=\"rks\"/\"uks\" requires xc",
         ));
     }
@@ -615,12 +615,12 @@ pub(crate) fn run_qmmm(
     } else {
         let scheme =
             PolarizationExclusions::parse_config_str(polarization_exclusions.unwrap_or("molecule"))
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                .map_err(crate::errors::input_err)?;
         let bonds: Option<Vec<(usize, usize)>> =
             mm_topology.map(|t| t.inner.bonds.iter().map(|b| (b.i, b.j)).collect());
         let ids = mm_sys
             .polarization_molecule_ids(scheme, bonds.as_deref())
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            .map_err(crate::errors::input_err)?;
         let thole_a = match thole_a {
             None => Some(DEFAULT_THOLE_A),
             Some(a) if a > 0.0 => Some(a),
@@ -757,7 +757,7 @@ pub(crate) fn run_qmmm(
             (r, g)
         }
         m => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "run_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
             )))
         }
@@ -965,12 +965,12 @@ pub(crate) fn run_optimize_qmmm(
     let method_name = method.unwrap_or("rhf");
     let is_ks = matches!(method_name, "rks" | "uks");
     if xc.is_some() && !is_ks {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_optimize_qmmm: xc is only valid for method=\"rks\"/\"uks\", got method={method_name:?}"
         )));
     }
     if is_ks && xc.is_none() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_optimize_qmmm: method=\"rks\"/\"uks\" requires xc",
         ));
     }
@@ -980,7 +980,7 @@ pub(crate) fn run_optimize_qmmm(
         "rks" => QmmmMethod::Rks(xc.unwrap().to_string()),
         "uks" => QmmmMethod::Uks(xc.unwrap().to_string()),
         m => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "run_optimize_qmmm: method must be \"rhf\", \"uhf\", \"rks\" or \"uks\", got {m:?}"
             )))
         }
@@ -1000,12 +1000,12 @@ pub(crate) fn run_optimize_qmmm(
     if let Some(s) = initial_hessian {
         opt.initial_hessian = Some(
             ferric_scf::optimize::InitialHessian::parse_config_str(s)
-                .map_err(pyo3::exceptions::PyValueError::new_err)?,
+                .map_err(crate::errors::input_err)?,
         );
     }
     if let Some(s) = trust_update {
         opt.trust_update = ferric_scf::optimize::TrustUpdate::parse_config_str(s)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            .map_err(crate::errors::input_err)?;
     }
     let cfg = QmmmOptimizeConfig {
         method: qmmm_method,
@@ -1064,7 +1064,7 @@ pub(crate) fn parse_move_mm(
         return match s.as_str() {
             "none" => Ok(MoveMm::None),
             "all" => Ok(MoveMm::All),
-            other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            other => Err(crate::errors::input_err(format!(
                 "run_optimize_qmmm: unknown move_mm string {other:?}; expected \"none\", \"all\", \
                  (\"within\", radius_angstrom), or (\"residues\", [ids])"
             ))),
@@ -1074,7 +1074,7 @@ pub(crate) fn parse_move_mm(
         match tag.as_str() {
             "within" => {
                 let r: f64 = arg.extract().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
+                    crate::errors::input_err(
                         "run_optimize_qmmm: (\"within\", radius_angstrom) needs a float radius",
                     )
                 })?;
@@ -1082,21 +1082,21 @@ pub(crate) fn parse_move_mm(
             }
             "residues" => {
                 let ids: Vec<usize> = arg.extract().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(
+                    crate::errors::input_err(
                         "run_optimize_qmmm: (\"residues\", [ids]) needs a list of int residue ids",
                     )
                 })?;
                 return Ok(MoveMm::Residues(ids));
             }
             other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "run_optimize_qmmm: unknown move_mm tag {other:?}; expected \"within\" or \"residues\""
                 )))
             }
         }
     }
     let _ = py;
-    Err(pyo3::exceptions::PyValueError::new_err(
+    Err(crate::errors::input_err(
         "run_optimize_qmmm: move_mm must be \"none\", \"all\", (\"within\", radius_angstrom), \
          or (\"residues\", [ids])",
     ))

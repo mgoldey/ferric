@@ -44,6 +44,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::{Operator, OperatorKind};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 /// The ωB97X-L-V range-separation parameter ω, in Bohr⁻¹ (paper Table 2).
@@ -241,6 +242,24 @@ pub fn u_solve_wb97x_l_v(
         None => 0.0,
     };
     Ok(assemble(ks.energy, e_c_scaled, cfg))
+}
+
+/// [`run_wb97x_l_v`] on the system `aux` was prepared on (see [`PreparedAux`]).
+pub fn run_wb97x_l_v_on(
+    aux: &PreparedAux<'_>,
+    scf_cfg: &ferric_scf::rhf::RhfConfig,
+    cfg: &DoubleHybridConfig,
+) -> Result<(DoubleHybridResult, ScfResult), FerricError> {
+    let sys = aux.system();
+    run_wb97x_l_v(
+        sys.ctx(),
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.bounds(),
+        scf_cfg,
+        cfg,
+    )
 }
 
 /// End-to-end ωB97X-L-V: converge the Kohn–Sham density, then add the correlation.

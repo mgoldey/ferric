@@ -102,12 +102,10 @@ fn response_modes(
     memory_budget_gb: Option<f64>,
 ) -> PyResult<PyResponseModes> {
     if n_modes == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "n_modes must be >= 1",
-        ));
+        return Err(crate::errors::input_err("n_modes must be >= 1"));
     }
     if !(omega.is_finite() && omega >= 0.0) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "omega must be a finite imaginary frequency >= 0 (Hartree), got {omega}"
         )));
     }
@@ -163,7 +161,7 @@ fn write_response_mode_cube(
         "l2" => 1.0 / m.l2_norms[index],
         "coulomb" => 1.0,
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown normalization {other:?}: expected \"l2\" or \"coulomb\""
             )))
         }
@@ -172,7 +170,7 @@ fn write_response_mode_cube(
     let chi =
         ferric_export::eval_basis_on_grid(&mol.inner, &auxbasis.inner, &grid).map_err(make_err)?;
     if chi.nrows() != m.naux {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "auxbasis places {} functions on mol but the modes have naux = {}",
             chi.nrows(),
             m.naux

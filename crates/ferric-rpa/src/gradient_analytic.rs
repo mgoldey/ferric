@@ -31,6 +31,7 @@ use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
+use ferric_scf::PreparedAux;
 use ndarray::{s, Array1, Array2, ArrayView2};
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -297,7 +298,7 @@ pub fn rpa_analytic_gradient_warm(
             last_energy: rhf.energy,
         });
     }
-    rpa_analytic_gradient_on(mol, &obs, &dfbs, op, &bounds, &rhf, cfg, RingOrder::Full)
+    rpa_analytic_gradient_from_rhf(mol, &obs, &dfbs, op, &bounds, &rhf, cfg, RingOrder::Full)
 }
 
 /// Energy and analytic gradient of `E_RHF + E_c^RPA` with a fresh reference
@@ -319,10 +320,33 @@ pub fn rpa_analytic_gradient(
     )
 }
 
+/// [`rpa_analytic_gradient_from_rhf`] on the system `aux` was prepared on
+/// (see [`PreparedAux`]): `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn rpa_analytic_gradient_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &PdepRpaConfig,
+    order: RingOrder,
+) -> Result<RpaAnalyticGradient, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    rpa_analytic_gradient_from_rhf(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        rhf,
+        cfg,
+        order,
+    )
+}
+
 /// The gradient on a converged reference `rhf` (exact or RI-JK route, as
 /// solved). `order` selects the full dRPA summand or its second-order term.
 #[allow(clippy::too_many_arguments)]
-pub fn rpa_analytic_gradient_on(
+pub fn rpa_analytic_gradient_from_rhf(
     mol: &Molecule,
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,

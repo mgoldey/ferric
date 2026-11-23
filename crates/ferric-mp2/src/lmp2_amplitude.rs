@@ -55,6 +55,7 @@
 //!   attaches; the measured record (C16/erfc/ε=1e-3 crossover, aux-domain
 //!   saturation) is in `wiki/amplitude-threshold-lmp2.md` §§23–26.
 
+use ferric_scf::PreparedAux;
 use ndarray::{s, Array2, Axis};
 use std::collections::HashMap;
 
@@ -1051,6 +1052,30 @@ pub fn require_hf_reference(rhf: &ScfResult, who: &str) -> Result<(), FerricErro
                 .to_string(),
         }),
     }
+}
+
+/// [`amplitude_lmp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+pub fn amplitude_lmp2_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLmp2Config,
+) -> Result<AmplitudeLmp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    amplitude_lmp2(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        op,
+        rhf,
+        cfg,
+    )
 }
 
 /// Amplitude-threshold local MP2 with the VV-HV space built internally.

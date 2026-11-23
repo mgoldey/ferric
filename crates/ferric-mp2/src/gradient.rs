@@ -17,6 +17,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::{solve_rhf_warm, ScfWarmStart};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
@@ -87,6 +88,29 @@ pub fn rimp2_gradient_fd(
         }
     }
     Ok(grad)
+}
+
+/// [`rimp2_gradient_analytical`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn rimp2_gradient_analytical_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    rimp2_gradient_analytical(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        rhf,
+        config,
+        ext,
+    )
 }
 
 /// Compute the analytical RI-MP2 nuclear gradient via the real multi-block

@@ -79,7 +79,7 @@ impl PropertyKwargs {
         let on = self.properties || self.export_npz;
         if !on {
             if self.any_switch() {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::errors::input_err(
                     "compute_* / esp_surface_* / c6_source / c6_partition select properties \
                      of the property bundle; pass properties=True (or export_npz=...) to \
                      compute it",
@@ -87,10 +87,9 @@ impl PropertyKwargs {
             }
             return Ok(None);
         }
-        C6Source::parse_config_str(self.c6_source.as_deref())
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        C6Source::parse_config_str(self.c6_source.as_deref()).map_err(crate::errors::input_err)?;
         DispersionPartition::parse_config_str(self.c6_partition.as_deref())
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            .map_err(crate::errors::input_err)?;
         let d = PdepPropertyRequest::default();
         Ok(Some(PdepPropertyRequest {
             esp: self.compute_esp.unwrap_or(d.esp),
@@ -146,7 +145,7 @@ pub(crate) fn cube_spec(
     use ferric_rpa::property_bundle::EigpotCubeSpec;
     let Some(prefix) = prefix else {
         if count.is_some() || spacing.is_some() || margin.is_some() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "export_eigpot_count / cube_spacing / cube_margin need export_eigpot_prefix",
             ));
         }
@@ -159,7 +158,7 @@ pub(crate) fn cube_spec(
         count: count.unwrap_or(d.count),
     };
     if !(spec.spacing > 0.0 && spec.spacing.is_finite()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "cube_spacing must be positive, got {}",
             spec.spacing
         )));
@@ -173,8 +172,7 @@ pub(crate) struct BundleJob<'a> {
     pub(crate) mol: &'a Molecule,
     pub(crate) bs: &'a BasisSet,
     pub(crate) aux_bs: &'a BasisSet,
-    pub(crate) prep: &'a PreparedBasis,
-    pub(crate) dfbs: &'a PreparedBasis,
+    pub(crate) dfbs: &'a PreparedAux<'a>,
     pub(crate) rhf: &'a ScfResult,
     pub(crate) op: Operator,
     pub(crate) rpa_cfg: &'a ferric_rpa::PdepRpaConfig,
@@ -208,7 +206,8 @@ pub(crate) fn run_property_bundle(
     cert_json: &str,
 ) -> PyResult<BundleOutput> {
     use ferric_rpa::property_bundle::{
-        compute_pdep_properties, export_eigenpotential_cubes, write_pdep_npz, PropertyInputs,
+        compute_pdep_properties, export_eigenpotential_cubes, write_pdep_npz, PropertyBundleError,
+        PropertyInputs,
     };
     let mut rep = CollectingReporter::default();
     let mut out = BundleOutput::default();
@@ -231,19 +230,16 @@ pub(crate) fn run_property_bundle(
         let proatom =
             ferric_scf::properties::scf_proatom_provider(job.ctx, job.bs, job.op, job.scf_config);
         let inputs = PropertyInputs {
-            ctx: job.ctx,
-            mol: job.mol,
-            prep: job.prep,
-            bs: job.bs,
-            dfbs: job.dfbs,
+            aux: job.dfbs,
             result: job.rhf,
-            op: job.op,
             rpa_cfg: job.rpa_cfg,
             rhf_config: job.scf_config,
             proatom: &proatom,
         };
-        let props = compute_pdep_properties(&inputs, request, &mut rep)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let props = compute_pdep_properties(&inputs, request, &mut rep).map_err(|e| match e {
+            PropertyBundleError::Config(msg) => crate::errors::input_err(msg),
+            PropertyBundleError::Reference(e) => make_err(e),
+        })?;
         for w in &rep.warnings[n_cube_warnings..] {
             crate::scf::emit_runtime_warning(py, w.clone());
         }

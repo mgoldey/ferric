@@ -78,7 +78,9 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::gradient::scs_mp2_gradient_analytical;
 use ferric_mp2::scs::ScsMp2Config;
 use ferric_rpa::config::{PdepRpaConfig, QuadratureConfig, QuadratureScheme};
-use ferric_rpa::gradient_analytic::{rpa_analytic_gradient, rpa_analytic_gradient_on, RingOrder};
+use ferric_rpa::gradient_analytic::{
+    rpa_analytic_gradient, rpa_analytic_gradient_from_rhf, RingOrder,
+};
 use ferric_rpa::run_pdep_rpa;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -211,7 +213,7 @@ fn second_order_term_equals_the_scs_mp2_gradient() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf_cfg = RhfConfig::default().with_density_conv(1e-10);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
-    let ring = rpa_analytic_gradient_on(
+    let ring = rpa_analytic_gradient_from_rhf(
         &mol,
         &obs,
         &dfbs,
@@ -236,7 +238,7 @@ fn second_order_term_equals_the_scs_mp2_gradient() {
         "second-order RPA vs SCS-MP2(2,0) gradient: {d:e}"
     );
     // The full dRPA gradient is a different energy: it must miss.
-    let full = rpa_analytic_gradient_on(
+    let full = rpa_analytic_gradient_from_rhf(
         &mol,
         &obs,
         &dfbs,

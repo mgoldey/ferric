@@ -73,9 +73,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::mp3::mp3_energy;
 use ferric_mp2::opmp3::{op_mp3, w_matrices, Opmp3Models, WMatrices};
-use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
-};
+use ferric_mp2::opmp3_driver::{opmp3_on, run_opmp3, Opmp3Config, Opmp3Integrals, Opmp3RefKind};
 use ferric_mp2::opmp3_reference::opmp3_reference;
 use ferric_mp2::u_mp3::{u_mp3, UMp3Config, UMp3Eri, UMp3Result};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
@@ -501,7 +499,7 @@ fn reference_path_rebuilds_e_hf_and_e_nbs_and_matches_pyscf_rohf() {
     let oh = system("oh", "rohf");
     // The same molecule and basis as `oh` (no ECP), so the same bounds.
     let oh_sys = PreparedSystem::new(oh.mol.clone(), &basis::bundled("cc-pvdz").unwrap()).unwrap();
-    let res = opmp3_on_reference(
+    let res = opmp3_on(
         &oh_sys,
         &oh.scf,
         Opmp3Integrals::Exact,

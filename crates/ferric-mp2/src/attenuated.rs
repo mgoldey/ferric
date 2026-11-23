@@ -130,6 +130,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_integrals::qqr3::QqrBounds3;
 use ferric_integrals::threeindex;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 /// Configuration for attenuated MP2.
@@ -240,6 +241,19 @@ pub fn attenuated_ri_mp2_long_range(
         total_energy: rhf.energy + scaled_corr,
         spin_components: sc,
     })
+}
+
+/// [`attenuated_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn attenuated_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &AttenuatedMp2Config,
+) -> Result<AttenuatedMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    attenuated_ri_mp2(sys.mol(), sys.basis(), aux.basis(), rhf, config)
 }
 
 /// Compute attenuated RI-MP2 using erfc(omega*r)/r operator.

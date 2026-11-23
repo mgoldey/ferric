@@ -1108,6 +1108,7 @@ pub fn ccsd_closed_shell_on(
     rhf: &ScfResult,
     cfg: &CcConfig,
 ) -> Result<CcResult, FerricError> {
+    aux.check_reference(rhf)?;
     let sys = aux.system();
     ccsd_closed_shell(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, cfg)
 }

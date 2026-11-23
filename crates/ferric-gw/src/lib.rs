@@ -284,6 +284,30 @@ impl std::fmt::Display for UGwResult {
     }
 }
 
+/// [`run_u_gw`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn run_u_gw_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<UGwResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    run_u_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        scf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
+}
+
 /// Top-level dispatch — spin-unrestricted. Accepts UHF, ROHF, UKS or ROKS reference.
 ///
 /// A ROHF/ROKS reference is first semi-canonicalized
@@ -541,6 +565,7 @@ pub fn run_gw_on(
     pdep_cfg: &PdepRpaConfig,
     gw_cfg: &GwConfig,
 ) -> Result<GwResult, FerricError> {
+    aux.check_reference(rhf)?;
     let sys = aux.system();
     run_gw(
         sys.mol(),

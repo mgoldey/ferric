@@ -13,7 +13,7 @@ pub(crate) fn parse_cdft_kind(kind: &str) -> PyResult<ferric_dft::cdft::SpinChan
     match kind.to_ascii_lowercase().as_str() {
         "charge" => Ok(SpinChannel::Total),
         "spin" => Ok(SpinChannel::SpinDiff),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+        _ => Err(crate::errors::input_err(format!(
             "unknown cDFT constraint kind '{kind}': valid options are 'charge' \
              (N_alpha + N_beta on the fragment) and 'spin' (N_alpha - N_beta)"
         ))),
@@ -57,14 +57,14 @@ impl PyCdftConstraint {
     fn new(atoms: Vec<i64>, target: f64, kind: &str) -> PyResult<Self> {
         let spin = parse_cdft_kind(kind)?;
         if atoms.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "CdftConstraint: atoms must be a non-empty list of atom indices",
             ));
         }
         let mut idx = Vec::with_capacity(atoms.len());
         for &a in &atoms {
             if a < 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "CdftConstraint: atom index {a} is negative (indices are 0-based)"
                 )));
             }
@@ -76,13 +76,13 @@ impl PyCdftConstraint {
         if sorted.len() != idx.len() {
             // The fragment weight is a SUM of per-atom Becke weights, so a
             // repeated index would count that atom twice.
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "CdftConstraint: duplicate atom index in {atoms:?}; a repeated atom \
                  would be weighted twice in the fragment population"
             )));
         }
         if !target.is_finite() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "CdftConstraint: target must be finite, got {target}"
             )));
         }
@@ -409,7 +409,7 @@ pub(crate) fn run_cdft(
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyCdftResult> {
     use ferric_dft::cdft::{Constraint, SpinChannel};
-    let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
+    let value_err = |msg: String| crate::errors::input_err(msg);
     // `max_outer` is this driver's own iteration; the bare SCF spellings are
     // deprecated aliases of the `scf_`-prefixed ones.
     let max_iter = alias_kwarg(
@@ -733,7 +733,7 @@ pub(crate) fn cdft_coupling(
 ) -> PyResult<PyCdftCouplingResult> {
     use ferric_dft::cdft::SpinChannel;
     use ferric_scf::cdft_coupling::{coupling_hab, DiabaticState};
-    let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
+    let value_err = |msg: String| crate::errors::input_err(msg);
     for (name, st) in [("state_a", state_a), ("state_b", state_b)] {
         if st.spins.len() != 1 || st.weight_matrices.len() != 1 || st.lambdas.len() != 1 {
             return Err(value_err(format!(
