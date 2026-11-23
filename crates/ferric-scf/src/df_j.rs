@@ -399,6 +399,23 @@ fn f32_rounding() -> F32Rounding {
     }
 }
 
+thread_local! {
+    /// Why the RI-J builders on this thread were asked for their precision,
+    /// while a caller that knows it builds them ([`with_request_source`]).
+    static REQUEST_SOURCE: std::cell::Cell<Option<RiJPrecisionSource>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` (which builds RI-J tensors) with the source of their requested
+/// precision recorded, so a declined f32 request says whether it was the
+/// default. Restores the previous record on return.
+pub(crate) fn with_request_source<T>(source: RiJPrecisionSource, f: impl FnOnce() -> T) -> T {
+    let prev = REQUEST_SOURCE.with(|c| c.replace(Some(source)));
+    let out = f();
+    REQUEST_SOURCE.with(|c| c.set(prev));
+    out
+}
+
 /// An f32 request that could not be honoured: say so once per builder and
 /// count it in the precision provenance (`f32_range` for a value beyond the
 /// f32 range, `cpu_f64` otherwise).
@@ -408,6 +425,11 @@ fn f32_rounding() -> F32Rounding {
 /// molecules), so the notice says so and how to make the result
 /// budget-independent.
 fn note_f32_declined(why: &F32Declined) {
+    // Says whether the user asked for f32 or it is the default they never set.
+    let requested = match REQUEST_SOURCE.with(std::cell::Cell::get) {
+        Some(RiJPrecisionSource::Explicit) | None => "",
+        Some(_) => " (default)",
+    };
     let budget_note = match why {
         F32Declined::DoesNotFit { .. } => {
             "; the energy therefore follows the memory budget (it differs from an f32 run by \
@@ -417,7 +439,8 @@ fn note_f32_declined(why: &F32Declined) {
         _ => "",
     };
     eprintln!(
-        "[ferric] RI-J: ri_j_precision = \"f32\" but the tensor stays f64 ({why}){budget_note}"
+        "[ferric] RI-J: ri_j_precision = \"f32\"{requested} but the tensor stays f64 \
+         ({why}){budget_note}"
     );
     let reason = match why {
         F32Declined::OutOfRange { .. } => MixedFallback::F32Range,

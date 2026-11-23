@@ -62,15 +62,9 @@ fn lanczos_panel_width(naux: usize, nov: usize, memory_budget_bytes: Option<usiz
     // conservative fixed 256-column panel so concurrency on memory-tight boxes
     // is preserved — the auto/fallback figure is an OOM guard for the big
     // resident tensors, not a hint that this panel should widen.
-    use ferric_core::memory::{self, BudgetSource};
+    use ferric_core::memory;
     let resolution = memory::resolve_budget(memory_budget_bytes);
-    let explicitly_budgeted = matches!(
-        resolution.source,
-        BudgetSource::Explicit
-            | BudgetSource::UnifiedEnv
-            | BudgetSource::LegacyOocEnv
-            | BudgetSource::LegacyEri3Env
-    );
+    let explicitly_budgeted = resolution.explicit_bytes().is_some();
     let budget = resolution.bytes;
     let per_col_bytes = (nov.saturating_add(naux)).saturating_mul(8).max(1);
     if !explicitly_budgeted {
@@ -83,18 +77,7 @@ fn lanczos_panel_width(naux: usize, nov: usize, memory_budget_bytes: Option<usiz
     // Use ~1/2 of the budget for the panel scratch (the assembled A and its
     // eigenvectors, each naux², live for the whole solve and are counted
     // separately by the caller's footprint).
-    let k = (budget / 2 / per_col_bytes).max(1).min(naux.max(1));
-    if k == 1 && naux > 1 {
-        memory::warn_width_collapsed(
-            "PDEP eigensolve panel",
-            k,
-            naux,
-            budget,
-            "the static dielectric matrix is assembled one column at a time (same \
-             eigenpairs, much slower)",
-        );
-    }
-    k
+    (budget / 2 / per_col_bytes).max(1).min(naux.max(1))
 }
 
 /// Full-rank PDEP eigensolve via **paneled dense dielectric assembly**.
@@ -178,6 +161,16 @@ where
     }
 
     let panel = lanczos_panel_width(naux, nov, memory_budget_bytes);
+    if panel == 1 && naux > 1 {
+        ferric_core::memory::warn_width_collapsed(
+            "PDEP eigensolve panel",
+            panel,
+            naux,
+            ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
+            "the static dielectric matrix is assembled one column at a time (same \
+             eigenpairs, much slower)",
+        );
+    }
     paneled_dense_eigs(naux, panel, &matvec, n_desired)
 }
 

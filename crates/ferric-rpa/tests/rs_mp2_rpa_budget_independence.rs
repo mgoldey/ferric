@@ -4,8 +4,9 @@
 //! On one fixed RHF reference, the scan runs at an ample budget and at
 //! budgets down to the smallest one its pre-flight admits. Smaller budgets
 //! narrow the frequency panel (the charge's `drpa_soft` falls below its
-//! full-width value), move the AO tensor to the packed or spilled tier and
-//! narrow the eigensolve panel; each only regroups sums, so every energy must
+//! full-width value) and move the AO tensor out of core (packed or spilled);
+//! the test asserts both at the smallest budget. Each only regroups sums, so
+//! every energy must
 //! agree with the ample run to reassociation noise. The bar, 1e-10 Ha, is
 //! well above the reassociation differences measured here (water dimer /
 //! aug-cc-pVDZ, at most 2e-15 Ha; printed by the test) and three orders
@@ -120,6 +121,11 @@ fn rs_mp2_rpa_energies_do_not_depend_on_the_budget() {
         assert!(
             narrowed.drpa_soft < full.drpa_soft,
             "the smallest admitted budget must narrow the frequency panel"
+        );
+        assert_ne!(
+            narrowed.ao_tier,
+            ferric_integrals::three_index_source::jk_storage::Tier::InCore,
+            "the smallest admitted budget must move the AO tensor out of core"
         );
         let budgets = [admitted[0], admitted[admitted.len() / 2], smallest];
         for &b in &budgets {

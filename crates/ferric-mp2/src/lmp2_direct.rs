@@ -338,18 +338,20 @@ pub struct DirectStats {
     /// The integral-free memory pre-flight of this assembly (see
     /// [`DirectMemoryEstimate`]).
     pub memory: DirectMemoryEstimate,
-    /// Stage-5 domain groups the budget let run at once: the worker count
-    /// when ungated, else the widest in-flight cap `min(len, workers)` of the
-    /// budget-sized waves (see `plan_group_wave`); 1 means the budget
-    /// serialised stage 5 (0 before stage 5).
+    /// Stage-5 domain groups allowed in flight at once: the worker count when
+    /// ungated (whatever the number of groups), else the widest cap
+    /// `min(len, workers)` of the budget-sized waves (see `plan_group_wave`),
+    /// so a gated run with one group reports 1. With more than one group, 1
+    /// means the budget serialised stage 5. 0 before stage 5.
     pub group_concurrency: usize,
     /// The largest per-group scratch bound the waves are sized with
     /// (`group_scratch_bound`; ≥ the measured `group_scratch_bytes_max`).
     pub group_scratch_bound_bytes: usize,
     /// Stage-5 groups measured in flight at once (peak); 0 before stage 5.
     pub group_in_flight_peak: usize,
-    /// Stage-5 waves run under the budget (1 when every group fits at once
-    /// or the run is ungated; 0 before stage 5).
+    /// Stage-5 waves: 1 when ungated or when every group fits one wave (a
+    /// single group included), more when the budget split the groups; 0
+    /// before stage 5.
     pub n_group_waves: usize,
 }
 
@@ -2656,7 +2658,7 @@ fn plan_group_wave(
         if need(end + 1 - start, s, b) > avail {
             return GroupWave {
                 end,
-                scratch: (end - start).min(workers) * s_max,
+                scratch: (end - start).min(workers).saturating_mul(s_max),
                 budget_limited: true,
             };
         }
@@ -2665,7 +2667,7 @@ fn plan_group_wave(
     }
     GroupWave {
         end,
-        scratch: (end - start).min(workers) * s_max,
+        scratch: (end - start).min(workers).saturating_mul(s_max),
         budget_limited: false,
     }
 }
@@ -2935,7 +2937,7 @@ fn fit_pairs(
                     "LMP2 pair-fit groups",
                     1,
                     workers,
-                    c.budget_bytes,
+                    c.budget_bytes.saturating_sub(base_bytes),
                     "stage-5 domain groups ran one at a time beside the pair blocks (same \
                      blocks, serial)",
                 );
@@ -5207,12 +5209,12 @@ mod memory_gate_tests {
     }
 
     /// ε > 0 with the budget at the strips + metric + candidate bound of the
-    /// pair blocks + one group's scratch bound: reserving the whole bound up
-    /// front leaves room for one group's scratch and runs stage 5 one group
-    /// at a time (the C32 audit: a 13.2 GB bound under the default budget).
-    /// The waves reserve only their own groups' block bounds beside the
-    /// blocks actually built, so both workers run groups, with the same
-    /// blocks.
+    /// pair blocks + one group's scratch bound. The previous schedule
+    /// reserved the whole candidate bound up front, which leaves room for one
+    /// group's scratch and ran stage 5 one group at a time (the C32 audit: a
+    /// 13.2 GB bound under the default budget). The waves reserve only their
+    /// own groups' block bounds beside the blocks actually built, so both
+    /// workers run groups, with the same blocks.
     #[test]
     fn finite_eps_groups_run_concurrently_under_the_candidate_bound() {
         let c = case(6);

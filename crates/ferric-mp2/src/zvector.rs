@@ -188,7 +188,7 @@ pub(crate) fn solve_zvector_timed(
     jk: &ResponseJk<'_>,
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
-    metric: Option<&Array2<f64>>,
+    metric: Option<crate::oo_rimp2::MetricFactor<'_>>,
     budget_bytes: usize,
     controls: ZvectorControls,
     acc: &mut PhaseAccumulator,
@@ -208,20 +208,18 @@ pub(crate) fn solve_zvector_timed(
 /// The RI-MP2 Lagrangian matrix `Imat` (all-MO, `(nmo, nmo)`) of one
 /// correlation term: `b_full` on `op` contracted with the term's `x_ov`.
 ///
-/// `metric`: the `V^{-1/2}` of `op` on `dfbs` when the caller already holds
-/// it — the energy step's `inter.v_inv_sqrt` when `inter` came from
-/// [`crate::rimp2::compute_mp2_intermediates_ov_only`] on `op`, which builds
-/// it with the same `coulomb_metric_2c` + `cholesky_inverse_sqrt` the
-/// `b_full` transform would — so the metric and its factorisation are not
-/// rebuilt. `None` builds them (an `inter` assembled from other densities
-/// may carry another factor).
+/// `metric`: the energy step's factor when the caller holds it
+/// ([`crate::oo_rimp2::MetricFactor::of_ov_intermediates`]), so the metric
+/// and its factorisation are not rebuilt; a factor of another operator is an
+/// error. `None` builds them (an `inter` assembled from other densities may
+/// carry another factor).
 pub(crate) fn lagrangian_imat_timed(
     prep: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
     rhf: &ScfResult,
     inter: &Mp2Intermediates,
-    metric: Option<&Array2<f64>>,
+    metric: Option<crate::oo_rimp2::MetricFactor<'_>>,
     acc: &mut PhaseAccumulator,
 ) -> Result<Array2<f64>, FerricError> {
     let orb = inter.orbital_space();
@@ -230,9 +228,7 @@ pub(crate) fn lagrangian_imat_timed(
 
     // RI-MP2 Lagrangian matrix Imat (all-MO), from the shared x_ov / b_full.
     let b_full = acc.time("zvec: b_full (P|pq) transform", || match metric {
-        Some(v_inv_sqrt) => {
-            crate::oo_rimp2::compute_b_full_mo_with_metric(prep, dfbs, op, v_inv_sqrt, c)
-        }
+        Some(metric) => crate::oo_rimp2::compute_b_full_mo_with_metric(prep, dfbs, op, metric, c),
         None => crate::oo_rimp2::compute_b_full_mo(prep, dfbs, op, c),
     })?;
     // Per-worker transients of the two pooled builds below. SOFT, for the

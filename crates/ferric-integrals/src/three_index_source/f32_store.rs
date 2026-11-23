@@ -34,9 +34,8 @@
 //! build's own block is, and the fit check leaves the same 64-row headroom for
 //! it that `packed_in_core_fits` leaves.
 use super::{
-    charge_three_index, jk_storage, pack_lower_triangle, packed_pair_len, pair_screen, Backend,
-    JkStorage, Operator, PairScreen, PreparedBasis, ThreeIndexSource, PACKED_MIN_SCRATCH_ROWS,
-    PACKED_SCRATCH_CAP_BYTES,
+    jk_storage, pack_lower_triangle, packed_pair_len, pair_screen, Backend, JkStorage, Operator,
+    PairScreen, PreparedBasis, ThreeIndexSource, PACKED_MIN_SCRATCH_ROWS, PACKED_SCRATCH_CAP_BYTES,
 };
 use ferric_core::FerricError;
 use ndarray::{Array2, ArrayView2};
@@ -85,12 +84,11 @@ impl F32Rounding {
 pub enum F32Declined {
     /// `[scf] jk_storage` is `disk` or `direct`.
     Policy(JkStorage),
-    /// The f32 tensor plus its build block does not fit the budget or the pool.
-    DoesNotFit {
-        need: usize,
-        budget: usize,
-        pool_free: Option<usize>,
-    },
+    /// The f32 tensor plus its build block does not fit the budget. The
+    /// decision reads the budget only, never the shared pool's free bytes, so
+    /// one input under one budget always gets one precision; a pool that then
+    /// cannot hold the tensor refuses the build (`MemoryExhausted`).
+    DoesNotFit { need: usize, budget: usize },
     /// A finite integral beyond `f32::MAX` (global aux row, stored column).
     OutOfRange { row: usize, col: usize, value: f64 },
 }
@@ -101,22 +99,12 @@ impl std::fmt::Display for F32Declined {
             F32Declined::Policy(p) => {
                 write!(f, "jk_storage = \"{p}\" keeps the tensor out of core")
             }
-            F32Declined::DoesNotFit {
-                need,
-                budget,
-                pool_free,
-            } => {
-                write!(
-                    f,
-                    "the f32 tensor needs {:.3} GB with its build block, the budget is {:.3} GB",
-                    *need as f64 / 1e9,
-                    *budget as f64 / 1e9
-                )?;
-                if let Some(p) = pool_free {
-                    write!(f, " and the pool has {:.3} GB free", *p as f64 / 1e9)?;
-                }
-                Ok(())
-            }
+            F32Declined::DoesNotFit { need, budget } => write!(
+                f,
+                "the f32 tensor needs {:.3} GB with its build block, the budget is {:.3} GB",
+                *need as f64 / 1e9,
+                *budget as f64 / 1e9
+            ),
             F32Declined::OutOfRange { row, col, value } => {
                 write!(f, "B[{row}, {col}] = {value:e} is beyond the f32 range")
             }
@@ -162,28 +150,38 @@ fn round_rows(
         })
 }
 
-/// Bytes the shared pool has free, `None` when no pool is installed.
-fn pool_free() -> Option<usize> {
-    ferric_core::memory::pool::global_available_bytes()
-}
-
 /// Does `tensor` bytes plus `min(64, rows)` rows of `scratch_row` f64 bytes
-/// (capped like the packed tier's headroom) fit the budget and the pool?
+/// (capped like the packed tier's headroom) fit the budget? The budget only:
+/// the pool's free bytes would make the stored precision depend on what else
+/// happens to be reserved.
 fn f32_fits(tensor: usize, rows: usize, scratch_row: usize, budget: usize) -> F32Outcome<()> {
     let head = scratch_row
         .saturating_mul(PACKED_MIN_SCRATCH_ROWS.min(rows.max(1)))
         .min(PACKED_SCRATCH_CAP_BYTES);
     let need = tensor.saturating_add(head);
-    let free = pool_free();
-    if need <= budget && need <= free.unwrap_or(usize::MAX) {
+    if need <= budget {
         Ok(())
     } else {
-        Err(F32Declined::DoesNotFit {
-            need,
-            budget,
-            pool_free: free,
-        })
+        Err(F32Declined::DoesNotFit { need, budget })
     }
+}
+
+/// The hard pool charge of an f32 RI-J tensor the budget admitted: a pool
+/// that cannot hold it refuses, naming the two ways out, rather than leaving
+/// the tensor in f64 (which would make the precision depend on the pool).
+fn charge_f32(
+    label: &str,
+    bytes: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    ferric_core::memory::pool::reserve_global(label, bytes).map_err(|e| {
+        FerricError::MemoryExhausted(format!(
+            "{e}: the f32 RI-J tensor ({:.3} GB) fits the memory budget but not the memory \
+             pool beside what is already reserved; its precision is fixed by the budget, so \
+             the build is refused rather than kept in f64. Raise [memory] budget_gb / \
+             FERRIC_MEM_BUDGET_GB, or set [scf] ri_j_precision = \"f64\"",
+            bytes as f64 / 1e9
+        ))
+    })
 }
 
 /// Rows per f64 build block: the budget left after the f32 tensor, capped at
@@ -296,7 +294,8 @@ impl ThreeIndexSource {
     /// rounding that tier's tensor.
     ///
     /// `Ok(Err(why))` when not taken: a `disk`/`direct` policy, a tensor that
-    /// does not fit the budget or the pool, or a value beyond `f32::MAX`.
+    /// does not fit the budget, or a value beyond `f32::MAX`. A tensor the
+    /// budget admits but the pool cannot hold is a `MemoryExhausted` error.
     pub fn build_ri_j_f32(
         op: Operator,
         obs: &PreparedBasis,
@@ -334,7 +333,7 @@ impl ThreeIndexSource {
         } else {
             "DF 3-index (P|mn) in-core packed, f32"
         };
-        let _charge = charge_three_index(label, bytes)?;
+        let _charge = charge_f32(label, bytes)?;
         let step = block_rows(bytes, scratch_row, budget_bytes).min(rows.max(1));
         if super::ooc_trace() {
             eprintln!(
@@ -377,11 +376,13 @@ impl ThreeIndexSource {
     /// f32 source is returned as it is.
     ///
     /// Used where the raw tensor was built in f64 for another consumer first
-    /// (the shared RI-JK path, where DF-K dresses it). The f32 charge is taken
-    /// with `try_reserve` while the f64 tensor still holds its own, so a pool
-    /// that cannot hold both at once declines. Returns the source (the f32 one,
-    /// or this one unchanged) and, when it was not converted, why. On success
-    /// the f64 tensor and its charge are dropped.
+    /// (the shared RI-JK path, where DF-K dresses it). Whether it converts is
+    /// decided by the budget alone; the f32 charge is then taken (hard) while
+    /// the f64 tensor still holds its own, so a pool that cannot hold both at
+    /// once refuses (`MemoryExhausted`) instead of leaving the precision to the
+    /// pool. Returns the source (the f32 one, or this one unchanged) and, when
+    /// it was not converted, why. On success the f64 tensor and its charge are
+    /// dropped.
     pub fn into_ri_j_f32(
         mut self,
         budget_bytes: usize,
@@ -406,13 +407,11 @@ impl ThreeIndexSource {
         };
         let cols = screen.as_ref().map_or(packed_pair_len(nao), |s| s.ncols());
         let bytes = Self::ri_j_f32_bytes(rows, cols);
-        let free = pool_free();
-        let declined = F32Declined::DoesNotFit {
-            need: bytes,
-            budget: budget_bytes,
-            pool_free: free,
-        };
         if bytes > budget_bytes {
+            let declined = F32Declined::DoesNotFit {
+                need: bytes,
+                budget: budget_bytes,
+            };
             return Ok((self, Some(declined)));
         }
         let label = if screen.is_some() {
@@ -420,9 +419,7 @@ impl ThreeIndexSource {
         } else {
             "DF 3-index (P|mn) in-core packed, f32"
         };
-        let Some(charge) = ferric_core::memory::pool::try_reserve_global(label, bytes) else {
-            return Ok((self, Some(declined)));
-        };
+        let charge = charge_f32(label, bytes)?;
         enum Kind {
             InMemory,
             Stream,

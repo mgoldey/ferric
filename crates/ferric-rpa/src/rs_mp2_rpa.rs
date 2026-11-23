@@ -12,6 +12,7 @@ use ferric_mp2::rimp2::{
 use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
+use crate::energy::PanelAllowance;
 use crate::PdepRpaConfig;
 
 /// Which algebraic form of the range-separated MP2 + RPA functional to use.
@@ -275,41 +276,46 @@ fn scan_shape(
     })
 }
 
-/// The budgets a closed-shell scan's two frequency loops are sized against
-/// ([`crate::budget::panel_budget_beside`]); `None` without an explicit
-/// budget (full width).
+/// What a scan's two frequency loops are sized against
+/// ([`crate::budget::panel_budget_beside`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PanelBudgets {
     /// The eigenbasis dRPA loop: beside the persistent planes, the held
-    /// Coulomb `b_ov` of a terf scan and the static eigensolve planes (whose
-    /// `y = Vᵀ B_ov` projection the panel solve subtracts itself).
-    drpa: Option<usize>,
+    /// Coulomb `b_ov` of a terf scan and the static eigensolve planes (the
+    /// `y = Vᵀ B_ov` projection the loop holds among them).
+    drpa: PanelAllowance,
     /// The terf signed log-det: beside the persistent planes and the held
-    /// Coulomb `b_ov` (it forms no eigenbasis; the stacked factor the panel
-    /// solve subtracts is never allocated, so it is given back).
-    signed: Option<usize>,
+    /// Coulomb `b_ov` (it forms no eigenbasis and stacks no factor).
+    signed: PanelAllowance,
 }
 
-/// [`PanelBudgets`] of `shape` under `cfg`'s explicit budget.
-fn panel_budgets(shape: crate::budget::PeakEstimateShape, cfg: &RsMp2RpaConfig) -> PanelBudgets {
+/// The budget a scan's panels are sized against: the resolved budget when it
+/// was SET (config field, kwarg or a budget environment variable, as
+/// `lanczos_panel_width` reads it), `None` when auto-detected or the fallback
+/// (the loops then run at full width and the ceiling check decides).
+fn panel_budget_of(cfg: &RsMp2RpaConfig) -> Option<usize> {
+    ferric_core::memory::resolve_budget(cfg.drpa.memory_budget_bytes).explicit_bytes()
+}
+
+/// [`PanelBudgets`] of a closed-shell `shape` under the set budget `budget`.
+fn panel_budgets(
+    shape: crate::budget::PeakEstimateShape,
+    cfg: &RsMp2RpaConfig,
+    budget: Option<usize>,
+) -> PanelBudgets {
     let held = if cfg.attenuator == Attenuator::Terf {
         held_b_ov_bytes(&[shape])
     } else {
         0
     };
-    let nov = shape.nocc.saturating_mul(shape.nvir);
-    let m = shape.n_keep.min(shape.naux).max(1);
-    let budget = cfg.drpa.memory_budget_bytes;
     PanelBudgets {
         drpa: crate::budget::panel_budget_beside(
             budget,
             crate::budget::scan_dielectric_resident_bytes(shape, held),
-            m.saturating_mul(nov).saturating_mul(8),
         ),
         signed: crate::budget::panel_budget_beside(
             budget,
             crate::budget::scan_persistent_bytes(shape).saturating_add(held),
-            (2 * shape.naux).saturating_mul(nov).saturating_mul(8),
         ),
     }
 }
@@ -329,9 +335,8 @@ fn charge_of(
     budget_bytes: usize,
 ) -> crate::budget::ScanCharge {
     let nov = shape.nocc.saturating_mul(shape.nvir);
-    let panels = panel_budgets(shape, cfg);
-    let panel_width =
-        crate::energy::quad_panel_width(shape.n_keep, nov, shape.n_workers, panels.drpa);
+    let panels = panel_budgets(shape, cfg, panel_budget_of(cfg));
+    let panel_width = crate::energy::panel_width(shape.n_keep, nov, shape.n_workers, panels.drpa);
     let stream = ferric_mp2::rimp2::mo_stream_scratch_bytes(shape.naux, nov);
     let base = crate::budget::scan_charge(shape, budget_bytes, panel_width, stream);
     if cfg.attenuator != Attenuator::Terf {
@@ -356,8 +361,11 @@ fn held_b_ov_bytes(shapes: &[crate::budget::PeakEstimateShape]) -> usize {
 }
 
 /// The signed log-det scratch at the panel width the loop will take under
-/// `budget` (the loop's own panel budget).
-fn signed_drpa_bytes(shapes: &[crate::budget::PeakEstimateShape], budget: Option<usize>) -> usize {
+/// `allowance` (the loop's own).
+fn signed_drpa_bytes(
+    shapes: &[crate::budget::PeakEstimateShape],
+    allowance: PanelAllowance,
+) -> usize {
     let Some(first) = shapes.first() else {
         return 0;
     };
@@ -366,7 +374,7 @@ fn signed_drpa_bytes(shapes: &[crate::budget::PeakEstimateShape], budget: Option
         .map(|s| s.nocc.saturating_mul(s.nvir))
         .max()
         .unwrap_or(0);
-    let width = crate::energy::quad_panel_width(2 * first.naux, nov, first.n_workers, budget);
+    let width = crate::energy::panel_width(2 * first.naux, nov, first.n_workers, allowance);
     crate::budget::signed_quad_scratch_bytes(first.naux, width, first.n_workers)
 }
 
@@ -613,13 +621,18 @@ fn scan_impl(
         ops.len()
     );
     let held = if signed { held_b_ov_bytes(&[shape]) } else { 0 };
+    // Refuses every case `panel_budgets` would size as `NoRoom`, so no loop
+    // below runs on that sentinel.
     crate::budget::check_scan_resident(
         &label,
-        crate::budget::scan_persistent_bytes(shape).saturating_add(held),
-        crate::budget::static_eigensolve_bytes(shape),
+        crate::budget::ScanResident {
+            persistent: crate::budget::scan_persistent_bytes(shape),
+            held_coulomb: held,
+            eigensolve: crate::budget::static_eigensolve_bytes(shape),
+        },
         resolved_budget_bytes,
     )?;
-    let panels = panel_budgets(shape, cfg);
+    let panels = panel_budgets(shape, cfg, panel_budget_of(cfg));
     let _persistent = ferric_core::memory::pool::reserve_global(
         &format!("{label} [metric + b_ov]"),
         crate::budget::scan_persistent_bytes(shape).saturating_add(held),
@@ -725,7 +738,7 @@ fn scan_impl(
             eps_vir: &eps[pos.nocc_total..pos.nocc_total + pos.nvir],
             prefactor: 4.0,
         };
-        crate::energy::signed_drpa_energy(&[channel], &cfg.drpa.quadrature, panels.signed)
+        crate::energy::signed_drpa_energy_panelled(&[channel], &cfg.drpa.quadrature, panels.signed)
     };
 
     // ω-independent stage: Coulomb spin components, and for T the Coulomb dRPA.
@@ -1028,14 +1041,11 @@ fn charge_of_unrestricted(
     cfg: &RsMp2RpaConfig,
     budget_bytes: usize,
 ) -> crate::budget::ScanCharge {
-    let panel = |s: crate::budget::PeakEstimateShape| {
-        crate::energy::quad_panel_width(
-            s.n_keep,
-            s.nocc.saturating_mul(s.nvir),
-            s.n_workers,
-            cfg.drpa.memory_budget_bytes,
-        )
-    };
+    // The open-shell frequency loop (`eval_eigenvalues_at_frequencies_unrestricted`)
+    // is not panelled: it runs at full width whatever the budget, so it is
+    // charged at full width. Charging the budget-narrowed width admitted runs
+    // whose loop then held more than the charge.
+    let panel = |s: crate::budget::PeakEstimateShape| s.nocc.saturating_mul(s.nvir).max(1);
     let stream = |s: crate::budget::PeakEstimateShape| {
         ferric_mp2::rimp2::mo_stream_scratch_bytes(s.naux, s.nocc.saturating_mul(s.nvir))
     };
@@ -1053,8 +1063,32 @@ fn charge_of_unrestricted(
         (a.nao.max(b.nao), a.naux),
         budget_bytes,
         held_b_ov_bytes(&[a, b]),
-        signed_drpa_bytes(&[a, b], cfg.drpa.memory_budget_bytes),
+        signed_drpa_bytes(
+            &[a, b],
+            signed_allowance_unrestricted((a, b), cfg, panel_budget_of(cfg)),
+        ),
     )
+}
+
+/// The open-shell terf signed log-det's panel allowance: beside both spins'
+/// persistent planes and their held Coulomb `b_ov`
+/// ([`crate::budget::panel_budget_beside`]).
+fn signed_allowance_unrestricted(
+    (a, b): (
+        crate::budget::PeakEstimateShape,
+        crate::budget::PeakEstimateShape,
+    ),
+    cfg: &RsMp2RpaConfig,
+    budget: Option<usize>,
+) -> PanelAllowance {
+    let held = if cfg.attenuator == Attenuator::Terf {
+        held_b_ov_bytes(&[a, b])
+    } else {
+        0
+    };
+    let persistent = crate::budget::scan_persistent_bytes(a)
+        .saturating_add(crate::budget::scan_persistent_bytes(b));
+    crate::budget::panel_budget_beside(budget, persistent.saturating_add(held))
 }
 
 /// Open-shell (UHF, or ROHF semi-canonicalized per spin) driver of
@@ -1115,6 +1149,25 @@ fn scan_impl_unrestricted(
         shapes.0.n_workers,
         ops.len()
     );
+    let (sa, sb) = shapes;
+    let held = if signed {
+        held_b_ov_bytes(&[sa, sb])
+    } else {
+        0
+    };
+    // Refuses every case the signed allowance would size as `NoRoom`.
+    crate::budget::check_scan_resident(
+        &label,
+        crate::budget::ScanResident {
+            persistent: crate::budget::scan_persistent_bytes(sa)
+                .saturating_add(crate::budget::scan_persistent_bytes(sb)),
+            held_coulomb: held,
+            eigensolve: crate::budget::static_eigensolve_bytes(sa)
+                .saturating_add(crate::budget::static_eigensolve_bytes(sb)),
+        },
+        resolved_budget_bytes,
+    )?;
+    let signed_allowance = signed_allowance_unrestricted(shapes, cfg, panel_budget_of(cfg));
     let charge = charge_of_unrestricted(shapes, cfg, resolved_budget_bytes);
     let _persistent = ferric_core::memory::pool::reserve_global(
         &format!("{label} [metric + b_ov, both spins]"),
@@ -1192,10 +1245,10 @@ fn scan_impl_unrestricted(
                 prefactor: 2.0,
             }
         }
-        crate::energy::signed_drpa_energy(
+        crate::energy::signed_drpa_energy_panelled(
             &[channel(pa, na, eps_a), channel(pb, nb, eps_b)],
             &cfg.drpa.quadrature,
-            cfg.drpa.memory_budget_bytes,
+            signed_allowance,
         )
     };
 
@@ -1324,7 +1377,13 @@ mod tests {
 
         let new = charge_of(shape, &cfg, budget);
         assert!(new.total <= budget, "{} > {budget}", new.total);
-        let width = crate::energy::quad_panel_width(400, nov, 4, panel_budgets(shape, &cfg).drpa);
+        let panels = panel_budgets(shape, &cfg, Some(budget));
+        assert_eq!(
+            panels.drpa,
+            PanelAllowance::Scratch(budget - resident),
+            "the scratch allowance is what the budget leaves beside the planes"
+        );
+        let width = crate::energy::panel_width(400, nov, 4, panels.drpa);
         assert!((1..nov).contains(&width), "panel width {width} of {nov}");
         assert!(width < old_width);
 
@@ -1349,8 +1408,13 @@ mod tests {
         use crate::budget::{check_scan_resident, scan_persistent_bytes, static_eigensolve_bytes};
         let shape = panelled_shape();
         let (p, h) = (scan_persistent_bytes(shape), static_eigensolve_bytes(shape));
-        assert!(check_scan_resident("scan", p, h, p + h + 1).is_ok());
-        let refused = |b: usize| match check_scan_resident("scan", p, h, b) {
+        let planes = |held_coulomb: usize| crate::budget::ScanResident {
+            persistent: p,
+            held_coulomb,
+            eigensolve: h,
+        };
+        assert!(check_scan_resident("scan", planes(0), p + h + 1).is_ok());
+        let refused = |b: usize| match check_scan_resident("scan", planes(0), b) {
             Err(FerricError::MemoryExhausted(m)) => m,
             other => panic!("expected a MemoryExhausted refusal at {b} B, got {other:?}"),
         };
@@ -1361,12 +1425,86 @@ mod tests {
         );
         let m = refused(p / 2);
         assert!(m.contains("persistent planes alone"), "{m}");
-        // The sizing never panics there: the narrowest panel, refused by the
-        // ceiling check.
+        // A terf scan names the Coulomb tensor it holds.
+        match check_scan_resident("scan", planes(p), 2 * p) {
+            Err(FerricError::MemoryExhausted(m)) => {
+                assert!(m.contains("Coulomb b_ov a terf scan holds"), "{m}")
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // The sizing never panics there: the explicit no-room outcome, which
+        // the check above refuses before any loop runs.
         assert_eq!(
-            crate::budget::panel_budget_beside(Some(p / 2), p + h, 0),
-            Some(1)
+            crate::budget::panel_budget_beside(Some(p / 2), p + h),
+            PanelAllowance::NoRoom
         );
+        assert_eq!(
+            crate::energy::panel_width(400, 4000, 4, PanelAllowance::NoRoom),
+            1
+        );
+    }
+
+    /// A budget set only through the environment (`FERRIC_MEM_BUDGET_GB`)
+    /// sizes the panel like a config budget: the run is refused against that
+    /// budget, so it must be panelled against it too. An auto-detected budget
+    /// leaves the loop at full width, as before.
+    #[test]
+    fn an_environment_budget_sizes_the_panel() {
+        use ferric_core::memory::{BudgetResolution, BudgetSource};
+        let shape = panelled_shape();
+        let nov = shape.nocc * shape.nvir;
+        let b = crate::budget::scan_dielectric_resident_bytes(shape, 0) + 30_000_000;
+        let from = |source| BudgetResolution { bytes: b, source }.explicit_bytes();
+        assert_eq!(from(BudgetSource::UnifiedEnv), Some(b));
+        assert_eq!(from(BudgetSource::Explicit), Some(b));
+        assert_eq!(from(BudgetSource::AutoDetected), None);
+        let unset = RsMp2RpaConfig::default();
+        let env = panel_budgets(shape, &unset, from(BudgetSource::UnifiedEnv));
+        let w = crate::energy::panel_width(400, nov, 4, env.drpa);
+        assert!(
+            (1..nov).contains(&w),
+            "an env budget must narrow the panel: {w}"
+        );
+        let auto = panel_budgets(shape, &unset, from(BudgetSource::AutoDetected));
+        assert_eq!(auto.drpa, PanelAllowance::Unbudgeted);
+        assert_eq!(crate::energy::panel_width(400, nov, 4, auto.drpa), nov);
+    }
+
+    /// The open-shell eigenbasis frequency loop is not panelled, so its
+    /// charge is at full width under any budget; the open-shell terf signed
+    /// log-det is sized beside both spins' planes and the held tensors.
+    #[test]
+    fn open_shell_charge_is_full_width_and_signed_panel_is_sized_beside() {
+        use crate::budget::{quad_scratch_bytes_at_width, scan_persistent_bytes};
+        let a = panelled_shape();
+        let b = crate::budget::PeakEstimateShape {
+            nocc: a.nocc - 1,
+            nvir: a.nvir + 1,
+            nao: 0,
+            ..a
+        };
+        let tight = scan_persistent_bytes(a) + scan_persistent_bytes(b) + 1_000_000;
+        let c = charge_of_unrestricted((a, b), &cfg_with_budget(tight, Attenuator::Erf), tight);
+        let full = quad_scratch_bytes_at_width(a, a.nocc * a.nvir)
+            + quad_scratch_bytes_at_width(b, b.nocc * b.nvir);
+        assert_eq!(c.drpa_soft, full);
+        let terf = cfg_with_budget(tight, Attenuator::Terf);
+        let resident =
+            scan_persistent_bytes(a) + scan_persistent_bytes(b) + held_b_ov_bytes(&[a, b]);
+        let allowance = 60_000_000;
+        assert_eq!(
+            signed_allowance_unrestricted((a, b), &terf, Some(resident + allowance)),
+            PanelAllowance::Scratch(allowance)
+        );
+        let nov = a.nocc * a.nvir;
+        let w = crate::energy::panel_width(
+            2 * a.naux,
+            nov,
+            a.n_workers,
+            PanelAllowance::Scratch(allowance),
+        );
+        assert!((1..nov).contains(&w), "signed panel {w} of {nov}");
+        assert!(crate::budget::signed_quad_scratch_bytes(a.naux, w, a.n_workers) <= allowance);
     }
 
     fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {

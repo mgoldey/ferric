@@ -328,42 +328,112 @@ pub(crate) fn quad_panel_width(
     n_workers: usize,
     memory_budget_bytes: Option<usize>,
 ) -> usize {
-    let Some(budget) = memory_budget_bytes else {
-        return nov.max(1);
-    };
+    panel_width(m, nov, n_workers, PanelAllowance::from(memory_budget_bytes))
+}
+
+/// What a frequency loop's per-worker panel is sized against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelAllowance {
+    /// No budget: the loop runs at full width.
+    Unbudgeted,
+    /// A whole budget, which the loop's frequency-independent projection `y`
+    /// (`m·nov·8`) and its per-worker scratch must both fit
+    /// ([`quad_panel_width`]).
+    Total(usize),
+    /// Bytes for the per-worker scratch alone: the caller has charged
+    /// everything else that is resident beside the loop, `y` included when
+    /// the loop holds one ([`quad_panel_width_beside`]).
+    Scratch(usize),
+    /// The resident planes leave nothing: the narrowest panel. A caller that
+    /// produces this refuses before any loop runs (the rs-mp2-rpa driver's
+    /// `budget::check_scan_resident`); a pre-flight charges width 1, whose
+    /// total then exceeds the budget.
+    NoRoom,
+}
+
+impl From<Option<usize>> for PanelAllowance {
+    fn from(budget: Option<usize>) -> Self {
+        budget.map_or(PanelAllowance::Unbudgeted, PanelAllowance::Total)
+    }
+}
+
+impl PanelAllowance {
+    /// The bytes this allowance names, for a report (`None` unbudgeted).
+    fn bytes(self) -> Option<usize> {
+        match self {
+            PanelAllowance::Unbudgeted => None,
+            PanelAllowance::Total(b) | PanelAllowance::Scratch(b) => Some(b),
+            PanelAllowance::NoRoom => Some(0),
+        }
+    }
+}
+
+/// The panel width `k` with `n_workers·(m·k + m²)·8 ≤ scratch_bytes`, the
+/// full width `nov` when that fits, never below 1: the per-worker scratch of
+/// the frequency loop sized against an allowance for that scratch alone.
+pub(crate) fn quad_panel_width_beside(
+    m: usize,
+    nov: usize,
+    n_workers: usize,
+    scratch_bytes: usize,
+) -> usize {
     if nov == 0 {
         return 1;
     }
     let n_workers = n_workers.max(1);
-    let y_bytes = m.saturating_mul(nov).saturating_mul(8);
     let full_width_scratch = n_workers
         .saturating_mul(m.saturating_mul(nov).saturating_add(m.saturating_mul(m)))
         .saturating_mul(8);
-    if y_bytes.saturating_add(full_width_scratch) <= budget {
+    if full_width_scratch <= scratch_bytes {
         return nov; // fast path: full width already fits
     }
-    // Panelling needed: solve n_workers·(m·k + m²)·8 + y_bytes <= budget for k,
-    // per worker, leaving headroom for the always-resident y and the (m,m)
-    // `out` term (m² is independent of k, so it's subtracted off first). This
-    // single `m·k` term is exact (not an underestimate) — see the k-term
-    // accounting note above.
-    let remaining = budget.saturating_sub(y_bytes);
-    let per_worker_budget = remaining / n_workers.max(1);
+    // Panelling needed: solve n_workers·(m·k + m²)·8 <= scratch for k, per
+    // worker, with the (m,m) `out` term (independent of k) subtracted off
+    // first. This single `m·k` term is exact (not an underestimate) — see the
+    // k-term accounting note on `quad_panel_width_for_test`.
+    let per_worker_budget = scratch_bytes / n_workers;
     let out_bytes = m.saturating_mul(m).saturating_mul(8);
     let scratch_for_k = per_worker_budget.saturating_sub(out_bytes);
     let per_col_bytes = m.saturating_mul(8).max(1);
-    let width = (scratch_for_k / per_col_bytes).clamp(1, nov);
+    (scratch_for_k / per_col_bytes).clamp(1, nov)
+}
+
+/// The panel width of a loop over an `(m, nov)` projection under
+/// `allowance`. Pure: a loop that runs at the width reports a collapse with
+/// [`warn_if_panel_collapsed`].
+pub(crate) fn panel_width(
+    m: usize,
+    nov: usize,
+    n_workers: usize,
+    allowance: PanelAllowance,
+) -> usize {
+    match allowance {
+        PanelAllowance::Unbudgeted => nov.max(1),
+        _ if nov == 0 => 1,
+        // Room for the always-resident y first, then the per-worker scratch.
+        PanelAllowance::Total(budget) => {
+            let y_bytes = m.saturating_mul(nov).saturating_mul(8);
+            quad_panel_width_beside(m, nov, n_workers, budget.saturating_sub(y_bytes))
+        }
+        PanelAllowance::Scratch(s) => quad_panel_width_beside(m, nov, n_workers, s),
+        PanelAllowance::NoRoom => 1,
+    }
+}
+
+/// Called by a frequency loop that runs at `width` of `nov`: warns
+/// ([`ferric_core::memory::warn_width_collapsed`]) when the allowance forced
+/// the narrowest panel.
+pub(crate) fn warn_if_panel_collapsed(width: usize, nov: usize, allowance: PanelAllowance) {
     if width == 1 && nov > 1 {
         ferric_core::memory::warn_width_collapsed(
             "RPA frequency panel",
             width,
             nov,
-            budget,
+            allowance.bytes().unwrap_or(0),
             "the frequency loop assembles each dielectric matrix one occupied-virtual \
              column at a time (same result, much slower)",
         );
     }
-    width
 }
 
 /// Budget-aware sibling of [`eval_eigenvalues_at_frequencies`]. Identical
@@ -387,6 +457,24 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
     quad_freqs: &[f64],
     memory_budget_bytes: Option<usize>,
 ) -> Result<Array2<f64>, FerricError> {
+    eval_eigenvalues_panelled(
+        eigenvectors,
+        b_ov,
+        (eps_occ, eps_vir),
+        quad_freqs,
+        memory_budget_bytes.into(),
+    )
+}
+
+/// [`eval_eigenvalues_at_frequencies_budgeted`] with the panel sized by
+/// `allowance`.
+pub(crate) fn eval_eigenvalues_panelled(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    (eps_occ, eps_vir): (&[f64], &[f64]),
+    quad_freqs: &[f64],
+    allowance: PanelAllowance,
+) -> Result<Array2<f64>, FerricError> {
     use crate::sternheimer::{
         build_scale_factors, dielectric_matrix_from_projection_into,
         dielectric_matrix_from_projection_into_panelled,
@@ -408,7 +496,8 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
     // `per_frequency` rather than hand-rolling its own
     // with_blas_threads/par_iter/map_init scaffold.
     let n_workers = rayon::current_num_threads().max(1);
-    let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
+    let panel_width = panel_width(m, nov, n_workers, allowance);
+    warn_if_panel_collapsed(panel_width, nov, allowance);
     let use_panelled = panel_width < nov;
 
     // map_init (not map): each rayon WORKER allocates its own (rhs_scaled, out)
@@ -519,8 +608,25 @@ pub fn eval_trace_log_summands_budgeted(
     quad_freqs: &[f64],
     memory_budget_bytes: Option<usize>,
 ) -> Result<Vec<f64>, FerricError> {
+    eval_trace_log_summands_panelled(
+        eigenvectors,
+        b_ov,
+        (eps_occ, eps_vir),
+        quad_freqs,
+        memory_budget_bytes.into(),
+    )
+}
+
+/// [`eval_trace_log_summands_budgeted`] with the panel sized by `allowance`.
+pub(crate) fn eval_trace_log_summands_panelled(
+    eigenvectors: &Array2<f64>,
+    b_ov: &Array2<f64>,
+    (eps_occ, eps_vir): (&[f64], &[f64]),
+    quad_freqs: &[f64],
+    allowance: PanelAllowance,
+) -> Result<Vec<f64>, FerricError> {
     let y = eigenvectors.t().dot(b_ov);
-    trace_log_summands_of_projection(&y, eps_occ, eps_vir, quad_freqs, memory_budget_bytes)
+    trace_log_summands_of_projection(&y, eps_occ, eps_vir, quad_freqs, allowance)
 }
 
 /// The same per-frequency summands `S(iω_k) = ln det(ε̃) + tr(I − ε̃)`, with
@@ -539,7 +645,13 @@ pub fn eval_trace_log_summands_aux_budgeted(
     quad_freqs: &[f64],
     memory_budget_bytes: Option<usize>,
 ) -> Result<Vec<f64>, FerricError> {
-    trace_log_summands_of_projection(b_ov, eps_occ, eps_vir, quad_freqs, memory_budget_bytes)
+    trace_log_summands_of_projection(
+        b_ov,
+        eps_occ,
+        eps_vir,
+        quad_freqs,
+        memory_budget_bytes.into(),
+    )
 }
 
 /// One χ₀ channel of a signed dielectric (see [`eval_signed_trace_log_summands`]):
@@ -586,6 +698,15 @@ pub fn eval_signed_trace_log_summands(
     quad_freqs: &[f64],
     memory_budget_bytes: Option<usize>,
 ) -> Result<Vec<f64>, FerricError> {
+    eval_signed_summands_panelled(channels, quad_freqs, memory_budget_bytes.into())
+}
+
+/// [`eval_signed_trace_log_summands`] with the panel sized by `allowance`.
+pub(crate) fn eval_signed_summands_panelled(
+    channels: &[SignedChannel],
+    quad_freqs: &[f64],
+    allowance: PanelAllowance,
+) -> Result<Vec<f64>, FerricError> {
     use crate::sternheimer::{build_scale_factors_with_prefactor, syrk_aat_accumulate_into};
     use ndarray::{s, Axis, Zip};
 
@@ -622,7 +743,8 @@ pub fn eval_signed_trace_log_summands(
     }
     let m = n_pos + n_neg;
     let n_workers = rayon::current_num_threads().max(1);
-    let panel_width = quad_panel_width(m, nov_max, n_workers, memory_budget_bytes).max(1);
+    let panel_width = panel_width(m, nov_max, n_workers, allowance).max(1);
+    warn_if_panel_collapsed(panel_width, nov_max, allowance);
 
     per_frequency(
         quad_freqs,
@@ -686,8 +808,17 @@ pub fn signed_drpa_energy(
     quadrature: &crate::config::QuadratureConfig,
     memory_budget_bytes: Option<usize>,
 ) -> Result<f64, FerricError> {
+    signed_drpa_energy_panelled(channels, quadrature, memory_budget_bytes.into())
+}
+
+/// [`signed_drpa_energy`] with the panel sized by `allowance`.
+pub(crate) fn signed_drpa_energy_panelled(
+    channels: &[SignedChannel],
+    quadrature: &crate::config::QuadratureConfig,
+    allowance: PanelAllowance,
+) -> Result<f64, FerricError> {
     let (freqs, weights) = crate::quadrature::build_quadrature(quadrature);
-    let summands = eval_signed_trace_log_summands(channels, &freqs, memory_budget_bytes)?;
+    let summands = eval_signed_summands_panelled(channels, &freqs, allowance)?;
     Ok(rpa_correlation_energy_from_summands(&weights, &summands))
 }
 
@@ -700,7 +831,7 @@ fn trace_log_summands_of_projection(
     eps_occ: &[f64],
     eps_vir: &[f64],
     quad_freqs: &[f64],
-    memory_budget_bytes: Option<usize>,
+    allowance: PanelAllowance,
 ) -> Result<Vec<f64>, FerricError> {
     use crate::sternheimer::{
         build_scale_factors, dielectric_matrix_from_projection_into,
@@ -712,7 +843,8 @@ fn trace_log_summands_of_projection(
     assert_eq!(y.ncols(), nov, "projection width must be nocc * nvir");
 
     let n_workers = rayon::current_num_threads().max(1);
-    let panel_width = quad_panel_width(m, nov, n_workers, memory_budget_bytes);
+    let panel_width = panel_width(m, nov, n_workers, allowance);
+    warn_if_panel_collapsed(panel_width, nov, allowance);
     let use_panelled = panel_width < nov;
 
     per_frequency(

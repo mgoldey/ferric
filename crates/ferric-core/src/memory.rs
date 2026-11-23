@@ -133,6 +133,20 @@ pub struct BudgetResolution {
 }
 
 impl BudgetResolution {
+    /// The budget when someone set it (a config field or kwarg, or one of the
+    /// budget environment variables), `None` when it was auto-detected or
+    /// fell back: a set budget sizes loops that otherwise run at full width.
+    pub fn explicit_bytes(&self) -> Option<usize> {
+        matches!(
+            self.source,
+            BudgetSource::Explicit
+                | BudgetSource::UnifiedEnv
+                | BudgetSource::LegacyOocEnv
+                | BudgetSource::LegacyEri3Env
+        )
+        .then_some(self.bytes)
+    }
+
     /// The `source -> value` audit line for debug/trace logging.
     pub fn audit_line(&self) -> String {
         format!(
@@ -486,14 +500,19 @@ pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) -> b
     over
 }
 
-/// Report, once per `what` per process, that a width derived from the memory
-/// budget (a panel, a batch, a group count, a subspace) collapsed to its
-/// minimum `width` of a possible `full`: the run is correct but serialized or
-/// blocked as finely as it can be, so a slow run under a tight budget says
-/// why. A budget changes only blocking; where a width can change a result
-/// (an iterative subspace), the caller says so in `effect`. Returns whether
-/// this call printed. `budget_bytes` is what the budget leaves for this width
-/// (the whole budget, or what remains beside planes already resident).
+/// Report that a width derived from the memory budget (a panel, a batch, a
+/// group count, a subspace) collapsed to its minimum `width` of a possible
+/// `full`: the run is correct but serialized or blocked as finely as it can
+/// be, so a slow run under a tight budget says why. A budget changes only
+/// blocking; where a width can change a result (an iterative subspace), the
+/// caller says so in `effect`. Call it from the code that RUNS at the width,
+/// never from a pre-flight or a probe. `budget_bytes` is what the budget
+/// leaves for this width (the whole budget, or what remains beside planes
+/// already resident).
+///
+/// Printed once per `(what, full, budget_bytes)` per process, so a later run
+/// of a different shape or budget still reports; [`reset_width_collapse_warnings`]
+/// clears the record. Returns whether this call printed.
 pub fn warn_width_collapsed(
     what: &'static str,
     width: usize,
@@ -501,11 +520,10 @@ pub fn warn_width_collapsed(
     budget_bytes: usize,
     effect: &str,
 ) -> bool {
-    use std::collections::HashSet;
-    use std::sync::Mutex;
-    static SEEN: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
-    let first = match SEEN.lock() {
-        Ok(mut seen) => seen.get_or_insert_with(HashSet::new).insert(what),
+    let first = match COLLAPSE_SEEN.lock() {
+        Ok(mut seen) => seen
+            .get_or_insert_with(std::collections::HashSet::new)
+            .insert((what, full, budget_bytes)),
         Err(_) => false,
     };
     if first {
@@ -518,6 +536,20 @@ pub fn warn_width_collapsed(
     }
     first
 }
+
+/// Forget which collapsed widths [`warn_width_collapsed`] has reported, so the
+/// next collapse of each prints again (a driver running several jobs in one
+/// process calls it between jobs).
+pub fn reset_width_collapse_warnings() {
+    if let Ok(mut seen) = COLLAPSE_SEEN.lock() {
+        *seen = None;
+    }
+}
+
+/// The `(what, full, budget)` triples [`warn_width_collapsed`] has printed.
+type CollapseKey = (&'static str, usize, usize);
+static COLLAPSE_SEEN: std::sync::Mutex<Option<std::collections::HashSet<CollapseKey>>> =
+    std::sync::Mutex::new(None);
 
 /// [`resolve_budget`], as if `planned_bytes` were already resident.
 ///
@@ -740,6 +772,18 @@ fn clamp_u64_to_usize(v: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A collapse prints once per (what, full, budget), again for another
+    /// budget, and again after a reset.
+    #[test]
+    fn width_collapse_warning_is_deduplicated_and_resettable() {
+        let what = "unit-test collapse (memory.rs)";
+        assert!(warn_width_collapsed(what, 1, 10, 100, "test"));
+        assert!(!warn_width_collapsed(what, 1, 10, 100, "test"));
+        assert!(warn_width_collapsed(what, 1, 10, 200, "test"));
+        reset_width_collapse_warnings();
+        assert!(warn_width_collapsed(what, 1, 10, 100, "test"));
+    }
     use std::sync::Mutex;
 
     /// Planned bytes come off live MemAvailable, not off a cgroup limit, and the

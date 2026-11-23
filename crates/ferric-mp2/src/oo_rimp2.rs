@@ -257,33 +257,63 @@ pub fn compute_b_full_mo(
     compute_b_full_mo_with(&ao, c)
 }
 
-/// [`compute_b_full_mo`] with the metric factor `V^{-1/2}` of `op` on `dfbs`
-/// already built (as [`OoRiMp2AoTensors::build`] builds it:
-/// `cholesky_inverse_sqrt(coulomb_metric_2c(op, dfbs))`): only the raw
+/// A metric factor `V^{-1/2}` and the operator whose metric it factors, as
+/// [`OoRiMp2AoTensors::build`] builds it
+/// (`cholesky_inverse_sqrt(coulomb_metric_2c(op, dfbs))`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MetricFactor<'a> {
+    pub(crate) op: Operator,
+    pub(crate) v_inv_sqrt: &'a Array2<f64>,
+}
+
+impl<'a> MetricFactor<'a> {
+    /// The factor of intermediates built by
+    /// [`crate::rimp2::compute_mp2_intermediates_ov_only`] on `op`, which
+    /// builds `V^{-1/2}` exactly as above. Only for those: an `inter`
+    /// assembled from other densities may carry another factor.
+    pub(crate) fn of_ov_intermediates(
+        op: Operator,
+        inter: &'a crate::rimp2::Mp2Intermediates,
+    ) -> Self {
+        MetricFactor {
+            op,
+            v_inv_sqrt: &inter.v_inv_sqrt,
+        }
+    }
+}
+
+/// [`compute_b_full_mo`] with the metric factor already built: only the raw
 /// `(P|μν)` source is built, under the same budget, and streamed through the
-/// same transform, so the result is that of [`compute_b_full_mo`] when
-/// `v_inv_sqrt` is that factor.
-pub fn compute_b_full_mo_with_metric(
+/// same transform, so the result is that of [`compute_b_full_mo`]. A factor
+/// of another operator, or of another aux basis size, is an error.
+pub(crate) fn compute_b_full_mo_with_metric(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,
     op: Operator,
-    v_inv_sqrt: &Array2<f64>,
+    metric: MetricFactor<'_>,
     c: &Array2<f64>,
 ) -> Result<Array3<f64>, FerricError> {
+    if metric.op != op {
+        return Err(FerricError::General(format!(
+            "compute_b_full_mo_with_metric: the metric factor was built for {:?}, the \
+             transform is on {:?}",
+            metric.op, op
+        )));
+    }
+    let (naux, nmo) = (dfbs.nbasis(), c.ncols());
+    if metric.v_inv_sqrt.dim() != (naux, naux) {
+        return Err(FerricError::General(format!(
+            "compute_b_full_mo_with_metric: V^-1/2 is {:?}, the aux basis has {naux} functions",
+            metric.v_inv_sqrt.dim()
+        )));
+    }
     let mut src = ThreeIndexSource::build(
         op,
         obs,
         dfbs,
         ferric_core::memory::resolve_budget_bytes(None),
     )?;
-    let (naux, nmo) = (src.naux(), c.ncols());
-    if v_inv_sqrt.dim() != (naux, naux) {
-        return Err(FerricError::General(format!(
-            "compute_b_full_mo_with_metric: V^-1/2 is {:?}, the aux basis has {naux} functions",
-            v_inv_sqrt.dim()
-        )));
-    }
-    let b_flat = crate::rimp2::stream_dressed_mo_band(&mut src, v_inv_sqrt, c, c, None)?;
+    let b_flat = crate::rimp2::stream_dressed_mo_band(&mut src, metric.v_inv_sqrt, c, c, None)?;
     b_flat
         .into_shape_with_order((naux, nmo, nmo))
         .map_err(|e| FerricError::General(format!("compute_b_full_mo_with_metric reshape: {e}")))

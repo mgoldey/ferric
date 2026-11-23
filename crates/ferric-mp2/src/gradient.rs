@@ -277,8 +277,10 @@ fn rimp2_gradient_from_intermediates_timed(
         bounds,
         rhf,
         &inter,
-        // The energy step's V^-1/2 of `op`: b_full's metric, not rebuilt.
-        Some(&inter.v_inv_sqrt),
+        // `inter` is the energy step's on `op` (`rimp2_gradient_intermediates_timed`).
+        Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+            op, &inter,
+        )),
         budget_bytes,
         ext,
         controls,
@@ -334,7 +336,7 @@ fn relaxed_gradient_from_intermediates(
     bounds: &SchwarzBounds,
     rhf: &ScfResult,
     inter: &crate::rimp2::Mp2Intermediates,
-    metric: Option<&Array2<f64>>,
+    metric: Option<crate::oo_rimp2::MetricFactor<'_>>,
     budget_bytes: usize,
     ext: Option<&ExternalPotential>,
     controls: ZvectorControls,
@@ -1324,7 +1326,9 @@ pub(crate) fn rimp2_terms_gradient_timed(
             term.op,
             rhf,
             &inter,
-            Some(&inter.v_inv_sqrt),
+            Some(crate::oo_rimp2::MetricFactor::of_ov_intermediates(
+                term.op, &inter,
+            )),
             acc,
         )?;
         let g_ri = integral_response_gradient_3c2c_timed(
@@ -1491,14 +1495,9 @@ mod tests {
                 compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
             let c = rhf.mos_r();
             let rebuilt = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, c).unwrap();
-            let reused = crate::oo_rimp2::compute_b_full_mo_with_metric(
-                &obs,
-                &dfbs,
-                op,
-                &inter.v_inv_sqrt,
-                c,
-            )
-            .unwrap();
+            let factor = crate::oo_rimp2::MetricFactor::of_ov_intermediates(op, &inter);
+            let reused =
+                crate::oo_rimp2::compute_b_full_mo_with_metric(&obs, &dfbs, op, factor, c).unwrap();
             assert_eq!(rebuilt.dim(), reused.dim());
             assert!(
                 rebuilt
@@ -1509,6 +1508,20 @@ mod tests {
                 op.kind
             );
         }
+        // A factor of another operator is refused, not used.
+        let inter =
+            compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg)
+                .unwrap();
+        let coulomb =
+            crate::oo_rimp2::MetricFactor::of_ov_intermediates(Operator::coulomb(), &inter);
+        let err = crate::oo_rimp2::compute_b_full_mo_with_metric(
+            &obs,
+            &dfbs,
+            Operator::erfc(0.33),
+            coulomb,
+            rhf.mos_r(),
+        );
+        assert!(err.is_err());
     }
 
     #[test]

@@ -69,8 +69,10 @@ pub struct ResponseJk<'a> {
 /// tensor the raw `(P|μν)` tensor is built ONCE: RI-K dresses it (its own
 /// constructor builds the same tensor with the same call and dresses it the
 /// same way) and RI-J then keeps it with the same metric `DfJ::new` builds,
-/// so both builders hold what two independent builds would, for one
-/// three-index pass instead of two (the SCF's `fock_assembly::build_df_jk`
+/// for one three-index pass instead of two. The builders are bitwise those of
+/// two independent builds when both take the same storage tier (always under
+/// an ample budget; under a tight pool the single raw tensor can leave room
+/// for a different RI-K layout than the second raw tensor did) (the SCF's `fock_assembly::build_df_jk`
 /// shares it the same way). An f32 RI-J tensor is built by its own f32 pass,
 /// so that route keeps the two independent builds.
 fn fitted_pair(

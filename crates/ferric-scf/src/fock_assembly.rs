@@ -302,17 +302,19 @@ pub(crate) fn build_df_jk<'a>(
     k_precision: crate::df_k::RiKPrecision,
 ) -> Result<(Option<RiJ<'a>>, Option<DfK<'a>>), FerricError> {
     let j_precision = resolved.precision;
-    let mut out = build_df_jk_impl(
-        ctx,
-        mol,
-        op,
-        prep,
-        (j_aux, k_aux),
-        ooc_budget,
-        (j_pair_thresh, resolved.site),
-        j_precision,
-        k_precision,
-    )?;
+    let mut out = crate::df_j::with_request_source(resolved.source, || {
+        build_df_jk_impl(
+            ctx,
+            mol,
+            op,
+            prep,
+            (j_aux, k_aux),
+            ooc_budget,
+            (j_pair_thresh, resolved.site),
+            j_precision,
+            k_precision,
+        )
+    })?;
     // Every stored route (including a tensor shared with DF-K) gates its
     // device build on the SCF's site.
     if let Some(j) = out.0.as_mut().and_then(RiJ::as_stored_mut) {

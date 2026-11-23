@@ -649,14 +649,14 @@ pub fn scan_dielectric_resident_bytes(shape: PeakEstimateShape, held_b_ov_bytes:
         .saturating_add(static_eigensolve_bytes(shape))
 }
 
-/// The budget a frequency loop's panel is sized against: what `budget`
-/// leaves beside the `resident` planes, plus the `projection` bytes the
-/// panel-width solve (`crate::energy::quad_panel_width`) subtracts on its own
-/// (pass them when `resident` already counts them, or when the loop does not
-/// allocate them), so that `resident + scratch ≤ budget`. `None` (no explicit
-/// budget) stays `None`: the loop runs at full width. A `resident` at or over
-/// the budget leaves the narrowest panel (`Some(1)`); the driver refuses that
-/// case first ([`check_scan_resident`]).
+/// What a frequency loop's per-worker scratch may use: what `budget` leaves
+/// beside the `resident` planes (everything the caller charges besides that
+/// scratch, a projection the loop holds included), so that
+/// `resident + scratch ≤ budget`. `None` (no set budget) runs the loop at full
+/// width. A `resident` at or over the budget is
+/// [`PanelAllowance::NoRoom`](crate::energy::PanelAllowance::NoRoom): the
+/// narrowest panel, which a pre-flight charges and the rs-mp2-rpa driver
+/// refuses before any loop runs ([`check_scan_resident`]).
 ///
 /// Sizing the panel against the whole budget and then adding the resident
 /// planes on top put every panelled run's demand at `budget + resident`, so
@@ -664,41 +664,64 @@ pub fn scan_dielectric_resident_bytes(shape: PeakEstimateShape, held_b_ov_bytes:
 pub fn panel_budget_beside(
     budget: Option<usize>,
     resident: usize,
-    projection: usize,
-) -> Option<usize> {
-    let b = budget?;
-    if resident >= b {
-        return Some(1);
+) -> crate::energy::PanelAllowance {
+    use crate::energy::PanelAllowance;
+    match budget {
+        None => PanelAllowance::Unbudgeted,
+        Some(b) if resident >= b => PanelAllowance::NoRoom,
+        Some(b) => PanelAllowance::Scratch(b - resident),
     }
-    Some((b - resident).saturating_add(projection))
 }
 
-/// The refusal when the planes a closed-shell scan holds through its dRPA
-/// phase leave nothing of `budget_bytes` for a frequency panel: `persistent`
-/// (metric + `b_ov`, and the held Coulomb `b_ov` of a terf scan) and the
-/// static eigensolve planes `eigensolve`.
+/// The planes a closed-shell or open-shell scan holds through its dRPA phase,
+/// for [`check_scan_resident`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanResident {
+    /// Aux metric + the current operator's `b_ov` (per spin).
+    pub persistent: usize,
+    /// The Coulomb `b_ov` a terf scan keeps for every point (0 otherwise).
+    pub held_coulomb: usize,
+    /// The static eigensolve planes.
+    pub eigensolve: usize,
+}
+
+/// The refusal when the planes a scan holds through its dRPA phase
+/// ([`ScanResident`]) leave nothing of `budget_bytes` for a frequency panel.
 pub fn check_scan_resident(
     label: &str,
-    persistent: usize,
-    eigensolve: usize,
+    planes: ScanResident,
     budget_bytes: usize,
 ) -> Result<(), ferric_core::error::FerricError> {
-    let resident = persistent.saturating_add(eigensolve);
+    let ScanResident {
+        persistent,
+        held_coulomb,
+        eigensolve,
+    } = planes;
+    let kept = persistent.saturating_add(held_coulomb);
+    let resident = kept.saturating_add(eigensolve);
     if resident < budget_bytes {
         return Ok(());
     }
     let gb = |b: usize| b as f64 / 1e9;
-    let what = if persistent >= budget_bytes {
+    let what = if kept >= budget_bytes {
         "the persistent planes alone"
     } else {
         "the persistent planes and the dRPA eigensolve planes"
     };
+    let held = if held_coulomb > 0 {
+        format!(
+            " + the Coulomb b_ov a terf scan holds for every point {:.3} GB",
+            gb(held_coulomb)
+        )
+    } else {
+        String::new()
+    };
     Err(ferric_core::error::FerricError::MemoryExhausted(format!(
         "{label}: {what} exceed the memory budget: persistent planes (aux metric + b_ov) \
-         {:.3} GB + static eigensolve planes {:.3} GB = {:.3} GB against a budget of {:.3} GB, \
-         which leaves no room for the frequency panel (it is sized against the budget minus \
-         these planes). Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or shrink the \
-         auxiliary basis or the active space (frozen_core)",
+         {:.3} GB{held} + static eigensolve planes {:.3} GB = {:.3} GB against a budget of \
+         {:.3} GB, which leaves no room for the frequency panel (it is sized against the \
+         budget minus these planes). Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or \
+         shrink the auxiliary basis or the active space (frozen_core)",
         gb(persistent),
         gb(eigensolve),
         gb(resident),
