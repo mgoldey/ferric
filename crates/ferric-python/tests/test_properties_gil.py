@@ -134,8 +134,13 @@ def test_errors_are_unchanged(water, basis, results, tmp_path):
         )
 
 
-# Calls of roughly 0.3 s or more on water/cc-pVDZ (measured 0.3-1.9 s on a
-# 4-core machine), long enough that a reader frozen by a held GIL stands out.
+# One call of each must be long enough that a reader frozen by a held GIL
+# stands out, on any runner. On water/cc-pVDZ a call took 0.18 s on a fast
+# macOS CI runner, under the 0.2 s bar, so the reference is the water dimer
+# (S22-02) in cc-pVDZ: 1.5-5 s per call on a loaded 4-core machine (load
+# ~14), where water took 0.4-1.1 s, so about 0.5 s or more on that runner.
+# Repeating a shorter call instead would let a binding that holds the GIL per
+# call look released, as the reader could run between calls.
 SLOW = {
     "esp_at_points": lambda m, b, r, _: ferric.esp_at_points(
         m, b, r, np.random.default_rng(0).normal(size=(20000, 3)) * 3.0
@@ -161,21 +166,28 @@ SLOW = {
 # s, a ratio of at most 0.13). The bar is half the call's duration.
 MAX_PAUSE_FRACTION = 0.5
 
-# The consumer repeats the call until this many seconds have passed (at most
-# `MAX_CALLS` calls), so the measured span is long enough on a fast machine.
-MIN_SPAN = 0.3
-MAX_CALLS = 50
+
+WATER_DIMER = (
+    "6\nS22-02 water dimer\n"
+    "O -1.551007 -0.114520 0.000000\n"
+    "H -1.934259 0.762503 0.000000\n"
+    "H -0.599677 0.040712 0.000000\n"
+    "O 1.350625 0.111469 0.000000\n"
+    "H 1.680398 -0.373741 -0.758561\n"
+    "H 1.680398 -0.373741 0.758561\n"
+)
 
 
 @pytest.fixture(scope="module")
-def slow_reference(water):
+def slow_reference():
+    mol = ferric.Molecule.from_xyz_string(WATER_DIMER)
     bs = ferric.BasisSet.bundled("cc-pvdz")
-    return bs, ferric.run_rhf(water, bs)
+    return mol, bs, ferric.run_rhf(mol, bs)
 
 
 @pytest.mark.parametrize("prop", list(SLOW))
-def test_gil_is_released_during_the_call(tmp_path, water, slow_reference, prop):
-    bs, r = slow_reference
+def test_gil_is_released_during_the_call(tmp_path, slow_reference, prop):
+    mol, bs, r = slow_reference
     fn = SLOW[prop]
     stop = threading.Event()
     errors: list[BaseException] = []
@@ -189,15 +201,8 @@ def test_gil_is_released_during_the_call(tmp_path, water, slow_reference, prop):
             # measured interval covers the whole call.
             if not ready.wait(timeout=30):
                 raise RuntimeError("the reader never took its first timestamp")
-            # Repeat the call until the span is long enough for a frozen
-            # reader to stand out: one call can finish in under 0.2 s on a
-            # fast runner (0.18 s seen on macOS CI). The reader's pause is
-            # measured across the whole span, every call included.
             t0 = time.perf_counter()
-            for _ in range(MAX_CALLS):
-                fn(water, bs, r, tmp_path / "slow.cube")
-                if time.perf_counter() - t0 >= MIN_SPAN:
-                    break
+            fn(mol, bs, r, tmp_path / "slow.cube")
             out["duration"] = time.perf_counter() - t0
         except BaseException as exc:  # noqa: BLE001 - reported below
             errors.append(exc)

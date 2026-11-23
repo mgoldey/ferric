@@ -445,7 +445,7 @@ fn build_df_jk_impl<'a>(
                         op,
                         &dfbs,
                         ooc_budget,
-                        rij_f32_beside(df_k.as_ref(), beside, ooc_budget),
+                        rij_f32_beside(df_k.as_ref(), (naux, prep.nbasis()), ooc_budget),
                         Some(ctx),
                         j_precision,
                     )? {
@@ -475,7 +475,7 @@ fn build_df_jk_impl<'a>(
                             &dfbs,
                             (
                                 ooc_budget,
-                                rij_f32_beside(df_k.as_ref(), beside, ooc_budget),
+                                rij_f32_beside(df_k.as_ref(), (naux, prep.nbasis()), ooc_budget),
                             ),
                             Some(ctx),
                             j_precision,
@@ -547,11 +547,15 @@ fn build_df_jk_impl<'a>(
 /// stayed in core also reads the pool, and the f32/f64 choice must depend on
 /// the shapes and the budget only.
 /// What a shared RI-JK set-up's f32 RI-J conversion counts beside it: the
-/// band at its budget placement ([`budget_placed_band_bytes`]) when DF-K was
-/// built, else nothing. The live `df_k` says only whether there is a band;
-/// whether it stayed in core or spilled is deliberately not read.
-fn rij_f32_beside(df_k: Option<&DfK<'_>>, band_bytes: usize, budget: usize) -> usize {
-    df_k.map_or(0, |_| budget_placed_band_bytes(band_bytes, budget))
+/// DF-K band at its budget placement ([`budget_placed_band_bytes`]), sized in
+/// the layout DF-K stores ([`DfK::stored_band_bytes`] at its stored
+/// precision: square f64, packed f64 after an f32 fallback, or packed f32),
+/// else nothing without DF-K. Whether the band stayed in core or spilled is
+/// deliberately not read.
+fn rij_f32_beside(df_k: Option<&DfK<'_>>, (naux, nao): (usize, usize), budget: usize) -> usize {
+    df_k.map_or(0, |k| {
+        budget_placed_band_bytes(DfK::stored_band_bytes(k.precision(), naux, nao), budget)
+    })
 }
 
 fn budget_placed_band_bytes(band_bytes: usize, budget: usize) -> usize {
@@ -1160,7 +1164,7 @@ mod tests {
         let f32_bytes = naux * nao * (nao + 1) / 2 * 4;
         for budget in [f32_bytes + band / 2, f32_bytes + band + band / 2, 1 << 40] {
             let precision = |k: &DfK<'_>| {
-                let beside = rij_f32_beside(Some(k), band, budget);
+                let beside = rij_f32_beside(Some(k), (naux, nao), budget);
                 let raw = ThreeIndexSource::build(op, &prep, &dfbs, 1 << 40).unwrap();
                 DfJ::from_source_beside(raw, op, &dfbs, (budget, beside), None, RiJPrecision::F32)
                     .unwrap()

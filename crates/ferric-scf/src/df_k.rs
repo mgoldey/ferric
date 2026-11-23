@@ -886,6 +886,25 @@ impl<'a> DfK<'a> {
             && !square_forced()
     }
 
+    /// Nominal bytes of a `band`-row dressed band in the layout a DfK whose
+    /// stored precision is `stored` (its [`DfK::precision`], after any f32
+    /// fallback) keeps, whether or not it is resident: the square f64 tensor
+    /// when the device may take K or the square layout is forced, else the
+    /// packed f32 or f64 triangle. Unlike [`DfK::packed_band_bytes`] (0 for
+    /// the square layout, the room a raw placement reserves), this is the
+    /// band's own size in every layout.
+    pub fn stored_band_bytes(stored: RiKPrecision, band: usize, nao: usize) -> usize {
+        let layout = if device_may_take_k(nao) || (stored == RiKPrecision::F64 && square_forced()) {
+            DressedLayout::Square
+        } else {
+            match stored {
+                RiKPrecision::F32 => DressedLayout::PackedF32,
+                RiKPrecision::F64 => DressedLayout::PackedF64,
+            }
+        };
+        ThreeIndexSource::dressed_band_bytes(band, nao, layout)
+    }
+
     /// The storage precision of the dressed tensor (after any fallback).
     pub fn precision(&self) -> RiKPrecision {
         self.precision
