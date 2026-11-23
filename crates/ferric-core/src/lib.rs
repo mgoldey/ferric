@@ -61,7 +61,7 @@ pub mod timing;
 /// Length units: the one Ångström ↔ Bohr conversion ([`units::ANGSTROM_TO_BOHR`]).
 pub mod units;
 
-pub use error::FerricError;
+pub use error::{ErrorCategory, FerricError};
 pub use orbitals::OrbitalSpace;
 
 use std::sync::atomic::AtomicBool;

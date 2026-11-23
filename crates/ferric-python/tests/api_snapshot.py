@@ -149,13 +149,20 @@ def generate(module=None, names=None) -> dict:
             continue
         if inspect.isclass(obj):
             members = {}
-            for m in sorted(n for n in dir(obj) if not n.startswith("_")):
+            # An exception class's inherited BaseException members vary with
+            # the Python version (`add_note` is 3.11+); pin its bases instead.
+            skip = set(dir(BaseException)) if issubclass(obj, BaseException) else ()
+            for m in sorted(
+                n for n in dir(obj) if not n.startswith("_") and n not in skip
+            ):
                 kind = _member_kind(obj, m)
                 entry = {"kind": kind}
                 if kind != "attribute":
                     entry["signature"] = _sig(getattr(obj, m))
                 members[m] = entry
             classes[name] = {"constructor": _sig(obj), "members": members}
+            if issubclass(obj, BaseException):
+                classes[name]["bases"] = [b.__name__ for b in obj.__bases__]
         elif callable(obj):
             functions[name] = _sig(obj)
         elif isinstance(obj, (int, float, str, bool)):
