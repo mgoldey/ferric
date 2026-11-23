@@ -56,6 +56,7 @@ use ferric_scf::hessian::{rhf_hessian, rhf_hessian_parts, RhfHessianParts};
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::{s, Array2};
 use ndarray_linalg::{Eigh, UPLO};
 
@@ -181,17 +182,6 @@ fn fd_hessian_richardson(
     let a = fd_hessian(mol, h, &mut grad);
     let b = fd_hessian(mol, h / 2.0, &mut grad);
     (4.0 * b - a) / 3.0
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) -> f64 {

@@ -68,6 +68,8 @@ use ferric_scf::hessian_ecp::ecp_skeleton_hessian;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs_diff;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -136,12 +138,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -166,13 +162,6 @@ fn matrix(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
         }
     }
     m
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim(), "Hessian shape");
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
 }
 
 fn max_freq_diff(got: &[f64], want: &[f64]) -> f64 {
@@ -231,7 +220,7 @@ fn check_system(system: &str, basis_name: &str) {
     assert_eq!(core, core_ref, "{ctx}: per-atom ECP core electrons");
     assert_eq!(mol.nelec() as i64, r["nelectron"].as_i64().unwrap());
     let enuc = mol.nuclear_repulsion();
-    let enuc_ref = num(&r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &ctx);
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
         "{ctx}: nuclear repulsion {enuc:.12} vs {enuc_ref:.12}"
@@ -254,7 +243,7 @@ fn check_system(system: &str, basis_name: &str) {
         solve_rhf(&pc, &mol, &prep, op, &bounds, &cfg).unwrap()
     };
     assert!(scf.converged, "{ctx}: SCF did not converge");
-    let (e, e_ref) = (scf.energy, num(&r, "/energy", &ctx));
+    let (e, e_ref) = (scf.energy, num_ctx(&r, "/energy", &ctx));
     eprintln!(
         "{ctx}: SCF energy offset vs PySCF {:.2e} Ha",
         (e - e_ref).abs()

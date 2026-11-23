@@ -62,6 +62,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -200,10 +201,6 @@ fn fd(
     g
 }
 
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
-}
-
 /// Absolute check (no grid): analytic of the fitted energy == FD of it, and
 /// the old pairing is visibly off.
 fn check_absolute(
@@ -240,6 +237,7 @@ fn check_absolute(
 
 /// Differential check for KS: the fitted run's residual must equal the
 /// residual of the same functional with exact J/K (grid residual cancels).
+#[allow(clippy::too_many_arguments)]
 fn check_differential(
     label: &str,
     kind: Kind,

@@ -25,8 +25,6 @@
 //! the tight-pool threshold below is derived from THESE tensors' size, and
 //! the refusal is required to name THIS label.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
@@ -38,31 +36,8 @@ use ferric_mp2::gradient::rimp2_gradient_analytical;
 use ferric_mp2::rimp2::RiMp2Config;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 fn h2() -> Molecule {
     Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap()

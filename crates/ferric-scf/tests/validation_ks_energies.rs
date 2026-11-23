@@ -144,6 +144,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -209,12 +210,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn tol_e(xc: &str) -> f64 {
     match xc {
         "pbe" => TOL_E_PBE,
@@ -268,7 +263,7 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     let ctx = format!("{system}/{basis_name}");
     // Geometry like-for-like FIRST: a constant or unit slip fails here as a
     // geometry defect, not later as an unexplained energy offset.
-    let enuc_ref = num(reference, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(reference, "/nuclear_repulsion", &ctx);
     let enuc = mol.nuclear_repulsion();
     eprintln!(
         "{ctx}: E_nuc ferric {enuc:.12} ref {enuc_ref:.12} |d| {:.2e}",
@@ -394,7 +389,7 @@ fn assert_functional_discriminates(
 ) {
     let must_miss = MUST_MISS_FACTOR * tol_e(xc);
     for other in all.iter().filter(|o| **o != xc) {
-        let e_other = num(r, &format!("/{prefix}_{other}/energy"), ctx);
+        let e_other = num_ctx(r, &format!("/{prefix}_{other}/energy"), ctx);
         assert!(
             (e - e_other).abs() > must_miss,
             "{ctx}: ferric {xc} energy {e:.10} is within {must_miss:.0e} of the {other} \
@@ -414,7 +409,7 @@ fn assert_basis_discriminates(
     let must_miss = MUST_MISS_FACTOR * tol_e(xc);
     for (i, b_self) in bases.iter().enumerate() {
         let b_other = bases[1 - i];
-        let other = num(
+        let other = num_ctx(
             &reference(system, b_other),
             &format!("/{block}/energy"),
             system,
@@ -457,7 +452,7 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
                 &ctx,
                 "lambda_min",
                 st.lowest_eigenvalue,
-                num(&r, &format!("/{block}/stability/lambda_min"), &ctx),
+                num_ctx(&r, &format!("/{block}/stability/lambda_min"), &ctx),
                 TOL_LAMBDA,
             );
         }
@@ -468,7 +463,7 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
         (None, _) => panic!("{ctx}: check_stability was set but no verdict came back"),
     }
 
-    let e_ref = num(&r, &format!("/{block}/energy"), &ctx);
+    let e_ref = num_ctx(&r, &format!("/{block}/energy"), &ctx);
     check_close(&ctx, "energy", res.energy, e_ref, tol_e(xc));
 
     let (na, nb) = nocc_ab(&sys.mol);
@@ -488,7 +483,7 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "<S^2>",
         s2,
-        num(&r, &format!("/{block}/s_squared"), &ctx),
+        num_ctx(&r, &format!("/{block}/s_squared"), &ctx),
         tol_s2(xc),
     );
     let eb = res.eps_beta.as_ref().unwrap();
@@ -502,14 +497,14 @@ fn check_uks(system: &str, basis_name: &str, xc: &str) -> f64 {
             &ctx,
             what,
             got,
-            num(&r, &format!("/{block}/{ptr}"), &ctx),
+            num_ctx(&r, &format!("/{block}/{ptr}"), &ctx),
             tol_eps(xc),
         );
     }
 
     // Negative controls.
     assert_functional_discriminates(&ctx, &r, "uks", xc, &OPEN_SHELL_XC, res.energy);
-    let e_uhf = num(&r, "/uhf_control/energy", &ctx);
+    let e_uhf = num_ctx(&r, "/uhf_control/energy", &ctx);
     assert!(
         (res.energy - e_uhf).abs() > CONTROL_GAP,
         "{ctx}: UKS {:.10} is within {CONTROL_GAP:.0e} of the exact UHF control {e_uhf:.10} — \
@@ -554,7 +549,7 @@ fn check_rks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "energy",
         res.energy,
-        num(&r, &format!("/{block}/energy"), &ctx),
+        num_ctx(&r, &format!("/{block}/energy"), &ctx),
         tol_e(xc),
     );
     let nocc = (sys.mol.nelec() as usize) / 2;
@@ -562,19 +557,19 @@ fn check_rks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "HOMO",
         res.eps_alpha[nocc - 1],
-        num(&r, &format!("/{block}/homo"), &ctx),
+        num_ctx(&r, &format!("/{block}/homo"), &ctx),
         tol_eps(xc),
     );
     check_close(
         &ctx,
         "LUMO",
         res.eps_alpha[nocc],
-        num(&r, &format!("/{block}/lumo"), &ctx),
+        num_ctx(&r, &format!("/{block}/lumo"), &ctx),
         tol_eps(xc),
     );
 
     assert_functional_discriminates(&ctx, &r, "rks", xc, &CLOSED_SHELL_XC, res.energy);
-    let e_rhf = num(&r, "/rhf_control/energy", &ctx);
+    let e_rhf = num_ctx(&r, "/rhf_control/energy", &ctx);
     assert!(
         (res.energy - e_rhf).abs() > CONTROL_GAP,
         "{ctx}: RKS {:.10} is within {CONTROL_GAP:.0e} of the exact RHF control {e_rhf:.10} — \

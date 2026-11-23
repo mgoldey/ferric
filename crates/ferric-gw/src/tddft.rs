@@ -224,6 +224,7 @@ fn check_tda_alloc(
 /// Duplicated here rather than made `pub(crate)` in `bse.rs` on purpose: this
 /// spike must not perturb the validated BSE path. The two are kept in sync by
 /// `tda_dft_oscillator_strength_matches_bse_helper` in the tests below.
+#[allow(clippy::too_many_arguments)]
 fn tda_oscillator_strengths(
     evals: &[f64],
     evecs: &Array2<f64>,

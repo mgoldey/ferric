@@ -122,6 +122,8 @@ use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use rayon::prelude::*;
 use serde_json::Value;
@@ -206,12 +208,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// The two systems of the row.
 #[derive(Clone, Copy)]
 enum Sys {
@@ -272,7 +268,7 @@ fn setup(sys: Sys) -> Setup {
 /// Harness checks against the reference before any energy is read.
 fn check_harness(s: &Setup, r: &Value) {
     let enuc = s.mol.nuclear_repulsion();
-    let want = num(r, "/nuclear_repulsion", &s.label);
+    let want = num_ctx(r, "/nuclear_repulsion", &s.label);
     assert!(
         (enuc - want).abs() < TOL_ENUC,
         "{}: E_nuc {enuc:.12} vs reference {want:.12}",
@@ -377,10 +373,6 @@ fn method_key(xc: Option<&str>) -> &'static str {
     }
 }
 
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
-}
-
 // ---------------------------------------------------------------------------
 // 1. Exact-K anchor vs PySCF
 // ---------------------------------------------------------------------------
@@ -398,7 +390,7 @@ fn exact_k_matches_pyscf() {
         for xc in xcs {
             let key = method_key(xc);
             let e = solve(&s, &scf_cfg(xc, None), "exact").energy;
-            let want = num(&r, &format!("/methods/{key}/exact/energy"), &s.label);
+            let want = num_ctx(&r, &format!("/methods/{key}/exact/energy"), &s.label);
             let d = (e - want).abs();
             eprintln!(
                 "{} {key}: exact-K E ferric {e:.12} PySCF {want:.12} |d| {d:.2e} (tol {TOL_EXACT_VS_PYSCF:.0e})",
@@ -431,7 +423,7 @@ fn same_grid_case(sys: Sys, xc: Option<&str>, angulars: &[usize]) {
         );
         let e = solve(&s, &cfg, &format!("cosx ({RADIAL},{ang}) fit off")).energy;
         let ptr = format!("/methods/{key}/sgx_matched_nofit/{RADIAL}_{ang}/energy");
-        let want = num(&r, &ptr, &s.label);
+        let want = num_ctx(&r, &ptr, &s.label);
         let d = (e - want).abs();
         worst = worst.max(d);
         eprintln!(
@@ -502,8 +494,8 @@ fn pruned_sgx_grid_matches_pyscf_on_the_same_grid() {
             );
             let e = solve(&s, &cfg, &format!("sgx({nr},{na}) fit off")).energy;
             let key = format!("/sgx_pruned_matched_nofit/{nr}_{na}");
-            let want = num(&r, &format!("{key}/energy"), &s.label);
-            let want_n = num(&r, &format!("{key}/n_points"), &s.label) as usize;
+            let want = num_ctx(&r, &format!("{key}/energy"), &s.label);
+            let want_n = num_ctx(&r, &format!("{key}/n_points"), &s.label) as usize;
             let d = (e - want).abs();
             eprintln!(
                 "{} sgx({nr},{na}) fit off: ferric {e:.12} PySCF {want:.12} |d| {d:.2e}; npts                  ferric {npts} PySCF {want_n}; E-E_exact {:+.3e}",

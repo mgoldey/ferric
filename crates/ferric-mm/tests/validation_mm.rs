@@ -113,6 +113,8 @@ use std::path::{Path, PathBuf};
 
 use ferric_mm::topology::{DEFAULT_SCALE_COUL_14, DEFAULT_SCALE_LJ_14};
 use ferric_mm::{energy, gradient, MmTopology};
+use ferric_testkit::compare::max_abs;
+use ferric_testkit::reference::num;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -177,12 +179,6 @@ fn reference(system: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
 }
 
 fn arr<'a>(v: &'a Value, ptr: &str) -> &'a Vec<Value> {
@@ -320,10 +316,6 @@ fn term_energy(e: &ferric_mm::MmEnergy, term: &str) -> f64 {
         "total" => e.total,
         _ => unreachable!(),
     }
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 fn rel_e(e: f64, e_ref: f64) -> f64 {

@@ -1389,6 +1389,7 @@ pub(crate) fn diagonalize_rect_with(
 /// `e_elec + e_xc + e_cosmo + e_pcm + vnn` keeps its historical FP
 /// association. No-op `(0.0, 0.0)` when both are `None` (vacuum), preserving
 /// the byte-identical-to-vacuum regression contract.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn solvent_terms(
     mol: &Molecule,
     prep: &PreparedBasis,

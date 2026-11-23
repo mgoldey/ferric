@@ -19,4 +19,5 @@ ndarray-linalg = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde_json = { workspace = true }

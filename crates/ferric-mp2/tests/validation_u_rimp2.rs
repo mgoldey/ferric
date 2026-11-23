@@ -104,6 +104,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/u_rimp2";
@@ -161,12 +162,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<14} ferric {got:+.12} ref {want:+.12} |d| {d:.2e} (tol {tol:.0e})");
@@ -210,7 +205,7 @@ fn load(system: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(BASIS).unwrap()).unwrap();
@@ -240,7 +235,7 @@ fn load(system: &str) -> Sys {
 /// descent that pins it to PySCF's stability-followed state; a level-shift +
 /// MOM fallback as in validation_gw.rs. Accepted only if the energy matches.
 fn uhf(sys: &Sys) -> ScfResult {
-    let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
+    let e_ref = num_ctx(&sys.r, "/uhf/energy", &sys.label);
     let base = RhfConfig {
         max_iter: 400,
         energy_conv: 1e-11,
@@ -327,7 +322,7 @@ fn check_block(sys: &Sys, block: &str, res: &URiMp2Result, frozen_core: usize) {
         "{ctx}: reference block frozen core"
     );
     for key in ["numpy_anchor_ss_diff", "numpy_anchor_os_diff"] {
-        let a = num(r, &format!("/{block}/{key}"), &ctx);
+        let a = num_ctx(r, &format!("/{block}/{key}"), &ctx);
         assert!(
             a.abs() < TOL_NUMPY_ANCHOR,
             "{ctx}: generator {key} {a:.2e} exceeds {TOL_NUMPY_ANCHOR:.0e}"
@@ -338,49 +333,49 @@ fn check_block(sys: &Sys, block: &str, res: &URiMp2Result, frozen_core: usize) {
         &ctx,
         "E_aa",
         c.e_aa,
-        num(r, &format!("/{block}/e_aa"), &ctx),
+        num_ctx(r, &format!("/{block}/e_aa"), &ctx),
         TOL_E_MP2,
     );
     check_close(
         &ctx,
         "E_bb",
         c.e_bb,
-        num(r, &format!("/{block}/e_bb"), &ctx),
+        num_ctx(r, &format!("/{block}/e_bb"), &ctx),
         TOL_E_MP2,
     );
     check_close(
         &ctx,
         "E_ab",
         c.e_ab,
-        num(r, &format!("/{block}/e_ab"), &ctx),
+        num_ctx(r, &format!("/{block}/e_ab"), &ctx),
         TOL_E_MP2,
     );
     check_close(
         &ctx,
         "E_ss (DFUMP2)",
         c.e_aa + c.e_bb,
-        num(r, &format!("/{block}/e_corr_ss"), &ctx),
+        num_ctx(r, &format!("/{block}/e_corr_ss"), &ctx),
         TOL_E_MP2,
     );
     check_close(
         &ctx,
         "E_os (DFUMP2)",
         c.e_ab,
-        num(r, &format!("/{block}/e_corr_os"), &ctx),
+        num_ctx(r, &format!("/{block}/e_corr_os"), &ctx),
         TOL_E_MP2,
     );
     check_close(
         &ctx,
         "E_corr",
         res.mp2_corr,
-        num(r, &format!("/{block}/e_corr"), &ctx),
+        num_ctx(r, &format!("/{block}/e_corr"), &ctx),
         TOL_E_MP2,
     );
     check_close(
         &ctx,
         "E_total",
         res.total_energy,
-        num(r, &format!("/{block}/e_total"), &ctx),
+        num_ctx(r, &format!("/{block}/e_total"), &ctx),
         TOL_E_MP2,
     );
     // Internal consistency: the blocks ARE the correlation energy.
@@ -393,14 +388,14 @@ fn check_block(sys: &Sys, block: &str, res: &URiMp2Result, frozen_core: usize) {
         &ctx,
         "E_aa vs reference E_bb",
         c.e_aa,
-        num(r, &format!("/{block}/e_bb"), &ctx),
+        num_ctx(r, &format!("/{block}/e_bb"), &ctx),
         TOL_E_MP2,
     );
     check_miss(
         &ctx,
         "E_bb vs reference E_aa",
         c.e_bb,
-        num(r, &format!("/{block}/e_aa"), &ctx),
+        num_ctx(r, &format!("/{block}/e_aa"), &ctx),
         TOL_E_MP2,
     );
 }
@@ -452,14 +447,14 @@ fn u_rimp2_ho2_ccpvdz_all_electron_and_frozen_core_vs_pyscf_dfump2() {
         &sys.label,
         "fc2 E_corr vs all-electron ref",
         fc.mp2_corr,
-        num(&sys.r, "/ump2/e_corr", &sys.label),
+        num_ctx(&sys.r, "/ump2/e_corr", &sys.label),
         TOL_E_MP2,
     );
     check_miss(
         &sys.label,
         "all-electron E_corr vs fc2 ref",
         ae.mp2_corr,
-        num(&sys.r, "/ump2_fc2/e_corr", &sys.label),
+        num_ctx(&sys.r, "/ump2_fc2/e_corr", &sys.label),
         TOL_E_MP2,
     );
 }

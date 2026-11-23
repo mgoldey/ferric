@@ -110,6 +110,7 @@ use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::{uhf_internal_stability, StabilityConfig};
 use ferric_scf::uhf_newton::UhfNewtonInputs;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -198,12 +199,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn matrix(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
     let rows = v
         .pointer(ptr)
@@ -255,7 +250,7 @@ fn load_system(system: &str) -> System {
     );
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), charge, mult)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
-    let enuc_ref = num(&r, "/nuclear_repulsion", &tag);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &tag);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -275,7 +270,7 @@ fn load_system(system: &str) -> System {
         .iter()
         .map(|v| v.as_u64().unwrap() as usize)
         .collect();
-    let target = num(&r, "/target", &tag);
+    let target = num_ctx(&r, "/target", &tag);
     let nocc: Vec<usize> = r["nocc"]
         .as_array()
         .expect("nocc")
@@ -336,8 +331,8 @@ fn state_base(state: &str, variant: &str) -> String {
 fn nwchem_state(s: &System, state: &str, variant: &str, grid: &str) -> (f64, f64) {
     let b = state_base(state, variant);
     (
-        num(&s.r, &format!("{b}/{grid}/energy_extrapolated"), &s.tag),
-        num(&s.r, &format!("{b}/{grid}/lambda_extrapolated"), &s.tag),
+        num_ctx(&s.r, &format!("{b}/{grid}/energy_extrapolated"), &s.tag),
+        num_ctx(&s.r, &format!("{b}/{grid}/lambda_extrapolated"), &s.tag),
     )
 }
 
@@ -600,7 +595,7 @@ fn ao_map_and_one_shot_energy_anchor() {
 
         // (c) one-shot UHF energy of NWChem's UNCONSTRAINED orbitals.
         let (ca_u, cb_u) = nwchem_mos(&s, "/unconstrained");
-        let e_unc_ref = num(&s.r, "/unconstrained/energy", &ctx);
+        let e_unc_ref = num_ctx(&s.r, "/unconstrained/energy", &ctx);
         check_close(
             &ctx,
             "one-shot E(unconstrained)",
@@ -627,7 +622,7 @@ fn ao_map_and_one_shot_energy_anchor() {
                 );
                 let n_f = ferric_population(&s, &w, &ca, &cb);
                 // JSON-pointer key "low/native": the '/' is escaped as "~1".
-                let n_pyscf = num(
+                let n_pyscf = num_ctx(
                     &s.r,
                     &format!("/pyscf_checks/{st}~1{v}/becke_population/ferric_radii"),
                     &ctx,

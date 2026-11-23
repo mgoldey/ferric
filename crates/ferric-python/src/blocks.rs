@@ -475,7 +475,7 @@ fn scatter_bra_pair(
 /// Construct once per geometry; every method reuses the prepared basis. ECPs
 /// carried by the basis are applied exactly as `run_rhf` applies them
 /// (`hcore()` includes V_ECP; `nelec` counts valence electrons).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "AoIntegrals")]
 struct PyAoIntegrals {
     mol: Molecule,
@@ -2355,7 +2355,7 @@ fn checked_rotations(
 /// U with `(A + B) U = rhs`: for a one-electron perturbation h1 use
 /// `rhs = -C_vᵀ h1 C_o`, then `D1 = density(U)`; for a Z-vector, the
 /// Lagrangian. Exact four-centre J/K, or RI-J/RI-K with `cphf(aux=...)`.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Cphf")]
 struct PyCphf {
     resp: Response,
@@ -2434,7 +2434,7 @@ fn check_tol(tol: f64) -> PyResult<()> {
 /// are the pair `(U_a, U_b)`, `density` gives `D1_s = C_vs U_s C_osᵀ + h.c.`
 /// (unit occupation) and `F1_s = J(D1_a + D1_b) - exchange mix·K(D1_s) +
 /// f_xc_s`.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "Ucphf")]
 struct PyUcphf {
     resp: Response,

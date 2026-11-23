@@ -74,3 +74,6 @@ rayon = { workspace = true }
 # device-resident DF-K occupied path). (ferric-tensors is not a dependency
 # of this crate, so it has nothing to forward to.)
 gpu = ["ferric-core/gpu", "ferric-cc/gpu", "ferric-mp2/gpu", "ferric-scf/gpu"]
+
+[dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }

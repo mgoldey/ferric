@@ -778,6 +778,7 @@ pub(crate) fn heap_pivoted_cholesky(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferric_testkit::compare::max_abs;
 
     fn part(n: usize, gsize: usize) -> Arc<Partition> {
         let labels: Vec<usize> = (0..n).map(|i| i / gsize).collect();
@@ -792,10 +793,6 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             ((s >> 11) as f64 / (1u64 << 53) as f64) - 0.5
         })
-    }
-
-    fn max_abs(a: &Array2<f64>) -> f64 {
-        a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
     }
 
     /// At tau = 0 every operation equals its dense counterpart to rounding,

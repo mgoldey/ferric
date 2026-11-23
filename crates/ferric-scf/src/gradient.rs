@@ -1180,6 +1180,7 @@ pub fn rhf_gradient_exact_jk(
 /// EXACTLY `rhf_gradient` (see [`crate::polarizable::qm_gradient_contribution`]
 /// for why the fixed-mu QM-centre term is a plain Hellmann-Feynman
 /// contraction, no `W`-vs-naive subtlety unlike [`crate::polarizable::site_gradient`]).
+#[allow(clippy::too_many_arguments)]
 pub fn rhf_gradient_with_polarizable(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -1218,6 +1219,7 @@ pub fn rhf_gradient_with_polarizable(
 /// [`crate::polarizable::qm_gradient_contribution`]'s documented
 /// total-density-only dependence — see that function's doc for why this
 /// term needs no UHF-specific derivation.
+#[allow(clippy::too_many_arguments)]
 pub fn uhf_gradient_with_polarizable(
     mol: &Molecule,
     prep: &PreparedBasis,

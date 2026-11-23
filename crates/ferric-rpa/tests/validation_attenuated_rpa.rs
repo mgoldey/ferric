@@ -114,6 +114,7 @@ use ferric_rpa::{run_pdep_rpa, run_pdep_rpa_from_intermediates, PdepRpaResult, R
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/attenuated_rpa";
@@ -191,12 +192,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) -> f64 {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<40} ferric {got:+.12} ref {want:+.12} |d| {d:.2e}");
@@ -253,7 +248,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -296,7 +291,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_RHF",
         rhf.energy,
-        num(&r, "/rhf/energy", &label),
+        num_ctx(&r, "/rhf/energy", &label),
         TOL_E_SCF,
     );
     Sys {
@@ -388,7 +383,7 @@ fn run_case(system: &str, basis_name: &str) {
     let r = &sys.r;
 
     // Coulomb baseline (the object the U-RPA row already validates).
-    let e_coul_ref = num(r, "/coulomb/e_corr", &ctx);
+    let e_coul_ref = num_ctx(r, "/coulomb/e_corr", &ctx);
     let coul = rpa(&sys, Operator::coulomb());
     assert_eq!(
         coul.n_eigenpotentials,
@@ -398,8 +393,8 @@ fn run_case(system: &str, basis_name: &str) {
     check_close(&ctx, "E_c Coulomb", coul.e_rpa, e_coul_ref, TOL_E_C_COULOMB);
 
     // Exactness anchors: the ω extremes are the Coulomb kernel.
-    assert_eq!(num(r, "/anchors/erfc_omega", &ctx), ERFC_ANCHOR);
-    assert_eq!(num(r, "/anchors/erf_omega", &ctx), ERF_ANCHOR);
+    assert_eq!(num_ctx(r, "/anchors/erfc_omega", &ctx), ERFC_ANCHOR);
+    assert_eq!(num_ctx(r, "/anchors/erf_omega", &ctx), ERF_ANCHOR);
     for (kind, w, ptr) in [
         (Kind::Erfc, ERFC_ANCHOR, "/anchors/erfc_e_corr"),
         (Kind::Erf, ERF_ANCHOR, "/anchors/erf_e_corr"),
@@ -409,7 +404,7 @@ fn run_case(system: &str, basis_name: &str) {
             &ctx,
             &format!("E_c {}({w:e}) vs numpy", kind.key()),
             a.e_rpa,
-            num(r, ptr, &ctx),
+            num_ctx(r, ptr, &ctx),
             kind.tol(),
         );
         check_close(
@@ -433,21 +428,21 @@ fn run_case(system: &str, basis_name: &str) {
                 &ctx,
                 &format!("E_c {here}"),
                 res.e_rpa,
-                num(b, &format!("/{key}/e_corr"), &ctx),
+                num_ctx(b, &format!("/{key}/e_corr"), &ctx),
                 kind.tol(),
             );
             assert_misses(
                 &ctx,
                 &format!("{here} vs Coulomb-metric/attenuated-3c"),
                 res.e_rpa,
-                num(b, &format!("/{key}/mixed_coulomb_metric"), &ctx),
+                num_ctx(b, &format!("/{key}/mixed_coulomb_metric"), &ctx),
                 kind.tol(),
             );
             assert_misses(
                 &ctx,
                 &format!("{here} vs the {}({w:.6}) reference", kind.other().key()),
                 res.e_rpa,
-                num(b, &format!("/{}/e_corr", kind.other().key()), &ctx),
+                num_ctx(b, &format!("/{}/e_corr", kind.other().key()), &ctx),
                 kind.tol(),
             );
             if i == I_UNIT_SLIP {
@@ -469,7 +464,7 @@ fn run_case(system: &str, basis_name: &str) {
                 kind.key()
             ),
             at_slip[k],
-            num(b_def, &format!("/{}/e_corr", kind.key()), &ctx),
+            num_ctx(b_def, &format!("/{}/e_corr", kind.key()), &ctx),
             kind.tol(),
         );
     }
@@ -548,14 +543,14 @@ fn attenuated_rpa_h2o_cc_pvdz_mixed_metric_control() {
             &ctx,
             &format!("mixed-metric {key}(default) vs numpy"),
             res.e_rpa,
-            num(b, &format!("/{key}/mixed_coulomb_metric"), &ctx),
+            num_ctx(b, &format!("/{key}/mixed_coulomb_metric"), &ctx),
             kind.tol(),
         );
         assert_misses(
             &ctx,
             &format!("mixed-metric {key}(default) vs the attenuated reference"),
             res.e_rpa,
-            num(b, &format!("/{key}/e_corr"), &ctx),
+            num_ctx(b, &format!("/{key}/e_corr"), &ctx),
             kind.tol(),
         );
     }

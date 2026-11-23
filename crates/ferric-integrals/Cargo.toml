@@ -20,6 +20,7 @@ libc = "0.2"
 cc = { workspace = true }
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # Lebedev angular sets for the md3c1e measurement harness (grid positions

@@ -34,8 +34,6 @@
 //! The pool is process-global, so these tests serialize on a private lock and
 //! clear the slot on entry and exit.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_cc::{ccd::ccd, ccsd::ccsd, ccsd_closed_shell::ccsd_closed_shell, CcConfig};
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
@@ -46,32 +44,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit so one test's pool can
-/// never leak into another's "unbudgeted" assertions.
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 struct Fixture {
     mol: Molecule,

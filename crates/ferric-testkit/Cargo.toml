@@ -1,0 +1,19 @@
+[package]
+name = "ferric-testkit"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+publish = false
+description = "Shared test helpers for the ferric workspace. A dev-dependency only."
+
+[lints]
+workspace = true
+
+# Depends on ferric-core and nothing above it, so every crate that sits on
+# ferric-core (everything except ferric-core itself and the crates below it)
+# can take this as a dev-dependency without a cycle. Never add it under
+# [dependencies]: scripts/check_testkit_dev_only.py enforces that.
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ndarray = { workspace = true }
+serde_json = { workspace = true }

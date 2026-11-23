@@ -461,6 +461,7 @@ def _run_gate(gate, stub_dir, **extra):
         "PATH": f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
         "CI_GATE_SKIP_TESTS": "1",
         "CI_GATE_SKIP_COMPLEXITY": "1",
+        "CI_GATE_SKIP_RATCHET": "1",
         "CI_GATE_SKIP_DOCS": "1",
         "CI_GATE_SKIP_PYTEST": "1",
         **extra,
@@ -652,6 +653,7 @@ def test_tier_full_forces_the_workspace_through_the_real_hook(repo, tmp_path):
         "CI_GATE_TIER": "full",
         "CI_GATE_SKIP_TESTS": "1",
         "CI_GATE_SKIP_COMPLEXITY": "1",
+        "CI_GATE_SKIP_RATCHET": "1",
         "CI_GATE_SKIP_DOCS": "1",
         "CI_GATE_SKIP_PYTEST": "1",
     }

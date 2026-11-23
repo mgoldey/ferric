@@ -160,6 +160,7 @@ impl std::fmt::Display for BseResult {
 /// orthogonality, also verified numerically). `mo_coeff` is the FULL
 /// nbasis×nmo MO coefficient matrix; `first_act`/`nocc_total` locate the
 /// active occ/vir columns within it.
+#[allow(clippy::too_many_arguments)]
 fn tda_oscillator_strengths(
     evals: &Array1<f64>,
     evecs: &Array2<f64>,

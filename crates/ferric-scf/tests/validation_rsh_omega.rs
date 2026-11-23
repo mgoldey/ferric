@@ -109,6 +109,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::omega_tuning::{eval_j, tune_omega, OmegaTuneConfig};
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/rsh_omega";
@@ -171,12 +172,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 struct System {
     mol: Molecule,
     prep: PreparedBasis,
@@ -197,7 +192,7 @@ fn load_system(system: &str, r: &Value) -> System {
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
     // Geometry like-for-like FIRST: a constant or unit slip fails here as a
     // geometry defect, not later as an unexplained J offset.
-    let enuc_ref = num(r, "/nuclear_repulsion", system);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", system);
     let enuc = mol.nuclear_repulsion();
     eprintln!(
         "{system}: E_nuc ferric {enuc:.12} ref {enuc_ref:.12} |d| {:.2e}",
@@ -268,7 +263,7 @@ fn check_points(system: &str) {
     let cfg = tune_config(TUNE_LO, TUNE_HI);
     let mut j_ferric = Vec::with_capacity(pts.len());
     for (k, p) in pts.iter().enumerate() {
-        let w = num(p, "/omega", system);
+        let w = num_ctx(p, "/omega", system);
         let ctx = format!("{system}/{BASIS}/w={w:.3}");
         let e = eval_j(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg, w)
             .unwrap_or_else(|err| panic!("{ctx}: eval_j failed: {err:?}"));
@@ -277,11 +272,11 @@ fn check_points(system: &str) {
             &ctx,
             "eps_HOMO",
             e.eps_homo,
-            num(p, "/eps_homo", &ctx),
+            num_ctx(p, "/eps_homo", &ctx),
             TOL_EPS,
         );
-        check_close(&ctx, "IP", e.ip_delta_scf, num(p, "/ip", &ctx), TOL_IP);
-        check_close(&ctx, "J", e.j, num(p, "/j", &ctx), TOL_J);
+        check_close(&ctx, "IP", e.ip_delta_scf, num_ctx(p, "/ip", &ctx), TOL_IP);
+        check_close(&ctx, "J", e.j, num_ctx(p, "/j", &ctx), TOL_J);
         // J is exactly the documented combination of the other two.
         assert_eq!(e.j, e.eps_homo + e.ip_delta_scf, "{ctx}: J != eps + IP");
         j_ferric.push((k, e.j));
@@ -291,7 +286,7 @@ fn check_points(system: &str) {
     for (k, j) in j_ferric {
         for n in [k.wrapping_sub(1), k + 1] {
             let Some(q) = pts.get(n) else { continue };
-            let j_other = num(q, "/j", system);
+            let j_other = num_ctx(q, "/j", system);
             assert!(
                 (j - j_other).abs() > must_miss,
                 "{system}: ferric J at point {k} ({j:+.3e}) is within {must_miss:.0e} of the \
@@ -307,7 +302,7 @@ fn check_omega_star(system: &str) {
     let r = reference(system);
     let sys = load_system(system, &r);
     let ctx = format!("{system}/{BASIS}/omega*");
-    let w_ref = num(&r, "/omega_star", &ctx);
+    let w_ref = num_ctx(&r, "/omega_star", &ctx);
     assert!(
         w_ref > TUNE_LO && w_ref < TUNE_HI,
         "{ctx}: reference omega* {w_ref} outside the tuner bracket [{TUNE_LO}, {TUNE_HI}]"
@@ -341,13 +336,13 @@ fn check_omega_star(system: &str) {
         t.omega
     );
     for p in r["points"].as_array().expect("points") {
-        let jp = num(p, "/j", &ctx);
+        let jp = num_ctx(p, "/j", &ctx);
         assert!(
             t.j.abs() < jp.abs(),
             "{ctx}: |J(omega*)| {:.3e} not below |J| {:.3e} at grid omega {}",
             t.j.abs(),
             jp.abs(),
-            num(p, "/omega", &ctx)
+            num_ctx(p, "/omega", &ctx)
         );
     }
     check_close(&ctx, "omega*", t.omega, w_ref, TOL_OMEGA_STAR);
