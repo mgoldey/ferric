@@ -108,9 +108,16 @@ impl CliError {
         }
     }
 
-    /// Write [`CliError::stderr_text`] to stderr.
+    /// Write [`CliError::stderr_text`] to stderr. A failed write is
+    /// dropped instead of panicking (as `eprint!` would): the error is
+    /// being reported because the run already failed, and when stderr
+    /// itself cannot be written there is nowhere left to say so; the exit
+    /// status still does.
     pub fn eprint(&self) {
-        eprint!("{}", self.stderr_text());
+        use std::io::Write;
+        let _ = std::io::stderr()
+            .lock()
+            .write_all(self.stderr_text().as_bytes());
     }
 }
 

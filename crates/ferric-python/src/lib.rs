@@ -376,7 +376,7 @@ fn molecule_to_xyz_string(mol: &Molecule) -> String {
 // ── BasisSet ──
 
 /// A Gaussian basis set (orbital or auxiliary/RI-fitting).
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "BasisSet")]
 struct PyBasisSet {
     inner: ferric_core::basis::BasisSet,

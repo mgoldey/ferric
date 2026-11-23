@@ -686,6 +686,11 @@ Done:
     (`OptimizeCfg::search_options`) and `md.rs` (`md_error`) into their
     callers, so the config layer returns plain errors; `ferric-batch`
     could report a child's error class from its exit status (2 vs 1).
+    Done since: `--help` / `--version` are written by
+    `info_text::write_info` instead of `eprintln!` / `print!`, same bytes;
+    a broken pipe is success (status 0), any other write error a
+    `CliError::Msg` (status 1) instead of a panic (101), and
+    `CliError::eprint` drops a failed stderr write instead of panicking.
 13. Result storage, bitwise unchanged (old-vs-new over the 15
     `result=`-taking functions and the array getters, on two RHF and two
     KS references: 84 values):
@@ -716,10 +721,10 @@ Done:
       re-runs the six field SCFs in turn. Assignment to a getter still
       raises the same `AttributeError` ("not writable"). Not frozen:
       `ConformerEnsemble` (`set_energy` mutates it) and the `blocks`
-      handles (`DfJk`, `XcFunctional` have `&mut self` methods; also
-      `AoIntegrals`, `Cphf`, `Ucphf`); and, as inputs rather than results,
-      `BasisSet`, `QmmmSystem`, `MmTopology` and `CdftConstraint`, which
-      have no mutating method and could be frozen in a follow-up.
+      handles `DfJk` and `XcFunctional` (`&mut self` methods). Done since:
+      the inputs `BasisSet`, `QmmmSystem`, `MmTopology`, `CdftConstraint`
+      and the handles `AoIntegrals`, `Cphf`, `Ucphf` (no setter, `&mut
+      self` or `PyRefMut` use) are frozen too (`tests/test_frozen_inputs.py`).
     - `ferric.serialize.RESULT_SCHEMA` (class name -> getters and array
       accessors) replaces the `dir()` scan for ferric classes, generated
       from the reflected field set so the output is byte-identical
@@ -749,10 +754,16 @@ Done:
       do not support `copy.deepcopy`, before and after (no `__reduce__`).
       `to_dict` should stop evaluating `e_xc` (drop it from the schema) and
       decide what to do with the list/dict fields: visible output changes
-      left for their own PR. The other `DensitySource` consumers (ESP,
-      CHELPG, RESP, Löwdin/Mulliken, `write_cube`) hold the GIL throughout;
-      they could release it using `DensitySource::shared` as
-      `hirshfeld_charges` does.
+      left for their own PR. Done since: ESP (`esp_at_atoms`,
+      `esp_at_points`, `esp_on_surface`), CHELPG, RESP, Löwdin, Mulliken
+      and `write_cube` prepare and compute with the GIL released
+      (`on_density_without_gil`, through `DensitySource::shared`), bitwise
+      unchanged (old-vs-new hex floats and file hashes over 12 cases, three
+      molecules x two bases x RHF/B3LYP: 108 outputs, 24 of them cube
+      files). Still holding it among the `DensitySource` consumers:
+      `orbital_moments`, `density_second_moment`, the `eval_*_on_points`
+      functions, `hirshfeld_polarizability` and `response_modes`
+      (response_modes.rs).
 
 Next, each as its own PR following the patterns above:
 
