@@ -532,10 +532,17 @@ const DRESS_COL_BLOCK: usize = 512;
 /// A lower-triangular metric factor (DF-K's Cholesky `L⁻¹`) has `m[P, Q] = 0`
 /// for every `Q > P`, so the Q block `[qa, qb)` contributes nothing to rows
 /// `P < qa`: those rows are skipped, which halves the dressing's flops (the
-/// flop count of a triangular solve). The skipped products are exact zeros
-/// and the kept rows see the same term sequence, so the result is the dense
-/// GEMM's (only the GEMM's row count changes, which does not move a bit). A
-/// dense (symmetric) factor has a nonzero first row and is dressed as before.
+/// flop count of a triangular solve; the measured wall-time saving is 20–35%,
+/// the dressing being partly memory bound). The skipped products are exact
+/// zeros and the kept rows see the same term sequence, so the result is the
+/// dense GEMM's: only the GEMM's row count changes, which does not move a
+/// bit on the CI kernel (`OPENBLAS_CORETYPE=Haswell`; see [`DRESS_COL_BLOCK`]
+/// for what is measured, and other kernels may differ). A dense (symmetric)
+/// factor has a nonzero first row and is dressed exactly as before.
+///
+/// The streamed routes still read every Q block of `raw`, including those
+/// past the last output row, whose GEMMs this skips; not streaming them is a
+/// follow-up.
 fn dress_tile(
     m_rows: &ndarray::ArrayView2<'_, f64>,
     panel: &ndarray::ArrayView2<'_, f64>,

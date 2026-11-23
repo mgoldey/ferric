@@ -472,6 +472,19 @@ const ENV_SWITCHES: [(&str, FieldClass); 9] = [
     ("FERRIC_DFK_METRIC", FieldClass::Route),
 ];
 
+/// The recorded value of one [`ENV_SWITCHES`] entry: the raw text, except
+/// for a switch with a parsed form, which records that (so `FERRIC_DFK_METRIC`
+/// unset, `auto` and ` AUTO ` are one identity). A value that does not parse
+/// keeps its raw text; the SCF itself refuses it.
+fn env_switch_value(name: &str) -> Option<String> {
+    if name == "FERRIC_DFK_METRIC" {
+        if let Ok(setting) = crate::df_k::dfk_metric_setting() {
+            return Some(setting.as_str().to_string());
+        }
+    }
+    std::env::var(name).ok()
+}
+
 /// Process-wide state that changes an SCF's numbers and is not in `RhfConfig`. An
 /// exact commit match does not cover it: these are runtime settings, the libint
 /// version comes from the machine, and features come from the build command.
@@ -524,7 +537,7 @@ impl ProcessSettings {
             ),
             env: ENV_SWITCHES
                 .iter()
-                .map(|(name, _)| std::env::var(name).ok())
+                .map(|(name, _)| env_switch_value(name))
                 .collect(),
         })
     }

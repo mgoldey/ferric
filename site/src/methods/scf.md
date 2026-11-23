@@ -202,8 +202,15 @@ needs exact degeneracies.
 
 ### RI-K tensor storage
 
-The RI-K (DF-K) builder keeps the V^{-1/2}-dressed three-index tensor for
-the whole SCF. That tensor is symmetric in its two orbital indices, and it is
+The RI-K (DF-K) builder keeps the metric-dressed three-index tensor
+`B = M (P|μν)`, `MᵀM = V⁻¹`, for the whole SCF. `M` is the Cholesky `L⁻¹`
+when the factor certifies that no metric eigenvalue lies near the `1e-10`
+linear-dependence cut, and otherwise the truncated `V^{-1/2}` from an
+eigendecomposition (which drops those modes); the two give the same K up to
+rounding (about `1e-13` relative), and the Cholesky route is several times
+cheaper to set up. `FERRIC_DFK_METRIC=eigh` forces the eigendecomposition; it
+is a debug escape hatch for comparing the two routes, not a tuning option
+(`auto`, the default, is the only other value; anything else is an error). That tensor is symmetric in its two orbital indices, and it is
 now held as the **packed symmetric half** (`n_aux × n_bf(n_bf+1)/2`
 elements) rather than the full square: half the memory at f64. Both K
 contractions read only one triangle (the occupied path unpacks each

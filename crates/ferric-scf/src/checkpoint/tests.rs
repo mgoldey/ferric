@@ -1728,6 +1728,15 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             .collect();
         assert_eq!(moved, [name], "{variable}={value}");
     }
+    // FERRIC_DFK_METRIC is recorded parsed: unset, `auto` and ` AUTO ` are one
+    // identity.
+    for value in ["auto", " AUTO "] {
+        assert_eq!(
+            key(&[("FERRIC_DFK_METRIC", value)]).fields,
+            base.fields,
+            "FERRIC_DFK_METRIC={value:?}"
+        );
+    }
     let field = |name: &str| base.fields.iter().find(|f| f.name == name).unwrap();
     assert_eq!(
         field("libint_version").value,

@@ -190,25 +190,32 @@ in the window $[\tau/100, 100\tau]$ that is that far from every eigenvalue,
 so that two eigensolvers that differ by rounding keep the same modes. RI-J uses the full Cholesky inverse,
 so the two fits differ only when modes are cut.
 
-Which factor (`DfkMetricRoute`): Cholesky when it proves that the cut would
-keep every mode, the eigendecomposition otherwise
+Which factor (`DfkMetricRoute`): Cholesky when it certifies (to rounding)
+that the cut would keep every mode, the eigendecomposition otherwise
 (`ferric-scf/src/df_k.rs::certified_cholesky_factor`). From the factor,
 $1/\lambda_{\min} = \lVert L^{-1}\rVert_2^2 \le
 \min(\lVert L^{-1}\rVert_F^2, \lVert L^{-1}\rVert_1\lVert L^{-1}\rVert_\infty)$
-and $\max\lambda \le \lVert V\rVert_\infty$; Cholesky is taken when that
-lower bound on $\lambda_{\min}$ is at least twice $\tau + 100\,\varepsilon\lVert V\rVert_\infty$,
-which puts every eigenvalue above the cut with its margin. A metric with
-eigenvalues near or below the cut (erf metrics, near-linearly-dependent
-auxiliary sets), an indefinite one (`dpotrf` fails), and every DF-K built
+and $\max\lambda \le \lVert V\rVert_\infty$; the computed factor is exact
+for $V + E$ with $\lVert E\rVert \lesssim N_{\rm aux}\varepsilon\lVert V\rVert$.
+Cholesky is taken when that lower bound on $\lambda_{\min}$ is at least twice
+$\tau + (100 + N_{\rm aux})\,\varepsilon\lVert V\rVert_\infty$, which puts
+every eigenvalue above the cut with its margin up to the factorization's own
+rounding. Under MPI every rank must agree (an all-reduce of the vote): a band of
+$L^{-1}$-dressed rows summed with a band of $V^{-1/2}$-dressed rows is no fit. A metric with
+eigenvalues near or below the cut (near-linearly-dependent auxiliary sets),
+an indefinite one (`dpotrf` fails), the erf metric of a range-separated
+hybrid (not tried: it always has near-null modes), and every DF-K built
 while a geometry task's gradient captures the metric eigendecomposition (the
 gradient reuses it) take the eigendecomposition; so does
-`FERRIC_DFK_METRIC=eigh`. The two factors fit the same span then and differ
-only in rounding (about $10^{-11}$ Ha in a converged SCF energy, measured on
-C8–C16 alkanes). A lower-triangular $M$ also halves the dressing: the GEMM of
-the $Q$ block $[q_a, q_b)$ skips the rows $P < q_a$, where $M$ is zero
-(the flop count of a triangular solve). On C16H34/def2-SVP the factor step
-fell from 1.5 s to 0.1 s and the dressing from 8.9 s to 7.1 s
-(4 threads, a shared machine).
+`FERRIC_DFK_METRIC=eigh` (a debug switch). The two factors fit the same span
+then and differ only in rounding: about $10^{-13}$ relative in $K$ at a fixed
+density, and within $3\times10^{-11}$ Ha in converged SCF energies of C8–C16
+alkanes at `energy_conv = 1e-10`, part of which is convergence noise. A
+lower-triangular $M$ also halves the dressing flops: the GEMM of the $Q$ block
+$[q_a, q_b)$ skips the rows $P < q_a$, where $M$ is zero (the flop count of a
+triangular solve); the measured dressing time fell 20–35%, the dressing being
+partly memory bound. On C16H34/def2-SVP the factor step fell from 1.5 s to
+0.1 s and the dressing from 8.9 s to 7.1 s (4 threads, a shared machine).
 
 **Three contractions.** They give the same $K$ and differ in cost:
 
