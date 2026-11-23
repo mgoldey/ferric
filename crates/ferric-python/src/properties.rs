@@ -89,23 +89,26 @@ pub(crate) fn check_result_matches_basis(who: &str, result_nbf: usize, nbf: usiz
 /// `f(molecule, prepared basis, density)` with the GIL released, for the
 /// density properties whose work is pure Rust. The molecule carries the
 /// basis set's ECP (`ecp_molecule`); the basis is prepared inside the
-/// release, and the density is the result's own, shared through its `Arc`
-/// (`DensitySource::shared`, as `hirshfeld_charges` does), not copied.
-/// `f` must not touch Python objects; building a `PyErr` is fine (lazy).
+/// release, and the density is read through the result's shared solve
+/// (`DensitySource::shared`, as `hirshfeld_charges` does). A preparation or
+/// `f` error is converted to its Python exception once, after the GIL is
+/// back (`make_err` takes the GIL to pick the class).
 fn on_density_without_gil<T: Send>(
     py: Python<'_>,
     mol: &PyMolecule,
     basis_set: &PyBasisSet,
     result: &DensitySource,
-    f: impl FnOnce(&Molecule, &PreparedBasis, &Array2<f64>) -> PyResult<T> + Send,
+    f: impl FnOnce(&Molecule, &PreparedBasis, &Array2<f64>) -> Result<T, ferric_core::FerricError>
+        + Send,
 ) -> PyResult<T> {
     let emol = ecp_molecule(mol, basis_set);
     let bs = &basis_set.inner;
     let reference = result.shared();
     py.allow_threads(|| {
-        let prep = PreparedBasis::new(&emol, bs).map_err(make_err)?;
+        let prep = PreparedBasis::new(&emol, bs)?;
         f(&emol, &prep, &reference.scf.density_total)
     })
+    .map_err(make_err)
 }
 
 /// Electrostatic potential at each nucleus, in Hartree atomic units (e/Bohr).
@@ -118,7 +121,7 @@ pub(crate) fn esp_at_atoms(
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
     on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
-        ferric_rpa::properties::esp_at_atoms(emol, prep, d).map_err(make_err)
+        ferric_rpa::properties::esp_at_atoms(emol, prep, d)
     })
 }
 
@@ -176,7 +179,6 @@ pub(crate) fn esp_on_surface<'py>(
     let (pts, esp, n_buried) =
         on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
             ferric_scf::properties::esp_on_surface_counted(emol, prep, d, vdw_scale, n_angular)
-                .map_err(make_err)
         })?;
     let mut arr = ndarray::Array2::<f64>::zeros((pts.len(), 3));
     for (i, p) in pts.iter().enumerate() {
@@ -544,15 +546,25 @@ pub(crate) fn write_cube(
             )))
         }
     };
+    /// A failure inside the GIL release, converted to its exception after it.
+    enum Fail {
+        Grid(ferric_export::GtoEvalError),
+        /// The result's basis size and the grid's.
+        Mismatch(usize, usize),
+        Shape(ndarray::ShapeError),
+        Export(ferric_export::cube::ExportError),
+    }
     let reference = result.shared();
     let (mol, bs) = (&mol.inner, &basis_set.inner);
     // The grid evaluation and the file write touch no Python object.
     py.allow_threads(|| {
-        let chi = ferric_export::eval_basis_on_grid(mol, bs, &grid).map_err(make_err)?;
+        let chi = ferric_export::eval_basis_on_grid(mol, bs, &grid).map_err(Fail::Grid)?;
         let (vals, comment): (Vec<f64>, String) = match field {
             Field::Density => {
                 let d = &reference.scf.density_total;
-                check_result_matches_basis("write_cube", d.nrows(), chi.nrows())?;
+                if d.nrows() != chi.nrows() {
+                    return Err(Fail::Mismatch(d.nrows(), chi.nrows()));
+                }
                 (
                     density_from_ao_values(d, &chi),
                     "total electron density (e/Bohr^3), lengths in Bohr".to_string(),
@@ -560,7 +572,9 @@ pub(crate) fn write_cube(
             }
             Field::Mo(i) => {
                 let c = reference.scf.mos_r();
-                check_result_matches_basis("write_cube", c.nrows(), chi.nrows())?;
+                if c.nrows() != chi.nrows() {
+                    return Err(Fail::Mismatch(c.nrows(), chi.nrows()));
+                }
                 (
                     c.column(i).dot(&chi).to_vec(),
                     format!("MO {i} (psi, Bohr^-3/2), lengths in Bohr"),
@@ -568,8 +582,16 @@ pub(crate) fn write_cube(
             }
         };
         let data = ndarray::Array3::from_shape_vec((shape[0], shape[1], shape[2]), vals)
-            .map_err(make_err)?;
-        ferric_export::export_cube(path, mol, &grid, &data, &comment).map_err(make_err)
+            .map_err(Fail::Shape)?;
+        ferric_export::export_cube(path, mol, &grid, &data, &comment).map_err(Fail::Export)
+    })
+    .map_err(|e| match e {
+        Fail::Grid(e) => make_err(e),
+        Fail::Mismatch(result_nbf, nbf) => {
+            check_result_matches_basis("write_cube", result_nbf, nbf).unwrap_err()
+        }
+        Fail::Shape(e) => make_err(e),
+        Fail::Export(e) => make_err(e),
     })?;
     Ok((origin, shape))
 }
@@ -585,7 +607,7 @@ pub(crate) fn lowdin_charges(
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
     on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
-        ferric_rpa::properties::lowdin_charges(emol, prep, d).map_err(make_err)
+        ferric_rpa::properties::lowdin_charges(emol, prep, d)
     })
 }
 
@@ -602,7 +624,7 @@ pub(crate) fn mulliken_charges(
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
     on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
-        ferric_rpa::properties::mulliken_charges(emol, prep, d).map_err(make_err)
+        ferric_rpa::properties::mulliken_charges(emol, prep, d)
     })
 }
 
@@ -622,7 +644,7 @@ pub(crate) fn chelpg_charges(
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
     on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
-        ferric_rpa::properties::chelpg_charges(emol, prep, d).map_err(make_err)
+        ferric_rpa::properties::chelpg_charges(emol, prep, d)
     })
 }
 
@@ -642,7 +664,7 @@ pub(crate) fn resp_charges(
     result: DensitySource,
 ) -> PyResult<Vec<f64>> {
     on_density_without_gil(py, mol, basis_set, &result, |emol, prep, d| {
-        ferric_rpa::properties::resp_charges(emol, prep, d).map_err(make_err)
+        ferric_rpa::properties::resp_charges(emol, prep, d)
     })
 }
 

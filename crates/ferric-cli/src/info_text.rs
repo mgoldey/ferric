@@ -18,8 +18,12 @@
 //!   [`CliError::eprint`] drops it rather than panic, and the status
 //!   still says the run failed.
 //!
-//! A closed descriptor (`ferric --version >&-`) is not an error at all: the
-//! Rust runtime reopens closed standard descriptors on `/dev/null` at start.
+//! A closed descriptor (`ferric --version >&-`) is not an error either way.
+//! For the native `ferric` / `ferric-cli` binaries, the Rust runtime reopens
+//! closed standard descriptors on `/dev/null` at start. Under the Python
+//! console script (`_cli_main`, where the Rust runtime does not start the
+//! process), std's stdout/stderr treat `EBADF` as a successful write, so
+//! the outcome is the same: status 0, nothing written.
 
 use std::io::{self, Write};
 
@@ -46,7 +50,7 @@ impl InfoText {
 /// Write `text` to `out` exactly as given and flush it. See the module
 /// documentation for how errors map to the result.
 pub(crate) fn write_info(mut out: impl Write, which: InfoText, text: &str) -> Result<(), CliError> {
-    match write!(out, "{text}").and_then(|()| out.flush()) {
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         Err(e) => Err(CliError::msg(format!(

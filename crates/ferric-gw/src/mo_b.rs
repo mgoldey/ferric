@@ -460,9 +460,10 @@ mod tests {
 
     /// The aux-blocked (spilled, multi-block) transform must reproduce the
     /// in-core single-block build up to the reassociation of its aux sum
-    /// (bound derived below; the MO transforms agree bitwise). Uses an explicit tiny budget for the
-    /// AO source (no env dependence); the MO coefficient matrix is arbitrary —
-    /// both paths consume the same C so any full-rank choice validates equality.
+    /// (bound derived below; the MO transforms agree bitwise). Uses an
+    /// explicit tiny budget for the AO source (no env dependence); the MO
+    /// coefficient matrix is arbitrary — both paths consume the same C so any
+    /// full-rank choice validates equality.
     #[test]
     fn blocked_build_matches_incore() {
         let (obs, dfbs, op) = water_setup();
@@ -543,6 +544,14 @@ mod tests {
         let n = v_inv_sqrt.nrows() as f64;
         let u = f64::EPSILON / 2.0;
         let gamma = n * u / (1.0 - n * u);
+        // Sanity cap: the bound must stay a tight test. If the fixture ever
+        // changed so that the largest tolerance grew past 1e-10 (it is
+        // 3.4e-12 here), an O(|b|) indexing error could start to hide in it.
+        let max_tol = 2.0 * gamma * bound.iter().fold(0.0_f64, |m, v| m.max(*v));
+        assert!(
+            max_tol < 1e-10,
+            "reassociation bound too loose to test with: {max_tol:e}"
+        );
         let (b_full_flat, b_blocked_flat) = (
             full.b_full
                 .view()

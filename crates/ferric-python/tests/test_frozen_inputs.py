@@ -5,7 +5,13 @@
 a setter or a `&mut self` method, so a borrow takes no flag and the objects
 can be shared across threads like the result classes. From Python this
 pins what is visible: a getter still refuses assignment, new attributes are
-refused, and the objects still work from several threads at once.
+refused, and the objects still work from several threads at once (the RI
+`Cphf` exercises its fitted response's `Mutex`).
+
+These cases also pass without `frozen`: a pyclass with no setter already
+refuses assignment, and shared borrows did not conflict. The real guarantee
+is at compile time: `frozen` requires the class to be `Sync`, and a later
+`&mut self` method or setter on one of these classes no longer compiles.
 """
 
 from __future__ import annotations
@@ -29,6 +35,11 @@ def objects():
     rhf = ferric.run_rhf(water, bs)
     nocc = ao.nelec // 2
     cphf = ao.cphf(rhf.mo_coefficients(), rhf.orbital_energies(), nocc)
+    jkfit = ferric.BasisSet.bundled("def2-universal-jkfit")
+    cphf_ri, cphf_ri_fresh = (
+        ao.cphf(rhf.mo_coefficients(), rhf.orbital_energies(), nocc, aux=jkfit)
+        for _ in range(2)
+    )
     oh = ferric.Molecule.from_xyz_string(OH, multiplicity=2)
     uhf = ferric.run_uhf(oh, bs)
     ao_oh = ferric.AoIntegrals(oh, bs)
@@ -58,6 +69,8 @@ def objects():
         "BasisSet": bs,
         "AoIntegrals": ao,
         "Cphf": cphf,
+        "Cphf_ri": cphf_ri,
+        "Cphf_ri_fresh": cphf_ri_fresh,
         "Ucphf": ucphf,
         "QmmmSystem": qmmm,
         "MmTopology": topo,
@@ -105,18 +118,22 @@ def test_cdft_constraint_getters_refuse_assignment(objects, attr, value):
 
 
 def test_shared_across_threads(objects):
-    """Several threads use the same `AoIntegrals`, `Cphf` and `BasisSet` at
-    once and get the serial answers."""
-    ao, cphf, bs = objects["AoIntegrals"], objects["Cphf"], objects["BasisSet"]
+    """Several threads use the same `AoIntegrals`, `Cphf` (exact and RI) and
+    `BasisSet` at once and get the serial answers. The RI handle the threads
+    share has not been used before, so its first calls run concurrently."""
+    ao, bs = objects["AoIntegrals"], objects["BasisSet"]
+    cphf, cphf_ri = objects["Cphf"], objects["Cphf_ri_fresh"]
     u = np.full((ao.nao - ao.nelec // 2, ao.nelec // 2), 0.01)
-    want = (ao.hcore(), cphf.matvec(u), bs.elements())
+    want = (ao.hcore(), cphf.matvec(u), objects["Cphf_ri"].matvec(u), bs.elements())
     got: list[tuple[object, ...]] = []
     errors: list[BaseException] = []
 
     def work():
         try:
             for _ in range(5):
-                got.append((ao.hcore(), cphf.matvec(u), bs.elements()))
+                got.append(
+                    (ao.hcore(), cphf.matvec(u), cphf_ri.matvec(u), bs.elements())
+                )
         except BaseException as exc:  # noqa: BLE001 - reported below
             errors.append(exc)
 
@@ -127,7 +144,9 @@ def test_shared_across_threads(objects):
         t.join()
     assert not errors, errors[0]
     assert len(got) == 20
-    for h, mv, el in got:
+    for h, mv, mv_ri, el in got:
         assert np.array_equal(h, want[0])
         assert np.array_equal(mv, want[1])
-        assert el == want[2]
+        assert np.array_equal(mv_ri, want[2])
+        assert el == want[3]
+    assert not np.array_equal(want[1], want[2])  # the RI path is a different one

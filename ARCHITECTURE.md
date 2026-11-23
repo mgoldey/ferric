@@ -745,9 +745,10 @@ Done:
       (`on_density_without_gil`, through `DensitySource::shared`), bitwise
       unchanged (old-vs-new hex floats and file hashes over 12 cases, three
       molecules x two bases x RHF/B3LYP: 108 outputs, 24 of them cube
-      files). Still holding it: `orbital_moments`,
-      `density_second_moment`, the `eval_*_on_points` functions and
-      `hirshfeld_polarizability`.
+      files). Still holding it among the `DensitySource` consumers:
+      `orbital_moments`, `density_second_moment`, the `eval_*_on_points`
+      functions, `hirshfeld_polarizability` and `response_modes`
+      (response_modes.rs).
 
 Next, each as its own PR following the patterns above:
 
