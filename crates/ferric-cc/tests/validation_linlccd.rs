@@ -175,14 +175,12 @@ fn cc_config() -> CcConfig {
 }
 
 fn scf_config(open_shell: bool) -> RhfConfig {
-    let cfg = RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        check_stability: open_shell,
-        scf_stability_descent: open_shell,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_check_stability(open_shell);
+    cfg.scf_stability_descent = open_shell;
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K expected"

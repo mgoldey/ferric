@@ -109,10 +109,9 @@ fn molecular_one_electron(su: &Setup) -> (Array2<f64>, Array2<f64>, f64) {
 /// A config the injected path accepts: everything default except the MINAO
 /// guess (projects onto molecular atoms, refused by `validate_injected`).
 fn injectable_config() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.use_sad_guess = false;
+    c
 }
 
 fn assert_bitwise(label: &str, a: &ScfResult, b: &ScfResult) {
@@ -143,10 +142,7 @@ fn injected_molecular_link_pair_reproduces_solve_rhf_bitwise() {
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
 
     // Reference: molecular solve_rhf through the pluggable-K arm (DirectJ + LinkK).
-    let ref_cfg = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
-        ..injectable_config()
-    };
+    let ref_cfg = injectable_config().with_k_builder(ferric_scf::options::KBuilderKind::Link);
     let reference =
         solve_rhf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &ref_cfg).expect("reference");
 
@@ -186,10 +182,7 @@ fn injected_molecular_link_pair_reproduces_solve_rhf_bitwise() {
 #[test]
 fn injected_direct_pair_matches_default_direct_jk_path() {
     let su = setup("cc-pvdz");
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..injectable_config()
-    };
+    let cfg = injectable_config().with_density_conv(1e-9);
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
     let reference =
         solve_rhf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &cfg).expect("reference");
@@ -268,10 +261,7 @@ fn injected_xc_builder_reproduces_molecular_ks() {
         n_angular: 50,
         ..Default::default()
     };
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..injectable_config()
-    };
+    let cfg = injectable_config().with_density_conv(1e-9);
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
     let injected = |xc: &str, frac: Option<f64>| {
         let (s, h, vnn) = molecular_one_electron(&su);
@@ -302,13 +292,12 @@ fn injected_xc_builder_reproduces_molecular_ks() {
             .expect("injected KS")
     };
     for xc in ["PBE", "PBE0"] {
-        let ref_cfg = RhfConfig {
-            xc: Some(xc.into()),
+        let ref_cfg = cfg
+            .clone()
+            .with_xc(xc)
             // Exact four-centre J/K, as the injected DirectJ/DirectK.
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            ..cfg.clone()
-        };
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new());
         let reference = solve_rhf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &ref_cfg)
             .expect("molecular KS");
         let inj = injected(xc, None);
@@ -390,98 +379,55 @@ fn rejected_cases() -> Vec<(&'static str, RhfConfig)> {
     vec![
         (
             "k_builder",
-            RhfConfig {
-                k_builder: Some(ferric_scf::options::KBuilderKind::Direct),
-                ..base()
-            },
+            base().with_k_builder(ferric_scf::options::KBuilderKind::Direct),
         ),
-        (
-            "df_j_aux",
-            RhfConfig {
-                df_j_aux: Some("def2-universal-jkfit".into()),
-                ..base()
-            },
-        ),
-        (
-            "df_k_aux",
-            RhfConfig {
-                df_k_aux: Some("def2-universal-jkfit".into()),
-                ..base()
-            },
-        ),
-        (
-            "xc",
-            RhfConfig {
-                xc: Some("PBE".into()),
-                ..base()
-            },
-        ),
-        (
-            "newton_trigger",
-            RhfConfig {
-                newton_trigger: 1e-3,
-                ..base()
-            },
-        ),
-        (
-            "aurora.enabled",
-            RhfConfig {
-                aurora: ferric_scf::aurora::AuroraConfig {
-                    enabled: true,
-                    ..Default::default()
-                },
-                ..base()
-            },
-        ),
-        (
-            "trah_trigger",
-            RhfConfig {
-                trah_trigger: Some(1e-2),
-                ..base()
-            },
-        ),
-        (
-            "use_sad_guess",
-            RhfConfig {
-                use_sad_guess: true,
-                ..base()
-            },
-        ),
-        (
-            "external_potential",
-            RhfConfig {
-                external_potential: Some(Default::default()),
-                ..base()
-            },
-        ),
-        (
-            "cosmo",
-            RhfConfig {
-                cosmo: Some(Default::default()),
-                ..base()
-            },
-        ),
-        (
-            "pcm",
-            RhfConfig {
-                pcm: Some(Default::default()),
-                ..base()
-            },
-        ),
-        (
-            "polarizable",
-            RhfConfig {
-                polarizable: Some(Default::default()),
-                ..base()
-            },
-        ),
-        (
-            "check_stability",
-            RhfConfig {
-                check_stability: true,
-                ..base()
-            },
-        ),
+        ("df_j_aux", base().with_df_j_aux("def2-universal-jkfit")),
+        ("df_k_aux", base().with_df_k_aux("def2-universal-jkfit")),
+        ("xc", base().with_xc("PBE")),
+        ("newton_trigger", {
+            let mut c = base();
+            c.newton_trigger = 1e-3;
+            c
+        }),
+        ("aurora.enabled", {
+            let mut c = base();
+            c.aurora = ferric_scf::aurora::AuroraConfig {
+                enabled: true,
+                ..Default::default()
+            };
+            c
+        }),
+        ("trah_trigger", {
+            let mut c = base();
+            c.trah_trigger = Some(1e-2);
+            c
+        }),
+        ("use_sad_guess", {
+            let mut c = base();
+            c.use_sad_guess = true;
+            c
+        }),
+        ("external_potential", {
+            let mut c = base();
+            c.external_potential = Some(Default::default());
+            c
+        }),
+        ("cosmo", {
+            let mut c = base();
+            c.cosmo = Some(Default::default());
+            c
+        }),
+        ("pcm", {
+            let mut c = base();
+            c.pcm = Some(Default::default());
+            c
+        }),
+        ("polarizable", {
+            let mut c = base();
+            c.polarizable = Some(Default::default());
+            c
+        }),
+        ("check_stability", base().with_check_stability(true)),
     ]
 }
 
@@ -492,11 +438,9 @@ fn baseline_injectable_config_is_accepted() {
     validate_injected(&injectable_config()).expect("baseline must validate");
     // use_sad_guess is irrelevant once an explicit density is supplied (same
     // precedence as the molecular path), so it is not refused then.
-    let with_density = RhfConfig {
-        use_sad_guess: true,
-        init_guess_density: Some(Array2::zeros((2, 2))),
-        ..Default::default()
-    };
+    let mut with_density = RhfConfig::default();
+    with_density.use_sad_guess = true;
+    with_density.init_guess_density = Some(Array2::zeros((2, 2)));
     validate_injected(&with_density).expect("explicit density overrides the guess choice");
 }
 
@@ -635,10 +579,7 @@ fn injected_molecular_link_pair_reproduces_solve_uhf_bitwise() {
     let su = uhf_setup();
     let cfg = injectable_config();
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
-    let ref_cfg = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
-        ..injectable_config()
-    };
+    let ref_cfg = injectable_config().with_k_builder(ferric_scf::options::KBuilderKind::Link);
     let reference =
         solve_uhf(&su.ctx, &su.mol, &su.prep, &su.bounds, &ref_cfg).expect("reference UHF");
     // solve_uhf builds LinkK on LinkBound::SchwarzRef(bounds) with bounds.op.
@@ -677,10 +618,7 @@ fn injected_molecular_link_pair_reproduces_solve_uhf_bitwise() {
 #[test]
 fn injected_direct_pair_matches_default_uhf_path() {
     let su = uhf_setup();
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..injectable_config()
-    };
+    let cfg = injectable_config().with_density_conv(1e-9);
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
     let reference = solve_uhf(&su.ctx, &su.mol, &su.prep, &su.bounds, &cfg).expect("reference");
     let injected = run_uhf_injected(
@@ -754,11 +692,9 @@ fn injected_uhf_explicit_density_guess_reaches_the_same_state() {
     };
     let (j0, k0) = mk();
     let base = run_uhf_injected(&su, &cfg, 0.0, j0, k0);
-    let guess_cfg = RhfConfig {
-        use_sad_guess: true,
-        init_guess_density: Some(base.density_total.clone()),
-        ..injectable_config()
-    };
+    let mut guess_cfg = injectable_config();
+    guess_cfg.use_sad_guess = true;
+    guess_cfg.init_guess_density = Some(base.density_total.clone());
     let (j1, k1) = mk();
     let from_d = run_uhf_injected(&su, &guess_cfg, 0.0, j1, k1);
     let de = (from_d.energy - base.energy).abs();
@@ -769,10 +705,8 @@ fn injected_uhf_explicit_density_guess_reaches_the_same_state() {
     assert!(de < 1e-8, "|dE| = {de:.3e}");
 
     // Wrong-shape density is a named error, not a silent core-guess fallback.
-    let bad_cfg = RhfConfig {
-        init_guess_density: Some(Array2::zeros((2, 2))),
-        ..injectable_config()
-    };
+    let mut bad_cfg = injectable_config();
+    bad_cfg.init_guess_density = Some(Array2::zeros((2, 2)));
     let (j2, k2) = mk();
     let (s, h, vnn) = molecular_one_electron(&su);
     let inj = PeriodicInjection {
@@ -791,13 +725,11 @@ fn injected_uhf_explicit_density_guess_reaches_the_same_state() {
 
 fn rejected_cases_uhf() -> Vec<(&'static str, RhfConfig)> {
     let mut v = rejected_cases();
-    v.push((
-        "scf_stability_descent",
-        RhfConfig {
-            scf_stability_descent: true,
-            ..injectable_config()
-        },
-    ));
+    v.push(("scf_stability_descent", {
+        let mut c = injectable_config();
+        c.scf_stability_descent = true;
+        c
+    }));
     v
 }
 
@@ -960,10 +892,7 @@ fn injected_molecular_link_pair_reproduces_solve_rohf_bitwise() {
     let su = uhf_setup();
     let cfg = injectable_config();
     let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
-    let ref_cfg = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Link),
-        ..injectable_config()
-    };
+    let ref_cfg = injectable_config().with_k_builder(ferric_scf::options::KBuilderKind::Link);
     let reference = solve_rohf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &ref_cfg)
         .expect("reference ROHF");
     let link_bound = LinkBound::SchwarzRef(&su.bounds);
@@ -1003,10 +932,7 @@ fn injected_molecular_link_pair_reproduces_solve_rohf_bitwise() {
 #[test]
 fn injected_direct_pair_matches_default_rohf_path() {
     let su = uhf_setup();
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..injectable_config()
-    };
+    let cfg = injectable_config().with_density_conv(1e-9);
     let reference =
         solve_rohf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &cfg).expect("reference");
     let (j, k) = direct_pair(&su, &cfg);
@@ -1050,11 +976,9 @@ fn injected_rohf_density_and_mo_guesses_reach_the_same_state() {
     let (j0, k0) = direct_pair(&su, &cfg);
     let base = run_rohf_injected(&su, &cfg, 0.0, j0, k0, None);
 
-    let guess_cfg = RhfConfig {
-        use_sad_guess: true,
-        init_guess_density: Some(base.density_total.clone()),
-        ..injectable_config()
-    };
+    let mut guess_cfg = injectable_config();
+    guess_cfg.use_sad_guess = true;
+    guess_cfg.init_guess_density = Some(base.density_total.clone());
     let (j1, k1) = direct_pair(&su, &guess_cfg);
     let from_d = run_rohf_injected(&su, &guess_cfg, 0.0, j1, k1, None);
     let de = (from_d.energy - base.energy).abs();
@@ -1080,10 +1004,8 @@ fn injected_rohf_density_and_mo_guesses_reach_the_same_state() {
     );
 
     let n = su.prep.nbasis();
-    let bad_cfg = RhfConfig {
-        init_guess_density: Some(Array2::zeros((2, 2))),
-        ..injectable_config()
-    };
+    let mut bad_cfg = injectable_config();
+    bad_cfg.init_guess_density = Some(Array2::zeros((2, 2)));
     for (label, c, needle) in [
         (
             "bad density",
@@ -1177,10 +1099,7 @@ fn injected_polarized_xc_builder_reproduces_molecular_roks() {
         n_angular: 50,
         ..Default::default()
     };
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..injectable_config()
-    };
+    let cfg = injectable_config().with_density_conv(1e-9);
     let injected = |xc: &str, frac: Option<f64>| {
         let (s, h, vnn) = molecular_one_electron(&su);
         let (j, k) = direct_pair(&su, &cfg);
@@ -1201,13 +1120,12 @@ fn injected_polarized_xc_builder_reproduces_molecular_roks() {
         .expect("injected ROKS")
     };
     for xc in ["PBE", "PBE0"] {
-        let ref_cfg = RhfConfig {
-            xc: Some(xc.into()),
+        let ref_cfg = cfg
+            .clone()
+            .with_xc(xc)
             // Exact four-centre J/K, as the injected DirectJ/DirectK.
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            ..cfg.clone()
-        };
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new());
         let reference = solve_rohf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &ref_cfg)
             .expect("molecular ROKS");
         let inj = injected(xc, None);
@@ -1228,20 +1146,16 @@ fn injected_polarized_xc_builder_reproduces_molecular_roks() {
 
 fn rejected_cases_rohf() -> Vec<(&'static str, RhfConfig)> {
     let mut v = rejected_cases();
-    v.push((
-        "scf_stability_descent",
-        RhfConfig {
-            scf_stability_descent: true,
-            ..injectable_config()
-        },
-    ));
-    v.push((
-        "ah_trigger",
-        RhfConfig {
-            ah_trigger: 1e-2,
-            ..injectable_config()
-        },
-    ));
+    v.push(("scf_stability_descent", {
+        let mut c = injectable_config();
+        c.scf_stability_descent = true;
+        c
+    }));
+    v.push(("ah_trigger", {
+        let mut c = injectable_config();
+        c.ah_trigger = 1e-2;
+        c
+    }));
     v
 }
 

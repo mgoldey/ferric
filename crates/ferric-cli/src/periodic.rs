@@ -684,12 +684,7 @@ fn report_timings(t: &PbcTimings) {
 // ─────────────────────────────────────────────────────── Gamma integrals ──
 
 fn gamma_scf_config(plan: &PeriodicPlan) -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv: plan.density_conv,
-        max_iter: plan.max_iter,
-        ..Default::default()
-    }
+    RhfConfig::periodic(plan.density_conv, plan.max_iter)
 }
 
 /// The Gamma J/K (and ov-integral) source, built with the run's `exxdiv`.
@@ -918,11 +913,9 @@ fn roks_config(plan: &PeriodicPlan) -> GammaRoksConfig {
     // Keep GammaRoksConfig::new's hybrid level shift (and its 600 cap unless
     // [scf] max_iter was written): a DIIS robustness default that vanishes
     // at convergence (see its doc).
-    c.scf = RhfConfig {
-        level_shift: c.scf.level_shift,
-        max_iter: effective_max_iter(plan),
-        ..gamma_scf_config(plan)
-    };
+    c.scf = gamma_scf_config(plan)
+        .with_level_shift(c.scf.level_shift)
+        .with_max_iter(effective_max_iter(plan));
     c
 }
 

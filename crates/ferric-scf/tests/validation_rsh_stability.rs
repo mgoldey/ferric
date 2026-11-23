@@ -199,21 +199,19 @@ fn load_system(r: &Value) -> System {
 
 /// The SCF configuration of the like-for-like table in the module doc.
 fn rsh_config(omega: f64) -> RhfConfig {
-    RhfConfig {
-        xc: Some(FUNCTIONAL.into()),
-        xc_omega: Some(omega),
-        // Explicit exact J, as `omega_tuning::state_scf_config` resolves an
-        // unset `df_j_aux`.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(AUX.into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-7,
-        // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py rsh:
-        // prune=None), not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        max_iter: 500,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default().with_xc(FUNCTIONAL);
+    c.xc_omega = Some(omega);
+    // Explicit exact J, as `omega_tuning::state_scf_config` resolves an
+    // unset `df_j_aux`.
+    c.df_j_aux = Some(String::new());
+    c.df_k_aux = Some(AUX.into());
+    c.energy_conv = 1e-10;
+    c.density_conv = 1e-7;
+    // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py rsh:
+    // prune=None), not the pruned KS default AtomicGridConfig::production().
+    c.dft_grid = Some(AtomicGridConfig::default());
+    c.max_iter = 500;
+    c
 }
 
 /// The reference's ω scan, as `(omega, pyscf_lambda_min, pyscf_energy)`.

@@ -51,20 +51,16 @@ fn pair(
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        xc: xc.map(|s| s.to_string()),
-        df_j_aux: xc.map(|_| "def2-universal-jkfit".to_string()),
+    let mut cfg_diis = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg_diis.xc = xc.map(|s| s.to_string());
+    cfg_diis.df_j_aux = xc.map(|_| "def2-universal-jkfit".to_string());
+    let mut cfg_aurora = cfg_diis.clone();
+    cfg_aurora.aurora = AuroraConfig {
+        enabled: true,
         ..Default::default()
-    };
-    let cfg_aurora = RhfConfig {
-        aurora: AuroraConfig {
-            enabled: true,
-            ..Default::default()
-        },
-        ..cfg_diis.clone()
     };
 
     let (a, steps_diis) = solve_counting_steps(&ctx, &mol, &prep, op, &bounds, &cfg_diis);
@@ -271,47 +267,33 @@ fn the_low_exchange_gate_is_reachable_in_both_directions() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 300,
-        xc: Some("PBE".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
-    let (declined, declined_steps) = solve_counting_steps(
-        &ctx,
-        &mol,
-        &prep,
-        op,
-        &bounds,
-        &RhfConfig {
-            aurora: AuroraConfig {
-                enabled: true,
-                ..Default::default()
-            },
-            ..base.clone()
-        },
-    );
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(300)
+        .with_xc("PBE".to_string())
+        .with_df_j_aux("def2-universal-jkfit".to_string());
+    let (declined, declined_steps) = solve_counting_steps(&ctx, &mol, &prep, op, &bounds, &{
+        let mut c = base.clone();
+        c.aurora = AuroraConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        c
+    });
     // Opted in, with the shorter step the (pre-Cholesky) measurement showed
     // this regime needs; see `AuroraConfig::allow_low_exchange_ks`.
-    let (engaged, engaged_steps) = solve_counting_steps(
-        &ctx,
-        &mol,
-        &prep,
-        op,
-        &bounds,
-        &RhfConfig {
-            aurora: AuroraConfig {
-                enabled: true,
-                allow_low_exchange_ks: true,
-                trust_radius: 0.10,
-                first_trust_radius: 0.10,
-                ..Default::default()
-            },
-            ..base.clone()
-        },
-    );
+    let (engaged, engaged_steps) = solve_counting_steps(&ctx, &mol, &prep, op, &bounds, &{
+        let mut c = base.clone();
+        c.aurora = AuroraConfig {
+            enabled: true,
+            allow_low_exchange_ks: true,
+            trust_radius: 0.10,
+            first_trust_radius: 0.10,
+            ..Default::default()
+        };
+        c
+    });
 
     eprintln!(
         "PBE declined: {} it, {declined_steps} AURORA steps (E = {:.12});  \
@@ -434,22 +416,18 @@ fn changing_the_auxiliary_curvature_basis_does_not_move_the_answer() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
 
     let mut energies = Vec::new();
     for aux in ["sto-3g", "6-31g"] {
-        let cfg = RhfConfig {
-            aurora: AuroraConfig {
-                enabled: true,
-                auxbasis: aux.to_string(),
-                ..Default::default()
-            },
-            ..base.clone()
+        let mut cfg = base.clone();
+        cfg.aurora = AuroraConfig {
+            enabled: true,
+            auxbasis: aux.to_string(),
+            ..Default::default()
         };
         let (r, steps) = solve_counting_steps(&ctx, &mol, &prep, op, &bounds, &cfg);
         eprintln!(
@@ -484,14 +462,12 @@ fn aurora_answer_is_independent_of_rayon_thread_count() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        aurora: AuroraConfig {
-            enabled: true,
-            ..Default::default()
-        },
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.aurora = AuroraConfig {
+        enabled: true,
         ..Default::default()
     };
 

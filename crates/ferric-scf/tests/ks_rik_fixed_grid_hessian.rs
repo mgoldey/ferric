@@ -122,13 +122,11 @@ fn water() -> Molecule {
 /// Config handed to the Hessian: functional, the SCF's RI-J / RI-K bases
 /// (`None` = exact).
 fn hessian_config(xc: &str, j: Option<&str>, k: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(j.unwrap_or("").into()),
-        df_k_aux: Some(k.unwrap_or("").into()),
-        dft_grid: Some(grid_cfg()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux(j.unwrap_or(""))
+        .with_df_k_aux(k.unwrap_or(""))
+        .with_dft_grid(grid_cfg())
 }
 
 struct Pt {
@@ -159,13 +157,11 @@ fn scf(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let (jbs, kbs) = (aux_at(mol, j), aux_at(mol, k));
-    let cfg = RhfConfig {
-        use_sad_guess: false,
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.use_sad_guess = false;
+    cfg.max_iter = 200;
+    cfg.energy_conv = 1e-13;
+    cfg.density_conv = 1e-11;
     let res = solve_rks_fixed_grid_dfjk(
         &ctx,
         mol,
@@ -676,19 +672,17 @@ fn production_ri_jk_scf_result_gives_the_same_hessian() {
     }
     let r = reference("sto-3g", "PBE0", Some(AUX), Some(AUX));
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE0".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
+    let cfg = RhfConfig::default()
+        .with_xc("PBE0")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
         // The injected reference builds an f64 `DfJ`; the production SCF must
         // store the same f64 tensor for the two Hessians to agree to 5e-10.
         // (With the f32 default the production Hessian follows its f32 SCF
         // and moves by 6.5e-7, measured.)
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..Default::default()
-    };
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
     assert!(cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none());
     let prod = solve_rhf(
         &ctx,
@@ -722,12 +716,9 @@ fn production_ri_jk_scf_result_gives_the_same_hessian() {
     assert!(diff < 5e-10, "{diff:.3e}");
 
     // A configuration stating exact K for a fitted-K SCF.
-    let err = run(&RhfConfig {
-        df_k_aux: Some(String::new()),
-        ..cfg.clone()
-    })
-    .unwrap_err()
-    .to_string();
+    let err = run(&cfg.clone().with_df_k_aux(String::new()))
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("fitted K over") && err.contains("df_k_aux"),
         "{err}"

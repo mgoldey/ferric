@@ -112,12 +112,10 @@ fn rimp2_gradient_in_field_matches_pyscf_canonical_mp2() {
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        external_potential: Some(ext.clone()),
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(ext.clone());
+    cfg.density_conv = 1e-10;
+    cfg.energy_conv = 1e-11;
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged);
 

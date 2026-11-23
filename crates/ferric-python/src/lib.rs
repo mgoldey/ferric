@@ -566,10 +566,9 @@ fn with_k_builder(
     cfg: &RhfConfig,
     raw: Option<&str>,
 ) -> Result<RhfConfig, ferric_core::FerricError> {
-    Ok(RhfConfig {
-        k_builder: ferric_scf::options::KBuilderKind::parse_opt(raw)?,
-        ..cfg.clone()
-    })
+    let mut c = cfg.clone();
+    c.k_builder = ferric_scf::options::KBuilderKind::parse_opt(raw)?;
+    Ok(c)
 }
 
 /// The reference-SCF config of a correlated entry point: its `k_builder=`
@@ -601,11 +600,13 @@ fn rhf_config_budgeted(
     k_builder: Option<&str>,
     budget_bytes: Option<usize>,
 ) -> PyResult<RhfConfig> {
-    Ok(RhfConfig {
+    ferric_scf::options::ScfOptions {
         k_builder: parse_k_builder(k_builder)?,
-        three_index_budget_bytes: budget_bytes.unwrap_or(0),
+        three_index_budget_bytes: budget_bytes,
         ..Default::default()
-    })
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()
 }
 
 /// [`rhf_config_budgeted`] with the caller's SCF convergence keywords applied.
@@ -1503,11 +1504,13 @@ fn run_saddle(
     // charge pair makes planar NH3 non-stationary), so searching in vacuum and
     // hoping the barrier transfers is not an approximation, it is a different
     // question.
-    let mut scf_cfg = RhfConfig {
+    let mut scf_cfg = ferric_scf::options::ScfOptions {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
     geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     let mut cfg = SaddleConfig::default();
@@ -1744,11 +1747,13 @@ fn run_irc(
     // saddle MUST be walked in the same field: the path is a property of the
     // surface, and a gas-phase walk from an embedded saddle descends a
     // different surface than the one the saddle sits on.
-    let mut scf_cfg = RhfConfig {
+    let mut scf_cfg = ferric_scf::options::ScfOptions {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut scf_cfg);
     geometry_task_scf(&mut scf_cfg, scf_ri_j_precision)?;
     let mut cfg = IrcConfig::default();

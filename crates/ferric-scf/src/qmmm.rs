@@ -349,10 +349,8 @@ pub enum QmSelection {
 /// let sys = QmmmSystem::new(&atoms, QmSelection::WithinRadius { seeds, radius }, 0, 1)?;
 /// let mol = sys.to_qm_molecule();
 /// let prep = PreparedBasis::new(&mol, &basis)?;
-/// let config = RhfConfig {
-///     external_potential: sys.to_external_potential(),
-///     ..Default::default()
-/// };
+/// let mut config = RhfConfig::default();
+/// config.external_potential = sys.to_external_potential();
 /// let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config)?;
 /// ```
 ///

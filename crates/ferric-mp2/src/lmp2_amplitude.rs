@@ -2747,10 +2747,7 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         (mol, obs, bs, rhf)
     }

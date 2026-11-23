@@ -60,13 +60,11 @@ const MBD_ENERGY_H: f64 = 0.08;
 const MBD_TOL: f64 = 2e-7;
 
 fn pbe() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE".to_string())
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn shifted(mol: &Molecule, dir: &[f64], s: f64) -> Molecule {

@@ -173,14 +173,12 @@ fn run_rhf_rpa(
     // was the source of the ~6e-4 Ha ferric-vs-PySCF E_total gap observed in
     // the C9 prep smoke test. See [[ferric-jk-aux-convention]] for context.
     // RPA correlation still uses cc-pvdz-ri (the aux argument below).
-    let rhf_cfg = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-7,
-        density_conv: 1e-6,
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-6)
+        .with_df_j_aux("def2-universal-jkfit".to_string())
+        .with_df_k_aux("def2-universal-jkfit".to_string());
 
     let t0 = Instant::now();
     let rhf = solve_rhf(ctx, mol, &obs, op, &bounds, &rhf_cfg)?;

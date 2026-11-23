@@ -28,10 +28,7 @@ fn water_ccpvdz() -> (
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     (mol, obs, dfbs, op, bounds, ctx, rhf)
 }
@@ -64,10 +61,7 @@ fn cpks_hf_alpha_matches_ff_hf_zz() {
     let (mol, obs, _dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
     let analytic = mp2_polarizability_analytic_hf(&ctx, &mol, &obs, &op, &bounds, &rhf).unwrap();
     // FF HF α_zz via SCF dipole difference (HF-level is stable for water).
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let h = 1e-3;
     let mp = debug_scf_dipole_z(&ctx, &mol, &obs, &bounds, &scf_cfg, h).unwrap();
     let mm = debug_scf_dipole_z(&ctx, &mol, &obs, &bounds, &scf_cfg, -h).unwrap();
@@ -88,10 +82,7 @@ fn cpks_hf_alpha_matches_ff_hf_zz() {
 fn diag_cpks_hf_all_components_vs_ff() {
     let (mol, obs, _dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
     let analytic = mp2_polarizability_analytic_hf(&ctx, &mol, &obs, &op, &bounds, &rhf).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let h = 1e-3;
     // FF along each axis: need a general debug_scf_dipole_axis. Use z helper for z;
     // for x,y compute via the full FF path on the SCF density. Quick: print analytic
@@ -112,10 +103,7 @@ fn diag_cpks_hf_full_tensor_vs_ff() {
     use ferric_mp2::ff_polar::debug_scf_dipole_axis;
     let (mol, obs, _dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
     let analytic = mp2_polarizability_analytic_hf(&ctx, &mol, &obs, &op, &bounds, &rhf).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let h = 1e-3;
     // FF-HF tensor: α_ij = -(μ_i(+h e_j) - μ_i(-h e_j))/(2h)
     let mut ff = [[0.0f64; 3]; 3];
@@ -154,10 +142,7 @@ fn diag_dd_vs_fd() {
     // correctly normalized and the Layer-2 residual is downstream of it.
     use ferric_mp2::cpks_polar::debug_dd_norms;
     let (mol, obs, _dfbs, op, bounds, ctx, rhf) = water_ccpvdz();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let (an, fd, maxd) =
         debug_dd_norms(&ctx, &mol, &obs, &op, &bounds, &rhf, &scf_cfg, 2, 1e-3).unwrap();
     eprintln!("∂D/∂Fz: ‖analytic‖={an:.6} ‖fd‖={fd:.6} maxΔ={maxd:.3e}");
@@ -168,10 +153,7 @@ fn diag_dd_vs_fd() {
 fn diag_dd_traces() {
     use ferric_mp2::cpks_polar::debug_dd_traces;
     let (mol, obs, _dfbs, _op, bounds, ctx, rhf) = water_ccpvdz();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let (an, fd) = debug_dd_traces(&ctx, &mol, &obs, &bounds, &rhf, &scf_cfg, 2, 1e-3).unwrap();
     eprintln!("−Tr[∂D·r_y] (=α^HF_y,z):  analytic={:?}  fd={:?}", an, fd);
     eprintln!("(validated HF α_zz=5.109; α_xz=α_yz≈0)");
@@ -188,10 +170,7 @@ fn diag_alpha_relaxed_vs_ff() {
         memory_budget_bytes: None,
         ..Default::default()
     };
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let an = analytic_alpha_relaxed(&ctx, &mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_cfg).unwrap();
     let ff = mp2_polarizability_static(
         &ctx,
@@ -241,10 +220,7 @@ fn diag_ferric_static_relaxed_dipole() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
@@ -307,10 +283,7 @@ fn cpks_static_relaxed_dipole_vs_pyscf() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
         frozen_core: 0,
@@ -370,10 +343,7 @@ fn cpks_attenuation_sweep() {
     let omegas = [0.0f64, 0.1, 0.2, 0.3, 0.42, 0.5, 0.6, 0.7];
 
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -440,10 +410,7 @@ fn cpks_attenuation_aug_water() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz-rifit").unwrap()).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -583,10 +550,7 @@ fn cpks_c6_attenuation_sweep() {
     let (freqs, weights) = cp_grid(0.6); // u0=0.6 a.u. — standard CP scale
 
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
 
     eprintln!("\n=== Dynamic CPHF C6 attenuation sweep (HF-level α(iω)) ===");
     eprintln!("basis aug-cc-pVDZ; molecular C6_AA (a.u.); ω in Bohr⁻¹\n");
@@ -649,10 +613,7 @@ fn cpks_frozen_mp2_c6_sweep() {
     let (freqs, weights) = cp_grid(0.6);
 
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -768,11 +729,9 @@ fn relaxed_alpha_matches_pyscf_energy_hessian() {
         let ctx = ParallelContext::default();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-12,
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-10);
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
             frozen_core: 0,
@@ -832,14 +791,15 @@ fn attenuated_relaxed_alpha_matches_energy_finite_field() {
         memory_budget_bytes: None,
         ..Default::default()
     };
-    let scf_cfg = |field: Option<[f64; 3]>| RhfConfig {
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        external_potential: field.map(|f| ExternalPotential {
+    let scf_cfg = |field: Option<[f64; 3]>| {
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-13)
+            .with_density_conv(1e-11);
+        c.external_potential = field.map(|f| ExternalPotential {
             field: Some(f),
             ..Default::default()
-        }),
-        ..Default::default()
+        });
+        c
     };
     let energy = |field: Option<[f64; 3]>| -> f64 {
         let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg(field)).unwrap();

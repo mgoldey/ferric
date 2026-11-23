@@ -222,10 +222,8 @@ fn production_gradient_difference_matches_the_moving_grid_hessian() {
     if !has_deriv2() {
         return;
     }
-    let cfg = RhfConfig {
-        dft_grid: None,
-        ..config("LDA")
-    };
+    let mut cfg = config("LDA");
+    cfg.dft_grid = None;
     full_hessian_case(&cfg, "LDA", "6-31g", TOL_HESS_FD);
 }
 
@@ -237,10 +235,8 @@ fn production_gradient_difference_matches_the_moving_grid_hessian() {
 /// default-grid case from 7e-11 to 2.3e-9 on the ubuntu-22.04 stack.
 #[test]
 fn the_fd_reference_scf_precondition_separates_loose_from_reference_scfs() {
-    let base = RhfConfig {
-        dft_grid: None,
-        ..config("LDA")
-    };
+    let mut base = config("LDA");
+    base.dft_grid = None;
     let err_max = |cfg: &RhfConfig| {
         scf(&water(), "6-31g", cfg)
             .res
@@ -248,11 +244,7 @@ fn the_fd_reference_scf_precondition_separates_loose_from_reference_scfs() {
             .expect("a converged SCF reports its convergence signals")
             .err_max
     };
-    let loose = err_max(&RhfConfig {
-        density_conv: 1e-8,
-        energy_conv: 1e-10,
-        ..base.clone()
-    });
+    let loose = err_max(&base.clone().with_density_conv(1e-8).with_energy_conv(1e-10));
     let reference = err_max(&fd_reference_config(&base));
     eprintln!("err_max: loose {loose:.2e}, reference {reference:.2e} (gate {FD_SCF_ERR_MAX:e})");
     assert!(

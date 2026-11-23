@@ -159,17 +159,15 @@ fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
 /// The KS config of `run_mp2_double_hybrid_arm`, pinned to the settings the
 /// reference runs (flat grid, f64 RI-J storage).
 fn ks_config(kind: DoubleHybridKind, tight: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(kind.xc_name().into()),
-        df_j_aux: Some(JKFIT.to_string()),
-        df_k_aux: Some(JKFIT.to_string()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        energy_conv: if tight { 1e-12 } else { 1e-10 },
-        density_conv: if tight { 1e-10 } else { 1e-8 },
-        max_iter: 300,
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(kind.xc_name())
+        .with_df_j_aux(JKFIT.to_string())
+        .with_df_k_aux(JKFIT.to_string())
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(if tight { 1e-12 } else { 1e-10 })
+        .with_density_conv(if tight { 1e-10 } else { 1e-8 })
+        .with_max_iter(300)
+        .with_dft_grid(AtomicGridConfig::default())
 }
 
 struct Run {

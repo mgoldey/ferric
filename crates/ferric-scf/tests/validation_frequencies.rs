@@ -376,22 +376,20 @@ fn scf_config(method: &str) -> (RhfConfig, FrequencyReference) {
     // UHF/UKS: follow instabilities at EVERY displaced SCF, as the reference
     // does. ROHF skips stability by design in ferric (see the UHF/ROHF row).
     let unrestricted = reference == FrequencyReference::Uhf;
-    let cfg = RhfConfig {
-        xc: xc.map(str::to_string),
-        // Explicit EXACT J/K: `None` auto-enables RI-J for closed-shell KS.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: SCF_ENERGY_CONV,
-        density_conv: SCF_DENSITY_CONV,
-        max_iter: 500,
-        check_stability: unrestricted,
-        scf_stability_descent: unrestricted,
-        // The KS references are PySCF on the flat (75,110) grid
-        // (gen_frequencies.py: prune=None), not the pruned KS default
-        // AtomicGridConfig::production(). Unused by the HF methods.
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.xc = xc.map(str::to_string);
+    // Explicit EXACT J/K: `None` auto-enables RI-J for closed-shell KS.
+    cfg.df_j_aux = Some(String::new());
+    cfg.df_k_aux = Some(String::new());
+    cfg.energy_conv = SCF_ENERGY_CONV;
+    cfg.density_conv = SCF_DENSITY_CONV;
+    cfg.max_iter = 500;
+    cfg.check_stability = unrestricted;
+    cfg.scf_stability_descent = unrestricted;
+    // The KS references are PySCF on the flat (75,110) grid
+    // (gen_frequencies.py: prune=None), not the pruned KS default
+    // AtomicGridConfig::production(). Unused by the HF methods.
+    cfg.dft_grid = Some(AtomicGridConfig::default());
     (cfg, reference)
 }
 

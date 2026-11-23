@@ -337,13 +337,11 @@ fn run_system_case(system: &str, case: &Case) {
         "geometry/constants mismatch: dVnn = {enuc:.3e}"
     );
 
-    let scf_cfg = RhfConfig {
-        use_sad_guess: false,
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut scf_cfg = RhfConfig::default();
+    scf_cfg.use_sad_guess = false;
+    scf_cfg.max_iter = 200;
+    scf_cfg.energy_conv = 1e-13;
+    scf_cfg.density_conv = 1e-11;
     let dfbs = case
         .aux
         .map(|a| PreparedBasis::new(&mol, &basis::bundled(a).unwrap()).unwrap());
@@ -370,12 +368,10 @@ fn run_system_case(system: &str, case: &Case) {
         "energy {de:.3e}: grid or functional mismatch"
     );
 
-    let hess_cfg = RhfConfig {
-        xc: Some(case.xc.into()),
-        df_j_aux: Some(case.aux.unwrap_or_default().into()),
-        df_k_aux: Some(case.k_aux.unwrap_or_default().into()),
-        ..Default::default()
-    };
+    let hess_cfg = RhfConfig::default()
+        .with_xc(case.xc)
+        .with_df_j_aux(case.aux.unwrap_or_default())
+        .with_df_k_aux(case.k_aux.unwrap_or_default());
     let h = rks_fixed_grid_hessian_parts_with(
         &ctx,
         &mol,

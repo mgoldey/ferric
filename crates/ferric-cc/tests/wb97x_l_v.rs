@@ -291,11 +291,9 @@ fn unconverged_reference_is_refused() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
 
-    let scf = RhfConfig {
-        max_iter: 1,
-        density_conv: 1e-14,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_max_iter(1)
+        .with_density_conv(1e-14);
     let stuck = ferric_scf::rhf::solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -330,10 +328,7 @@ fn invalid_parameters_are_rejected() {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-8,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-8),
     )
     .unwrap();
     assert!(rhf.converged);
@@ -386,10 +381,7 @@ fn ladder_variant_is_honored() {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-8,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-8),
     )
     .unwrap();
 
@@ -452,11 +444,9 @@ fn open_shell_end_to_end_via_semicanonicalization() {
     let ctx = ParallelContext::default();
 
     // 1. Converge the open-shell reference.
-    let scf = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let rohf =
         ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
     assert!(rohf.converged, "ROHF reference must converge");
@@ -524,11 +514,9 @@ fn open_shell_end_to_end_via_roks() {
     let ctx = ParallelContext::default();
 
     // 1. Converge the open-shell KOHN-SHAM reference with the custom functional.
-    let mut scf = RhfConfig {
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let mut scf = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     scf.xc = Some(WB97X_L_V_NAME.to_string());
     let roks = ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
         .expect("ROKS/wB97X-L-V should solve");
@@ -573,11 +561,9 @@ fn open_shell_end_to_end_via_roks() {
 
     // The KS reference must differ from the HF-referenced sibling above: same molecule and
     // basis, different Fock, so a coincidence here would mean the XcSpec was ignored.
-    let scf_hf = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf_hf = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let rohf =
         ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf_hf)
             .unwrap();

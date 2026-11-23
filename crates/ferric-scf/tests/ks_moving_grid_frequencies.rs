@@ -113,10 +113,7 @@ fn run_op(
 }
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        ..Default::default()
-    }
+    RhfConfig::default().with_xc(xc)
 }
 
 #[test]
@@ -124,18 +121,16 @@ fn every_refusal_is_named() {
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
     let h2_triplet = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 3).unwrap();
     let rhf = FrequencyReference::Rhf;
-    let embedded = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            point_charges: vec![PointCharge {
-                q: 0.5,
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-            }],
-            ..Default::default()
-        }),
-        ..ks("LDA")
-    };
+    let mut embedded = ks("LDA");
+    embedded.external_potential = Some(ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 0.5,
+            x: 0.0,
+            y: 0.0,
+            z: 6.0,
+        }],
+        ..Default::default()
+    });
     // (label, message, fragments it must carry)
     let cases: Vec<(&str, String, Vec<&str>)> = vec![
         (
@@ -178,9 +173,10 @@ fn every_refusal_is_named() {
             run(
                 &water,
                 "sto-3g",
-                RhfConfig {
-                    mom_after_iter: 3,
-                    ..ks("LDA")
+                {
+                    let mut c = ks("LDA");
+                    c.mom_after_iter = 3;
+                    c
                 },
                 rhf,
             ),
@@ -191,9 +187,10 @@ fn every_refusal_is_named() {
             run(
                 &water,
                 "sto-3g",
-                RhfConfig {
-                    smearing_sigma: Some(1e-3),
-                    ..ks("LDA")
+                {
+                    let mut c = ks("LDA");
+                    c.smearing_sigma = Some(1e-3);
+                    c
                 },
                 rhf,
             ),
@@ -235,10 +232,7 @@ fn the_route_reaches_the_moving_grid_hessian() {
         return;
     }
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..ks("PBE")
-    };
+    let cfg = ks("PBE").with_density_conv(1e-9);
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let routed = harmonic_frequencies(
@@ -415,19 +409,15 @@ fn auto_sends_a_system_above_the_response_table_cap_to_fd_before_the_scf() {
     use ferric_scf::ks_fixed_grid::ResponseTableCapOverride;
     let h2 = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
     // The flat 75 x 110 grid, so the point count (2 x 8250) is derivable.
-    let cfg = RhfConfig {
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..ks("LDA")
-    };
+    let cfg = ks("LDA").with_dft_grid(AtomicGridConfig::default());
     let rhf = FrequencyReference::Rhf;
     {
         let _cap = ResponseTableCapOverride::new(263_999);
-        let one_iteration = RhfConfig {
-            max_iter: 1,
-            energy_conv: 1e-14,
-            density_conv: 1e-14,
-            ..cfg.clone()
-        };
+        let one_iteration = cfg
+            .clone()
+            .with_max_iter(1)
+            .with_energy_conv(1e-14)
+            .with_density_conv(1e-14);
         let msg = run(&h2, "sto-3g", one_iteration, rhf);
         assert!(
             msg.contains("resident AO table") && msg.contains("2 basis functions x 16500"),
@@ -474,12 +464,10 @@ fn auto_returns_a_non_converged_scf() {
         return;
     }
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 1,
-        energy_conv: 1e-14,
-        density_conv: 1e-14,
-        ..ks("LDA")
-    };
+    let cfg = ks("LDA")
+        .with_max_iter(1)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-14);
     let err = harmonic_frequencies(
         &ParallelContext::default(),
         &water,

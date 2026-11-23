@@ -71,14 +71,12 @@ fn df_b3lyp_energy(ctx: &ParallelContext, mol: &Molecule) -> f64 {
     let obs = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let res = solve_rhf(ctx, mol, &obs, op, &bounds, &cfg).unwrap();
     // NOTE: we deliberately do NOT assert res.converged. DF-JK RHF can plateau
     // just above a strict density threshold (the DF-JK noise floor) while the

@@ -156,16 +156,14 @@ fn dress_first_scf_is_bitwise_the_resident_run() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
     let run = |budget: usize| {
-        let cfg = RhfConfig {
-            energy_conv: 1e-3,
-            density_conv: 1e-8,
-            df_j_aux: Some(AUX.into()),
-            df_k_aux: Some(AUX.into()),
-            three_index_budget_bytes: budget,
-            ri_j_precision: Some(RiJPrecision::F32),
-            ri_k_precision: Some(RiKPrecision::F64),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-3)
+            .with_density_conv(1e-8)
+            .with_df_j_aux(AUX)
+            .with_df_k_aux(AUX);
+        cfg.three_index_budget_bytes = budget;
+        cfg.ri_j_precision = Some(RiJPrecision::F32);
+        cfg.ri_k_precision = Some(RiKPrecision::F64);
         solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap()
     };
     let before = ferric_scf::dress_first_count_for_test();

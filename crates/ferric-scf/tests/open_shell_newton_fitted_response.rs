@@ -202,16 +202,14 @@ fn converged_scf(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ri_k_precision: Some(RiKPrecision::F64),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_ri_j_precision(RiJPrecision::F64);
+    cfg.ri_k_precision = Some(RiKPrecision::F64);
     let res = if restricted_open {
         ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap()
     } else {
@@ -539,22 +537,18 @@ fn newton_matches_diis(xyz: &str, mult: usize, xc: Option<&str>, hybrid: bool, r
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg_diis = RhfConfig {
-        xc: xc.map(Into::into),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        // As in uhf_newton_smoke / rohf_newton_smoke: the UKS tests shift,
-        // the ROKS ones do not (the ROKS Newton step uses its own shift floor).
-        level_shift: if rohf { 0.0 } else { 0.2 },
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: hybrid.then(|| AUX.into()),
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let mut cfg_diis = RhfConfig::default();
+    cfg_diis.xc = xc.map(Into::into);
+    cfg_diis.energy_conv = 1e-9;
+    cfg_diis.density_conv = 1e-7;
+    cfg_diis.max_iter = 200;
+    // As in uhf_newton_smoke / rohf_newton_smoke: the UKS tests shift,
+    // the ROKS ones do not (the ROKS Newton step uses its own shift floor).
+    cfg_diis.level_shift = if rohf { 0.0 } else { 0.2 };
+    cfg_diis.df_j_aux = Some(AUX.into());
+    cfg_diis.df_k_aux = hybrid.then(|| AUX.into());
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
     let solve = |cfg: &RhfConfig| {
         if rohf {
             ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, cfg).unwrap()

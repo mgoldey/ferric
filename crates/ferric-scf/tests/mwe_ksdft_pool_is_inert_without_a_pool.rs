@@ -76,11 +76,9 @@ fn run_ksdft() -> f64 {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit");
     solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg)
         .expect("KS-DFT must converge")
         .energy

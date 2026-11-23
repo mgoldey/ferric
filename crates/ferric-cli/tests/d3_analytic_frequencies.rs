@@ -44,15 +44,13 @@ const XC: &str = "B3LYP";
 const DELTA: f64 = 5e-3;
 
 fn cfg(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 300,
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
         // Tight: the FD route's noise is ~err/δ (SCF error 1e-11 -> 2e-9).
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    }
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
 }
 
 fn d3(m: &Molecule) -> Result<GeometricCorrection, ferric_core::FerricError> {
@@ -202,11 +200,7 @@ fn explicit_moving_grid_refusals_name_the_reference() {
         &h2,
         "sto-3g",
         Operator::coulomb(),
-        &RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            ..cfg("HSE06")
-        },
+        &cfg("HSE06").with_energy_conv(1e-11).with_density_conv(1e-9),
         &FrequencyConfig::default(),
         d3,
     )

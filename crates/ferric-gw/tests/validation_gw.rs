@@ -511,23 +511,20 @@ fn load_system(system: &str, xyz_rel: &str, basis_name: &str, ecp: bool) -> Sys 
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_check_stability(true);
+    c.scf_stability_descent = true;
+    c
 }
 
 /// Closed-shell HF through the level-shift ladder (Ag2 needs it; for the
@@ -560,11 +557,8 @@ fn rhf(sys: &Sys, tol_e: f64) -> ScfResult {
 /// only if its energy equals the stability-checked reference's.
 fn uhf(sys: &Sys) -> ScfResult {
     let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..uhf_config()
-    };
+    let mut steered = uhf_config().with_level_shift(0.5);
+    steered.mom_after_iter = 5;
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", uhf_config()), ("ls0.5+MOM5", steered)] {
         let res = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
@@ -822,18 +816,16 @@ fn vxc_diagonal_mo(
 }
 
 fn pbe_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("pbe".into()),
+    rhf_config()
+        .with_xc("pbe")
         // Exact J, as the reference (an empty name is the explicit opt-out of
         // the RI-J auto-default in rhf.rs `resolve_aux`).
-        df_j_aux: Some(String::new()),
+        .with_df_j_aux(String::new())
         // KS densities floor above 1e-10 on the grid (KS-DFT row uses 1e-8).
-        density_conv: 1e-10,
+        .with_density_conv(1e-10)
         // The references are PySCF on the flat (75,110) grid (gen_gw.py),
         // not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..rhf_config()
-    }
+        .with_dft_grid(AtomicGridConfig::default())
 }
 
 fn g0w0_pbe_case(system: &str, basis_name: &str, quadrature_control: bool) {
@@ -1474,19 +1466,17 @@ fn uks_grid(sys: &Sys) -> AtomicGridConfig {
 }
 
 fn uks_pbe_config(grid: &AtomicGridConfig) -> RhfConfig {
-    RhfConfig {
-        xc: Some("pbe".into()),
+    uhf_config()
+        .with_xc("pbe")
         // Exact J, as the reference (an empty name is the explicit "no
         // density fitting"; solve_uhf's build_df_jk filters it to None). The
         // CLI's default for `gw` + `[rpa] xc` is RI-J/RI-K with the JK aux —
         // that choice is the fitting error, not what this row measures.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
         // The references are PySCF on a flat grid ([`uks_grid`]), not the
         // pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(grid.clone()),
-        ..uhf_config()
-    }
+        .with_dft_grid(grid.clone())
 }
 
 /// UKS/PBE on the reference's stable state (same fallback as `uhf`).
@@ -1510,15 +1500,10 @@ fn uks_pbe_config(grid: &AtomicGridConfig) -> RhfConfig {
 fn uks_pbe(sys: &Sys) -> ScfResult {
     let e_ref = num(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
     let grid = uks_grid(sys);
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..uks_pbe_config(&grid)
-    };
-    let hcore = RhfConfig {
-        use_sad_guess: false,
-        ..uks_pbe_config(&grid)
-    };
+    let mut steered = uks_pbe_config(&grid).with_level_shift(0.5);
+    steered.mom_after_iter = 5;
+    let mut hcore = uks_pbe_config(&grid);
+    hcore.use_sad_guess = false;
     let mut runs = Vec::new();
     for (name, cfg) in [
         ("stability-descent", uks_pbe_config(&grid)),

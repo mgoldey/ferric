@@ -931,50 +931,46 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     // plateau, so the achievable localized hole is N≈1.01; tol=1e-2 matches the
     // physically flat response (∂N/∂λ≈1e-3) and lands the driver on the
     // localized plateau rather than walking λ over the cliff.
-    let cfg0 = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target: 1.0,
-        }],
-        cdft_lambda_tol: 1e-2,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        dft_grid: Some(gcfg.clone()),
-        level_shift: 0.2,
-        ..Default::default()
-    };
-    let cfg1 = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![1],
-            spin: SpinChannel::Total,
-            target: 1.0,
-        }],
-        cdft_lambda_tol: 1e-2,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        dft_grid: Some(gcfg.clone()),
-        level_shift: 0.2,
-        ..Default::default()
-    };
+    let mut cfg0 = RhfConfig::default();
+    cfg0.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target: 1.0,
+    }];
+    cfg0.cdft_lambda_tol = 1e-2;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    cfg0.cdft_max_outer = 40;
+    cfg0.fractional_occ = false;
+    cfg0.dft_grid = Some(gcfg.clone());
+    cfg0.level_shift = 0.2;
+    let mut cfg1 = RhfConfig::default();
+    cfg1.constraints = vec![Constraint {
+        fragment: vec![1],
+        spin: SpinChannel::Total,
+        target: 1.0,
+    }];
+    cfg1.cdft_lambda_tol = 1e-2;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    cfg1.cdft_max_outer = 40;
+    cfg1.fractional_occ = false;
+    cfg1.dft_grid = Some(gcfg.clone());
+    cfg1.level_shift = 0.2;
     let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg0).unwrap();
     let rb = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg1).unwrap();
 
@@ -1114,13 +1110,12 @@ fn hene() -> Hene {
 /// and B to 1e-8 Ha. `level_shift` 0.5
 /// is the value every other HeNe⁺ test uses for its near-degenerate SOMO.
 fn hene_base_cfg() -> RhfConfig {
-    RhfConfig {
-        level_shift: 0.5,
-        max_iter: 400,
-        use_sad_guess: false,
-        fractional_occ: false,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_level_shift(0.5)
+        .with_max_iter(400);
+    c.use_sad_guess = false;
+    c.fractional_occ = false;
+    c
 }
 
 /// Solve one HeNe⁺ diabat with the default driver (stability descent ON).
@@ -1151,21 +1146,19 @@ fn hene_diabat_with(
     target: f64,
     descent: bool,
 ) -> ferric_scf::cdft_driver::CdftResult {
-    let cfg = RhfConfig {
-        cdft_stability_descent: descent,
-        constraints: vec![Constraint {
-            fragment: vec![fragment],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        dft_grid: Some(AtomicGridConfig {
-            n_radial: 99,
-            n_angular: 302,
-            ..Default::default()
-        }),
-        ..hene_base_cfg()
-    };
+    let mut cfg = hene_base_cfg();
+    cfg.cdft_stability_descent = descent;
+    cfg.constraints = vec![Constraint {
+        fragment: vec![fragment],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-5;
+    cfg.dft_grid = Some(AtomicGridConfig {
+        n_radial: 99,
+        n_angular: 302,
+        ..Default::default()
+    });
     let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("HeNe+ N(atom {fragment}) = {target}: {e}"));
     assert!(r.scf.converged, "inner SCF did not converge");
@@ -1177,10 +1170,8 @@ fn hene_diabat_with(
 /// diabat equal to either is the unconstrained solution, not a diabat.
 fn hene_unconstrained_energies(sys: &Hene) -> [f64; 2] {
     [false, true].map(|sad| {
-        let cfg = RhfConfig {
-            use_sad_guess: sad,
-            ..hene_base_cfg()
-        };
+        let mut cfg = hene_base_cfg();
+        cfg.use_sad_guess = sad;
         let scf =
             ferric_scf::uhf::solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
         assert!(

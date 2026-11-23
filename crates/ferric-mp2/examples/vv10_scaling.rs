@@ -41,11 +41,9 @@ fn main() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-9,
-            density_conv: 1e-7,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7),
     )
     .unwrap();
     eprintln!(

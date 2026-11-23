@@ -120,11 +120,9 @@ fn setup(label: &str, obs_name: &str) -> Setup {
     let ctx = ParallelContext::default();
     let cb = Operator::coulomb();
     let bounds = SchwarzBounds::compute(cb, &obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10);
     let rhf = solve_rhf(&ctx, &mol, &obs, cb, &bounds, &cfg).unwrap();
     Setup {
         mol,
@@ -192,14 +190,15 @@ fn attenuated_alpha_finite_field_nh3() {
     let s = setup("nh3g", "sto-3g");
     let cfg = mp2_cfg();
     let cb = Operator::coulomb();
-    let scf_cfg = |field: Option<[f64; 3]>| RhfConfig {
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        external_potential: field.map(|f| ExternalPotential {
+    let scf_cfg = |field: Option<[f64; 3]>| {
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-13)
+            .with_density_conv(1e-11);
+        c.external_potential = field.map(|f| ExternalPotential {
             field: Some(f),
             ..Default::default()
-        }),
-        ..Default::default()
+        });
+        c
     };
     for w in [0.42, 1.0] {
         let op = Operator::erfc(w);

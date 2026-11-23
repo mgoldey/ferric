@@ -68,17 +68,15 @@ fn sad_direct_rhf_energy(ctx: &ParallelContext, mol: &Molecule) -> ferric_scf::r
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        // Deliberately unset: forces BOTH the SAD free-atom guess sub-solves
-        // AND the outer molecular SCF through the direct (non-DF) build_jk
-        // Fock-builder path.
-        df_j_aux: None,
-        df_k_aux: None,
-        use_sad_guess: true, // default, but explicit: this is the case under test
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    // Deliberately unset: forces BOTH the SAD free-atom guess sub-solves
+    // AND the outer molecular SCF through the direct (non-DF) build_jk
+    // Fock-builder path.
+    cfg.df_j_aux = None;
+    cfg.df_k_aux = None;
+    cfg.use_sad_guess = true; // default, but explicit: this is the case under test
+    cfg.energy_conv = 1e-10;
+    cfg.density_conv = 1e-9;
     solve_rhf(ctx, mol, &prep, op, &bounds, &cfg).unwrap()
 }
 

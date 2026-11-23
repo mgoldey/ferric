@@ -40,10 +40,9 @@ fn internal() -> OptimizeConfig {
 }
 
 fn with_ext(ext: ExternalPotential) -> RhfConfig {
-    RhfConfig {
-        external_potential: Some(ext),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.external_potential = Some(ext);
+    c
 }
 
 fn point_charge() -> ExternalPotential {
@@ -79,18 +78,17 @@ fn field() -> ExternalPotential {
 }
 
 fn polarizable() -> RhfConfig {
-    RhfConfig {
-        polarizable: Some(PolarizableSites {
-            sites: vec![PolarizableSite {
-                x: 4.0,
-                y: 0.0,
-                z: 0.0,
-                alpha: 5.0,
-            }],
-            ..Default::default()
-        }),
+    let mut c = RhfConfig::default();
+    c.polarizable = Some(PolarizableSites {
+        sites: vec![PolarizableSite {
+            x: 4.0,
+            y: 0.0,
+            z: 0.0,
+            alpha: 5.0,
+        }],
         ..Default::default()
-    }
+    });
+    c
 }
 
 /// Every fixed-frame configuration the guard must name.
@@ -135,13 +133,12 @@ fn each_fixed_frame_term_is_refused_on_every_scf_entry_before_any_scf() {
 
 #[test]
 fn invariant_configurations_are_not_refused() {
-    let pcm = RhfConfig {
-        pcm: Some(ferric_pcm::PcmConfig::water()),
-        ..Default::default()
-    };
-    let cosmo = RhfConfig {
-        cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
-        ..Default::default()
+    let mut pcm = RhfConfig::default();
+    pcm.pcm = Some(ferric_pcm::PcmConfig::water());
+    let cosmo = {
+        let mut c = RhfConfig::default();
+        c.cosmo = Some(ferric_scf::cosmo::CosmoConfig::default());
+        c
     };
     for (tag, cfg) in [
         ("gas phase", RhfConfig::default()),
@@ -184,10 +181,8 @@ fn cartesian_in_a_field_is_not_refused_and_converges() {
 #[test]
 fn internal_with_pcm_converges() {
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        pcm: Some(ferric_pcm::PcmConfig::water()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.pcm = Some(ferric_pcm::PcmConfig::water());
     let opt = OptimizeConfig {
         max_steps: 60,
         ..internal()

@@ -1046,10 +1046,7 @@ mod tests {
             &prep,
             op,
             &bounds,
-            &RhfConfig {
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_density_conv(1e-10),
         )
         .unwrap();
 

@@ -82,14 +82,12 @@ fn run(sys: &QmmmSystem, pol: Option<PolarizableSites>, with_gradient: bool) -> 
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ext = sys.to_external_potential();
-    let cfg = RhfConfig {
-        external_potential: ext.clone(),
-        polarizable: pol,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = ext.clone();
+    cfg.polarizable = pol;
+    cfg.energy_conv = 1e-11;
+    cfg.density_conv = 1e-10;
+    cfg.max_iter = 300;
     let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "polarizable SCF did not converge");
     if !with_gradient {

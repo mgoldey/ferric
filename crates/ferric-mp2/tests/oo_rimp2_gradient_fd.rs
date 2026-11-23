@@ -119,13 +119,14 @@ fn solve(mol: &Molecule, obs: &BasisSet, aux: &BasisSet, jk_aux: Option<&str>) -
     let prep = PreparedBasis::new(mol, obs).unwrap();
     let dfbs = PreparedBasis::new(mol, aux).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-11,
-        max_iter: 300,
-        df_j_aux: jk_aux.map(str::to_string),
-        df_k_aux: jk_aux.map(str::to_string),
-        ..Default::default()
+    let cfg = {
+        let mut c = RhfConfig::default()
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-11)
+            .with_max_iter(300);
+        c.df_j_aux = jk_aux.map(str::to_string);
+        c.df_k_aux = jk_aux.map(str::to_string);
+        c
     }
     .for_geometry_task();
     let rhf = solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, &cfg).unwrap();

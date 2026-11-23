@@ -108,13 +108,12 @@ fn diatomic(
 
 /// The F6 report's settings.
 fn cfg(xc: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: xc.map(str::to_string),
-        density_conv: 1e-8,
-        energy_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.xc = xc.map(str::to_string);
+    c.density_conv = 1e-8;
+    c.energy_conv = 1e-10;
+    c.max_iter = 200;
+    c
 }
 
 /// Run the sweep and assert: all converge within `max_iters`, the energies
@@ -255,13 +254,11 @@ fn oh_rohf_perturbation_sweep_is_unchanged() {
 /// 7e-6 difference is the two codes' grids, not a state.
 #[test]
 fn oh_roks_lda_098_sweep_loose_and_tight() {
-    let loose = RhfConfig {
-        xc: Some("LDA".into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-4,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let loose = RhfConfig::default()
+        .with_xc("LDA")
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-4)
+        .with_max_iter(400);
     assert_sweep(
         "OH ROKS/LDA/STO-3G 0.98 loose",
         &loose,
@@ -340,14 +337,13 @@ const OH_631G: f64 = -75.361_846_292_5;
 const OH_631G_EXCITED: f64 = -75.203_724_952_9;
 
 fn tight(use_sad_guess: bool, guard: bool) -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        use_sad_guess,
-        rohf_occupation_guard: guard,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11);
+    c.use_sad_guess = use_sad_guess;
+    c.rohf_occupation_guard = guard;
+    c
 }
 
 /// **A deliberately excited state is not reported as converged.**
@@ -379,9 +375,10 @@ fn a_converged_excited_state_is_not_returned() {
          {OH_631G_EXCITED:.10}; got {:.10}",
         excited.energy
     );
-    let seeded = |guard: bool| RhfConfig {
-        init_guess_density: Some(excited.density_total.clone()),
-        ..tight(false, guard)
+    let seeded = |guard: bool| {
+        let mut c = tight(false, guard);
+        c.init_guess_density = Some(excited.density_total.clone());
+        c
     };
 
     // 2. Negative control: guard OFF holds the excited state it is given.

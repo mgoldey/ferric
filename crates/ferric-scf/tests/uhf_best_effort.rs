@@ -30,11 +30,9 @@ fn setup() -> (Molecule, PreparedBasis, SchwarzBounds) {
 #[test]
 fn best_effort_returns_usable_state_when_it_fails() {
     let (mol, obs, bounds) = setup();
-    let cfg = RhfConfig {
-        max_iter: 1,
-        density_conv: 1e-14,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(1)
+        .with_density_conv(1e-14);
 
     let r = solve_uhf_best_effort(&ParallelContext::default(), &mol, &obs, &bounds, &cfg, None)
         .expect("best-effort must return Ok even when the SCF does not converge");
@@ -76,11 +74,9 @@ fn best_effort_returns_usable_state_when_it_fails() {
 #[test]
 fn solve_uhf_keeps_its_error_contract() {
     let (mol, obs, bounds) = setup();
-    let cfg = RhfConfig {
-        max_iter: 1,
-        density_conv: 1e-14,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(1)
+        .with_density_conv(1e-14);
 
     let r = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg);
     assert!(
@@ -95,11 +91,9 @@ fn solve_uhf_keeps_its_error_contract() {
 #[test]
 fn converged_results_agree_between_the_two_entry_points() {
     let (mol, obs, bounds) = setup();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(200)
+        .with_density_conv(1e-8);
 
     let a = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg).unwrap();
     let b = solve_uhf_best_effort(&ParallelContext::default(), &mol, &obs, &bounds, &cfg, None)

@@ -233,14 +233,12 @@ fn tune_config(omega_lo: f64, omega_hi: f64) -> OmegaTuneConfig {
         omega_hi,
         omega_tol: TUNE_TOL,
         max_evals: TUNE_MAX_EVALS,
-        scf: RhfConfig {
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(AUX.into()),
-            max_iter: 500,
-            energy_conv: 1e-10,
-            density_conv: 1e-7,
-            ..Default::default()
-        },
+        scf: RhfConfig::default()
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(AUX)
+            .with_max_iter(500)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-7),
         // Continuation and the cation branch check at their library defaults.
         // `check_points` calls `eval_j`, which never continues, so the ω-grid
         // comparison below is unaffected; only `check_omega_star`'s tuner run

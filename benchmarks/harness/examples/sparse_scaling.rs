@@ -210,14 +210,12 @@ fn main() {
         // skipped because cc-pvdz-ri is an MP2-fit basis, not a JK-fit basis
         // (would introduce mHa-scale error in K). With DF-J + LinkK, RHF cost
         // on drug-sized systems drops from hours to minutes.
-        let rhf_cfg = RhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-7,
-            density_conv: 1e-6,
-            df_j_aux: Some("cc-pvdz-ri".to_string()),
-            k_builder: Some(ferric_scf::options::KBuilderKind::Link),
-            ..Default::default()
-        };
+        let rhf_cfg = RhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-7)
+            .with_density_conv(1e-6)
+            .with_df_j_aux("cc-pvdz-ri".to_string())
+            .with_k_builder(ferric_scf::options::KBuilderKind::Link);
 
         let t0 = Instant::now();
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg) {

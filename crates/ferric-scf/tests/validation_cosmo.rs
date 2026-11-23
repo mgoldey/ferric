@@ -225,13 +225,12 @@ fn load_system(system: &str, basis_name: &str, r: &Value) -> System {
 }
 
 fn scf_config(cosmo: Option<CosmoConfig>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        cosmo,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
+    c.cosmo = cosmo;
+    c
 }
 
 fn cosmo_config(r: &Value, eps: f64) -> CosmoConfig {

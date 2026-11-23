@@ -33,12 +33,10 @@ fn rohf_newton_step_at_stationary_point_is_noop() {
     let ctx = ParallelContext::default();
 
     // Plain ROHF (no XC) — should converge easily.
-    let cfg = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);
 
@@ -146,17 +144,13 @@ fn rohf_newton_h2_triplet_lda_matches_diis() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RohfConfig {
-        xc: Some("LDA".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        ..Default::default()
-    };
-    let cfg_newton = RohfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RohfConfig::default()
+        .with_xc("LDA")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_newton).unwrap();
     eprintln!(
@@ -188,19 +182,15 @@ fn rohf_newton_oh_hf_matches_diis_only() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
-    let cfg_newton = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        newton_trigger: 1e-2,
-        ..Default::default()
-    };
+    let cfg_diis = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    let mut cfg_newton = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg_newton.newton_trigger = 1e-2;
 
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_newton).unwrap();
@@ -244,17 +234,13 @@ fn roks_h2_triplet_pbe_gga_fxc_newton_engages_and_matches_diis() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RohfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        ..Default::default()
-    };
-    let cfg_newton = RohfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RohfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
 
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
 
@@ -342,14 +328,13 @@ impl Saddle {
         }
     }
     fn cfg() -> RohfConfig {
-        RohfConfig {
-            max_iter: 400,
-            density_conv: 1e-10,
-            energy_conv: 1e-11,
-            use_sad_guess: false,
-            rohf_occupation_guard: false,
-            ..Default::default()
-        }
+        let mut c = RohfConfig::default()
+            .with_max_iter(400)
+            .with_density_conv(1e-10)
+            .with_energy_conv(1e-11);
+        c.use_sad_guess = false;
+        c.rohf_occupation_guard = false;
+        c
     }
     fn densities(&self, c: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
         let ca = c.slice(ndarray::s![.., ..self.nc + 1]);
@@ -475,10 +460,11 @@ fn escape_from_saddle(s: &Saddle, eps: f64) -> Escape {
     // (b) The full solver, seeded with the displaced density, Newton from
     // iteration 4 on (trigger 1.0), occupation guard off.
     let (da, db) = s.densities(&c_d);
-    let cfg = RohfConfig {
-        init_guess_density: Some(&da + &db),
-        newton_trigger: 1.0,
-        ..Saddle::cfg()
+    let cfg = {
+        let mut c = Saddle::cfg();
+        c.init_guess_density = Some(&da + &db);
+        c.newton_trigger = 1.0;
+        c
     };
     let h0 = hvp_calls_on_this_thread();
     let full = solve_rohf(
@@ -615,12 +601,13 @@ fn rohf_newton_escapes_a_saddle_from_a_small_displacement() {
 #[test]
 fn rohf_newton_honours_a_tight_density_conv() {
     let s = Saddle::new();
-    let cfg = RohfConfig {
-        use_sad_guess: true,
-        newton_trigger: 1e-2,
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        ..Saddle::cfg()
+    let cfg = {
+        let mut c = Saddle::cfg();
+        c.use_sad_guess = true;
+        c.newton_trigger = 1e-2;
+        c.density_conv = 1e-10;
+        c.energy_conv = 1e-12;
+        c
     };
     let r = solve_rohf(
         &s.ctx,
@@ -665,12 +652,13 @@ fn rohf_ah_honours_a_tight_density_conv() {
     use ferric_scf::rohf_ah::ah_fallbacks_on_this_thread;
     use ferric_scf::rohf_newton::hvp_calls_on_this_thread;
     let s = Saddle::new();
-    let cfg = RohfConfig {
-        use_sad_guess: true,
-        ah_trigger: 1e-2,
-        density_conv: 1e-12,
-        energy_conv: 1e-12,
-        ..Saddle::cfg()
+    let cfg = {
+        let mut c = Saddle::cfg();
+        c.use_sad_guess = true;
+        c.ah_trigger = 1e-2;
+        c.density_conv = 1e-12;
+        c.energy_conv = 1e-12;
+        c
     };
     let (h0, f0) = (hvp_calls_on_this_thread(), ah_fallbacks_on_this_thread());
     let r = solve_rohf(

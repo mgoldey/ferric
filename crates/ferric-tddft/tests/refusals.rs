@@ -123,10 +123,7 @@ fn open_shell_references_unrestricted_accepted_restricted_open_refused() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &scf_cfg).unwrap();
     assert!(uhf.converged, "OH/STO-3G UHF did not converge");
     let rohf =

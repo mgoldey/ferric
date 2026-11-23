@@ -87,12 +87,8 @@ fn a_ks_job_with_xc_uncharged_peaks_near_its_budget() {
 
     let p = tensor + l / 2;
     install_global(MemoryPool::with_capacity_bytes(p));
-    let c = RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some(aux_name.into()),
-        three_index_budget_bytes: p,
-        ..Default::default()
-    };
+    let mut c = RhfConfig::default().with_xc("PBE").with_df_j_aux(aux_name);
+    c.three_index_budget_bytes = p;
     let base = LIVE.load(Relaxed);
     PEAK.store(base, Relaxed);
     let r = pool

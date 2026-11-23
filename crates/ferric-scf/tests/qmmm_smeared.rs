@@ -58,11 +58,9 @@ fn scf_energy(mol: &Molecule, ext: Option<&ExternalPotential>) -> f64 {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: ext.cloned(),
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = ext.cloned();
+    cfg.density_conv = 1e-11;
     let r = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     r.energy
@@ -94,11 +92,9 @@ fn smeared_qm_gradient_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: Some(ext.clone()),
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(ext.clone());
+    cfg.density_conv = 1e-11;
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -156,11 +152,9 @@ fn smeared_site_force_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: Some(base.clone()),
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(base.clone());
+    cfg.density_conv = 1e-11;
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
     let d_total = result.density_total();
@@ -233,11 +227,9 @@ fn full_gradient_translational_invariance_smeared_only() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: Some(ep.clone()),
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(ep.clone());
+    cfg.density_conv = 1e-11;
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -363,15 +355,10 @@ fn check_smeared(name: &str) {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        external_potential: Some(ep.clone()),
-        density_conv: 1e-10,
-        ..Default::default()
-    };
-    let gas_cfg = RhfConfig {
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(ep.clone());
+    cfg.density_conv = 1e-10;
+    let gas_cfg = RhfConfig::default().with_density_conv(1e-10);
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &gas_cfg).unwrap();
     assert!(scf.converged && gas.converged);
@@ -469,16 +456,12 @@ fn tiny_width_scf_matches_point_charge_scf() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg_point = RhfConfig {
-        external_potential: Some(ext_point.clone()),
-        density_conv: 1e-11,
-        ..Default::default()
-    };
-    let cfg_smeared = RhfConfig {
-        external_potential: Some(ext_smeared.clone()),
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg_point = RhfConfig::default();
+    cfg_point.external_potential = Some(ext_point.clone());
+    cfg_point.density_conv = 1e-11;
+    let mut cfg_smeared = RhfConfig::default();
+    cfg_smeared.external_potential = Some(ext_smeared.clone());
+    cfg_smeared.density_conv = 1e-11;
     let r_point = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_point).unwrap();
     let r_smeared = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_smeared).unwrap();
     assert!(r_point.converged && r_smeared.converged);

@@ -70,17 +70,16 @@ fn oh() -> Oh {
 }
 
 fn lda(density_conv: f64, mom_after_iter: usize) -> RhfConfig {
-    RhfConfig {
-        xc: Some("LDA".to_string()),
-        energy_conv: 1e-7,
-        density_conv,
-        max_iter: 400,
-        mom_after_iter,
-        // OH's near-degenerate β π pair resolves energies at the 1e-8 Ha level,
-        // below the f32 RI-J tensor's rounding, so these tests pin f64.
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc("LDA".to_string())
+        .with_energy_conv(1e-7)
+        .with_density_conv(density_conv)
+        .with_max_iter(400);
+    c.mom_after_iter = mom_after_iter;
+    // OH's near-degenerate β π pair resolves energies at the 1e-8 Ha level,
+    // below the f32 RI-J tensor's rounding, so these tests pin f64.
+    c.ri_j_precision = Some(RiJPrecision::F64);
+    c
 }
 
 fn solve(sys: &Oh, cfg: &RhfConfig) -> ScfResult {
@@ -127,11 +126,9 @@ fn ascending(e: &[f64]) -> bool {
 /// state arrives with a config that does not say so (the ferric-cli MOM
 /// references, free-atom proatoms).
 fn hessian_state_refusal(sys: &Oh, r: &ScfResult, cfg: &RhfConfig) -> String {
-    let hf = RhfConfig {
-        xc: None,
-        mom_after_iter: 0,
-        ..cfg.clone()
-    };
+    let mut hf = cfg.clone();
+    hf.xc = None;
+    hf.mom_after_iter = 0;
     let r = &ScfResult {
         xc: None,
         ..r.clone()

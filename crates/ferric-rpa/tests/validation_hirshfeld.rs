@@ -403,12 +403,10 @@ fn check(ctx: &str, what: &str, d: f64, tol: f64) {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 /// Elementwise overlap check: the reference's PySCF overlap, permuted to

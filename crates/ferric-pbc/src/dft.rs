@@ -2494,12 +2494,7 @@ impl GammaRksConfig {
             grid: PeriodicGridConfig::default(),
             exxdiv: ExxDiv::Ewald,
             xc: PeriodicXcConfig::default(),
-            scf: RhfConfig {
-                use_sad_guess: false,
-                density_conv: 1e-10,
-                max_iter: 200,
-                ..Default::default()
-            },
+            scf: RhfConfig::periodic(1e-10, 200),
         }
     }
 }

@@ -38,10 +38,8 @@ fn main() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let cfg = RhfConfig {
-        xc: xc.clone(),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.xc = xc.clone();
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("scf");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;

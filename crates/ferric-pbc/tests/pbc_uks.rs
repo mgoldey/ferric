@@ -668,21 +668,19 @@ fn h_atom_sto3g_pbe0_box_limit_is_hyb_times_the_uhf_c3() {
     let prep_mol = PreparedBasis::new(&mol, &basis).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep_mol).unwrap();
     let molecular = |xc: &str| {
-        let cfg = RhfConfig {
-            xc: Some(xc.to_string()),
-            dft_grid: Some(AtomicGridConfig {
+        let mut cfg = RhfConfig::default()
+            .with_xc(xc.to_string())
+            .with_dft_grid(AtomicGridConfig {
                 n_radial: 75,
                 n_angular: 302,
                 prune: None,
                 weight_cut: None,
-            }),
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            use_sad_guess: false,
-            density_conv: 1e-10,
-            max_iter: 200,
-            ..Default::default()
-        };
+            })
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new());
+        cfg.use_sad_guess = false;
+        cfg.density_conv = 1e-10;
+        cfg.max_iter = 200;
         let r = solve_uhf(&ParallelContext::default(), &mol, &prep_mol, &bounds, &cfg).unwrap();
         assert!(r.converged);
         r

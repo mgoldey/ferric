@@ -86,7 +86,7 @@ use ferric_pbc::grad::{
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::lattice::Cell;
 use ferric_scf::result::ScfResult;
-use ferric_scf::rhf::{solve_rhf, solve_rhf_injected, PeriodicInjection, RhfConfig};
+use ferric_scf::rhf::{solve_rhf, solve_rhf_injected, PeriodicInjection};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 use std::collections::HashMap;
@@ -354,11 +354,9 @@ fn gamma_rhf(b: &Built, eri: &DenseAftEri, seed: Option<&Array2<f64>>) -> ScfRes
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &b.prep).expect("schwarz");
-    let cfg = RhfConfig {
-        init_guess_density: seed.cloned(),
-        max_iter: 300,
-        ..gamma_config()
-    };
+    let mut cfg = gamma_config();
+    cfg.init_guess_density = seed.cloned();
+    cfg.max_iter = 300;
     let inj = PeriodicInjection {
         s: b.hc.s.clone(),
         h: b.hc.h.clone(),
@@ -380,11 +378,9 @@ fn molecular_energy(b: &Built, seed: Option<&Array2<f64>>) -> ScfResult {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &b.prep).expect("schwarz");
-    let cfg = RhfConfig {
-        init_guess_density: seed.cloned(),
-        max_iter: 300,
-        ..gamma_config()
-    };
+    let mut cfg = gamma_config();
+    cfg.init_guess_density = seed.cloned();
+    cfg.max_iter = 300;
     let r = solve_rhf(&ctx, b.cell.mol(), &b.prep, op, &bounds, &cfg).expect("molecular RHF");
     assert!(r.converged, "molecular RHF did not converge");
     r

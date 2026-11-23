@@ -111,12 +111,10 @@ fn per_atom_pair_sum_vs_molecular_c6_water() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        xc: Some("PBE".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_xc("PBE".to_string())
+        .with_df_j_aux("def2-universal-jkfit".to_string())
+        .with_df_k_aux("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     let cfg = PdepRpaConfig {
         trunc_thresh: 0.0,
@@ -174,12 +172,10 @@ fn partition_dependence_becke_vs_hirshfeld_water() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        xc: Some("PBE".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_xc("PBE".to_string())
+        .with_df_j_aux("def2-universal-jkfit".to_string())
+        .with_df_k_aux("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     let cfg = PdepRpaConfig {
         trunc_thresh: 0.0,
@@ -324,12 +320,10 @@ fn bounded_divergence_pair_sum_vs_molecular_c6_water() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        xc: Some("PBE".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_xc("PBE".to_string())
+        .with_df_j_aux("def2-universal-jkfit".to_string())
+        .with_df_k_aux("def2-universal-jkfit".to_string());
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
     let cfg = PdepRpaConfig {
         trunc_thresh: 0.0,

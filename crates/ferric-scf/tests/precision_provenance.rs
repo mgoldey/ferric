@@ -69,25 +69,16 @@ fn f64_scf_results_carry_the_explicit_f64_record() {
     let ks = rhf(
         WATER,
         "sto-3g",
-        &RhfConfig {
-            xc: Some("LDA".into()),
-            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_xc("LDA")
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64),
     );
     assert!(ks.converged);
     assert_eq!(ks.precision, PrecisionRecord::f64(), "RKS, f64 RI-J");
 
     // The default RI-J tensor is f32: the record says so (requested and run
     // mixed, on the CPU), with no `[precision]` settings installed.
-    let ks = rhf(
-        WATER,
-        "sto-3g",
-        &RhfConfig {
-            xc: Some("LDA".into()),
-            ..Default::default()
-        },
-    );
+    let ks = rhf(WATER, "sto-3g", &RhfConfig::default().with_xc("LDA"));
     assert!(ks.converged);
     let j = ks.precision.to_json();
     assert_eq!(j["precision"], "mixed", "{j}");
@@ -111,9 +102,9 @@ fn f64_scf_results_carry_the_explicit_f64_record() {
 }
 
 fn cosx_cfg(f32_route: Option<PrimPairSum>) -> RhfConfig {
-    RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx: CosxConfig {
+    RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(CosxConfig {
             grid: AtomicGridConfig {
                 n_radial: 30,
                 n_angular: 110,
@@ -122,9 +113,7 @@ fn cosx_cfg(f32_route: Option<PrimPairSum>) -> RhfConfig {
             fp64_multiplier: 1e5,
             f32_route,
             ..CosxConfig::flat_reference()
-        },
-        ..Default::default()
-    }
+        })
 }
 
 #[test]

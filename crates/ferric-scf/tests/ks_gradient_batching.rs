@@ -104,10 +104,7 @@ fn converged(mol_name: &str, basis: &str) -> Case {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("PBE");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("KS-DFT must converge");
     let d = scf.density_r().clone();
     let npts = ferric_dft::grid::build_atomic_grid(&mol, &AtomicGridConfig::default()).len();

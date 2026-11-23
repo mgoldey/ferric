@@ -103,12 +103,11 @@ fn rsh() -> JkExchange {
 }
 
 fn cfg(j: Option<&str>, k: Option<&str>, kb: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        df_j_aux: j.map(str::to_string),
-        df_k_aux: k.map(str::to_string),
-        k_builder: ferric_scf::options::KBuilderKind::parse_opt(kb).expect("spelling"),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.df_j_aux = j.map(str::to_string);
+    c.df_k_aux = k.map(str::to_string);
+    c.k_builder = ferric_scf::options::KBuilderKind::parse_opt(kb).expect("spelling");
+    c
 }
 
 fn route(x: JkExchange, spin: Spin, j: Option<&str>, k: Option<&str>) -> JkRoute {
@@ -272,13 +271,12 @@ fn solve(sy: &Sys, spin: Spin, config: &RhfConfig) -> ScfResult {
 }
 
 fn tight(xc: Option<&str>, j: Option<&str>, k: Option<&str>, kb: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: xc.map(str::to_string),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..cfg(j, k, kb)
-    }
+    let mut c = cfg(j, k, kb);
+    c.xc = xc.map(str::to_string);
+    c.energy_conv = 1e-10;
+    c.density_conv = 1e-8;
+    c.ri_j_precision = Some(RiJPrecision::F64);
+    c
 }
 
 /// The certificate's J/K entries a route predicts: `ri-j` for RI-J, one

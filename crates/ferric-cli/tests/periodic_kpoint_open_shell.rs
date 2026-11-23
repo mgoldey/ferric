@@ -223,11 +223,12 @@ fn library_gamma_uks_energy(functional: &str) -> f64 {
     .unwrap();
     let mut c = GammaUksConfig::new(functional);
     (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
-    c.scf = RhfConfig {
-        use_sad_guess: false,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
+    c.scf = {
+        let mut c = RhfConfig::default();
+        c.use_sad_guess = false;
+        c.density_conv = 1e-10;
+        c.max_iter = 200;
+        c
     };
     let sizing = GammaRshSizing {
         rsgdf_omega: DEFAULT_RSGDF_OMEGA,

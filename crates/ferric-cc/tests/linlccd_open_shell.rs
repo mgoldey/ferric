@@ -40,11 +40,9 @@ fn u_linlccd_matches_restricted_on_closed_shell() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let cfg = CcConfig {
         energy_conv: 1e-11,
         max_iter: 200,
@@ -90,11 +88,9 @@ fn runs_on_an_open_shell_doublet() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let cfg = CcConfig {
         energy_conv: 1e-11,
         max_iter: 200,
@@ -153,11 +149,9 @@ fn raw_rohf_is_refused_but_semicanonical_works() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let cfg = CcConfig {
         energy_conv: 1e-11,
         max_iter: 200,
@@ -195,11 +189,9 @@ fn short_range_attenuation_works_open_shell() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let cfg = CcConfig {
         energy_conv: 1e-11,
         max_iter: 200,

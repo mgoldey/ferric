@@ -35,11 +35,9 @@ fn water_ccsd() -> Case {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let scf = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
     assert!(rhf.converged, "SCF must converge");
 

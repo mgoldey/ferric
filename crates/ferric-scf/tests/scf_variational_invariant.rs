@@ -155,13 +155,11 @@ fn one_step_drop(sys: &System, r: &ScfResult, cfg: &RhfConfig) -> (f64, f64) {
 }
 
 fn cfg(flavor: DiisFlavor, level_shift: f64, sad: bool, tight: bool) -> RhfConfig {
-    let mut c = RhfConfig {
-        diis_flavor: flavor,
-        level_shift,
-        use_sad_guess: sad,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let mut c = RhfConfig::default();
+    c.diis_flavor = flavor;
+    c.level_shift = level_shift;
+    c.use_sad_guess = sad;
+    c.max_iter = 200;
     if tight {
         c.energy_conv = 1e-10;
         c.density_conv = 1e-8;
@@ -302,11 +300,9 @@ fn a_converged_ediis_in_a_field_is_a_fixed_point_of_one_roothaan_step() {
     let sys = System::new(mol, Some(ext.clone()));
     let mut failures = Vec::new();
     for ls in SHIFTS {
-        let c = RhfConfig {
-            diis_switch_thresh: 1e-1,
-            external_potential: Some(ext.clone()),
-            ..cfg(DiisFlavor::Ediis, ls, true, false)
-        };
+        let mut c = cfg(DiisFlavor::Ediis, ls, true, false);
+        c.diis_switch_thresh = 1e-1;
+        c.external_potential = Some(ext.clone());
         let label = format!("benzene/2000 RHF Ediis level_shift={ls}");
         rhf_case(&sys, &label, &c, &mut failures);
     }

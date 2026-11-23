@@ -402,39 +402,35 @@ fn rks_config(xc: &str, j: &str) -> RhfConfig {
         "exact" => Some(String::new()),
         other => panic!("unknown J mode {other}"),
     };
-    RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux,
-        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
-        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
-        ri_j_precision: Some(RiJPrecision::F64),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 500,
-        // The references are PySCF on the flat (75,110) grid (gen_mgga_gradients.py:
-        // prune=None), not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default().with_xc(ferric_xc(xc));
+    c.df_j_aux = df_j_aux;
+    // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+    // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+    c.ri_j_precision = Some(RiJPrecision::F64);
+    c.energy_conv = 1e-10;
+    c.density_conv = 1e-8;
+    c.max_iter = 500;
+    // The references are PySCF on the flat (75,110) grid (gen_mgga_gradients.py:
+    // prune=None), not the pruned KS default AtomicGridConfig::production().
+    c.dft_grid = Some(AtomicGridConfig::default());
+    c
 }
 
 /// Open-shell config: the UHF/ROHF solvers read `df_j_aux` verbatim (no
 /// auto-default), so RI-J is requested explicitly to match PySCF `density_fit`.
 fn open_config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux: Some(AUX.into()),
+    RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        .with_df_j_aux(AUX)
         // The PySCF references fit J in f64; pin it (the f32 RI-J default's
         // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
-        ri_j_precision: Some(RiJPrecision::F64),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 500,
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(500)
         // The references are PySCF on the flat (75,110) grid (gen_mgga_gradients.py:
         // prune=None), not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+        .with_dft_grid(AtomicGridConfig::default())
 }
 
 fn assert_j_route(res: &ScfResult, j: &str, ctx: &str) {
@@ -868,11 +864,9 @@ fn mgga_gradient_closed_h2o_631g_r2scan_vs_own_fd() {
     .unwrap();
     // Every displaced SCF starts from the reference density (a fresh guess can
     // land a ± twin in another basin and fabricate an FD "gradient").
-    let seeded = RhfConfig {
-        init_guess_density: Some(res.density_r().clone()),
-        use_sad_guess: false,
-        ..cfg
-    };
+    let mut seeded = cfg;
+    seeded.init_guess_density = Some(res.density_r().clone());
+    seeded.use_sad_guess = false;
     let bs = sys.bs.clone();
     let energy = |m: &Molecule| {
         let prep = PreparedBasis::new(m, &bs).unwrap();

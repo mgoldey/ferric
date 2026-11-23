@@ -47,7 +47,6 @@ use ferric_scf::frequencies::{
     harmonic_frequencies, FrequencyConfig, FrequencyReference, HessianMethod, HessianSource,
 };
 use ferric_scf::hessian::{analytic_rohf_hessian_available, analytic_uhf_hessian_available};
-use ferric_scf::rhf::RhfConfig;
 
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
@@ -222,14 +221,11 @@ fn ri_with_an_external_potential_stays_refused() {
         return;
     }
     let (mol, prep) = iodine(HOI, 1);
-    let cfg = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        external_potential: Some(ferric_core::external_potential::ExternalPotential {
-            field: Some([0.0, 0.0, 0.004]),
-            ..Default::default()
-        }),
-        ..config(Fit::J(AUX_OK))
-    };
+    let mut cfg = config(Fit::J(AUX_OK)).with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
+    cfg.external_potential = Some(ferric_core::external_potential::ExternalPotential {
+        field: Some([0.0, 0.0, 0.004]),
+        ..Default::default()
+    });
     let err =
         ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
             .expect_err("RI + environment stays refused");

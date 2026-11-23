@@ -103,13 +103,12 @@ fn water_cation() -> Molecule {
 /// callers use. Do not re-pin it without first checking whether the atomic
 /// guess has regressed.
 fn direct_config() -> RhfConfig {
-    RhfConfig {
-        df_j_aux: None,
-        df_k_aux: None,
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.df_j_aux = None;
+    c.df_k_aux = None;
+    c.energy_conv = 1e-10;
+    c.density_conv = 1e-9;
+    c
 }
 
 /// Reduce `value` over the world and return `(min, max)`. `(v, v)` at one rank.

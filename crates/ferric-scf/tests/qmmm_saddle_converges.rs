@@ -101,10 +101,8 @@ fn embedded_search(
         QmmmAtom::new("X", 0, 0.0, 0.0, -6.0, q_below),
     ];
     let system = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3]), 0, 1)?;
-    let mut scf = RhfConfig {
-        external_potential: system.to_external_potential(),
-        ..Default::default()
-    };
+    let mut scf = RhfConfig::default();
+    scf.external_potential = system.to_external_potential();
     scf.max_iter = 300;
 
     let s1 = scf.clone();

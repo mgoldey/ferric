@@ -78,17 +78,15 @@ fn converged_energy_is_independent_of_the_charge_order_at_tight_thresholds() {
         "the tight thresholds must switch the incremental Fock update off (the property this test pins)"
     );
     let run = |charges: Vec<PointCharge>| {
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 100,
-            external_potential: Some(ExternalPotential {
-                point_charges: charges,
-                smeared_charges: Vec::new(),
-                field: None,
-            }),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(100);
+        cfg.external_potential = Some(ExternalPotential {
+            point_charges: charges,
+            smeared_charges: Vec::new(),
+            field: None,
+        });
         solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap()
     };
     let base_charges = field(1500);
@@ -145,14 +143,12 @@ fn converged_energy_is_independent_of_the_charge_order_at_default_thresholds() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let run = |charges: Vec<PointCharge>| {
-        let cfg = RhfConfig {
-            external_potential: Some(ExternalPotential {
-                point_charges: charges,
-                smeared_charges: Vec::new(),
-                field: None,
-            }),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.external_potential = Some(ExternalPotential {
+            point_charges: charges,
+            smeared_charges: Vec::new(),
+            field: None,
+        });
         assert!(
             ferric_scf::direct_jk::closed_shell_incremental_enabled(
                 cfg.energy_conv,

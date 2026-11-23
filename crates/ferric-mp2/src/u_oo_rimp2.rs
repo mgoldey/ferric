@@ -1262,12 +1262,10 @@ mod tests {
 
         // UHF reference seeded from RHF MOs to land at the same singlet solution
         let c_seed = rhf.mos_r().clone();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf_with_guess(
             &ctx,
             &mol,
@@ -1317,10 +1315,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default().with_max_iter(200);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let umpc = crate::u_rimp2::u_ri_mp2(
             &mol,
@@ -1402,13 +1397,14 @@ mod tests {
                 &mol,
                 &obs,
                 &bounds,
-                &UhfConfig {
-                    max_iter: 200,
-                    energy_conv: 1e-11,
-                    density_conv: 1e-9,
-                    df_j_aux: jk_aux.map(str::to_string),
-                    df_k_aux: jk_aux.map(str::to_string),
-                    ..Default::default()
+                &{
+                    let mut c = UhfConfig::default()
+                        .with_max_iter(200)
+                        .with_energy_conv(1e-11)
+                        .with_density_conv(1e-9);
+                    c.df_j_aux = jk_aux.map(str::to_string);
+                    c.df_k_aux = jk_aux.map(str::to_string);
+                    c
                 }
                 .for_geometry_task(),
             )
@@ -1756,14 +1752,12 @@ mod tests {
             &t.obs,
             t.op,
             &t.bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-9,
-                df_j_aux: Some(JK_AUX.into()),
-                df_k_aux: Some(JK_AUX.into()),
-                ..Default::default()
-            }
-            .for_geometry_task(),
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-9)
+                .with_df_j_aux(JK_AUX)
+                .with_df_k_aux(JK_AUX)
+                .for_geometry_task(),
         )
         .unwrap();
         assert!(crate::oo_rimp2::rijk_route(&rhf).is_some());

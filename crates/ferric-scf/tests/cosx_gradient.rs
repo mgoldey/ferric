@@ -128,21 +128,20 @@ fn cosx_production_nofit() -> CosxConfig {
 /// sanity bound (see `cosx_scf.rs::tight`), reachable here because nothing is
 /// density-fitted.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
-    RhfConfig {
-        k_builder: cosx
-            .as_ref()
-            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx.unwrap_or_default(),
-        xc: xc.map(str::to_string),
-        // Conventional four-centre J (and K when not COSX): the ONLY exchange
-        // approximation under test is COSX.
-        df_j_aux: xc.map(|_| String::new()),
-        df_k_aux: xc.map(|_| String::new()),
-        energy_conv: 1e-8,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.k_builder = cosx
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.cosx = cosx.unwrap_or_default();
+    c.xc = xc.map(str::to_string);
+    // Conventional four-centre J (and K when not COSX): the ONLY exchange
+    // approximation under test is COSX.
+    c.df_j_aux = xc.map(|_| String::new());
+    c.df_k_aux = xc.map(|_| String::new());
+    c.energy_conv = 1e-8;
+    c.density_conv = 1e-10;
+    c.max_iter = 300;
+    c
 }
 
 fn mol_of(xyz: &str, mult: usize) -> Molecule {
@@ -196,10 +195,11 @@ fn restricted_grads(
 /// from the reference density (keeps all 2*3N solves in one basin).
 fn fd_restricted(mol: &Molecule, basis: &str, cfg: &RhfConfig, seed: &Array2<f64>) -> Array2<f64> {
     let n = mol.atoms.len();
-    let cfg = RhfConfig {
-        init_guess_density: Some(seed.clone()),
-        use_sad_guess: false,
-        ..cfg.clone()
+    let cfg = {
+        let mut c = cfg.clone();
+        c.init_guess_density = Some(seed.clone());
+        c.use_sad_guess = false;
+        c
     };
     let pairs: Vec<(usize, usize)> = (0..n).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
     let vals: Vec<f64> = pairs
@@ -528,13 +528,11 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
     // `_with_exchange(None)` are exactly `ks_gradient_closed`. (With
     // k_builder = "cosx" the same config is RIJCOSX now — RI-J + COSX K, see
     // `tests/cosx_rijcosx.rs` — so it no longer belongs to the exact-K set.)
-    let plain = RhfConfig {
-        xc: Some("B3LYP".into()),
-        energy_conv: 1e-6,
-        density_conv: 1e-7,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let plain = RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_energy_conv(1e-6)
+        .with_density_conv(1e-7)
+        .with_max_iter(300);
     assert!(!scf_exchange_is_cosx(&plain, false).unwrap());
     let r_plain = solve_restricted(&mol, basis, &plain);
     let a = restricted_scf_gradient(&mol, &prep, &bs, op, &bounds, &plain, &r_plain).unwrap();
@@ -547,11 +545,9 @@ fn exact_k_gradients_are_bit_identical_through_the_dispatch() {
         a == b && b == c,
         "KS dispatch / _with_exchange(None) differ from ks_gradient_closed"
     );
-    let with_cosx = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx_production_nofit(),
-        ..plain
-    };
+    let with_cosx = plain
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx_production_nofit());
     assert!(
         scf_exchange_is_cosx(&with_cosx, false).unwrap(),
         "RI-J auto-default + cosx is RIJCOSX, not exact K"
@@ -620,20 +616,15 @@ fn unsupported_cosx_gradients_are_refused() {
 
     // UKS: fit-off COSX is differentiated (`uks_cosx_*` below); the overlap
     // fit with a functional is refused by the gradient and the preflight.
-    let uks_fitted = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx: CosxConfig::default(),
-        xc: Some("B3LYP".into()),
-        ..Default::default()
-    };
+    let uks_fitted = RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(CosxConfig::default())
+        .with_xc("B3LYP");
     assert!(scf_exchange_is_cosx(&uks_fitted, true).unwrap());
     let err = preflight_cosx_unrestricted(&uks_fitted).unwrap_err();
     assert!(format!("{err}").contains("overlap_fit"), "{err}");
-    preflight_cosx_unrestricted(&RhfConfig {
-        cosx: cosx_exact(),
-        ..uks_fitted.clone()
-    })
-    .expect("fit-off UKS passes the preflight");
+    preflight_cosx_unrestricted(&uks_fitted.clone().with_cosx(cosx_exact()))
+        .expect("fit-off UKS passes the preflight");
     let oh = mol_of(OH, 2);
     let prep_oh = PreparedBasis::new(&oh, &bs).expect("prep");
     let bounds_oh = SchwarzBounds::compute(op, &prep_oh).expect("schwarz");
@@ -650,22 +641,14 @@ fn unsupported_cosx_gradients_are_refused() {
     assert!(format!("{err}").contains("overlap_fit"), "{err}");
 
     // ROHF/ROKS: fit-off passes, the overlap fit is refused for HF and KS.
-    let rohf_fitted = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        ..Default::default()
-    };
+    let rohf_fitted = RhfConfig::default().with_k_builder(ferric_scf::options::KBuilderKind::Cosx);
     for xc in [None, Some("B3LYP")] {
-        let c = RhfConfig {
-            xc: xc.map(str::to_string),
-            ..rohf_fitted.clone()
-        };
+        let mut c = rohf_fitted.clone();
+        c.xc = xc.map(str::to_string);
         let err = preflight_cosx_restricted_open(&c).unwrap_err();
         assert!(format!("{err}").contains("ROHF/ROKS"), "{xc:?}: {err}");
-        preflight_cosx_restricted_open(&RhfConfig {
-            cosx: cosx_exact(),
-            ..c
-        })
-        .expect("fit-off ROHF/ROKS passes the preflight");
+        preflight_cosx_restricted_open(&c.with_cosx(cosx_exact()))
+            .expect("fit-off ROHF/ROKS passes the preflight");
     }
 }
 
@@ -680,30 +663,18 @@ fn unsupported_cosx_gradients_are_refused() {
 /// a named RI-K next to it is an error.
 #[test]
 fn open_shell_empty_df_name_keeps_cosx_active() {
-    let base = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx_exact(),
-        ..Default::default()
-    };
-    let empty_j = RhfConfig {
-        df_j_aux: Some(String::new()),
-        ..base.clone()
-    };
-    let empty_jk = RhfConfig {
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..base.clone()
-    };
+    let base = RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx_exact());
+    let empty_j = base.clone().with_df_j_aux(String::new());
+    let empty_jk = base
+        .clone()
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new());
     assert!(scf_exchange_is_cosx(&empty_j, true).unwrap());
     assert!(scf_exchange_is_cosx(&empty_jk, true).unwrap());
-    let named_j = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        ..base.clone()
-    };
-    let named_k = RhfConfig {
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..base
-    };
+    let named_j = base.clone().with_df_j_aux("def2-universal-jkfit");
+    let named_k = base.with_df_k_aux("def2-universal-jkfit");
     // A named RI-J keeps COSX on (RIJCOSX); a named RI-K next to COSX is a
     // conflict, refused rather than silently resolved.
     assert!(scf_exchange_is_cosx(&named_j, true).unwrap());

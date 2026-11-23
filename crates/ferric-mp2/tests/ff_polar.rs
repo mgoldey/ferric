@@ -33,10 +33,7 @@ fn h2o() -> (
 #[test]
 fn mp2_alpha_water_positive_and_sane() {
     let (mol, obs, dfbs, op, bounds, ctx) = h2o();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -102,11 +99,9 @@ fn ff_relaxed_alpha_matches_pyscf_energy_hessian() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10);
     let a = mp2_polarizability_static(
         &ctx,
         &mol,
@@ -139,10 +134,7 @@ fn ff_relaxed_alpha_matches_pyscf_energy_hessian() {
 #[test]
 fn mp2_alpha_vs_rpa_alpha_water() {
     let (mol, obs, dfbs, op, bounds, ctx) = h2o();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -180,10 +172,7 @@ fn mp2_alpha_vs_rpa_alpha_water() {
 #[ignore]
 fn mp2_alpha_attenuation_sweep_water() {
     let (mol, obs, dfbs, _op, bounds, ctx) = h2o();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -229,10 +218,7 @@ fn mp2_alpha_attenuation_sweep_water_augccpvdz() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -305,10 +291,7 @@ fn test_a_generalization() {
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -431,10 +414,7 @@ fn diag_n2_field_scan() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -492,10 +472,7 @@ fn diag_fieldscan_nh3_co2() {
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -541,10 +518,7 @@ fn diag_nh3_zvec_trace() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -583,11 +557,9 @@ fn diag_nh3_tight_scf_scan() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // TIGHTENED field-SCF.
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -630,10 +602,7 @@ fn diag_nh3_raw_dipoles() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,
@@ -669,10 +638,7 @@ fn diag_relaxed_vs_unrelaxed_sweetspot() {
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
         memory_budget_bytes: None,

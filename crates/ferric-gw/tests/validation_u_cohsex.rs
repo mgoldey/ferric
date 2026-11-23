@@ -347,23 +347,20 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_check_stability(true);
+    c.scf_stability_descent = true;
+    c
 }
 
 fn rhf(sys: &Sys) -> ScfResult {
@@ -393,11 +390,8 @@ fn rhf(sys: &Sys) -> ScfResult {
 /// energy.
 fn uhf(sys: &Sys) -> ScfResult {
     let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..uhf_config()
-    };
+    let mut steered = uhf_config().with_level_shift(0.5);
+    steered.mom_after_iter = 5;
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", uhf_config()), ("ls0.5+MOM5", steered)] {
         let res = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)

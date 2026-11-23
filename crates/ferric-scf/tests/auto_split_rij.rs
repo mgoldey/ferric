@@ -43,14 +43,12 @@ fn run(xc: &str, storage: JkStorage, budget: usize) -> (f64, usize) {
     let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some(xc.into()),
-        three_index_budget_bytes: budget,
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc);
+    cfg.three_index_budget_bytes = budget;
+    cfg.energy_conv = 1e-10;
+    cfg.density_conv = 1e-8;
     set_jk_storage(Some(storage));
     let before = constructed_count();
     let r = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg);

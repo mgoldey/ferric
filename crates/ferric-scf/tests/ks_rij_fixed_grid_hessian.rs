@@ -87,14 +87,12 @@ fn water() -> Molecule {
 /// Config handed to the Hessian: functional, the SCF's RI-J basis (`None` =
 /// exact J), exact K.
 fn hessian_config(xc: &str, aux: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some(xc.into()),
-        df_j_aux: Some(aux.unwrap_or("").into()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(grid_cfg()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc)
+        .with_df_j_aux(aux.unwrap_or(""))
+        .with_df_k_aux(String::new())
+        .with_dft_grid(grid_cfg())
 }
 
 struct Pt {
@@ -114,14 +112,11 @@ fn scf(grid: &FixedGridKs, mol: &Molecule, basis_name: &str, aux: Option<&str>) 
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let dfbs = aux.map(|a| PreparedBasis::new(mol, &basis::bundled(a).unwrap()).unwrap());
-    let cfg = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        use_sad_guess: false,
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default().with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
+    cfg.use_sad_guess = false;
+    cfg.max_iter = 200;
+    cfg.energy_conv = 1e-13;
+    cfg.density_conv = 1e-11;
     let res =
         solve_rks_fixed_grid_df(&ctx, mol, &prep, op, &bounds, grid, dfbs.as_ref(), &cfg).unwrap();
     assert!(
@@ -422,13 +417,11 @@ fn production_ri_j_scf_result_gives_the_same_hessian() {
     }
     let r = reference("6-31g", "PBE", Some(AUX));
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..hessian_config("PBE", Some(AUX))
-    };
+    let cfg = hessian_config("PBE", Some(AUX))
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let prod = solve_rhf(
         &ctx,
         &r.mol,
@@ -495,11 +488,9 @@ fn inconsistent_fits_are_refused() {
     // ks_rik_fixed_grid_hessian.rs): the rebuilt Fock matrix differs by the
     // exchange fitting error.
     let msg = run(
-        &RhfConfig {
-            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-            df_k_aux: Some(AUX.into()),
-            ..hessian_config("PBE0", Some(AUX))
-        },
+        &hessian_config("PBE0", Some(AUX))
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+            .with_df_k_aux(AUX),
         &r.pt.res,
     );
     assert!(msg.contains("not a converged"), "{msg}");
@@ -521,15 +512,13 @@ fn the_same_default_config_serves_the_scf_and_the_hessian() {
     }
     let r = reference("sto-3g", "PBE", Some("def2-universal-jkfit"));
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some("PBE".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("PBE")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     assert!(cfg.df_j_aux.is_none());
     let prod = solve_rhf(
         &ctx,

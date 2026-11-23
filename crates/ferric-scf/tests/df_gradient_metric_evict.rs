@@ -35,13 +35,11 @@ fn an_evicted_metric_is_recomputed_and_the_gradient_is_unchanged() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let base = RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ..RhfConfig::default()
-    }
-    .for_geometry_task();
+    let base = RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .for_geometry_task();
     let cfg = with_fresh_handoff(&base);
     let ctx = ParallelContext::default();
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("SCF");

@@ -63,10 +63,7 @@ fn python_route_equals_the_cli_optimize_gradient_bit_for_bit() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default().with_density_conv(1e-9);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
     assert!(rhf.converged);
     let r = rpa_analytic_gradient_on(&mol, &obs, &dfbs, op, &bounds, &rhf, &cfg, RingOrder::Full)

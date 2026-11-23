@@ -281,13 +281,11 @@ fn setup(r: &Value, ctx: &str) -> Setup {
 }
 
 fn rhf(s: &Setup, ext: Option<&ExternalPotential>, ctx: &str) -> ScfResult {
-    let cfg = RhfConfig {
-        external_potential: ext.cloned(),
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = ext.cloned();
+    cfg.energy_conv = 1e-11;
+    cfg.density_conv = 1e-10;
+    cfg.max_iter = 300;
     let res = solve_rhf(
         &ParallelContext::default(),
         &s.mol,

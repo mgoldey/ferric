@@ -84,7 +84,7 @@ use ferric_pbc::uhf::{gamma_uhf, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResu
 use ferric_pbc::SrColumnRotation;
 use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::result::ScfResult;
-use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection, RhfConfig};
+use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -512,10 +512,8 @@ fn rhf_injected<'a>(
     let op = Operator::coulomb();
     // Never read on the injected path; required by the signature.
     let bounds = SchwarzBounds::compute(op, prep).expect("schwarz");
-    let cfg = RhfConfig {
-        init_guess_density: seed.cloned(),
-        ..gamma_config()
-    };
+    let mut cfg = gamma_config();
+    cfg.init_guess_density = seed.cloned();
     let inj = PeriodicInjection {
         s: hc.s.clone(),
         h: hc.h.clone(),

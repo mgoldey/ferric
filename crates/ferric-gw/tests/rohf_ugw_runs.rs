@@ -67,12 +67,10 @@ fn g0w0() -> GwConfig {
 }
 
 fn scf_cfg() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9)
+        .with_max_iter(200)
 }
 
 fn u_g0w0_roks_oh(mom_after_iter: usize) -> UGwResult {
@@ -82,11 +80,8 @@ fn u_g0w0_roks_oh(mom_after_iter: usize) -> UGwResult {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        mom_after_iter,
-        ..scf_cfg()
-    };
+    let mut cfg = scf_cfg().with_xc("pbe");
+    cfg.mom_after_iter = mom_after_iter;
     let roks = solve_rohf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(roks.converged);
     // v_xc in the QP equation's own (semi-canonical) basis, as Python does.
@@ -145,11 +140,7 @@ fn u_g0w0_on_closed_shell_rohf_equals_rhf_g0w0() {
     let ctx = ParallelContext::default();
     // Tighter than scf_cfg(): the two SCF drivers' residual orbital errors are
     // the only difference between the arms.
-    let tight = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-11,
-        ..scf_cfg()
-    };
+    let tight = scf_cfg().with_energy_conv(1e-12).with_density_conv(1e-11);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &tight).unwrap();
     let rohf = solve_rohf(&ctx, &mol, &obs, op, &bounds, &tight).unwrap();
     assert!(rhf.converged && rohf.converged);

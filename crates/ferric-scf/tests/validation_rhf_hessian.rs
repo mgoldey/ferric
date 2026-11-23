@@ -219,14 +219,12 @@ fn must_miss_hessian(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 fn check_system(system: &str, basis_name: &str) {

@@ -56,12 +56,11 @@ fn n2() -> (Molecule, PreparedBasis, SchwarzBounds) {
 }
 
 fn config(check: bool, descent: bool) -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-9,
-        check_stability: check,
-        scf_stability_descent: descent,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_check_stability(check);
+    c.scf_stability_descent = descent;
+    c
 }
 
 fn run(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds, cfg: &RhfConfig) -> ScfResult {

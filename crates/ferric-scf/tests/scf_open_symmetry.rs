@@ -57,15 +57,14 @@ fn setup(mol: &Molecule, basis_name: &str) -> (PreparedBasis, SchwarzBounds) {
 }
 
 fn cfg(symmetry: bool, rohf: bool) -> RhfConfig {
-    RhfConfig {
-        symmetry,
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        max_iter: 300,
-        // The F6 guard crosses irreps; the blocked ROHF refuses it.
-        rohf_occupation_guard: !(symmetry && rohf),
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default();
+    c.symmetry = symmetry;
+    c.density_conv = 1e-10;
+    c.energy_conv = 1e-12;
+    c.max_iter = 300;
+    // The F6 guard crosses irreps; the blocked ROHF refuses it.
+    c.rohf_occupation_guard = !(symmetry && rohf);
+    c
 }
 
 fn uhf_off(mol: &Molecule, b: &str) -> ScfResult {
@@ -214,10 +213,8 @@ fn c1_molecule_is_bit_identical_with_symmetry_on() {
     // Like with like: the symmetric entry point runs with the F6 guard off
     // (guard-on is refused, see the refusal test), so compare against guard off.
     let (prep, bounds) = setup(&mol, "sto-3g");
-    let guard_off = RhfConfig {
-        rohf_occupation_guard: false,
-        ..cfg(false, true)
-    };
+    let mut guard_off = cfg(false, true);
+    guard_off.rohf_occupation_guard = false;
     let off = solve_rohf(
         &ParallelContext::default(),
         &mol,
@@ -499,11 +496,9 @@ fn stretched_h2_unrestricted_solution_is_lower_than_the_symmetric_one() {
     // The unblocked UHF needs its stability descent to leave the restricted
     // saddle (plain aufbau UHF stays on it, as the HOMO/LUMO mix relaxes back).
     let (prep0, bounds0) = setup(&mol, b);
-    let descent = RhfConfig {
-        scf_stability_descent: true,
-        check_stability: true,
-        ..cfg(false, false)
-    };
+    let mut descent = cfg(false, false);
+    descent.scf_stability_descent = true;
+    descent.check_stability = true;
     let broken = solve_uhf(
         &ParallelContext::default(),
         &mol,

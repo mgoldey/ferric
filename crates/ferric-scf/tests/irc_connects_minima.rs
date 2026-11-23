@@ -217,10 +217,8 @@ fn the_irc_runs_under_qmmm_embedding() {
     ];
     let system =
         QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3]), 0, 1).expect("qmmm system");
-    let mut scf = RhfConfig {
-        external_potential: system.to_external_potential(),
-        ..Default::default()
-    };
+    let mut scf = RhfConfig::default();
+    scf.external_potential = system.to_external_potential();
     scf.max_iter = 300;
     let op = Operator::coulomb();
 

@@ -261,16 +261,15 @@ fn z_rotation_invariants(h: &Array2<f64>) -> Array2<f64> {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_check_stability(true);
+    c.scf_stability_descent = true;
+    c
 }
 
 fn load_molecule(system: &str, mult: usize) -> Molecule {

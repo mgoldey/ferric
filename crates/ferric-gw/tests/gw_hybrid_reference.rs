@@ -153,16 +153,15 @@ fn h2o(r: &Value) -> H2o {
 /// there `df_k_aux` stays at its def2-universal-jkfit default and the
 /// comparison carries that fitting error (the `Bars` of that case).
 fn ks_config(xc: &str, exact_k: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: exact_k.then(String::new),
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux(String::new());
+    c.df_k_aux = exact_k.then(String::new);
+    c.max_iter = 400;
+    c.energy_conv = 1e-11;
+    c.density_conv = 1e-10;
+    c.dft_grid = Some(AtomicGridConfig::default());
+    c
 }
 
 /// Bars for one functional: SCF energy, v_mf / ε_mf / Σx diagonal, QP.
@@ -362,12 +361,10 @@ fn pure_functional_has_no_k_term() {
     let r = reference();
     let sys = h2o(&r);
     let grid = AtomicGridConfig::default();
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        df_j_aux: Some(String::new()),
-        dft_grid: Some(grid.clone()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("pbe")
+        .with_df_j_aux(String::new())
+        .with_dft_grid(grid.clone());
     let scf = solve_rhf(
         &ParallelContext::default(),
         &sys.mol,

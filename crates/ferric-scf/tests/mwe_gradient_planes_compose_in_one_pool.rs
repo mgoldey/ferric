@@ -99,10 +99,8 @@ fn fixture(xc: Option<&str>) -> Fixture {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: xc.map(str::to_string),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.xc = xc.map(str::to_string);
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("SCF must converge");
     Fixture {
         mol,

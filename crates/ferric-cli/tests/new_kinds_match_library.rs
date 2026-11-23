@@ -141,11 +141,9 @@ fn library_setup(basis_name: &str) -> Lib {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            max_iter: 200,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(200)
+            .with_density_conv(1e-10),
     )
     .expect("library RHF");
     assert!(rhf.converged, "library RHF did not converge");

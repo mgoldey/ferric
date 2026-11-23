@@ -50,10 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux_name)?)?;
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs)?;
-    let rhf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default().with_energy_conv(1e-10);
     let rhf = solve_rhf(
         &ParallelContext::default(),
         &mol,

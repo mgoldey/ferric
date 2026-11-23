@@ -25,7 +25,16 @@ use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
 /// Configuration parameters for the RHF solver.
+///
+/// `#[non_exhaustive]`: outside this crate a config is built from
+/// [`RhfConfig::default`], a named constructor ([`RhfConfig::periodic`],
+/// [`RhfConfig::gradient_reference`]) or a lowering
+/// ([`ScfOptions::into_rhf_config`](crate::options::ScfOptions::into_rhf_config)),
+/// then adjusted with the `with_*` setters or by assigning a field (the
+/// fields stay public). There is no struct literal, so a new field takes its
+/// default at every such site.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RhfConfig {
     /// Maximum SCF iterations for one solve (each ladder rung sets its own).
     /// Default 200.
@@ -649,6 +658,38 @@ impl RhfConfig {
         }
     }
 
+    /// The SCF density threshold of [`RhfConfig::gradient_reference`].
+    pub const GRADIENT_REFERENCE_DENSITY_CONV: f64 = 1e-9;
+
+    /// The reference SCF of a gradient (finite-difference or analytic) or a
+    /// geometry task's certificate: the defaults with `density_conv` at
+    /// [`Self::GRADIENT_REFERENCE_DENSITY_CONV`] (the reachable tight signal
+    /// under the ΔP gate; `energy_conv` stays at its loose default, since a
+    /// tight one floors under DF noise and would hang at `max_iter`, see
+    /// `scf_converged`) and `external_potential` (an embedding field, or
+    /// `None`).
+    pub fn gradient_reference(
+        external_potential: Option<ferric_core::external_potential::ExternalPotential>,
+    ) -> Self {
+        Self {
+            density_conv: Self::GRADIENT_REFERENCE_DENSITY_CONV,
+            external_potential,
+            ..Self::default()
+        }
+    }
+
+    /// The SCF of the periodic (Gamma-point) solvers: the core-Hamiltonian
+    /// guess (`use_sad_guess = false`), `density_conv` and `max_iter`, every
+    /// other field at its default.
+    pub fn periodic(density_conv: f64, max_iter: usize) -> Self {
+        Self {
+            use_sad_guess: false,
+            density_conv,
+            max_iter,
+            ..Self::default()
+        }
+    }
+
     /// Set the maximum number of SCF iterations.
     pub fn with_max_iter(mut self, max_iter: usize) -> Self {
         self.max_iter = max_iter;
@@ -657,6 +698,11 @@ impl RhfConfig {
     /// Set the density convergence threshold (dp_rms).
     pub fn with_density_conv(mut self, thresh: f64) -> Self {
         self.density_conv = thresh;
+        self
+    }
+    /// Set the energy convergence threshold (|ΔE|, Ha).
+    pub fn with_energy_conv(mut self, thresh: f64) -> Self {
+        self.energy_conv = thresh;
         self
     }
     /// Set the XC functional (e.g. "PBE", "B3LYP", "wB97X-V").
@@ -678,6 +724,16 @@ impl RhfConfig {
     /// [`KBuilderKind::Cosx`]).
     pub fn with_cosx(mut self, cosx: crate::cosx_k::CosxConfig) -> Self {
         self.cosx = cosx;
+        self
+    }
+    /// Set the RI-J storage precision ([`Self::ri_j_precision`]).
+    pub fn with_ri_j_precision(mut self, precision: crate::df_j::RiJPrecision) -> Self {
+        self.ri_j_precision = Some(precision);
+        self
+    }
+    /// Set an explicit main Kohn-Sham grid ([`Self::dft_grid`]).
+    pub fn with_dft_grid(mut self, grid: ferric_dft::grid::AtomicGridConfig) -> Self {
+        self.dft_grid = Some(grid);
         self
     }
     /// Set the auxiliary basis for density-fitted Coulomb (RI-J).
@@ -6722,5 +6778,114 @@ mod tests {
                 .collect()
         };
         (unstack(0, &jscale), unstack(mj, &kscale))
+    }
+}
+
+#[cfg(test)]
+mod construction_oracle {
+    //! The named constructors and `with_*` setters that replaced the struct
+    //! literals outside this crate (roadmap item 11(a)) reproduce those
+    //! literals field for field. `RhfConfig` has no `PartialEq`, so configs
+    //! compare through their `Debug` text (every field; f64 in shortest
+    //! round-trip form).
+    use super::*;
+    use crate::cosx_k::CosxConfig;
+    use crate::df_j::RiJPrecision;
+    use ferric_core::external_potential::{ExternalPotential, PointCharge};
+    use ferric_dft::grid::AtomicGridConfig;
+
+    fn assert_same(old: &RhfConfig, new: &RhfConfig) {
+        assert_eq!(format!("{old:?}"), format!("{new:?}"));
+    }
+
+    fn field() -> ExternalPotential {
+        ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: -0.5,
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }],
+            field: Some([0.0, 0.0, 1e-3]),
+            ..Default::default()
+        }
+    }
+
+    /// The Gamma-point configs (`GammaRksConfig::new`, `GammaUhfConfig` /
+    /// `GammaRohfConfig::default`) and the CLI / Python periodic helpers.
+    #[test]
+    fn periodic_is_the_core_guess_literal() {
+        for (density_conv, max_iter) in [(1e-10, 200), (3e-7, 17)] {
+            let old = RhfConfig {
+                use_sad_guess: false,
+                density_conv,
+                max_iter,
+                ..Default::default()
+            };
+            assert_same(&old, &RhfConfig::periodic(density_conv, max_iter));
+        }
+    }
+
+    /// The gradient / geometry-task reference SCFs of ferric-mp2,
+    /// ferric-rpa and the Python geometry drivers.
+    #[test]
+    fn gradient_reference_is_the_tight_density_literal() {
+        for ext in [None, Some(field())] {
+            let old = RhfConfig {
+                density_conv: 1e-9,
+                external_potential: ext.clone(),
+                ..Default::default()
+            };
+            assert_same(&old, &RhfConfig::gradient_reference(ext));
+        }
+    }
+
+    /// Each setter writes its field and nothing else, from the defaults and
+    /// from a non-default base (`..base` updates).
+    #[test]
+    fn setters_are_the_struct_update() {
+        let grid = AtomicGridConfig {
+            n_radial: 30,
+            n_angular: 50,
+            ..Default::default()
+        };
+        let cosx = CosxConfig {
+            overlap_fit: !CosxConfig::default().overlap_fit,
+            ..CosxConfig::default()
+        };
+        let base = RhfConfig::periodic(1e-10, 50);
+        for b in [RhfConfig::default(), base] {
+            let old = RhfConfig {
+                max_iter: 77,
+                energy_conv: 1e-7,
+                density_conv: 3e-9,
+                level_shift: 0.25,
+                verbose: true,
+                check_stability: true,
+                cosx: cosx.clone(),
+                xc: Some("PBE0".to_string()),
+                df_j_aux: Some("def2-universal-jkfit".to_string()),
+                df_k_aux: Some(String::new()),
+                k_builder: Some(KBuilderKind::Cosx),
+                ri_j_precision: Some(RiJPrecision::F64),
+                dft_grid: Some(grid.clone()),
+                ..b.clone()
+            };
+            let new = b
+                .with_max_iter(77)
+                .with_energy_conv(1e-7)
+                .with_density_conv(3e-9)
+                .with_level_shift(0.25)
+                .with_verbose(true)
+                .with_check_stability(true)
+                .with_cosx(cosx.clone())
+                .with_xc("PBE0")
+                .with_df_j_aux("def2-universal-jkfit")
+                .with_df_k_aux(String::new())
+                .with_k_builder(KBuilderKind::Cosx)
+                .with_ri_j_precision(RiJPrecision::F64)
+                .with_dft_grid(grid.clone());
+            assert_same(&old, &new);
+        }
     }
 }

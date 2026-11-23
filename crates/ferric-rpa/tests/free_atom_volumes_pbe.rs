@@ -83,22 +83,17 @@ fn pbe_vol_free(z: usize, basis_name: &str) -> Option<f64> {
     let bounds = SchwarzBounds::compute(op, &obs).ok()?;
 
     let density = if mult > 1 {
-        let cfg = RhfConfig {
-            xc: Some("PBE".to_string()),
-            fractional_occ: true,
-            mom_after_iter: 5,
-            max_iter: 200,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default().with_xc("PBE".to_string());
+        cfg.fractional_occ = true;
+        cfg.mom_after_iter = 5;
+        cfg.max_iter = 200;
         solve_uhf(&ctx, &mol, &obs, &bounds, &cfg)
             .ok()
             .map(|r| r.density_total().to_owned())
     } else {
-        let cfg = RhfConfig {
-            xc: Some("PBE".to_string()),
-            max_iter: 200,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_xc("PBE".to_string())
+            .with_max_iter(200);
         solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg)
             .ok()
             .map(|r| r.density_r().to_owned())
@@ -220,23 +215,18 @@ fn diagnose_becke_vs_hirshfeld_grid_truncation() {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
         let density = if mult > 1 {
-            let cfg = RhfConfig {
-                xc: Some("PBE".to_string()),
-                fractional_occ: true,
-                mom_after_iter: 5,
-                max_iter: 200,
-                ..Default::default()
-            };
+            let mut cfg = RhfConfig::default().with_xc("PBE".to_string());
+            cfg.fractional_occ = true;
+            cfg.mom_after_iter = 5;
+            cfg.max_iter = 200;
             solve_uhf(&ctx, &mol, &obs, &bounds, &cfg)
                 .unwrap()
                 .density_total()
                 .to_owned()
         } else {
-            let cfg = RhfConfig {
-                xc: Some("PBE".to_string()),
-                max_iter: 200,
-                ..Default::default()
-            };
+            let cfg = RhfConfig::default()
+                .with_xc("PBE".to_string())
+                .with_max_iter(200);
             solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg)
                 .unwrap()
                 .density_r()

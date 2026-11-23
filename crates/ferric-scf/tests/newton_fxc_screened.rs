@@ -185,19 +185,17 @@ fn fd_anchor(xc: &str, k_mix: f64, screen_thresh: f64) -> Anchor {
     let h = oneelectron::hcore(&prep);
     let grid = AtomicGridConfig::production();
 
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        level_shift: 0.2,
-        dft_grid: Some(grid.clone()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: (k_mix != 0.0).then(|| AUX.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ri_k_precision: Some(ferric_scf::df_k::RiKPrecision::F64),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_level_shift(0.2)
+        .with_dft_grid(grid.clone())
+        .with_df_j_aux(AUX);
+    cfg.df_k_aux = (k_mix != 0.0).then(|| AUX.into());
+    cfg.ri_j_precision = Some(RiJPrecision::F64);
+    cfg.ri_k_precision = Some(ferric_scf::df_k::RiKPrecision::F64);
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);
 
@@ -406,20 +404,16 @@ fn newton_matches_diis_screened(xc: &str, hybrid: bool) {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg_diis = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        level_shift: 0.2,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: hybrid.then(|| AUX.into()),
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let mut cfg_diis = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        .with_level_shift(0.2)
+        .with_df_j_aux(AUX);
+    cfg_diis.df_k_aux = hybrid.then(|| AUX.into());
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let (h0, s0, d0) = (
         hvp_calls_on_this_thread(),
@@ -568,17 +562,15 @@ fn screened_fxc_hvp_matches_fd_oh_uks_pbe() {
     let na = (mol.nelec() as usize).div_ceil(2);
     let nb = mol.nelec() as usize / 2;
     let grid = AtomicGridConfig::production();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        level_shift: 0.2,
-        dft_grid: Some(grid.clone()),
-        df_j_aux: Some(AUX.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_level_shift(0.2)
+        .with_dft_grid(grid.clone())
+        .with_df_j_aux(AUX)
+        .with_ri_j_precision(RiJPrecision::F64);
     let res = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(res.converged);
     let ca = res.mos_alpha.clone();
@@ -750,19 +742,15 @@ fn open_shell_newton_matches_diis(xyz: &str, mult: usize, xc: &str, hybrid: bool
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg_diis = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: hybrid.then(|| AUX.into()),
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let mut cfg_diis = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        .with_df_j_aux(AUX);
+    cfg_diis.df_k_aux = hybrid.then(|| AUX.into());
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
     let solve = |cfg: &RhfConfig| {
         if rohf {
             ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, cfg).unwrap()
@@ -865,10 +853,10 @@ fn screened_fxc_cache_is_budget_checked_without_a_pool() {
     let mut rng = Xorshift64(0x5DEE_CE66_D1CE_4E5B);
     let dd = Array2::<f64>::from_shape_fn((n, n), |_| 0.01 * rng.next_f64());
     let dd = &dd + &dd.t();
-    let cfg = |bytes: usize| RhfConfig {
-        xc: Some("PBE".into()),
-        three_index_budget_bytes: bytes,
-        ..Default::default()
+    let cfg = |bytes: usize| {
+        let mut c = RhfConfig::default().with_xc("PBE");
+        c.three_index_budget_bytes = bytes;
+        c
     };
     let label = "f_xc response kernel";
     let run = |c: &RhfConfig| {

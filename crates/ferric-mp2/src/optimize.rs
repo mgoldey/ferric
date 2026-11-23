@@ -481,28 +481,23 @@ mod tests {
             ..OoRiMp2Config::default()
         };
         refused(&rhf, &frozen, "frozen_core = 1");
-        let rijk = RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..RhfConfig::default()
-        };
+        let rijk = RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         assert!(refuse_oo_rimp2_optimize(&rijk, &oo).is_ok());
         assert!(oo_rimp2_gradient_label(&rijk).ends_with("RI-JK reference (def2-universal-jkfit)"));
-        let rijcosx = RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-            ..RhfConfig::default()
-        };
+        let rijcosx = RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_k_builder(ferric_scf::options::KBuilderKind::Cosx);
         refused(&rijcosx, &oo, "\"rijcosx\"");
-        let split = RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("cc-pvtz-jkfit".into()),
-            ..RhfConfig::default()
-        };
+        let split = RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("cc-pvtz-jkfit");
         refused(&split, &oo, "\"mixed\"");
-        let cosmo = RhfConfig {
-            cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
-            ..RhfConfig::default()
+        let cosmo = {
+            let mut c = RhfConfig::default();
+            c.cosmo = Some(ferric_scf::cosmo::CosmoConfig::default());
+            c
         };
         refused(&cosmo, &oo, "PCM/COSMO");
     }

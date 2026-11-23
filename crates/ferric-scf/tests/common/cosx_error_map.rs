@@ -39,19 +39,18 @@ pub fn pool() -> rayon::ThreadPool {
 }
 
 fn rhf_cfg(cosx: CosxConfig, cosx_k: bool) -> RhfConfig {
-    RhfConfig {
-        k_builder: cosx_k.then_some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx,
-        df_j_aux: Some(JK.to_string()),
-        df_k_aux: Some(if cosx_k {
-            String::new()
-        } else {
-            JK.to_string()
-        }),
-        energy_conv: 1e-9,
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.k_builder = cosx_k.then_some(ferric_scf::options::KBuilderKind::Cosx);
+    c.cosx = cosx;
+    c.df_j_aux = Some(JK.to_string());
+    c.df_k_aux = Some(if cosx_k {
+        String::new()
+    } else {
+        JK.to_string()
+    });
+    c.energy_conv = 1e-9;
+    c.density_conv = 1e-8;
+    c
 }
 
 /// Load `testdata/molecules/<xyz>` and converge an RI-JK RHF density.

@@ -29,17 +29,15 @@ use ndarray::Array2;
 const BAR: f64 = 3e-7;
 
 fn cfg() -> RhfConfig {
-    RhfConfig {
+    RhfConfig::default()
         // f64 RI-J: the f32 default jitters the energy surface by ~1e-7 Ha,
         // above these bars (site/src/methods/scf.md, "RI-J tensor precision").
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("wB97X-V")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {

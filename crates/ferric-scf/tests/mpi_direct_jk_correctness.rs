@@ -53,17 +53,15 @@ fn direct_rhf_energy(ctx: &ParallelContext, mol: &Molecule) -> ferric_scf::resul
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        // Deliberately unset: df_j_aux/df_k_aux both None routes solve_rhf's
-        // per-iteration Fock build through DirectJK (direct_jk.rs), which
-        // already rank-partitions correctly. The regression target is the
-        // STANDALONE build_jk function (rhf.rs), exercised separately below.
-        df_j_aux: None,
-        df_k_aux: None,
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    // Deliberately unset: df_j_aux/df_k_aux both None routes solve_rhf's
+    // per-iteration Fock build through DirectJK (direct_jk.rs), which
+    // already rank-partitions correctly. The regression target is the
+    // STANDALONE build_jk function (rhf.rs), exercised separately below.
+    cfg.df_j_aux = None;
+    cfg.df_k_aux = None;
+    cfg.energy_conv = 1e-10;
+    cfg.density_conv = 1e-9;
     solve_rhf(ctx, mol, &prep, op, &bounds, &cfg).unwrap()
 }
 

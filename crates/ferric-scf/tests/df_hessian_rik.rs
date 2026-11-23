@@ -86,15 +86,13 @@ fn water() -> Molecule {
 
 /// SCF with RI-K in `k_aux`; RI-J in `j_aux` ("" = exact J).
 fn scf_config(j_aux: &str, k_aux: &str) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 200,
-        energy_conv: 1e-14,
-        density_conv: 1e-12,
-        df_j_aux: Some(j_aux.to_string()),
-        df_k_aux: Some(k_aux.to_string()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(200)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-12)
+        .with_df_j_aux(j_aux.to_string())
+        .with_df_k_aux(k_aux.to_string())
 }
 
 struct Setup {
@@ -1077,19 +1075,19 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
     }
     uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-K preflight");
     // External potential next to RI-K.
-    let with_field = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        external_potential: Some(ferric_core::external_potential::ExternalPotential {
-            point_charges: vec![ferric_core::external_potential::PointCharge {
-                q: 0.3,
-                x: 5.0,
-                y: 0.0,
-                z: 0.0,
-            }],
-            ..Default::default()
-        }),
-        ..s.cfg.clone()
-    };
+    let mut with_field = s
+        .cfg
+        .clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
+    with_field.external_potential = Some(ferric_core::external_potential::ExternalPotential {
+        point_charges: vec![ferric_core::external_potential::PointCharge {
+            q: 0.3,
+            x: 5.0,
+            y: 0.0,
+            z: 0.0,
+        }],
+        ..Default::default()
+    });
     let e = rhf_hessian_preflight(op, &with_field)
         .unwrap_err()
         .to_string();
@@ -1127,15 +1125,13 @@ fn df_off_configurations_are_unchanged_by_the_exchange_branch() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let hess = |df_k: Option<String>| {
-        let cfg = RhfConfig {
-            ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-            max_iter: 200,
-            energy_conv: 1e-12,
-            density_conv: 1e-10,
-            df_j_aux: Some(String::new()),
-            df_k_aux: df_k,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+            .with_max_iter(200)
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-10)
+            .with_df_j_aux(String::new());
+        cfg.df_k_aux = df_k;
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
         assert!(rhf.df_jk.is_none());
         rhf_hessian(

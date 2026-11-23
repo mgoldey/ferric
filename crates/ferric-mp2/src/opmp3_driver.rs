@@ -175,12 +175,10 @@ impl Opmp3Result {
 /// (or [`OPMP3_ENERGY_CONV`] / [`OPMP3_DENSITY_CONV`]), the functional of a
 /// DFT reference.
 pub fn opmp3_scf_config(config: &Opmp3Config) -> RhfConfig {
-    let mut cfg = RhfConfig {
-        energy_conv: config.scf_energy_conv.unwrap_or(OPMP3_ENERGY_CONV),
-        density_conv: config.scf_density_conv.unwrap_or(OPMP3_DENSITY_CONV),
-        three_index_budget_bytes: config.memory_budget_bytes.unwrap_or(0),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(config.scf_energy_conv.unwrap_or(OPMP3_ENERGY_CONV))
+        .with_density_conv(config.scf_density_conv.unwrap_or(OPMP3_DENSITY_CONV));
+    cfg.three_index_budget_bytes = config.memory_budget_bytes.unwrap_or(0);
     cfg.max_iter = config.scf_max_iter.unwrap_or(cfg.max_iter);
     if let Opmp3RefKind::Dft(f) = &config.reference {
         cfg.xc = Some(f.clone());
@@ -192,10 +190,8 @@ pub fn opmp3_scf_config(config: &Opmp3Config) -> RhfConfig {
 /// singlet, ROHF/ROKS otherwise), exact J/K, screening with the system's
 /// kind ([`PreparedSystem::screening`]). Unconverged is an error.
 pub fn opmp3_scf(sys: &PreparedSystem, config: &Opmp3Config) -> Result<ScfResult, FerricError> {
-    let cfg = RhfConfig {
-        screening: sys.screening(),
-        ..opmp3_scf_config(config)
-    };
+    let mut cfg = opmp3_scf_config(config);
+    cfg.screening = sys.screening();
     let scf = if sys.mol().multiplicity == 1 {
         sys.solve_rhf(&cfg)?
     } else {

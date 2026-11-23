@@ -45,12 +45,10 @@ fn run(budget: usize, aux: Option<&str>) -> Result<DfGuessResult, FerricError> {
     let (mol, prep) = water();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        three_index_budget_bytes: budget,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
+    cfg.three_index_budget_bytes = budget;
     solve_rhf_with_df_guess(
         &ParallelContext::default(),
         &mol,
@@ -193,10 +191,8 @@ fn under_mpi_a_memory_failure_of_the_guess_stays_an_error() {
     let needed = tensor_bytes(&mol, &prep);
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        three_index_budget_bytes: needed * 4,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.three_index_budget_bytes = needed * 4;
     // Two ranks' worth of band, on a pool too small for even one raw tensor.
     let ctx = ParallelContext { rank: 0, size: 2 };
     install_global(MemoryPool::with_capacity_bytes(needed / 8));

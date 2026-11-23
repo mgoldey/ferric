@@ -2941,10 +2941,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled(aux_name).unwrap();
@@ -3022,10 +3019,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -3076,10 +3070,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -3264,10 +3255,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -3440,10 +3428,7 @@ mod tests {
             &obs,
             opc,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-9,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-9),
         )
         .unwrap();
         let cfg = RiMp2Config::default();

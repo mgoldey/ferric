@@ -279,12 +279,10 @@ fn run_system(system: &str, variants_wanted: &[usize]) {
     );
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx0}: solve_rhf: {e:?}"));
     assert!(rhf.converged, "{ctx0}: RHF not converged");

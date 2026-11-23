@@ -77,15 +77,14 @@ fn embedding() -> ExternalPotential {
 }
 
 fn config(ext: Option<&ExternalPotential>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        external_potential: ext.cloned(),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new());
+    c.external_potential = ext.cloned();
+    c
 }
 
 struct Solved {
@@ -314,10 +313,8 @@ fn empty_smeared_list_is_bit_identical_to_no_potential() {
 fn smeared_charges_pass_preflight_and_polarizable_is_still_refused() {
     let op = Operator::coulomb();
     rhf_hessian_preflight(op, &config(Some(&embedding()))).unwrap();
-    let pol = RhfConfig {
-        polarizable: Some(Default::default()),
-        ..config(Some(&embedding()))
-    };
+    let mut pol = config(Some(&embedding()));
+    pol.polarizable = Some(Default::default());
     let err = rhf_hessian_preflight(op, &pol).unwrap_err();
     assert!(err.to_string().contains("polarizable"), "{err}");
 }

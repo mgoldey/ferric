@@ -91,24 +91,21 @@ fn water() -> Molecule {
 /// Config handed to the Hessian: names the functional and states that J is
 /// exact (the KS default is RI-J).
 fn hessian_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("LDA".into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(grid_cfg()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("LDA")
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_dft_grid(grid_cfg())
 }
 
 /// Production SCF config (grid following the atoms, exact J).
 fn production_config(grid: Option<AtomicGridConfig>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        dft_grid: grid,
-        ..hessian_config()
-    }
+    let mut c = hessian_config()
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
+    c.dft_grid = grid;
+    c
 }
 
 struct Pt {
@@ -125,13 +122,11 @@ fn fixed_grid_scf(grid: &FixedGridKs, mol: &Molecule, basis_name: &str) -> Pt {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        use_sad_guess: false,
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.use_sad_guess = false;
+    cfg.max_iter = 200;
+    cfg.energy_conv = 1e-13;
+    cfg.density_conv = 1e-11;
     let res = solve_rks_fixed_grid(&ctx, mol, &prep, op, &bounds, grid, &cfg).unwrap();
     assert!(
         res.converged,
@@ -258,10 +253,7 @@ fn analytic(r: &Ref, m: &KsFixedGridMutants) -> Array2<f64> {
 
 /// [`analytic`] on a caller-built `grid` (same SCF, same functional name).
 fn analytic_on(r: &Ref, grid: &FixedGridKs, m: &KsFixedGridMutants) -> Array2<f64> {
-    let cfg = RhfConfig {
-        xc: Some(r.xc.clone()),
-        ..hessian_config()
-    };
+    let cfg = hessian_config().with_xc(r.xc.clone());
     rks_fixed_grid_hessian_parts_with(
         &ParallelContext::default(),
         &r.mol,
@@ -629,18 +621,11 @@ fn production_gradient_difference_differs_by_the_weight_response_scale() {
         (prep, bounds, res)
     };
     let (prep, bounds, res) = setup(&mol);
-    let fixed = rks_fixed_grid_hessian(
-        &ctx,
-        &mol,
-        &prep,
-        op,
-        &bounds,
-        &res,
-        &RhfConfig {
-            dft_grid: None,
-            ..hessian_config()
-        },
-    )
+    let fixed = rks_fixed_grid_hessian(&ctx, &mol, &prep, op, &bounds, &res, &{
+        let mut c = hessian_config();
+        c.dft_grid = None;
+        c
+    })
     .unwrap();
     let n3 = 9;
     let mut prod = Array2::<f64>::zeros((n3, n3));
@@ -692,10 +677,7 @@ fn refusal_with(config: &RhfConfig, r: &Ref, res: &ScfResult) -> String {
 fn unsupported_configurations_are_refused_naming_the_next_unit() {
     let r = reference("sto-3g");
     let res = &r.fixed.res;
-    let with_xc = |name: &str| RhfConfig {
-        xc: Some(name.into()),
-        ..hessian_config()
-    };
+    let with_xc = |name: &str| hessian_config().with_xc(name);
     for (xc, needle) in [
         ("HSE06", "range-separated"),
         ("wB97X-V", "VV10"),
@@ -711,9 +693,10 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         );
     }
     let msg = refusal_with(
-        &RhfConfig {
-            xc: None,
-            ..hessian_config()
+        &{
+            let mut c = hessian_config();
+            c.xc = None;
+            c
         },
         &r,
         res,
@@ -734,10 +717,7 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
         )
         .unwrap()
     };
-    let inert = run(&RhfConfig {
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..hessian_config()
-    });
+    let inert = run(&hessian_config().with_df_k_aux("def2-universal-jkfit"));
     let d = max_abs_diff(&inert, &run(&hessian_config()));
     assert!(
         d < 1e-12,
@@ -746,21 +726,19 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
     // An exact-J SCF presented as an RI-J one: the rebuilt Fock matrix differs
     // by the fitting error (RI-J itself is supported: ks_rij_fixed_grid_hessian.rs).
     let msg = refusal_with(
-        &RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            ..hessian_config()
-        },
+        &hessian_config().with_df_j_aux("def2-universal-jkfit"),
         &r,
         res,
     );
     assert!(msg.contains("not a converged"), "{msg}");
     let msg = refusal_with(
-        &RhfConfig {
-            external_potential: Some(ferric_core::external_potential::ExternalPotential {
+        &{
+            let mut c = hessian_config();
+            c.external_potential = Some(ferric_core::external_potential::ExternalPotential {
                 field: Some([0.0, 0.0, 0.01]),
                 ..Default::default()
-            }),
-            ..hessian_config()
+            });
+            c
         },
         &r,
         res,
@@ -883,10 +861,11 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
     let r = reference("sto-3g");
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let exact = |xc: Option<&str>, ext: Option<ExternalPotential>| RhfConfig {
-        xc: xc.map(str::to_string),
-        external_potential: ext,
-        ..production_config(Some(grid_cfg()))
+    let exact = |xc: Option<&str>, ext: Option<ExternalPotential>| {
+        let mut c = production_config(Some(grid_cfg()));
+        c.xc = xc.map(str::to_string);
+        c.external_potential = ext;
+        c
     };
     let solve = |cfg: &RhfConfig| solve_rhf(&ctx, &r.mol, &r.prep, op, &r.bounds, cfg).unwrap();
     let charges = ExternalPotential {
@@ -922,11 +901,11 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
     assert!(legit_inj < 1e-8 && legit_prod < 1e-8);
     // A loosely converged but legitimate SCF (the library default,
     // density_conv = 1e-6) must stay well below the guard.
-    let loose = solve(&RhfConfig {
-        density_conv: RhfConfig::default().density_conv,
-        energy_conv: RhfConfig::default().energy_conv,
-        ..exact(Some("LDA"), None)
-    });
+    let loose = solve(
+        &exact(Some("LDA"), None)
+            .with_density_conv(RhfConfig::default().density_conv)
+            .with_energy_conv(RhfConfig::default().energy_conv),
+    );
     let legit_loose = rks_fixed_grid_fock_residual(
         &ctx,
         &r.mol,
@@ -1006,8 +985,9 @@ fn point_charges_in_the_configuration_are_refused() {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     let r = reference("sto-3g");
     let msg = refusal_with(
-        &RhfConfig {
-            external_potential: Some(ExternalPotential {
+        &{
+            let mut c = hessian_config();
+            c.external_potential = Some(ExternalPotential {
                 point_charges: vec![PointCharge {
                     q: 0.5,
                     x: 0.0,
@@ -1015,8 +995,8 @@ fn point_charges_in_the_configuration_are_refused() {
                     z: 4.0,
                 }],
                 ..Default::default()
-            }),
-            ..hessian_config()
+            });
+            c
         },
         &r,
         &r.fixed.res,
@@ -1151,10 +1131,7 @@ fn gga_fixed_grid_scf_reproduces_the_production_energy() {
         &r.prep,
         Operator::coulomb(),
         &r.bounds,
-        &RhfConfig {
-            xc: Some("PBE0".into()),
-            ..production_config(Some(grid_cfg()))
-        },
+        &production_config(Some(grid_cfg())).with_xc("PBE0"),
     )
     .unwrap();
     let de = (prod.energy - r.fixed.res.energy).abs();

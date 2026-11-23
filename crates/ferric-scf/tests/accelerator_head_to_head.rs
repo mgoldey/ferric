@@ -80,18 +80,16 @@ fn run(xyz: &str, bas: &str, xc: Option<&str>, arm: Arm) -> Row {
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: xc.map(|s| s.to_string()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 300,
-        aurora: AuroraConfig {
-            enabled: arm == Arm::Aurora,
-            ..Default::default()
-        },
-        trah_trigger: if arm == Arm::Trah { Some(1e-2) } else { None },
+    let mut cfg = RhfConfig::default();
+    cfg.xc = xc.map(|s| s.to_string());
+    cfg.energy_conv = 1e-10;
+    cfg.density_conv = 1e-8;
+    cfg.max_iter = 300;
+    cfg.aurora = AuroraConfig {
+        enabled: arm == Arm::Aurora,
         ..Default::default()
     };
+    cfg.trah_trigger = if arm == Arm::Trah { Some(1e-2) } else { None };
 
     let jk0 = target_jk_builds();
     let t0 = Instant::now();

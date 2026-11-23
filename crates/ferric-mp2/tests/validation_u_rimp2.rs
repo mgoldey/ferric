@@ -241,23 +241,18 @@ fn load(system: &str) -> Sys {
 /// MOM fallback as in validation_gw.rs. Accepted only if the energy matches.
 fn uhf(sys: &Sys) -> ScfResult {
     let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
-    let base = RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_check_stability(true);
+    base.scf_stability_descent = true;
     assert!(
         base.df_j_aux.is_none() && base.df_k_aux.is_none(),
         "exact J/K, as the CLI's rimp2 reference"
     );
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..base.clone()
-    };
+    let mut steered = base.clone().with_level_shift(0.5);
+    steered.mom_after_iter = 5;
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", base), ("ls0.5+MOM5", steered)] {
         let res = solve_uhf(

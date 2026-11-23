@@ -74,23 +74,17 @@ fn measure_omega_ri_alkanes() {
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let (rhf, t_scf) = timed(|| {
-            solve_rhf(
-                &ParallelContext::default(),
-                &mol,
-                &obs,
-                op,
-                &bounds,
-                &RhfConfig {
-                    energy_conv: 1e-10,
-                    density_conv: 1e-8,
-                    max_iter: 200,
-                    // FERRIC_OMEGA_RI_RIJK=1: RI-JK SCF (def2-universal-jkfit) to reach
-                    // larger sizes; every method then reads the same orbitals.
-                    df_j_aux: rijk.then(|| "def2-universal-jkfit".to_string()),
-                    df_k_aux: rijk.then(|| "def2-universal-jkfit".to_string()),
-                    ..Default::default()
-                },
-            )
+            solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &{
+                let mut c = RhfConfig::default()
+                    .with_energy_conv(1e-10)
+                    .with_density_conv(1e-8)
+                    .with_max_iter(200);
+                // FERRIC_OMEGA_RI_RIJK=1: RI-JK SCF (def2-universal-jkfit) to reach
+                // larger sizes; every method then reads the same orbitals.
+                c.df_j_aux = rijk.then(|| "def2-universal-jkfit".to_string());
+                c.df_k_aux = rijk.then(|| "def2-universal-jkfit".to_string());
+                c
+            })
             .unwrap()
         });
         assert!(rhf.converged);

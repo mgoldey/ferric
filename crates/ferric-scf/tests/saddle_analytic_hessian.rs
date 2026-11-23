@@ -233,28 +233,27 @@ fn recalc_every_with_analytic_hessian_costs_no_extra_gradients() {
 /// Gaussian-smeared external charges (QM/MM): analytic-supported since #358,
 /// like point charges since #343.
 fn smeared_scf() -> RhfConfig {
-    RhfConfig {
-        external_potential: Some(ExternalPotential {
-            smeared_charges: vec![
-                SmearedCharge {
-                    q: -0.4,
-                    x: 0.0,
-                    y: 0.0,
-                    z: 6.0,
-                    width: 1.0,
-                },
-                SmearedCharge {
-                    q: -0.4,
-                    x: 0.0,
-                    y: 0.0,
-                    z: -6.0,
-                    width: 1.0,
-                },
-            ],
-            ..Default::default()
-        }),
+    let mut c = RhfConfig::default();
+    c.external_potential = Some(ExternalPotential {
+        smeared_charges: vec![
+            SmearedCharge {
+                q: -0.4,
+                x: 0.0,
+                y: 0.0,
+                z: 6.0,
+                width: 1.0,
+            },
+            SmearedCharge {
+                q: -0.4,
+                x: 0.0,
+                y: 0.0,
+                z: -6.0,
+                width: 1.0,
+            },
+        ],
         ..Default::default()
-    }
+    });
+    c
 }
 
 #[test]

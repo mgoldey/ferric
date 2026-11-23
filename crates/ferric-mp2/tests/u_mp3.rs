@@ -148,12 +148,10 @@ struct Sys {
 }
 
 fn tight() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-12,
-        density_conv: FERRIC_DENSITY_CONV,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-12)
+        .with_density_conv(FERRIC_DENSITY_CONV)
 }
 
 /// Molecule, bases and a converged reference of kind `rhf`/`uhf`/`rohf`.
@@ -173,17 +171,11 @@ fn system(name: &str, scf_kind: &str) -> Sys {
     let ctx = ParallelContext::default();
     let scf = match scf_kind {
         "rhf" => solve_rhf(&ctx, &mol, &obs, op, &bounds, &tight()),
-        "uhf" => solve_uhf(
-            &ctx,
-            &mol,
-            &obs,
-            &bounds,
-            &RhfConfig {
-                check_stability: true,
-                scf_stability_descent: true,
-                ..tight()
-            },
-        ),
+        "uhf" => solve_uhf(&ctx, &mol, &obs, &bounds, &{
+            let mut c = tight().with_check_stability(true);
+            c.scf_stability_descent = true;
+            c
+        }),
         "rohf" => solve_rohf(&ctx, &mol, &obs, op, &bounds, &tight()),
         _ => panic!("unknown reference {scf_kind}"),
     }

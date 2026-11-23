@@ -54,15 +54,14 @@ enum Kind {
 }
 
 fn config(xc: &str, grid: Option<AtomicGridConfig>) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some(xc.into()),
-        dft_grid: grid,
-        energy_conv: 1e-11,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc);
+    c.dft_grid = grid;
+    c.energy_conv = 1e-11;
+    c.density_conv = 1e-8;
+    c.max_iter = 200;
+    c
 }
 
 fn energy(kind: Kind, mol: &Molecule, cfg: &RhfConfig) -> f64 {

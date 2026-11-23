@@ -1715,12 +1715,10 @@ mod tests {
 
         // Open-shell run on same molecule (singlet, M=1)
         let mol_us = Molecule::parse_xyz(xyz, 0, 1).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         // UHF will converge to a symmetric solution for singlet H2 if seeded
         // from neutral RHF MOs (no spin contamination).
         let c_seed = rhf.mos_r().clone();
@@ -1768,12 +1766,10 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         println!("OH UHF: E={:.8}, iters={}", uhf.energy, uhf.iterations);
 
@@ -1809,12 +1805,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
         let energy_res = u_ri_mp2(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -1888,12 +1882,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let amps =
             compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -1961,12 +1953,10 @@ mod tests {
         let rhf = ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default())
             .unwrap();
         let c_seed = rhf.mos_r().clone();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = ferric_scf::uhf::solve_uhf_with_guess(
             &ctx,
             &mol,
@@ -2026,12 +2016,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let amps =
             compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
@@ -2284,12 +2272,10 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
         let inter_a = compute_rpa_intermediates_spin(

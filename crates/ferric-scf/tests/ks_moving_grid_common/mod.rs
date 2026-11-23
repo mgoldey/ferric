@@ -53,17 +53,15 @@ pub fn water() -> Molecule {
 /// Production SCF / Hessian config: functional `xc`, exact J and K, the
 /// test grid.
 pub fn config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc(xc)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
 }
 
 pub struct Pt {
@@ -256,12 +254,10 @@ pub const MUTANT_FACTOR: f64 = 10.0;
 /// local ubuntu-24.04 stack. At 1e-13 the same column misses by 7.4e-11 in
 /// that container.
 pub fn fd_reference_config(cfg: &RhfConfig) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        density_conv: cfg.density_conv.min(1e-13),
-        energy_conv: cfg.energy_conv.min(1e-14),
-        ..cfg.clone()
-    }
+    cfg.clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(cfg.density_conv.min(1e-13))
+        .with_energy_conv(cfg.energy_conv.min(1e-14))
 }
 
 /// Largest DIIS `err_max` an SCF behind the gradient difference may stop at.

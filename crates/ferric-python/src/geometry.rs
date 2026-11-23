@@ -264,11 +264,13 @@ pub(crate) fn run_optimize(
     let method = parse_optimize_method(method)?;
     let spin = parse_optimize_reference(reference, &mol.inner)?;
     refuse_unread_optimize_kwargs(method, spin, &k)?;
-    let mut cfg = RhfConfig {
+    let mut cfg = ferric_scf::options::ScfOptions {
         external_potential: build_external_potential(point_charges, external_field),
         pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
     ScfConv::new(scf_max_iter, scf_energy_conv, scf_density_conv).apply(&mut cfg);
     cfg.xc = xc.map(str::to_string);
     cfg.df_j_aux = crate::geometry_df_aux(xc, df_j_aux);
@@ -1156,11 +1158,7 @@ fn run_optimize_pdep_rpa(
             )
         })
         .map_err(make_err)?;
-    let ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
     let certificate_data = correlated_optimize_certificate(
         "pdep-rpa",
         &r.mol,
@@ -1532,12 +1530,7 @@ fn mp2_gradient_optimize_result(
     opt_config: &OptimizeConfig,
     spin: ferric_scf::Spin,
 ) -> PyOptimizeResult {
-    let mut ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut ref_cfg = RhfConfig::gradient_reference(ext).for_geometry_task();
     scf_jk.apply(&mut ref_cfg);
     let certificate_data = correlated_optimize_certificate(
         kind,
@@ -2272,11 +2265,13 @@ pub(crate) fn run_frequencies(
     // Hessian needs no new machinery -- only a way to ask for one. Without
     // this, CONFIRMING an embedded saddle (exactly one imaginary frequency)
     // had to be done in vacuum, against a Hessian from a different surface.
-    let mut scf_cfg = RhfConfig {
+    let mut scf_cfg = ferric_scf::options::ScfOptions {
         xc: xc.map(|s| s.to_string()),
         external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
-    };
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
     // Unset keeps the RhfConfig defaults (200, 1e-3, 1e-6), as before.
     scf_cfg.max_iter = max_iter.unwrap_or(scf_cfg.max_iter);
     scf_cfg.energy_conv = energy_conv.unwrap_or(scf_cfg.energy_conv);
@@ -2414,11 +2409,7 @@ fn run_frequencies_pdep_rpa(
             )
         })
         .map_err(make_err)?;
-    let ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
     let (kind, reference) =
         task_reference_certificate(&m, basis_name, &ref_cfg, ferric_scf::Spin::Restricted);
     let _ = kind;
@@ -2570,11 +2561,7 @@ fn run_frequencies_att_rimp2(
             )
         })
         .map_err(make_err)?;
-    let mut ref_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
     scf_jk.apply(&mut ref_cfg);
     let (_, reference) = task_reference_certificate(&m, basis_name, &ref_cfg, spin);
     let certificate_data = match reference {
@@ -2697,11 +2684,7 @@ fn run_frequencies_mp2_family(
         (None, cfg.for_geometry_task(), label, Some(oo))
     } else {
         let jk = mp2_gradient_scf_jk(k, basis_name, kind)?;
-        let mut ref_cfg = RhfConfig {
-            density_conv: 1e-9,
-            ..Default::default()
-        }
-        .for_geometry_task();
+        let mut ref_cfg = RhfConfig::gradient_reference(None).for_geometry_task();
         jk.apply(&mut ref_cfg);
         let label = ferric_mp2::optimize::rimp2_gradient_label(&jk);
         (Some(jk), ref_cfg, label, None)

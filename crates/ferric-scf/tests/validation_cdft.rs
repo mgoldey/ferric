@@ -226,14 +226,12 @@ fn grid_cfg() -> AtomicGridConfig {
 
 /// Unconstrained UKS/PBE config; exact J (no `df_j_aux`), as NWChem `direct`.
 fn base_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 500,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 struct System {
@@ -299,16 +297,14 @@ fn spin_of(kind: &str) -> SpinChannel {
 }
 
 fn solve_constrained(s: &System, spin: SpinChannel, target: f64) -> CdftResult {
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: s.fragment.clone(),
-            spin,
-            target,
-        }],
-        cdft_lambda_tol: 1e-10,
-        cdft_max_outer: 60,
-        ..base_config()
-    };
+    let mut cfg = base_config();
+    cfg.constraints = vec![Constraint {
+        fragment: s.fragment.clone(),
+        spin,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-10;
+    cfg.cdft_max_outer = 60;
     let r = solve_cdft_uhf(&s.ctx, &s.mol, &s.prep, &s.bs, &s.bounds, &cfg)
         .unwrap_or_else(|e| panic!("{}: cDFT {spin:?} target {target}: {e:?}", s.tag));
     assert!(

@@ -52,13 +52,11 @@ const AUX: &str = "def2-universal-jkfit";
 const BASIS: &str = "def2-svp";
 
 fn geometry_config(xc: &str, aux: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(aux.into()),
-        df_k_aux: Some(aux.into()),
-        ..RhfConfig::default()
-    }
-    .for_geometry_task()
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux(aux)
+        .with_df_k_aux(aux)
+        .for_geometry_task()
 }
 
 fn handoff(cfg: &RhfConfig) -> &RawHandoff {
@@ -242,9 +240,10 @@ fn mismatched_aux_basis_metric_is_not_used() {
 #[test]
 fn sub_solve_without_handoff_keeps_no_metric() {
     let s = setup(water());
-    let cfg = with_fresh_handoff(&RhfConfig {
-        guess_basis: Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap()),
-        ..geometry_config("B3LYP", AUX)
+    let cfg = with_fresh_handoff(&{
+        let mut c = geometry_config("B3LYP", AUX);
+        c.guess_basis = Some(ferric_scf::basis2::GuessBasis::bundled("sto-3g", "fock").unwrap());
+        c
     });
     let res = scf(&s, false, &cfg);
     assert!(res.guess_basis.is_some(), "the guess-basis SCF did not run");

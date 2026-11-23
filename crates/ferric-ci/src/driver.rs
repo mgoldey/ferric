@@ -48,23 +48,32 @@ pub fn rhf_start(
     start: ScfStart,
     memory_budget_bytes: Option<usize>,
 ) -> Result<ScfResult, FerricError> {
-    let cfg = RhfConfig {
-        screening: sys.screening(),
-        ..start_config(start, memory_budget_bytes)
-    };
+    let cfg = start_config(start, memory_budget_bytes, sys.screening())?;
     sys.solve_rhf(&cfg)?.into_converged()
 }
 
-/// The [`RhfConfig`] of the RHF start.
-fn start_config(start: ScfStart, memory_budget_bytes: Option<usize>) -> RhfConfig {
-    let mut cfg = RhfConfig {
-        three_index_budget_bytes: memory_budget_bytes.unwrap_or(0),
+/// The [`RhfConfig`] of the RHF start, lowered through
+/// [`ScfOptions`](ferric_scf::options::ScfOptions): `start`'s thresholds,
+/// the budget and the screening kind, every other field at its default.
+fn start_config(
+    start: ScfStart,
+    memory_budget_bytes: Option<usize>,
+    screening: ferric_scf::screening::ScreeningKind,
+) -> Result<RhfConfig, FerricError> {
+    let ScfStart {
+        max_iter,
+        energy_conv,
+        density_conv,
+    } = start;
+    ferric_scf::options::ScfOptions {
+        max_iter,
+        energy_conv,
+        density_conv,
+        three_index_budget_bytes: memory_budget_bytes,
+        screening: Some(screening),
         ..Default::default()
-    };
-    cfg.max_iter = start.max_iter.unwrap_or(cfg.max_iter);
-    cfg.energy_conv = start.energy_conv.unwrap_or(cfg.energy_conv);
-    cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
-    cfg
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
 }
 
 /// The doubly occupied core count `(nelec − n_α − n_β) / 2` that the active
@@ -220,6 +229,41 @@ pub fn nevpt2_on_rhf(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `start_config` (through `ScfOptions`) reproduces the config the RHF
+    /// start built before roadmap item 11(a): the
+    /// `RhfConfig { three_index_budget_bytes, ..Default::default() }` literal,
+    /// the three threshold overrides, then `screening` (the literal's
+    /// `..start_config(..)` update in `rhf_start`), field for field
+    /// (`Debug` text; `RhfConfig` has no `PartialEq`).
+    #[test]
+    fn start_config_is_the_old_literal() {
+        use ferric_scf::screening::ScreeningKind;
+        let old = |start: ScfStart, budget: Option<usize>, screening| {
+            let mut cfg = RhfConfig::default();
+            cfg.three_index_budget_bytes = budget.unwrap_or(0);
+            cfg.max_iter = start.max_iter.unwrap_or(cfg.max_iter);
+            cfg.energy_conv = start.energy_conv.unwrap_or(cfg.energy_conv);
+            cfg.density_conv = start.density_conv.unwrap_or(cfg.density_conv);
+            cfg.screening = screening;
+            cfg
+        };
+        let all = ScfStart {
+            max_iter: Some(77),
+            energy_conv: Some(1e-9),
+            density_conv: Some(3e-8),
+        };
+        for (start, budget, screening) in [
+            (ScfStart::default(), None, ScreeningKind::default()),
+            (all, Some(1 << 30), ScreeningKind::Csb),
+        ] {
+            let new = start_config(start, budget, screening).unwrap();
+            assert_eq!(
+                format!("{:?}", old(start, budget, screening)),
+                format!("{new:?}")
+            );
+        }
+    }
 
     /// `rhf_start` builds its own config; on a CSB system it must screen
     /// with CSB (the system's solve methods refuse any other kind).

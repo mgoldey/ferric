@@ -103,18 +103,17 @@ fn overlap_diag_error(mol: &Molecule, bs: &BasisSet, prep: &PreparedBasis) -> f6
 /// auxiliary set, as PySCF's `density_fit(auxbasis=...)` does.
 fn scf_config(case: &Case) -> RhfConfig {
     let df = (case.kind == "dfhf").then(|| case.auxbasis.clone().unwrap());
-    RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        max_iter: 400,
-        df_j_aux: df.clone(),
-        df_k_aux: df,
-        // f64 RI-J tensor: PySCF's DF-HF reference is f64, and the f32
-        // default moves these energies by up to 1.1e-6 Ha (measured), above
-        // the bar.
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(400);
+    c.df_j_aux = df.clone();
+    c.df_k_aux = df;
+    // f64 RI-J tensor: PySCF's DF-HF reference is f64, and the f32
+    // default moves these energies by up to 1.1e-6 Ha (measured), above
+    // the bar.
+    c.ri_j_precision = Some(ferric_scf::df_j::RiJPrecision::F64);
+    c
 }
 
 /// Structural checks against PySCF: ECP, electron count, basis-function count

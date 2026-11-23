@@ -337,12 +337,10 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         // DF-JK for the cation UHF (matches the neutral RHF ladder). def2-universal-jkfit
         // avoids the direct <gg|gg> quartets that make g-function atoms (Cu/aTZ) ~28x
         // slower per iteration. solve_uhf honors df_j_aux/df_k_aux for plain HF (omega=0).
-        let uhf_cfg = UhfConfig {
-            max_iter: 200,
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let uhf_cfg = UhfConfig::default()
+            .with_max_iter(200)
+            .with_df_j_aux("def2-universal-jkfit".to_string())
+            .with_df_k_aux("def2-universal-jkfit".to_string());
         let c_seed = rhf_n.mos_alpha.clone();
         let _t_uhf = ferric_rpa::timing::Stage::start("phase:cation_UHF");
         let (uhf_c, diag_method) = match solve_uhf_with_guess(
@@ -532,10 +530,7 @@ fn run_g0w0_pbe(
     pdep_cfg_gw: &PdepRpaConfig,
     homo_abs: usize,
 ) -> Option<f64> {
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("pbe");
     // Physicality test for a closed-shell RKS reference: a bound HOMO and a real
     // gap. `converged = true` is NOT sufficient — a homonuclear transition-metal
     // dimer's closed-shell RKS-PBE can CONVERGE to an unphysical state (Cu2:
@@ -570,13 +565,11 @@ fn run_g0w0_pbe(
         // is only ferric's default guess+damping that mis-converges.
         if !is_physical(&ks) {
             for shift in [0.5f64, 1.0, 2.0] {
-                let sc = RhfConfig {
-                    xc: Some("pbe".into()),
-                    level_shift: shift,
-                    max_iter: 200,
-                    df_j_aux: Some("def2-universal-jkfit".to_string()),
-                    ..Default::default()
-                };
+                let sc = RhfConfig::default()
+                    .with_xc("pbe")
+                    .with_level_shift(shift)
+                    .with_max_iter(200)
+                    .with_df_j_aux("def2-universal-jkfit".to_string());
                 match solve_rhf(ctx, neutral, obs_n, op, bounds_n, &sc) {
                     Ok(r) if is_physical(&r) => {
                         let eps = r.eps_r();
@@ -696,11 +689,9 @@ fn run_u_g0w0_pbe(
     // Build a symmetry-broken guess from plain neutral RHF MOs (HF converges for
     // Cu2 — its @HF GW columns all succeeded). α keeps the RHF occupied set; β
     // swaps HOMO↔LUMO so the two spins localize on opposite atoms.
-    let hf_cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let hf_cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit".to_string())
+        .with_df_k_aux("def2-universal-jkfit".to_string());
     let rhf_n = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &hf_cfg).ok()?;
     let nocc = (neutral.nelec() as usize) / 2; // singlet
     if nocc == 0 || nocc >= rhf_n.mos_alpha.ncols() {
@@ -729,13 +720,11 @@ fn run_u_g0w0_pbe(
         c_b[(mu, homo)] = c * h - s * l;
         c_b[(mu, lumo)] = s * h + c * l;
     }
-    let uks_cfg = UhfConfig {
-        max_iter: 300,
-        xc: Some("pbe".into()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let uks_cfg = UhfConfig::default()
+        .with_max_iter(300)
+        .with_xc("pbe")
+        .with_df_j_aux("def2-universal-jkfit".to_string())
+        .with_df_k_aux("def2-universal-jkfit".to_string());
     let uks =
         solve_uhf_with_guess(ctx, neutral, obs_n, bounds_n, &uks_cfg, Some((&c_a, &c_b))).ok()?;
     // Always print the spin state of the @PBE reference actually used. ⟨S²⟩ ≈ 0

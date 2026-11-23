@@ -174,17 +174,15 @@ fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
 /// reference runs (flat grid, f64 RI-J storage). `tight` tightens the SCF
 /// stop by two orders to measure ferric's own convergence term.
 fn ks_config(tight: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(DoubleHybridKind::DsdPbep86.xc_name().into()),
-        df_j_aux: Some(JKFIT.to_string()),
-        df_k_aux: Some(JKFIT.to_string()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        energy_conv: if tight { 1e-12 } else { 1e-10 },
-        density_conv: if tight { 1e-10 } else { 1e-8 },
-        max_iter: 200,
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(DoubleHybridKind::DsdPbep86.xc_name())
+        .with_df_j_aux(JKFIT.to_string())
+        .with_df_k_aux(JKFIT.to_string())
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(if tight { 1e-12 } else { 1e-10 })
+        .with_density_conv(if tight { 1e-10 } else { 1e-8 })
+        .with_max_iter(200)
+        .with_dft_grid(AtomicGridConfig::default())
 }
 
 struct Run {
@@ -401,11 +399,9 @@ fn default_grid_and_ri_j_storage_shift_the_total() {
     let mut worst = 0.0f64;
     for (system, basis_name, aux) in CASES {
         let pinned = solve(system, basis_name, aux, false);
-        let default_cfg = RhfConfig {
-            dft_grid: None,
-            ri_j_precision: None,
-            ..ks_config(false)
-        };
+        let mut default_cfg = ks_config(false);
+        default_cfg.dft_grid = None;
+        default_cfg.ri_j_precision = None;
         let dflt = solve_with(system, basis_name, aux, default_cfg);
         let d = (dh(&pinned, 0).total_energy - dh(&dflt, 0).total_energy).abs();
         eprintln!("{system}/{basis_name}: default-vs-pinned total {d:.2e}");

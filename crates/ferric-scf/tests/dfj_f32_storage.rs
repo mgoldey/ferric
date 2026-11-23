@@ -788,16 +788,14 @@ fn mutants_fail_the_per_build_check() {
 fn scf(sys: &System, f32: bool) -> ScfResult {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &sys.obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-6,
-        density_conv: 1e-9,
-        max_iter: 200,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: 3 << 30,
-        ri_j_precision: Some(precision(f32)),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-6)
+        .with_density_conv(1e-9)
+        .with_max_iter(200)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX);
+    cfg.three_index_budget_bytes = 3 << 30;
+    cfg.ri_j_precision = Some(precision(f32));
     let _r = Request::set(None);
     let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
     let res = solve_rhf(

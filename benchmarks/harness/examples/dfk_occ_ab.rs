@@ -23,20 +23,22 @@ fn main() {
     let obs = PreparedBasis::new(&mol, &basis::bundled(bs_name).unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        max_iter: 200,
-        energy_conv: std::env::var("EC")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1e-3),
-        density_conv: std::env::var("DC")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1e-6),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_max_iter(200)
+        .with_energy_conv(
+            std::env::var("EC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1e-3),
+        )
+        .with_density_conv(
+            std::env::var("DC")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1e-6),
+        );
     let t = Instant::now();
     let r = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     println!(

@@ -126,14 +126,12 @@ fn mol_of(xyz: &str, mult: usize) -> Molecule {
 
 /// Exact J/K, tight convergence.
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 fn prep_for(m: &Molecule, basis_name: &str) -> (PreparedBasis, SchwarzBounds) {
@@ -914,11 +912,9 @@ fn stored_focks_are_checked_against_the_rebuilt_ones() {
     let op = Operator::coulomb();
     // Matching: at the tight tolerance and at the default one.
     let dev_tight = fock_deviation(c, &c.rohf);
-    let default_cfg = RhfConfig {
-        density_conv: RhfConfig::default().density_conv,
-        energy_conv: RhfConfig::default().energy_conv,
-        ..scf_config()
-    };
+    let default_cfg = scf_config()
+        .with_density_conv(RhfConfig::default().density_conv)
+        .with_energy_conv(RhfConfig::default().energy_conv);
     let loose = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &default_cfg).unwrap();
     let dev_default = fock_deviation(c, &loose);
     // Perturbed stored Fock, and a ROKS/PBE result handed an HF config.
@@ -927,10 +923,7 @@ fn stored_focks_are_checked_against_the_rebuilt_ones() {
     fa[(0, 0)] += 1e-3;
     bad.rohf_spin_focks = Some((fa, fb));
     let dev_bad = fock_deviation(c, &bad);
-    let roks_cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..scf_config()
-    };
+    let roks_cfg = scf_config().with_xc("PBE");
     let roks = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &roks_cfg).unwrap();
     let dev_roks = fock_deviation(c, &roks);
     eprintln!(
@@ -993,18 +986,16 @@ fn cosx_and_external_potential_results_are_refused() {
     let err = hessian_of(c, &cosx, &scf_config()).expect_err("COSX");
     assert!(err.to_string().contains("COSX"), "{err}");
 
-    let ext_cfg = RhfConfig {
-        external_potential: Some(ferric_core::external_potential::ExternalPotential {
-            point_charges: vec![ferric_core::external_potential::PointCharge {
-                q: 0.5,
-                x: 6.0,
-                y: 0.0,
-                z: 0.0,
-            }],
-            ..Default::default()
-        }),
-        ..scf_config()
-    };
+    let mut ext_cfg = scf_config();
+    ext_cfg.external_potential = Some(ferric_core::external_potential::ExternalPotential {
+        point_charges: vec![ferric_core::external_potential::PointCharge {
+            q: 0.5,
+            x: 6.0,
+            y: 0.0,
+            z: 0.0,
+        }],
+        ..Default::default()
+    });
     let err = hessian_of(c, &c.rohf, &ext_cfg).expect_err("external potential");
     eprintln!("{err}");
     assert!(err.to_string().contains("external potential"), "{err}");
@@ -1128,11 +1119,9 @@ fn default_scf_tolerance_error_of_the_hessian() {
     let c = nh2();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let default_cfg = RhfConfig {
-        density_conv: RhfConfig::default().density_conv,
-        energy_conv: RhfConfig::default().energy_conv,
-        ..scf_config()
-    };
+    let default_cfg = scf_config()
+        .with_density_conv(RhfConfig::default().density_conv)
+        .with_energy_conv(RhfConfig::default().energy_conv);
     let loose = solve_rohf(&ctx, &c.mol, &c.prep, op, &c.bounds, &default_cfg).unwrap();
     let go = |m: RohfMutation| {
         rohf_hessian_parts_mutated(

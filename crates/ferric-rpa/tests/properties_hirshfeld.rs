@@ -294,10 +294,8 @@ fn h2o_hirshfeld_with_external_point_charge_diagnostic() {
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf_cfg = RhfConfig {
-            external_potential: Some(ext),
-            ..Default::default()
-        };
+        let mut rhf_cfg = RhfConfig::default();
+        rhf_cfg.external_potential = Some(ext);
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
 
         let alpha_mol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg)

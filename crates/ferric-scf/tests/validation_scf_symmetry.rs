@@ -41,13 +41,12 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 }
 
 fn cfg(symmetry: bool) -> RhfConfig {
-    RhfConfig {
-        symmetry,
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        max_iter: 200,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default();
+    c.symmetry = symmetry;
+    c.density_conv = 1e-10;
+    c.energy_conv = 1e-12;
+    c.max_iter = 200;
+    c
 }
 
 fn occupation(r: &SymmetricRhf, nocc: usize) -> BTreeMap<String, usize> {
@@ -136,21 +135,20 @@ fn matches_pyscf_symmetry_references() {
 /// def2-universal-jkfit against PySCF `dft.RKS` with symmetry on the same
 /// recipe (`rks_pbe` blocks of the references).
 fn ks_cfg(irrep_nelec: Option<Vec<(String, usize)>>) -> RhfConfig {
-    RhfConfig {
-        symmetry: true,
-        xc: Some("PBE".into()),
-        // The PySCF references fit J in f64. The f32 RI-J default moves the
-        // energy by 1e-7..1e-6 Ha, above this test's bar.
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        density_conv: 1e-10,
-        energy_conv: 1e-8,
-        max_iter: 200,
-        // The references are PySCF on the flat (75,110) grid (gen_scf_symmetry.py:
-        // prune=None), not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        irrep_nelec,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default();
+    c.symmetry = true;
+    c.xc = Some("PBE".into());
+    // The PySCF references fit J in f64. The f32 RI-J default moves the
+    // energy by 1e-7..1e-6 Ha, above this test's bar.
+    c.ri_j_precision = Some(ferric_scf::df_j::RiJPrecision::F64);
+    c.density_conv = 1e-10;
+    c.energy_conv = 1e-8;
+    c.max_iter = 200;
+    // The references are PySCF on the flat (75,110) grid (gen_scf_symmetry.py:
+    // prune=None), not the pruned KS default AtomicGridConfig::production().
+    c.dft_grid = Some(AtomicGridConfig::default());
+    c.irrep_nelec = irrep_nelec;
+    c
 }
 
 #[test]

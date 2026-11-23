@@ -52,12 +52,10 @@ fn run_uhf(
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = UhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     (res, mol, prep)
@@ -159,12 +157,10 @@ fn fd_energy(mol: &Molecule, basis_name: &str) -> f64 {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = UhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     solve_uhf(&ctx, mol, &prep, &bounds, &cfg).unwrap().energy
 }
@@ -177,10 +173,7 @@ fn uhf_gradient_h_atom_fd() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = UhfConfig {
-        energy_conv: 1e-12,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default().with_energy_conv(1e-12);
     let ctx = ParallelContext::default();
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     let g = uhf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();
@@ -197,12 +190,10 @@ fn uhf_gradient_oh_sto3g_fd() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = UhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     let analytic = uhf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();

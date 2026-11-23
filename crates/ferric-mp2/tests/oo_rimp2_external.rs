@@ -96,11 +96,9 @@ fn oo_mp2_energy_shift_tracks_rhf_shift() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap();
     assert!(rhf_vac.converged);
@@ -108,12 +106,10 @@ fn oo_mp2_energy_shift_tracks_rhf_shift() {
     assert!(oo_vac.converged, "vacuum OO-MP2 must converge");
 
     // In the field.
-    let field_cfg = RhfConfig {
-        external_potential: Some(ext.clone()),
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let mut field_cfg = RhfConfig::default();
+    field_cfg.external_potential = Some(ext.clone());
+    field_cfg.energy_conv = 1e-11;
+    field_cfg.density_conv = 1e-10;
     let rhf_field = solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -184,11 +180,9 @@ fn oo_mp2_ext_none_matches_vacuum() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged);
@@ -233,12 +227,10 @@ fn oo_mp2_gradient_matches_fd_in_field() {
         let obs = PreparedBasis::new(m, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(m, &aux_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            external_potential: Some(ext.clone()),
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.external_potential = Some(ext.clone());
+        cfg.energy_conv = 1e-11;
+        cfg.density_conv = 1e-10;
         let rhf = solve_rhf(&ParallelContext::default(), m, &obs, op, &bounds, &cfg).unwrap();
         assert!(rhf.converged);
         let oo = oo_ri_mp2(m, &obs, &dfbs, op, &bounds, &rhf, &oo_config, Some(&ext)).unwrap();
@@ -252,12 +244,10 @@ fn oo_mp2_gradient_matches_fd_in_field() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        external_potential: Some(ext.clone()),
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(ext.clone());
+    cfg.energy_conv = 1e-11;
+    cfg.density_conv = 1e-10;
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged);
     let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, Some(&ext)).unwrap();

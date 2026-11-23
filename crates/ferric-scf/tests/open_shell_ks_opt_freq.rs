@@ -46,13 +46,11 @@ fn energy_at_start(ctx: &ParallelContext, mol: &Molecule, cfg: &RhfConfig, rohf:
 /// Tighter SCF for the FD-Hessian path: differentiating a loosely-converged
 /// gradient produces a large `FrequencyResult::asymmetry` and garbage modes.
 fn freq_config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        energy_conv: 1e-7,
-        density_conv: 1e-6,
-        max_iter: 600,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-6)
+        .with_max_iter(600)
 }
 
 fn ks_config(xc: &str) -> RhfConfig {
@@ -62,13 +60,11 @@ fn ks_config(xc: &str) -> RhfConfig {
     // that swap once the orbital gradient is below density_conv
     // (tests/uhf_degenerate_swap.rs); ROHF holds the occupation by continuity
     // (rohf_occupation, F6).
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        energy_conv: 1e-7,
-        density_conv: 1e-4,
-        max_iter: 400,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-4)
+        .with_max_iter(400)
 }
 
 /// Measured descent of a 2-step optimization from the input geometry (see the

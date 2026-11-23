@@ -115,26 +115,24 @@ fn charge_constraint_is_satisfied() {
     let (mol, bs, prep, _op, bounds) = setup();
     let ctx = ParallelContext::default();
     let target = 2.2; // pull a bit of charge onto Li (Z=3)
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-5;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    cfg.cdft_max_outer = 40;
+    cfg.fractional_occ = false;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
     assert!(
         (res.populations[0] - target).abs() < 1e-5,
@@ -156,26 +154,24 @@ fn charge_constraint_is_satisfied_hf_molecule() {
     // F is atom index 1; pull extra charge onto F (already electronegative,
     // so a modest increase over the unconstrained baseline is physical).
     let target = 9.3;
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![1],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.constraints = vec![Constraint {
+        fragment: vec![1],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-5;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    cfg.cdft_max_outer = 40;
+    cfg.fractional_occ = false;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
     assert!(
         (res.populations[0] - target).abs() < 1e-5,
@@ -214,26 +210,24 @@ fn spin_constraint_is_satisfied_lih_plus() {
     let ctx = ParallelContext::default();
 
     let target = 0.45; // pull more of the unpaired spin density onto Li
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::SpinDiff,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::SpinDiff,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-5;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    cfg.cdft_max_outer = 40;
+    cfg.fractional_occ = false;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
     assert!(
         (res.populations[0] - target).abs() < 1e-5,
@@ -272,27 +266,25 @@ fn cdft_composes_with_external_point_charge() {
     let ctx = ParallelContext::default();
     let target = 2.2; // same target as charge_constraint_is_satisfied
 
-    let base_cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        external_potential: None,
-        ..Default::default()
-    };
+    let mut base_cfg = RhfConfig::default();
+    base_cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    base_cfg.cdft_lambda_tol = 1e-5;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    base_cfg.cdft_max_outer = 40;
+    base_cfg.fractional_occ = false;
+    base_cfg.external_potential = None;
     let base = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &base_cfg).unwrap();
     assert!(base.scf.converged, "baseline inner SCF not converged");
     assert!(
@@ -311,27 +303,25 @@ fn cdft_composes_with_external_point_charge() {
         smeared_charges: Vec::new(),
         field: None,
     };
-    let perturbed_cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        fractional_occ: false,
-        external_potential: Some(ext),
-        ..Default::default()
-    };
+    let mut perturbed_cfg = RhfConfig::default();
+    perturbed_cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    perturbed_cfg.cdft_lambda_tol = 1e-5;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    perturbed_cfg.cdft_max_outer = 40;
+    perturbed_cfg.fractional_occ = false;
+    perturbed_cfg.external_potential = Some(ext);
     let perturbed = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &perturbed_cfg).unwrap();
     assert!(
         perturbed.scf.converged,
@@ -467,23 +457,19 @@ fn hene_free_population(
 fn hene_vacuous_constraint_is_still_accepted() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        level_shift: 0.5,
-        dft_grid: Some(gcfg.clone()),
-        fractional_occ: false,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_level_shift(0.5)
+        .with_dft_grid(gcfg.clone());
+    base.fractional_occ = false;
     let (n_free, e_free) = hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, 1);
 
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![1],
-            spin: SpinChannel::Total,
-            target: n_free,
-        }],
-        cdft_lambda_tol: 1e-6,
-        ..base
-    };
+    let mut cfg = base;
+    cfg.constraints = vec![Constraint {
+        fragment: vec![1],
+        spin: SpinChannel::Total,
+        target: n_free,
+    }];
+    cfg.cdft_lambda_tol = 1e-6;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
         .expect("a vacuous constraint must return");
     assert_eq!(res.lambdas[0], 0.0, "vacuous constraint moved λ");
@@ -522,13 +508,11 @@ fn loose_tolerance_still_applies_the_constraint() {
     let ctx = ParallelContext::default();
     for &(frag, target) in &[(1usize, 9.0_f64), (0usize, 2.0_f64)] {
         for &ls in &[0.2_f64, 0.5, 0.8] {
-            let base = RhfConfig {
-                dft_grid: Some(gcfg.clone()),
-                level_shift: ls,
-                max_iter: 400,
-                fractional_occ: false,
-                ..Default::default()
-            };
+            let mut base = RhfConfig::default()
+                .with_dft_grid(gcfg.clone())
+                .with_level_shift(ls)
+                .with_max_iter(400);
+            base.fractional_occ = false;
             let (n_free, e_free) =
                 hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, frag);
             let gap = (n_free - target).abs();
@@ -536,15 +520,13 @@ fn loose_tolerance_still_applies_the_constraint() {
                 gap > 1e-2,
                 "frag {frag} ls {ls}: gap {gap:.3e} too small to exercise the rule"
             );
-            let cfg = RhfConfig {
-                constraints: vec![Constraint {
-                    fragment: vec![frag],
-                    spin: SpinChannel::Total,
-                    target,
-                }],
-                cdft_lambda_tol: 2.0 * gap,
-                ..base
-            };
+            let mut cfg = base;
+            cfg.constraints = vec![Constraint {
+                fragment: vec![frag],
+                spin: SpinChannel::Total,
+                target,
+            }];
+            cfg.cdft_lambda_tol = 2.0 * gap;
             let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
                 .unwrap_or_else(|e| panic!("frag {frag} ls {ls}: {e}"));
             assert!(
@@ -581,20 +563,18 @@ fn loose_tolerance_met_after_lambda_moved_is_accepted() {
     let ctx = ParallelContext::default();
     let target = 9.0;
     let tol = 5e-2;
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![1],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: tol,
-        dft_grid: Some(gcfg.clone()),
-        level_shift: 0.5,
-        max_iter: 400,
-        fractional_occ: false,
-        cdft_stability_descent: false,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.constraints = vec![Constraint {
+        fragment: vec![1],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    cfg.cdft_lambda_tol = tol;
+    cfg.dft_grid = Some(gcfg.clone());
+    cfg.level_shift = 0.5;
+    cfg.max_iter = 400;
+    cfg.fractional_occ = false;
+    cfg.cdft_stability_descent = false;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("a loose solve whose λ moved must be accepted: {e}"));
     assert!(res.lambdas[0] != 0.0, "λ did not move: {:?}", res.lambdas);
@@ -625,18 +605,16 @@ fn cliff_side_targets_with_tight_tolerance_are_accepted() {
     let ctx = ParallelContext::default();
     let mut energies = Vec::new();
     for &(frag, target) in &[(1usize, 9.0_f64), (0usize, 2.0_f64)] {
-        let cfg = RhfConfig {
-            constraints: vec![Constraint {
-                fragment: vec![frag],
-                spin: SpinChannel::Total,
-                target,
-            }],
-            cdft_lambda_tol: 1e-5,
-            dft_grid: Some(gcfg.clone()),
-            level_shift: 0.5,
-            fractional_occ: false,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.constraints = vec![Constraint {
+            fragment: vec![frag],
+            spin: SpinChannel::Total,
+            target,
+        }];
+        cfg.cdft_lambda_tol = 1e-5;
+        cfg.dft_grid = Some(gcfg.clone());
+        cfg.level_shift = 0.5;
+        cfg.fractional_occ = false;
         let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap_or_else(|e| {
             panic!("frag {frag} target {target} must still solve at tol 1e-5: {e}")
         });
@@ -669,16 +647,14 @@ fn reported_residual_matches_population_minus_target() {
     let (mol, bs, prep, _op, bounds) = setup();
     let ctx = ParallelContext::default();
     let target = 2.2;
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-5,
-        fractional_occ: false,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-5;
+    cfg.fractional_occ = false;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap();
     assert_eq!(res.residuals.len(), 1);
     assert!(
@@ -701,22 +677,18 @@ fn reported_residual_matches_population_minus_target() {
 fn near_vacuous_constraint_within_the_quadrature_floor_is_accepted() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        level_shift: 0.5,
-        dft_grid: Some(gcfg.clone()),
-        fractional_occ: false,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_level_shift(0.5)
+        .with_dft_grid(gcfg.clone());
+    base.fractional_occ = false;
     let (n_free, _) = hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, 1);
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![1],
-            spin: SpinChannel::Total,
-            target: n_free + 1e-8,
-        }],
-        cdft_lambda_tol: 5e-2,
-        ..base
-    };
+    let mut cfg = base;
+    cfg.constraints = vec![Constraint {
+        fragment: vec![1],
+        spin: SpinChannel::Total,
+        target: n_free + 1e-8,
+    }];
+    cfg.cdft_lambda_tol = 5e-2;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("a target 1e-8 from the unconstrained population: {e}"));
     assert_eq!(res.lambdas[0], 0.0);
@@ -742,26 +714,22 @@ fn near_vacuous_constraint_within_the_quadrature_floor_is_accepted() {
 fn dissociation_limit_target_met_at_lambda_zero_is_accepted() {
     let (mol, bs, prep, bounds, gcfg) = setup_hene(6.0);
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        level_shift: 0.5,
-        dft_grid: Some(gcfg.clone()),
-        fractional_occ: false,
-        cdft_stability_descent: false,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_level_shift(0.5)
+        .with_dft_grid(gcfg.clone());
+    base.fractional_occ = false;
+    base.cdft_stability_descent = false;
     let (n_free, e_free) = hene_free_population(&mol, &bs, &prep, &bounds, &gcfg, &base, 0);
     let target = 2.0;
     let gap = (n_free - target).abs();
     assert!(gap > 1e-4 && gap < 1e-3, "reachability: gap {gap:.3e}");
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target,
-        }],
-        cdft_lambda_tol: 1e-3,
-        ..base
-    };
+    let mut cfg = base;
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target,
+    }];
+    cfg.cdft_lambda_tol = 1e-3;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("the R = 6 Å diabat must be accepted: {e}"));
     assert_eq!((res.outer_iters, res.lambdas[0]), (1, 0.0));
@@ -794,14 +762,12 @@ fn two_constraint_loose_tolerance_still_applies_the_constraint() {
 
     let (mol, bs, prep, bounds, gcfg) = setup_hene(2.0);
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        level_shift: 0.5,
-        dft_grid: Some(gcfg.clone()),
-        fractional_occ: false,
-        cdft_stability_descent: false,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_level_shift(0.5)
+        .with_dft_grid(gcfg.clone());
+    base.fractional_occ = false;
+    base.cdft_stability_descent = false;
+    base.max_iter = 400;
     let scf = solve_uhf(&ctx, &mol, &prep, &bounds, &base).unwrap();
     let grid = build_atomic_grid(&mol, &gcfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
@@ -815,23 +781,21 @@ fn two_constraint_loose_tolerance_still_applies_the_constraint() {
         (n_free - 2.0).abs() > 1e-2 && (n_free - 2.0).abs() < tol,
         "reachability: N(He) = {n_free}"
     );
-    let cfg = RhfConfig {
-        constraints: vec![
-            Constraint {
-                fragment: vec![0],
-                spin: SpinChannel::Total,
-                target: 2.0,
-            },
-            Constraint {
-                fragment: vec![0],
-                spin: SpinChannel::SpinDiff,
-                target: s_free,
-            },
-        ],
-        cdft_lambda_tol: tol,
-        cdft_max_outer: 40,
-        ..base
-    };
+    let mut cfg = base;
+    cfg.constraints = vec![
+        Constraint {
+            fragment: vec![0],
+            spin: SpinChannel::Total,
+            target: 2.0,
+        },
+        Constraint {
+            fragment: vec![0],
+            spin: SpinChannel::SpinDiff,
+            target: s_free,
+        },
+    ];
+    cfg.cdft_lambda_tol = tol;
+    cfg.cdft_max_outer = 40;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("two-constraint loose solve: {e}"));
     assert!(res.outer_iters >= 2, "outer = {}", res.outer_iters);

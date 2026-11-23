@@ -378,25 +378,24 @@ fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) -> f64 {
 
 fn scf_config(m: &Method) -> RhfConfig {
     let unrestricted = m.kind == Kind::Uhf;
-    RhfConfig {
-        xc: m.xc.map(str::to_string),
-        // Explicit EXACT J/K: `None` auto-enables RI-J for closed-shell KS.
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: SCF_ENERGY_CONV,
-        density_conv: SCF_DENSITY_CONV,
-        max_iter: 500,
-        // UHF/UKS end on a stable state, as the reference does. ferric's ROHF
-        // skips stability by design (see the UHF/ROHF row); the reference is
-        // ROHF-stable, so a ferric saddle shows as an energy/geometry miss.
-        check_stability: unrestricted,
-        scf_stability_descent: unrestricted,
-        // The KS references are PySCF on the flat (75,110) grid
-        // (gen_geometry_optimization.py: prune=None), not the pruned KS default
-        // AtomicGridConfig::production(). Unused by the HF methods.
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.xc = m.xc.map(str::to_string);
+    // Explicit EXACT J/K: `None` auto-enables RI-J for closed-shell KS.
+    c.df_j_aux = Some(String::new());
+    c.df_k_aux = Some(String::new());
+    c.energy_conv = SCF_ENERGY_CONV;
+    c.density_conv = SCF_DENSITY_CONV;
+    c.max_iter = 500;
+    // UHF/UKS end on a stable state, as the reference does. ferric's ROHF
+    // skips stability by design (see the UHF/ROHF row); the reference is
+    // ROHF-stable, so a ferric saddle shows as an energy/geometry miss.
+    c.check_stability = unrestricted;
+    c.scf_stability_descent = unrestricted;
+    // The KS references are PySCF on the flat (75,110) grid
+    // (gen_geometry_optimization.py: prune=None), not the pruned KS default
+    // AtomicGridConfig::production(). Unused by the HF methods.
+    c.dft_grid = Some(AtomicGridConfig::default());
+    c
 }
 
 fn opt_config() -> OptimizeConfig {

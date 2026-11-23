@@ -37,14 +37,13 @@ use ndarray::{s, Array2};
 const OH_631G_EXCITED: f64 = -75.203_724_952_9;
 
 fn cfg(guard: bool) -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        use_sad_guess: false,
-        rohf_occupation_guard: guard,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11);
+    c.use_sad_guess = false;
+    c.rohf_occupation_guard = guard;
+    c
 }
 
 fn max_abs(a: &Array2<f64>) -> f64 {
@@ -125,17 +124,11 @@ fn give_up_exit_returns_one_self_consistent_state() {
     // 5. Independent recompute: start the pre-F6 solver (guard off) FROM the
     //    returned density. It is a converged ROHF stationary point, so the
     //    solver must stay there and reproduce the returned energy and density.
-    let back = solve_rohf(
-        &ctx,
-        &mol,
-        &prep,
-        op,
-        &bounds,
-        &RhfConfig {
-            init_guess_density: Some(r.density_total.clone()),
-            ..cfg(false)
-        },
-    )
+    let back = solve_rohf(&ctx, &mol, &prep, op, &bounds, &{
+        let mut c = cfg(false);
+        c.init_guess_density = Some(r.density_total.clone());
+        c
+    })
     .expect("guard-off solve from the returned density");
     println!(
         "recomputed from the returned density: E={:.10} ({} iters)",

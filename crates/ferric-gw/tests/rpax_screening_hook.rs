@@ -34,10 +34,7 @@ fn static_pdep_hook_is_bit_identical_to_the_public_function() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            xc: Some("PBE".to_string()),
-            ..Default::default()
-        },
+        &RhfConfig::default().with_xc("PBE".to_string()),
     )
     .unwrap();
     assert!(ks.converged);

@@ -18,11 +18,9 @@ fn lda_h2_converges_and_is_lower_than_hf() {
     let rhf_only = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
     eprintln!("HF energy:  {:.6}", rhf_only.energy);
 
-    let lda_cfg = RhfConfig {
-        xc: Some("LDA".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let lda_cfg = RhfConfig::default()
+        .with_xc("LDA".to_string())
+        .with_df_j_aux("def2-universal-jkfit".to_string());
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &lda_cfg).unwrap();
     eprintln!("LDA energy: {:.6}", ks.energy);
     eprintln!("converged: {}, iters: {}", ks.converged, ks.iterations);

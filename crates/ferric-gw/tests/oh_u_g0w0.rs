@@ -47,10 +47,7 @@ fn prepare_oh() -> (
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("Schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_max_iter(200);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).expect("UHF");
     assert!(uhf.converged, "UHF did not converge");
     (mol, obs, dfbs, uhf)

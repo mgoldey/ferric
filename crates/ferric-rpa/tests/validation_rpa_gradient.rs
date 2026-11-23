@@ -291,12 +291,10 @@ fn rpa_cfg(n_quad: usize, frozen_core: usize) -> PdepRpaConfig {
 }
 
 fn tight_rhf() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 /// ferric's E_RHF and E_c at `mol`, written here independently of gradient.rs

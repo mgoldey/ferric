@@ -303,12 +303,11 @@ fn gamma_ecp(cell: &Cell, p: &PreparedBasis, cfg: &PeriodicEcpConfig) -> Array2<
 /// RHF config without the SAD guess, `density_conv = 1e-10` and the given
 /// `max_iter`.
 fn scf_cfg(max_iter: usize) -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv: 1e-10,
-        max_iter,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.use_sad_guess = false;
+    c.density_conv = 1e-10;
+    c.max_iter = max_iter;
+    c
 }
 
 /// Gamma RHF on `(S, h, E_nn)` + dense pure-AFT J/K.
@@ -826,11 +825,9 @@ fn molecular_reference(bs: &BasisSet) -> (f64, f64, [f64; 3], f64) {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &p).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        max_iter: 300,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(300)
+        .with_density_conv(1e-10);
     let r = solve_rhf(&ctx, &mol, &p, op, &bounds, &cfg).expect("molecular RHF");
     assert!(r.converged);
     let nocc = (mol.nelec() / 2) as usize;

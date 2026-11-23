@@ -36,10 +36,8 @@ fn vol_for_atom(spec: &AtomSpec, obs_name: &str) -> f64 {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        mom_after_iter: if spec.mult > 1 { 5 } else { 0 },
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.mom_after_iter = if spec.mult > 1 { 5 } else { 0 };
 
     let density = if spec.mult > 1 {
         let rhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();

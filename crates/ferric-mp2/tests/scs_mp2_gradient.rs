@@ -116,11 +116,9 @@ fn point(mol: &Molecule, obs: &BasisSet, aux: &BasisSet, jk: Option<&ScfJk>) -> 
     let prep = PreparedBasis::new(mol, obs).unwrap();
     let dfbs = PreparedBasis::new(mol, aux).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .for_geometry_task();
     if let Some(jk) = jk {
         jk.apply(&mut cfg);
     }

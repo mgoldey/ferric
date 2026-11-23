@@ -71,13 +71,12 @@ fn hydroxyl() -> Molecule {
 }
 
 fn scf(xc: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: xc.map(str::to_string),
-        density_conv: DC,
-        energy_conv: DC,
-        max_iter: 300,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.xc = xc.map(str::to_string);
+    c.density_conv = DC;
+    c.energy_conv = DC;
+    c.max_iter = 300;
+    c
 }
 
 fn max_abs(a: &Array2<f64>) -> f64 {
@@ -99,11 +98,7 @@ fn sensitivities(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let at = |dc: f64| {
-        let c = RhfConfig {
-            density_conv: dc,
-            energy_conv: 1e-3,
-            ..cfg.clone()
-        };
+        let c = cfg.clone().with_density_conv(dc).with_energy_conv(1e-3);
         let r = match reference {
             FrequencyReference::Rhf => {
                 ferric_scf::rhf::solve_rhf(&ctx, mol, &prep, op, &bounds, &c).unwrap()

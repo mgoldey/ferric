@@ -221,22 +221,20 @@ fn roks_config(xc: &str) -> RhfConfig {
         "b3lyp" => Some(AUX.to_string()),
         other => panic!("unknown functional {other}"),
     };
-    let cfg = RhfConfig {
-        xc: Some(ferric_xc(xc).into()),
-        df_j_aux: Some(AUX.to_string()),
-        df_k_aux,
-        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
-        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
-        ri_j_precision: Some(RiJPrecision::F64),
-        max_iter: 500,
-        energy_conv: 1e-10,
-        // Same as the UKS half of the KS-DFT row (validation_ks_energies.rs).
-        density_conv: 1e-7,
-        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
-        // not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        .with_df_j_aux(AUX.to_string());
+    cfg.df_k_aux = df_k_aux;
+    // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+    // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+    cfg.ri_j_precision = Some(RiJPrecision::F64);
+    cfg.max_iter = 500;
+    cfg.energy_conv = 1e-10;
+    // Same as the UKS half of the KS-DFT row (validation_ks_energies.rs).
+    cfg.density_conv = 1e-7;
+    // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+    // not the pruned KS default AtomicGridConfig::production().
+    cfg.dft_grid = Some(AtomicGridConfig::default());
     // The F6 occupation guard is what makes OH converge to its ground state;
     // it is ON by default and must stay on here (the CLI sets it true).
     assert!(cfg.rohf_occupation_guard, "F6 occupation guard must be on");

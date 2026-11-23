@@ -16,15 +16,14 @@ use ndarray::Array2;
 /// consistency matters, not how converged the orbitals are against an
 /// exact-integral SCF.
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        integral_thresh: 1e-9,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6);
+    c.integral_thresh = 1e-9;
+    c.df_j_aux = Some("def2-universal-jkfit".into());
+    c.df_k_aux = Some("def2-universal-jkfit".into());
+    c
 }
 
 pub struct Prepared {

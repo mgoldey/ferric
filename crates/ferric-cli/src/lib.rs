@@ -8839,10 +8839,8 @@ mod scf_functional_tests {
 
     /// The run-start RI-J site of `method` with `[dft] functional = xc`.
     fn overlap_site(method: &str, xc: Option<&str>) -> bool {
-        let cfg = RhfConfig {
-            xc: xc.map(str::to_string),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.xc = xc.map(str::to_string);
         ri_j_site_for_functional(300, scf_functional(method, &cfg)).jxc_overlap
     }
 
@@ -8977,11 +8975,9 @@ mod energy_conv_advisory_tests {
     }
 
     fn rhf(ec: f64, thresh: f64) -> RhfConfig {
-        RhfConfig {
-            energy_conv: ec,
-            integral_thresh: thresh,
-            ..RhfConfig::default()
-        }
+        let mut c = RhfConfig::default().with_energy_conv(ec);
+        c.integral_thresh = thresh;
+        c
     }
 
     /// Reporter class: a written 1e-10 on alkane C20/STO-3G (142 functions, exact J/K).
@@ -9141,106 +9137,107 @@ mod scf_config_lowering_tests {
         // (`match &qmmm_system`, `qmmm_system.as_ref()`); here the caller
         // hands in that borrow.
         let qmmm_system = qmmm_system.cloned();
-        RhfConfig {
-            guess_basis: guess_basis_or_panic(cfg),
-            xc_omega: None,
-            max_iter: cfg.scf.max_iter,
-            energy_conv: cfg.scf.energy_conv,
-            density_conv: cfg.scf.density_conv,
-            diis_size: cfg.scf.diis_size,
-            diis_flavor: cfg
-                .scf
-                .diis_flavor()
-                .unwrap_or_else(|e| panic!("error: {e}")),
-            diis_switch_thresh: cfg.scf.diis_switch_thresh.unwrap_or(1e-1),
-            smearing_sigma: cfg.scf.smearing_sigma,
-            integral_thresh: cfg.scf.integral_thresh,
-            // Verbatim then; the solver refused an unknown spelling, which
-            // `old_first_error` reports where the lowering now does.
-            k_builder: ferric_scf::options::KBuilderKind::parse_opt(cfg.scf.k_builder.as_deref())
-                .ok()
-                .flatten(),
-            cosx: cfg
-                .scf
-                .cosx_config(router_allowed)
-                .unwrap_or_else(|e| panic!("error: {e}")),
-            df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
-            ri_j_precision: cfg
-                .scf
-                .ri_j_precision_resolved()
-                .unwrap_or_else(|e| panic!("error: {e}")),
-            ri_j_task: ri_j_task_for(task),
-            ri_k_precision: cfg
-                .scf
-                .ri_k_precision_resolved()
-                .unwrap_or_else(|e| panic!("error: {e}")),
-            df_k_aux: cfg.scf.df_k_aux_resolved().or(
-                if cfg.scf.k_builder.as_deref() == Some("cosx") {
+        let mut c = RhfConfig::default();
+        c.guess_basis = guess_basis_or_panic(cfg);
+        c.xc_omega = None;
+        c.max_iter = cfg.scf.max_iter;
+        c.energy_conv = cfg.scf.energy_conv;
+        c.density_conv = cfg.scf.density_conv;
+        c.diis_size = cfg.scf.diis_size;
+        c.diis_flavor = cfg
+            .scf
+            .diis_flavor()
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c.diis_switch_thresh = cfg.scf.diis_switch_thresh.unwrap_or(1e-1);
+        c.smearing_sigma = cfg.scf.smearing_sigma;
+        c.integral_thresh = cfg.scf.integral_thresh;
+        // Verbatim then; the solver refused an unknown spelling, which
+        // `old_first_error` reports where the lowering now does.
+        c.k_builder = ferric_scf::options::KBuilderKind::parse_opt(cfg.scf.k_builder.as_deref())
+            .ok()
+            .flatten();
+        c.cosx = cfg
+            .scf
+            .cosx_config(router_allowed)
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c.df_j_aux = cfg.scf.df_j_aux_resolved().or(df_j_default);
+        c.ri_j_precision = cfg
+            .scf
+            .ri_j_precision_resolved()
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c.ri_j_task = ri_j_task_for(task);
+        c.ri_k_precision = cfg
+            .scf
+            .ri_k_precision_resolved()
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c.df_k_aux =
+            cfg.scf
+                .df_k_aux_resolved()
+                .or(if cfg.scf.k_builder.as_deref() == Some("cosx") {
                     None
                 } else {
                     df_k_default
-                },
-            ),
-            xc,
-            dft_grid: cfg
-                .main_dft_grid(grid_prune)
-                .unwrap_or_else(|e| panic!("error: {e}")),
-            nlc_grid: None,
-            level_shift: cfg.scf.level_shift.unwrap_or(0.0),
-            meta_gga_auto_level_shift: cfg.scf.level_shift.is_none(),
-            newton_trigger: if cfg.scf.soscf { 1e-3 } else { 0.0 },
-            ah_trigger: 0.0,
-            mom_after_iter: cfg.scf.mom_after_iter,
-            mom_reference: cfg
-                .scf
-                .mom_reference_resolved()
-                .unwrap_or_else(|e| panic!("error: {e}")),
-            rohf_occupation_guard: true,
-            constraints: Vec::new(),
-            cdft_lambda_tol: 1e-5,
-            cdft_max_outer: 30,
-            cdft_lambda_init: None,
-            aurora: ferric_scf::aurora::AuroraConfig {
-                enabled: cfg.scf.aurora,
-                ..Default::default()
-            },
-            trah: Default::default(),
-            trah_trigger: cfg.scf.trah_trigger,
-            cdft_stability_descent: true,
-            scf_stability_descent: cfg.scf.stability_descent,
-            fractional_occ: false,
-            three_index_budget_bytes: budget_bytes.unwrap_or(0),
-            init_guess_density: None,
-            use_sad_guess: cfg
-                .scf
-                .use_density_guess()
-                .unwrap_or_else(|e| panic!("error: {e}")),
-            stall_window: None,
-            divergence_tol: None,
-            external_potential: match &qmmm_system {
-                Some(sys) => sys.to_external_potential(),
-                None => cfg.external_potential.to_external_potential(),
-            },
-            cosmo: cfg.cosmo.clone(),
-            pcm: resolve_pcm(cfg),
-            polarizable: resolve_polarizable(cfg, qmmm_system.as_ref()),
-            verbose: cfg.scf.verbose,
-            check_stability: cfg.scf.check_stability || cfg.scf.stability_descent,
-            screening: screening_kind,
-            irrep_nelec: cfg.scf.irrep_nelec.as_ref().map(|m| {
-                m.iter()
-                    .map(|(label, n)| (label.clone(), *n))
-                    .collect::<Vec<_>>()
-            }),
-            symmetry: cfg.scf.symmetry,
-            raw_handoff: None,
-            eri: scf_eri_mode(cfg.scf.eri.as_deref()),
-            eri_route: Default::default(),
-            relativistic: cfg
-                .scf
-                .relativistic_resolved()
-                .unwrap_or_else(|e| panic!("error: {e}")),
-        }
+                });
+        c.xc = xc;
+        c.dft_grid = cfg
+            .main_dft_grid(grid_prune)
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c.nlc_grid = None;
+        c.level_shift = cfg.scf.level_shift.unwrap_or(0.0);
+        c.meta_gga_auto_level_shift = cfg.scf.level_shift.is_none();
+        c.newton_trigger = if cfg.scf.soscf { 1e-3 } else { 0.0 };
+        c.ah_trigger = 0.0;
+        c.mom_after_iter = cfg.scf.mom_after_iter;
+        c.mom_reference = cfg
+            .scf
+            .mom_reference_resolved()
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c.rohf_occupation_guard = true;
+        c.constraints = Vec::new();
+        c.cdft_lambda_tol = 1e-5;
+        c.cdft_max_outer = 30;
+        c.cdft_lambda_init = None;
+        c.aurora = ferric_scf::aurora::AuroraConfig {
+            enabled: cfg.scf.aurora,
+            ..Default::default()
+        };
+        c.trah = Default::default();
+        c.trah_trigger = cfg.scf.trah_trigger;
+        c.cdft_stability_descent = true;
+        c.scf_stability_descent = cfg.scf.stability_descent;
+        c.fractional_occ = false;
+        c.three_index_budget_bytes = budget_bytes.unwrap_or(0);
+        c.init_guess_density = None;
+        c.use_sad_guess = cfg
+            .scf
+            .use_density_guess()
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c.stall_window = None;
+        c.divergence_tol = None;
+        c.external_potential = match &qmmm_system {
+            Some(sys) => sys.to_external_potential(),
+            None => cfg.external_potential.to_external_potential(),
+        };
+        c.cosmo = cfg.cosmo.clone();
+        c.pcm = resolve_pcm(cfg);
+        c.polarizable = resolve_polarizable(cfg, qmmm_system.as_ref());
+        c.verbose = cfg.scf.verbose;
+        c.check_stability = cfg.scf.check_stability || cfg.scf.stability_descent;
+        c.screening = screening_kind;
+        c.irrep_nelec = cfg.scf.irrep_nelec.as_ref().map(|m| {
+            m.iter()
+                .map(|(label, n)| (label.clone(), *n))
+                .collect::<Vec<_>>()
+        });
+        c.symmetry = cfg.scf.symmetry;
+        c.raw_handoff = None;
+        c.eri = scf_eri_mode(cfg.scf.eri.as_deref());
+        c.eri_route = Default::default();
+        c.relativistic = cfg
+            .scf
+            .relativistic_resolved()
+            .unwrap_or_else(|e| panic!("error: {e}"));
+        c
     }
 
     /// The error `run` exited with while evaluating [`old_literal`], or

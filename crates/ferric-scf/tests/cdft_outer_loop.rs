@@ -82,34 +82,33 @@ fn build_sys() -> Sys {
 /// descent runs the whole loop again from rotated guesses, which would confound
 /// "did the outer loop converge" with "did the descent find something lower".
 fn cfg(target: f64, use_sad: bool) -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        level_shift: HENE_LEVEL_SHIFT,
-        cdft_lambda_tol: HENE_LAMBDA_TOL,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        cdft_stability_descent: false,
-        use_sad_guess: use_sad,
-        dft_grid: Some(AtomicGridConfig {
-            n_radial: 99,
-            n_angular: 302,
-            ..Default::default()
-        }),
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            target,
-            spin: SpinChannel::Total,
-        }],
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_level_shift(HENE_LEVEL_SHIFT);
+    c.cdft_lambda_tol = HENE_LAMBDA_TOL;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    c.cdft_max_outer = 40;
+    c.cdft_stability_descent = false;
+    c.use_sad_guess = use_sad;
+    c.dft_grid = Some(AtomicGridConfig {
+        n_radial: 99,
+        n_angular: 302,
         ..Default::default()
-    }
+    });
+    c.constraints = vec![Constraint {
+        fragment: vec![0],
+        target,
+        spin: SpinChannel::Total,
+    }];
+    c
 }
 
 // ===========================================================================

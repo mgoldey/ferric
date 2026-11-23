@@ -287,12 +287,10 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap_or_else(|e| panic!("{label}: RHF failed: {e:?}"));
     assert!(rhf.converged, "{label}: RHF did not converge");

@@ -43,11 +43,9 @@ fn setup(xyz: &str, mult: usize, basis: &str) -> (Molecule, PreparedBasis, Schwa
 }
 
 fn tight(xc: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-8,
-        xc: xc.map(str::to_string),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default().with_density_conv(1e-8);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 fn solve(
@@ -68,10 +66,9 @@ fn solve(
 }
 
 fn with_guess(cfg: &RhfConfig, basis: &str, projection: &str) -> RhfConfig {
-    RhfConfig {
-        guess_basis: Some(GuessBasis::bundled(basis, projection).unwrap()),
-        ..cfg.clone()
-    }
+    let mut c = cfg.clone();
+    c.guess_basis = Some(GuessBasis::bundled(basis, projection).unwrap());
+    c
 }
 
 fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -286,13 +283,11 @@ fn missing_element_in_secondary_basis_is_an_error() {
     let (mol, prep, bounds) = setup(WATER, 1, "6-31g");
     let mut no_h: BasisSet = basis::bundled("sto-3g").unwrap();
     no_h.shells.remove(&1);
-    let cfg = RhfConfig {
-        guess_basis: Some(GuessBasis {
-            basis: no_h,
-            projection: GuessProjection::Fock,
-        }),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.guess_basis = Some(GuessBasis {
+        basis: no_h,
+        projection: GuessProjection::Fock,
+    });
     let e = solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -309,10 +304,8 @@ fn missing_element_in_secondary_basis_is_an_error() {
 #[test]
 fn symmetry_blocked_solve_refuses_guess_basis() {
     let (mol, prep, bounds) = setup(WATER, 1, "6-31g");
-    let cfg = RhfConfig {
-        symmetry: true,
-        ..with_guess(&RhfConfig::default(), "sto-3g", "fock")
-    };
+    let mut cfg = with_guess(&RhfConfig::default(), "sto-3g", "fock");
+    cfg.symmetry = true;
     let r = ferric_scf::symmetric::solve_rhf_symmetric(
         &ParallelContext::default(),
         &mol,
@@ -331,9 +324,10 @@ fn symmetry_blocked_solve_refuses_guess_basis() {
 #[test]
 fn injected_path_refuses_guess_basis() {
     let cfg = with_guess(
-        &RhfConfig {
-            use_sad_guess: false,
-            ..Default::default()
+        &{
+            let mut c = RhfConfig::default();
+            c.use_sad_guess = false;
+            c
         },
         "sto-3g",
         "fock",
@@ -393,11 +387,9 @@ fn unconverged_secondary_still_seeds_a_converging_target() {
 /// The reason string tells this path apart from the iteration-cap path.
 fn stalled_secondary_declines(kind: Kind, xyz: &str, target_basis: &str, stall_window: usize) {
     let (mol, prep, bounds) = setup(xyz, 2, target_basis);
-    let base = RhfConfig {
-        stall_window: Some(stall_window),
-        divergence_tol: Some(0.5),
-        ..tight(None)
-    };
+    let mut base = tight(None);
+    base.stall_window = Some(stall_window);
+    base.divergence_tol = Some(0.5);
     let reference = solve(kind, &mol, &prep, &bounds, &base);
     let r = solve(
         kind,
@@ -452,10 +444,7 @@ fn ladder_escalates_past_a_failing_secondary() {
     let base = with_guess(&tight(None), "6-31g", "fock");
     let ladder = vec![
         ferric_scf::ladder::Rung {
-            config: RhfConfig {
-                max_iter: 2,
-                ..base.clone()
-            },
+            config: base.clone().with_max_iter(2),
             restart: false,
         },
         ferric_scf::ladder::Rung {
@@ -495,15 +484,10 @@ fn ladder_escalates_past_a_failing_secondary() {
 #[test]
 fn report_survives_the_stability_descent() {
     let (mol, prep, bounds) = setup("2\n\nH 0 0 0\nH 0 0 2.5\n", 1, "cc-pvdz");
-    let cfg = RhfConfig {
-        check_stability: true,
-        scf_stability_descent: true,
-        ..with_guess(&tight(None), "6-31g", "fock")
-    };
-    let plain = RhfConfig {
-        scf_stability_descent: false,
-        ..cfg.clone()
-    };
+    let mut cfg = with_guess(&tight(None), "6-31g", "fock").with_check_stability(true);
+    cfg.scf_stability_descent = true;
+    let mut plain = cfg.clone();
+    plain.scf_stability_descent = false;
     let first = solve(Kind::Uhf, &mol, &prep, &bounds, &plain);
     let r = solve(Kind::Uhf, &mol, &prep, &bounds, &cfg);
     assert!(
@@ -550,18 +534,16 @@ fn cdft_runs_the_secondary_scf_once() {
     use ferric_dft::cdft::{Constraint, SpinChannel};
     let (mol, prep, bounds) = setup("2\n\nLi 0 0 0\nH 0 0 1.60\n", 1, "def2-svp");
     let bs = basis::bundled("def2-svp").unwrap();
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            spin: SpinChannel::Total,
-            target: 2.2,
-        }],
-        cdft_lambda_tol: 1e-5,
-        cdft_max_outer: 40,
-        cdft_stability_descent: false,
-        fractional_occ: false,
-        ..with_guess(&RhfConfig::default(), "sto-3g", "fock")
-    };
+    let mut cfg = with_guess(&RhfConfig::default(), "sto-3g", "fock");
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        spin: SpinChannel::Total,
+        target: 2.2,
+    }];
+    cfg.cdft_lambda_tol = 1e-5;
+    cfg.cdft_max_outer = 40;
+    cfg.cdft_stability_descent = false;
+    cfg.fractional_occ = false;
     let before = b2::secondary_runs_on_this_thread();
     let res = ferric_scf::cdft_driver::solve_cdft_uhf(
         &ParallelContext::default(),
@@ -591,10 +573,8 @@ fn cdft_runs_the_secondary_scf_once() {
 fn explicit_density_outranks_guess_basis() {
     let (mol, prep, bounds) = setup(WATER, 1, "6-31g");
     let reference = solve(Kind::Rhf, &mol, &prep, &bounds, &tight(None));
-    let cfg = RhfConfig {
-        init_guess_density: Some(reference.density_total.clone()),
-        ..with_guess(&tight(None), "sto-3g", "fock")
-    };
+    let mut cfg = with_guess(&tight(None), "sto-3g", "fock");
+    cfg.init_guess_density = Some(reference.density_total.clone());
     let before = b2::secondary_runs_on_this_thread();
     let r = solve(Kind::Rhf, &mol, &prep, &bounds, &cfg);
     assert_eq!(b2::secondary_runs_on_this_thread(), before);
@@ -630,13 +610,11 @@ fn hi_error(guess: BasisSet) -> String {
     mol.apply_ecp(&bs);
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        guess_basis: Some(GuessBasis {
-            basis: guess,
-            projection: GuessProjection::Fock,
-        }),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.guess_basis = Some(GuessBasis {
+        basis: guess,
+        projection: GuessProjection::Fock,
+    });
     solve_rhf(
         &ParallelContext::default(),
         &mol,

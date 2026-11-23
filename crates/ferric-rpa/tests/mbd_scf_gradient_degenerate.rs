@@ -50,13 +50,11 @@ enum Reference {
 }
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn fd_step() -> f64 {

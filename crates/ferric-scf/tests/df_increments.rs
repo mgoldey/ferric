@@ -149,11 +149,9 @@ fn df_increments_converges_to_same_energy_as_plain_scf() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap();
     assert!(
@@ -196,11 +194,9 @@ fn df_increments_computes_far_fewer_exact_quartets() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap();
     assert!(plain.converged);
@@ -258,11 +254,9 @@ fn df_increments_final_state_satisfies_exact_residual() {
     let ctx = ParallelContext::default();
     let n = prep.nbasis();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let dfi = solve_rhf_with_df_increments(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
     assert!(dfi.result.converged);

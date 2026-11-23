@@ -33,15 +33,13 @@ pub fn real_case(xyz: &str, charge: i32, mult: usize) -> Case {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = UhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        integral_thresh: 1e-9,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let mut cfg = UhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6);
+    cfg.integral_thresh = 1e-9;
+    cfg.df_j_aux = Some("def2-universal-jkfit".into());
+    cfg.df_k_aux = Some("def2-universal-jkfit".into());
     let scf = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg).unwrap();
     assert!(scf.converged, "{xyz}: UHF did not converge");
     let amps =

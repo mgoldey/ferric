@@ -51,14 +51,13 @@ const AUX: &str = "def2-universal-jkfit";
 const BASIS: &str = "def2-svp";
 
 fn config(thresh: f64) -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: None,
-        integral_thresh: thresh,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..RhfConfig::default()
+    {
+        let mut c = RhfConfig::default().with_xc("PBE").with_df_j_aux(AUX);
+        c.df_k_aux = None;
+        c.integral_thresh = thresh;
+        c.energy_conv = 1e-11;
+        c.density_conv = 1e-9;
+        c
     }
     .for_geometry_task()
 }

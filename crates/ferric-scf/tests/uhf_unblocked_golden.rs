@@ -30,12 +30,10 @@ fn run(rel: &str, mult: usize) -> (u64, usize) {
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        max_iter: 300,
-        ..RhfConfig::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
+        .with_max_iter(300);
     let r = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!(
         "GOLDEN {rel} bits={:#x} iters={}",

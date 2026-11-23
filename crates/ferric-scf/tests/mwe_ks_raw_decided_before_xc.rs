@@ -81,13 +81,10 @@ fn water() -> Sys {
 }
 
 fn cfg(budget: usize, max_iter: usize) -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some(AUX.into()),
-        three_index_budget_bytes: budget,
-        max_iter,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default().with_xc("PBE").with_df_j_aux(AUX);
+    c.three_index_budget_bytes = budget;
+    c.max_iter = max_iter;
+    c
 }
 
 /// `P/T` from below the tensor through past the highest old band, at half-`T`
@@ -172,10 +169,8 @@ fn raising_the_budget_never_turns_a_running_rhf_job_into_a_refused_one() {
 #[test]
 fn raising_the_budget_never_turns_a_running_hybrid_job_into_a_refused_one() {
     let _s = slot();
-    sweep_with(Solver::Rhf, |p, n| RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_k_aux: Some(AUX.into()),
-        ..cfg(p, n)
+    sweep_with(Solver::Rhf, |p, n| {
+        cfg(p, n).with_xc("B3LYP").with_df_k_aux(AUX)
     });
 }
 
@@ -309,26 +304,25 @@ fn energy_is_the_same_for_every_xc_mode_and_thread_count() {
 }
 
 fn vv10_cfg(budget: usize, max_iter: usize) -> RhfConfig {
-    RhfConfig {
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: budget,
-        max_iter,
-        dft_grid: Some(AtomicGridConfig {
-            n_radial: 30,
-            n_angular: 50,
-            prune: None,
-            weight_cut: None,
-        }),
-        nlc_grid: Some(AtomicGridConfig {
-            n_radial: 10,
-            n_angular: 14,
-            prune: None,
-            weight_cut: None,
-        }),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX);
+    c.three_index_budget_bytes = budget;
+    c.max_iter = max_iter;
+    c.dft_grid = Some(AtomicGridConfig {
+        n_radial: 30,
+        n_angular: 50,
+        prune: None,
+        weight_cut: None,
+    });
+    c.nlc_grid = Some(AtomicGridConfig {
+        n_radial: 10,
+        n_angular: 14,
+        prune: None,
+        weight_cut: None,
+    });
+    c
 }
 
 fn nlc_cache(s: &Sys, c: &RhfConfig) -> usize {

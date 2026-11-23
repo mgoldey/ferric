@@ -146,20 +146,17 @@ fn grid() -> AtomicGridConfig {
 /// r2SCAN, exact J (`Some("")` forces four-centre J on the restricted path;
 /// the open-shell solvers read `None` as exact J).
 fn config(restricted: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(XC.into()),
-        dft_grid: Some(grid()),
-        df_j_aux: if restricted {
-            Some(String::new())
-        } else {
-            None
-        },
-        df_k_aux: None,
-        max_iter: 500,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default().with_xc(XC).with_dft_grid(grid());
+    c.df_j_aux = if restricted {
+        Some(String::new())
+    } else {
+        None
+    };
+    c.df_k_aux = None;
+    c.max_iter = 500;
+    c.energy_conv = 1e-11;
+    c.density_conv = 1e-9;
+    c
 }
 
 fn close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
@@ -185,10 +182,7 @@ fn nh2_uks_r2scan_hessian_matches_pyscf() {
     let r = reference("nh2");
     let s = load("nh2", 2, &r);
     let ctx = "nh2/6-31g/UKS-r2SCAN";
-    let cfg = RhfConfig {
-        check_stability: true,
-        ..config(false)
-    };
+    let cfg = config(false).with_check_stability(true);
     let before = builds();
     let res = solve_uhf(&s.ctx, &s.mol, &s.prep, &s.bounds, &cfg).unwrap();
     assert!(res.converged, "{ctx}: SCF not converged");
@@ -282,10 +276,7 @@ fn water_rks_r2scan_singlet_hessian_matches_pyscf() {
     let r = reference("water_eq");
     let s = load("water_eq", 1, &r);
     let ctx = "water/6-31g/RKS-r2SCAN";
-    let cfg = RhfConfig {
-        check_stability: true,
-        ..config(true)
-    };
+    let cfg = config(true).with_check_stability(true);
     let before = builds();
     let res = solve_rhf(
         &s.ctx,
@@ -366,10 +357,8 @@ fn water_rks_r2scan_singlet_hessian_matches_pyscf() {
 /// and the Newton run built the τ kernel.
 fn newton_vs_diis(ctx: &str, run: impl Fn(&RhfConfig) -> ferric_scf::ScfResult, diis: RhfConfig) {
     let _g = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..diis.clone()
-    };
+    let mut newton = diis.clone();
+    newton.newton_trigger = 1e-2;
     let before = builds();
     let r_diis = run(&diis);
     assert_eq!(builds(), before, "{ctx}: DIIS-only built a kernel");
@@ -424,15 +413,11 @@ fn roks_r2scan_newton_request_keeps_diis() {
     let _g = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let r = reference("nh2");
     let s = load("nh2", 2, &r);
-    let diis = RhfConfig {
-        density_conv: 1e-7,
-        energy_conv: 1e-10,
-        ..config(false)
-    };
-    let newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..diis.clone()
-    };
+    let diis = config(false)
+        .with_density_conv(1e-7)
+        .with_energy_conv(1e-10);
+    let mut newton = diis.clone();
+    newton.newton_trigger = 1e-2;
     let run = |c: &RhfConfig| {
         solve_rohf(&s.ctx, &s.mol, &s.prep, Operator::coulomb(), &s.bounds, c).unwrap()
     };

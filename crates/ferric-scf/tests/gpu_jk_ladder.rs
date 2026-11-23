@@ -295,17 +295,15 @@ fn gpu_delta(a: &GpuStatsSnapshot, b: &GpuStatsSnapshot) -> (u64, u64, u64) {
 fn scf(sys: &System, arm: Arm, k: Kernels) -> Run {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &sys.obs).unwrap();
-    let cfg = RhfConfig {
+    let mut cfg = RhfConfig::default()
         // dP is the real gate; energy_conv is only a "not still descending" bound
         // (an RI energy never settles to 1e-10, see the noise-floor notes).
-        energy_conv: 1e-6,
-        density_conv: DENSITY_CONV,
-        max_iter: 200,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: 3 << 30,
-        ..Default::default()
-    };
+        .with_energy_conv(1e-6)
+        .with_density_conv(DENSITY_CONV)
+        .with_max_iter(200)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX);
+    cfg.three_index_budget_bytes = 3 << 30;
     let _s = Seams::arm(arm, k);
     let (l0, g0) = (counters(LadderSite::Jk), stats());
     let k0 = kernel_counters();

@@ -86,10 +86,7 @@ fn case(xyz: &str, fc: usize, eps: f64, gate: Option<f64>) -> Case {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();

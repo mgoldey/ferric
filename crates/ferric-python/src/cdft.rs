@@ -555,34 +555,42 @@ pub(crate) fn run_cdft(
     };
 
     let k_builder = crate::parse_k_builder(k_builder)?;
-    let config = RhfConfig {
-        constraints: cons,
-        cdft_lambda_tol: lambda_tol,
-        cdft_max_outer: max_outer,
-        cdft_stability_descent: stability_descent.unwrap_or(defaults.cdft_stability_descent),
+    let mut config = ferric_scf::options::ScfOptions {
         xc,
         dft_grid,
-        max_iter: max_iter.unwrap_or(defaults.max_iter),
-        energy_conv: energy_conv.unwrap_or(defaults.energy_conv),
-        density_conv: density_conv.unwrap_or(defaults.density_conv),
-        diis_size: diis_size.unwrap_or(defaults.diis_size),
-        integral_thresh: integral_thresh.unwrap_or(defaults.integral_thresh),
+        max_iter,
+        energy_conv,
+        density_conv,
+        diis_size,
+        integral_thresh,
         k_builder,
         // Same shared parser as run_rhf/run_uhf/run_dft, so "exact"/"off" mean
         // exact J/K here too and cdft_coupling's Hamiltonian key sees one
         // spelling for one Hamiltonian.
-        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
-        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
+        df_j_aux: df_j_aux.map(ferric_scf::options::AuxBasis::parse),
+        df_k_aux: df_k_aux.map(ferric_scf::options::AuxBasis::parse),
         ri_j_precision: parse_ri_j_precision(scf_ri_j_precision)?,
         ri_k_precision: parse_ri_k_precision(scf_ri_k_precision)?,
-        level_shift: level_shift.unwrap_or(defaults.level_shift),
-        mom_after_iter: mom_after_iter.unwrap_or(defaults.mom_after_iter),
+        mom_after_iter,
         external_potential: build_external_potential(point_charges, external_field),
-        // 0 means "unset -> auto" (resolve_three_index_budget).
-        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
-        use_sad_guess,
-        ..defaults
-    };
+        // `None` is "unset -> auto" (resolve_three_index_budget).
+        three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+        guess: Some(if use_sad_guess {
+            ferric_scf::options::Guess::Sad
+        } else {
+            ferric_scf::options::Guess::Core
+        }),
+        ..Default::default()
+    }
+    .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
+    .py()?;
+    // Assigned, not `ScfOptions::level_shift`, which would also clear the
+    // meta-GGA automatic shift.
+    config.level_shift = level_shift.unwrap_or(defaults.level_shift);
+    config.constraints = cons;
+    config.cdft_lambda_tol = lambda_tol;
+    config.cdft_max_outer = max_outer;
+    config.cdft_stability_descent = stability_descent.unwrap_or(defaults.cdft_stability_descent);
 
     let hamiltonian_key = cdft_hamiltonian_key(emol, &config);
     let bs = basis_set.inner.clone();

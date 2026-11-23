@@ -110,12 +110,10 @@ fn rhf_trah_off_is_bit_identical() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     assert!(
         base.trah_trigger.is_none(),
         "TRAH must default to OFF — a default-on convergence knob would change \
@@ -123,14 +121,12 @@ fn rhf_trah_off_is_bit_identical() {
     );
 
     // Identical except for a non-default TrahConfig that must never be read.
-    let with_cfg = RhfConfig {
-        trah: ferric_scf::trah::TrahConfig {
-            radius0: 0.01,
-            shrink: 0.1,
-            grow: 5.0,
-            ..Default::default()
-        },
-        ..base.clone()
+    let mut with_cfg = base.clone();
+    with_cfg.trah = ferric_scf::trah::TrahConfig {
+        radius0: 0.01,
+        shrink: 0.1,
+        grow: 5.0,
+        ..Default::default()
     };
 
     let before = trah_steps();
@@ -167,20 +163,16 @@ fn rks_pbe_trah_off_is_bit_identical() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        level_shift: 0.2,
+    let base = RhfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        .with_level_shift(0.2);
+    let mut with_cfg = base.clone();
+    with_cfg.trah = ferric_scf::trah::TrahConfig {
+        radius0: 0.005,
         ..Default::default()
-    };
-    let with_cfg = RhfConfig {
-        trah: ferric_scf::trah::TrahConfig {
-            radius0: 0.005,
-            ..Default::default()
-        },
-        ..base.clone()
     };
 
     let before = trah_steps();
@@ -205,20 +197,16 @@ fn uhf_trah_off_is_bit_identical() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 300,
-        level_shift: 0.2,
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(300)
+        .with_level_shift(0.2);
+    let mut with_cfg = base.clone();
+    with_cfg.trah = ferric_scf::trah::TrahConfig {
+        radius0: 0.02,
+        rho_reject: 0.9,
         ..Default::default()
-    };
-    let with_cfg = RhfConfig {
-        trah: ferric_scf::trah::TrahConfig {
-            radius0: 0.02,
-            rho_reject: 0.9,
-            ..Default::default()
-        },
-        ..base.clone()
     };
 
     let before = trah_steps();
@@ -250,20 +238,16 @@ fn uks_pbe_trah_off_is_bit_identical() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        max_iter: 300,
-        level_shift: 0.3,
+    let base = RhfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6)
+        .with_max_iter(300)
+        .with_level_shift(0.3);
+    let mut with_cfg = base.clone();
+    with_cfg.trah = ferric_scf::trah::TrahConfig {
+        radius0: 0.02,
         ..Default::default()
-    };
-    let with_cfg = RhfConfig {
-        trah: ferric_scf::trah::TrahConfig {
-            radius0: 0.02,
-            ..Default::default()
-        },
-        ..base.clone()
     };
 
     let before = trah_steps();
@@ -294,19 +278,15 @@ fn newton_trigger_path_is_unaffected_by_trah_being_compiled_in() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let newton = RhfConfig {
-        newton_trigger: 1e-2,
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
+    let mut newton = RhfConfig::default();
+    newton.newton_trigger = 1e-2;
+    newton.energy_conv = 1e-10;
+    newton.density_conv = 1e-8;
+    newton.max_iter = 200;
+    let mut newton_plus_trah_cfg = newton.clone();
+    newton_plus_trah_cfg.trah = ferric_scf::trah::TrahConfig {
+        radius0: 0.001,
         ..Default::default()
-    };
-    let newton_plus_trah_cfg = RhfConfig {
-        trah: ferric_scf::trah::TrahConfig {
-            radius0: 0.001,
-            ..Default::default()
-        },
-        ..newton.clone()
     };
 
     let before = trah_steps();
@@ -336,14 +316,12 @@ fn trah_off_is_bit_identical_across_rayon_widths() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        trah: ferric_scf::trah::TrahConfig {
-            radius0: 0.01,
-            ..Default::default()
-        },
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.trah = ferric_scf::trah::TrahConfig {
+        radius0: 0.01,
         ..Default::default()
     };
 

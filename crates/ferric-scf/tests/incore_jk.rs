@@ -162,10 +162,8 @@ fn incore_matches_direct_on_water_symmetric_nonsymmetric_and_scf_densities() {
     let n = prep.nbasis();
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        eri: EriMode::Direct,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.eri = EriMode::Direct;
     let scf = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg).unwrap();
     let eri = store(&prep);
     anchor(
@@ -268,10 +266,8 @@ fn auto_attaches_the_store_and_reproduces_the_direct_energy() {
     let op = Operator::coulomb();
     let solve = |eri: EriMode| {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let cfg = RhfConfig {
-            eri,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.eri = eri;
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         // The certificate names the route, and not as an approximation.
         let c = ferric_scf::certificate::scf_certificate(&mol, &r, &cfg);
@@ -319,10 +315,8 @@ fn a_two_step_optimize_rebuilds_the_store_per_geometry() {
         ..Default::default()
     };
     let run = |eri: EriMode| {
-        let cfg = RhfConfig {
-            eri,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.eri = eri;
         optimize_geometry(&ctx, &mol, "6-31g", Operator::coulomb(), &cfg, &opt).unwrap()
     };
     let direct = run(EriMode::Direct);
@@ -360,11 +354,9 @@ fn fd_frequencies_rebuild_the_store_per_displacement() {
     // Core guess: the SAD guess runs free-atom SCFs of its own, and a
     // store-reuse defect that those SCFs happened to mask would go unseen.
     let run = |eri: EriMode| {
-        let cfg = RhfConfig {
-            eri,
-            use_sad_guess: false,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.eri = eri;
+        cfg.use_sad_guess = false;
         harmonic_frequencies(&ctx, &mol, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap()
     };
     let direct = run(EriMode::Direct);
@@ -381,10 +373,8 @@ fn incore_on_a_fitted_route_is_an_error_and_auto_clears_the_slot() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig {
-        eri: EriMode::Incore,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.eri = EriMode::Incore;
     assert!(
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
             .unwrap()
@@ -432,10 +422,8 @@ fn incore_with_a_df_guess_pre_stage_applies_to_the_exact_stage() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        eri: EriMode::Incore,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.eri = EriMode::Incore;
     let r = ferric_scf::ladder::solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &cfg, None);
     assert!(
         r.is_ok(),

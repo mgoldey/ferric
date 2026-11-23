@@ -125,13 +125,11 @@ fn converge_uhf_from(
     // the eigenvalues, tolerances and dense cross-checks. Pinning the guess
     // keeps the known-unstable reference reachable instead of silently
     // re-baselining these tests onto a different state.
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 400,
-        use_sad_guess: false,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(400);
+    cfg.use_sad_guess = false;
     let res = match guess.as_ref() {
         Some((a, b)) => {
             solve_uhf_with_guess(&ctx, &mol, &prep, &bounds, &cfg, Some((a, b))).unwrap()
@@ -420,12 +418,10 @@ fn anchor_water_rhf_singlet_channel_is_internally_stable() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
     let res_scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res_scf.converged);
 
@@ -1018,12 +1014,10 @@ fn small_rotation_space_converges_without_collapse_deadlock() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
     let res_scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let nocc = mol.nelec() as usize / 2;
     let c = res_scf.mos_alpha.clone();

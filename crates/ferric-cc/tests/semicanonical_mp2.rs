@@ -61,11 +61,9 @@ fn semicanonicalization_measurably_corrects_open_shell_mp2() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
 
     let rohf = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(rohf.converged);

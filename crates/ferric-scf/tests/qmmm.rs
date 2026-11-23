@@ -170,10 +170,8 @@ fn empty_mm_region_is_bit_identical_to_gas_phase() {
     let ctx = ParallelContext::default();
 
     let gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-    let qmmm_config = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        ..Default::default()
-    };
+    let mut qmmm_config = RhfConfig::default();
+    qmmm_config.external_potential = sys.to_external_potential();
     let embedded = solve_rhf(&ctx, &mol, &prep, op, &bounds, &qmmm_config).unwrap();
 
     assert!(gas.converged && embedded.converged);
@@ -214,10 +212,8 @@ fn zero_charge_mm_region_is_bit_identical_to_gas_phase() {
     let ctx = ParallelContext::default();
 
     let gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = sys.to_external_potential();
     let embedded = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert_eq!(gas.energy, embedded.energy);
 }
@@ -284,10 +280,8 @@ fn positive_charge_near_oxygen_lone_pair_stabilizes_water() {
             .to_external_potential()
             .expect("MM charge must produce a potential");
         assert_eq!(ep.point_charges.len(), 1);
-        let cfg = RhfConfig {
-            external_potential: Some(ep),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.external_potential = Some(ep);
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         assert!(r.converged);
         r.energy
@@ -341,10 +335,8 @@ fn mm_charge_polarizes_the_qm_density() {
     let mut atoms = atoms_base.clone();
     atoms.push(QmmmAtom::new("Na", 11, 0.0, 0.0, -6.0, 1.0));
     let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = sys.to_external_potential();
     let pol = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let mu_pol = dipole(&mol, &prep, pol.density_total());
 
@@ -389,10 +381,8 @@ fn embedding_response_scales_with_mm_charge() {
         // Far enough (12 Bohr) that the response is dominated by the linear term.
         atoms.push(QmmmAtom::new("Na", 11, 0.0, 0.0, -12.0, q));
         let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
-        let cfg = RhfConfig {
-            external_potential: sys.to_external_potential(),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.external_potential = sys.to_external_potential();
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
             .unwrap()
             .energy
@@ -479,10 +469,8 @@ fn link_atom_caps_a_cut_cc_bond_with_verified_geometry() {
 
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = sys.to_external_potential();
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "capped QM fragment failed to converge");
 
@@ -568,10 +556,8 @@ fn mm_force_on_a_probe_charge_points_toward_the_electron_rich_side() {
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = sys.to_external_potential();
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(scf.converged);
 
@@ -629,12 +615,10 @@ fn mm_force_matches_finite_difference_of_the_scf_energy() {
     let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        // Tighten so the FD signal is well above the convergence noise.
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = sys.to_external_potential();
+    // Tighten so the FD signal is well above the convergence noise.
+    cfg.density_conv = 1e-10;
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let analytic = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap()[0];
 
@@ -645,11 +629,9 @@ fn mm_force_matches_finite_difference_of_the_scf_energy() {
         let mut a = atoms_base.clone();
         a.push(QmmmAtom::new("Na", 11, 0.0, 0.0, z, 1.0));
         let s = QmmmSystem::new(&a, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
-        let c = RhfConfig {
-            external_potential: s.to_external_potential(),
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let mut c = RhfConfig::default();
+        c.external_potential = s.to_external_potential();
+        c.density_conv = 1e-10;
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &c).unwrap();
         assert!(r.converged);
         r.energy
@@ -698,10 +680,8 @@ fn mm_force_rows_align_with_mm_charge_positions() {
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: Some(ep),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(ep);
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
 
     let forces = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap();
@@ -955,10 +935,8 @@ fn mm_forces_cover_redistributed_midpoint_charges() {
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        external_potential: Some(ep),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = Some(ep);
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(scf.converged);
     let f = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap();
@@ -1126,11 +1104,9 @@ fn full_gradient_matches_finite_difference_across_the_boundary() {
         let sys = build(atoms);
         let mol = sys.to_qm_molecule();
         let (_bs, prep, op, bounds) = setup(&mol);
-        let cfg = RhfConfig {
-            external_potential: sys.to_external_potential(),
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default();
+        cfg.external_potential = sys.to_external_potential();
+        cfg.density_conv = 1e-10;
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         assert!(r.converged);
         r.energy
@@ -1140,11 +1116,9 @@ fn full_gradient_matches_finite_difference_across_the_boundary() {
     let sys = build(&atoms0);
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
-    let cfg = RhfConfig {
-        external_potential: sys.to_external_potential(),
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.external_potential = sys.to_external_potential();
+    cfg.density_conv = 1e-10;
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let qm_grad = rhf_gradient(
         &mol,

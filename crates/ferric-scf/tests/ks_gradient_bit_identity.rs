@@ -82,21 +82,19 @@ fn cosx() -> CosxConfig {
 /// `exact` turns density fitting off (four-centre J and K).
 fn cfg(xc: &str, exact: bool, cosx_cfg: Option<CosxConfig>) -> RhfConfig {
     let off = exact.then(String::new);
-    RhfConfig {
-        xc: Some(xc.into()),
-        k_builder: cosx_cfg
-            .as_ref()
-            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx_cfg.unwrap_or_default(),
-        df_j_aux: off.clone(),
-        df_k_aux: off,
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        max_iter: 400,
-        level_shift: 0.2,
-        mom_after_iter: 5,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default().with_xc(xc);
+    c.k_builder = cosx_cfg
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.cosx = cosx_cfg.unwrap_or_default();
+    c.df_j_aux = off.clone();
+    c.df_k_aux = off;
+    c.energy_conv = 1e-8;
+    c.density_conv = 1e-6;
+    c.max_iter = 400;
+    c.level_shift = 0.2;
+    c.mom_after_iter = 5;
+    c
 }
 
 #[derive(Clone, Copy)]

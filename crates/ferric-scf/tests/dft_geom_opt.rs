@@ -26,18 +26,17 @@ fn opt_cfg() -> OptimizeConfig {
 }
 
 fn rhf_cfg_for(xc: &str, hybrid: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: if hybrid {
-            Some("def2-universal-jkfit".into())
-        } else {
-            None
-        },
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit");
+    c.df_k_aux = if hybrid {
+        Some("def2-universal-jkfit".into())
+    } else {
+        None
+    };
+    c.energy_conv = 1e-9;
+    c.density_conv = 1e-7;
+    c
 }
 
 fn run_h2_opt(xc: &str, hybrid: bool, r_lo: f64, r_hi: f64) {

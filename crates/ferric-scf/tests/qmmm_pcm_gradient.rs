@@ -55,13 +55,12 @@ fn system() -> QmmmSystem {
 }
 
 fn scf_cfg(pcm: Option<PcmConfig>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: E_CONV,
-        density_conv: 1e-9,
-        pcm,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(E_CONV)
+        .with_density_conv(1e-9);
+    c.pcm = pcm;
+    c
 }
 
 /// SCF energy of the QM molecule `mol` in the (fixed) embedding of `sys`.
@@ -182,10 +181,8 @@ fn qmmm_without_pcm_is_bit_identical_to_bare_rhf_gradient() {
 fn qmmm_cosmo_gradient_is_refused() {
     let sys = system();
     let bs = basis::bundled("sto-3g").unwrap();
-    let cfg = RhfConfig {
-        cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default();
+    cfg.cosmo = Some(ferric_scf::cosmo::CosmoConfig::default());
     for m in [QmmmMethod::Rhf, QmmmMethod::Uhf] {
         let err = qmmm_qm_energy_and_gradient(&ParallelContext::default(), &sys, &bs, &m, &cfg)
             .unwrap_err();

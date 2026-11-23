@@ -187,12 +187,11 @@ fn dense_none(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore) -> DenseAft
 }
 
 fn uhf_scf() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv: 1e-10,
-        max_iter: 400,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.use_sad_guess = false;
+    c.density_conv = 1e-10;
+    c.max_iter = 400;
+    c
 }
 
 /// Gamma UHF on the dense tensor (Direct for `none`, Staged for `ewald`).
@@ -1009,17 +1008,12 @@ fn molecular_u_corr(mol: &Molecule, bs: &BasisSet, na: usize, nb: usize) -> (Scf
     let prep = PreparedBasis::new(mol, bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let m = solve_uhf(
-        &ParallelContext::default(),
-        mol,
-        &prep,
-        &bounds,
-        &RhfConfig {
-            use_sad_guess: false,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
-    )
+    let m = solve_uhf(&ParallelContext::default(), mol, &prep, &bounds, &{
+        let mut c = RhfConfig::default();
+        c.use_sad_guess = false;
+        c.density_conv = 1e-10;
+        c
+    })
     .unwrap();
     assert!(m.converged);
     let n = prep.nbasis();
@@ -1235,10 +1229,7 @@ fn u_parts_entries_reproduce_the_molecular_drivers_bitwise() {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(u.converged && matches!(u.spin, Spin::Unrestricted));

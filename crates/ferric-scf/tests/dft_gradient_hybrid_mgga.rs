@@ -56,16 +56,14 @@ const NH2: &str = "3\nNH2\nN 0 0 0.1414\nH 0 0.8067 -0.4950\nH 0 -0.8067 -0.4950
 const BASIS: &str = "6-31g";
 
 fn cfg(xc: &str) -> RhfConfig {
-    RhfConfig {
-        dft_grid: Some(AtomicGridConfig::default()),
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_dft_grid(AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(300)
 }
 
 fn scf(mol: &Molecule, xc: &str, c: &RhfConfig) -> ScfResult {
@@ -106,12 +104,10 @@ fn analytic(mol: &Molecule, xc: &str) -> (f64, Array2<f64>, ScfResult) {
 }
 
 fn fd(mol: &Molecule, xc: &str, res0: &ScfResult, delta: f64) -> Array2<f64> {
-    let seeded = RhfConfig {
-        // Spin-summed (UKS splits it D/2 per spin and reconverges).
-        init_guess_density: Some(res0.density_total.clone()),
-        use_sad_guess: false,
-        ..cfg(xc)
-    };
+    let mut seeded = cfg(xc);
+    // Spin-summed (UKS splits it D/2 per spin and reconverges).
+    seeded.init_guess_density = Some(res0.density_total.clone());
+    seeded.use_sad_guess = false;
     let n = mol.atoms.len();
     let pairs: Vec<(usize, usize)> = (0..n).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
     let vals: Vec<f64> = pairs

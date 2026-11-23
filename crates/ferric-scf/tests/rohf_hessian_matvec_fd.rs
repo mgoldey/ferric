@@ -116,13 +116,11 @@ fn setup_xc(xyz: &str, mult: usize, basis_name: &str, xc_name: Option<&str>) -> 
         (ks, name.to_string())
     });
     let ck = xc.as_ref().map_or(1.0, |(ks, _)| ks.k_mix().sr);
-    let cfg = RohfConfig {
-        xc: xc_name.map(str::to_string),
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let mut cfg = RohfConfig::default();
+    cfg.xc = xc_name.map(str::to_string);
+    cfg.energy_conv = 1e-11;
+    cfg.density_conv = 1e-9;
+    cfg.max_iter = 300;
     let res = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(res.converged, "ROHF reference must converge");
     let no = mult - 1;

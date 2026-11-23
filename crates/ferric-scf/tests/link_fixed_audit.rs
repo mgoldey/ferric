@@ -223,16 +223,14 @@ fn link_fixed_audit_cell() {
         println!("density loaded from {path} (provenance: an earlier direct-SCF process of this harness)");
         d
     } else {
-        let scf_cfg = RhfConfig {
-            max_iter: env_num("LFA_SCF_MAXITER", RhfConfig::default().max_iter),
-            verbose: true,
-            init_guess_density: std::env::var("LFA_SCF_RESTART_IN").ok().map(|p| {
-                let d0 = load_matrix(&p, nbf);
-                println!("SCF restart density loaded from {p}");
-                d0
-            }),
-            ..RhfConfig::default()
-        };
+        let mut scf_cfg = RhfConfig::default()
+            .with_max_iter(env_num("LFA_SCF_MAXITER", RhfConfig::default().max_iter))
+            .with_verbose(true);
+        scf_cfg.init_guess_density = std::env::var("LFA_SCF_RESTART_IN").ok().map(|p| {
+            let d0 = load_matrix(&p, nbf);
+            println!("SCF restart density loaded from {p}");
+            d0
+        });
         println!(
             "direct SCF pool: {} rayon threads (not a timing)",
             rayon::current_num_threads()
