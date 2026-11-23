@@ -176,8 +176,13 @@ def test_gil_is_released_during_the_call(tmp_path, water, slow_reference, prop):
     errors: list[BaseException] = []
     out = {"pause": 0.0, "reads": 0, "duration": 0.0}
 
+    ready = threading.Event()
+
     def consumer():
         try:
+            # Start only once the reader has its first timestamp, so the
+            # measured interval covers the whole call.
+            ready.wait(timeout=30)
             t0 = time.perf_counter()
             fn(water, bs, r, tmp_path / "slow.cube")
             out["duration"] = time.perf_counter() - t0
@@ -191,12 +196,17 @@ def test_gil_is_released_during_the_call(tmp_path, water, slow_reference, prop):
         # held GIL may resume only after the call, so the pause must be
         # measured across the start of the call too.
         last = time.perf_counter()
+        ready.set()
         while not stop.is_set():
             r.density()
             now = time.perf_counter()
             out["pause"] = max(out["pause"], now - last)
             out["reads"] += 1
             last = now
+        # A reader frozen by a held GIL may wake only after the consumer has
+        # set `stop`: record that last interval too, or the pause across the
+        # call would never be measured.
+        out["pause"] = max(out["pause"], time.perf_counter() - last)
 
     threads = [threading.Thread(target=reader), threading.Thread(target=consumer)]
     for t in threads:

@@ -10,8 +10,10 @@ refused, and the objects still work from several threads at once (the RI
 
 These cases also pass without `frozen`: a pyclass with no setter already
 refuses assignment, and shared borrows did not conflict. The real guarantee
-is at compile time: `frozen` requires the class to be `Sync`, and a later
-`&mut self` method or setter on one of these classes no longer compiles.
+is at compile time: `frozen` forbids `&mut self` methods, `PyRefMut` and
+setters, so adding one to these classes no longer compiles. (Thread safety
+itself comes from pyo3 0.23 requiring every non-`unsendable` pyclass to be
+`Sync`, frozen or not, so these classes must not hold non-`Sync` fields.)
 """
 
 from __future__ import annotations
