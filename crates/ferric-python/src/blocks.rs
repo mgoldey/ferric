@@ -68,7 +68,6 @@ use ferric_scf::PreparedSystem;
 use ndarray::{Array2, Array3, Array4, Axis};
 use numpy::{PyArray2, PyArray3, PyArray4, PyArrayDyn, PyReadonlyArray2, PyReadonlyArrayDyn};
 use provenance::certificate_from_blocks;
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
@@ -86,7 +85,7 @@ const DENSITY_SYMMETRY_TOL: f64 = 1e-10;
 fn parse_operator(operator: &str, omega: Option<f64>) -> PyResult<Operator> {
     match (operator, omega) {
         ("coulomb", None) => Ok(Operator::coulomb()),
-        ("coulomb", Some(_)) => Err(PyValueError::new_err(
+        ("coulomb", Some(_)) => Err(crate::errors::input_err(
             "operator='coulomb' takes no omega; use operator='erf' or 'erfc'",
         )),
         ("erf" | "erfc", Some(w)) if w.is_finite() && w > 0.0 => Ok(if operator == "erf" {
@@ -94,10 +93,10 @@ fn parse_operator(operator: &str, omega: Option<f64>) -> PyResult<Operator> {
         } else {
             Operator::erfc(w)
         }),
-        ("erf" | "erfc", _) => Err(PyValueError::new_err(format!(
+        ("erf" | "erfc", _) => Err(crate::errors::input_err(format!(
             "operator='{operator}' requires a positive finite omega (Bohr^-1), got {omega:?}"
         ))),
-        _ => Err(PyValueError::new_err(format!(
+        _ => Err(crate::errors::input_err(format!(
             "unknown operator '{operator}'; expected 'coulomb', 'erf' or 'erfc'"
         ))),
     }
@@ -107,7 +106,9 @@ fn parse_operator(operator: &str, omega: Option<f64>) -> PyResult<Operator> {
 /// error first, because `f64::max` drops NaN and would hide them.
 fn asymmetry(a: &Array2<f64>, what: &str) -> PyResult<f64> {
     if !a.iter().all(|v| v.is_finite()) {
-        return Err(PyValueError::new_err(format!("{what} contains NaN or inf")));
+        return Err(crate::errors::input_err(format!(
+            "{what} contains NaN or inf"
+        )));
     }
     Ok(a.iter()
         .zip(a.t().iter())
@@ -127,7 +128,7 @@ fn stack(m: Vec<Array2<f64>>, n: usize) -> Array3<f64> {
 fn checked_square(m: PyReadonlyArray2<'_, f64>, n: usize, what: &str) -> PyResult<Array2<f64>> {
     let m = m.as_array().to_owned();
     if m.dim() != (n, n) {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what} has shape {:?}, expected ({n}, {n})",
             m.dim()
         )));
@@ -143,7 +144,7 @@ fn checked_density(density: PyReadonlyArray2<'_, f64>, n: usize) -> PyResult<Arr
     let d = checked_square(density, n, "density")?;
     let asym = asymmetry(&d, "density")?;
     if asym > DENSITY_SYMMETRY_TOL {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "density is not symmetric (max |D - D^T| = {asym:.3e}); the J/K builds fold ERI \
              permutational symmetry and need a symmetric density"
         )));
@@ -155,13 +156,15 @@ fn checked_density(density: PyReadonlyArray2<'_, f64>, n: usize) -> PyResult<Arr
 fn checked_coeffs(c: PyReadonlyArray2<'_, f64>, nao: usize, what: &str) -> PyResult<Array2<f64>> {
     let c = c.as_array().to_owned();
     if c.nrows() != nao {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what} has shape {:?}, expected ({nao}, k)",
             c.dim()
         )));
     }
     if !c.iter().all(|v| v.is_finite()) {
-        return Err(PyValueError::new_err(format!("{what} contains NaN or inf")));
+        return Err(crate::errors::input_err(format!(
+            "{what} contains NaN or inf"
+        )));
     }
     Ok(c)
 }
@@ -561,7 +564,7 @@ impl PyAoIntegrals {
                 .zip(&self.mol.atoms)
                 .all(|(a, b)| a.z == b.z && [a.x, a.y, a.zpos] == [b.x, b.y, b.zpos]);
         if !same_atoms || xc.bs.name != self.bs.name || xc.prep.nbasis() != self.prep.nbasis() {
-            return Err(PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "xc was built by another AoIntegrals (different molecule or basis)",
             ));
         }
@@ -730,7 +733,7 @@ impl PyAoIntegrals {
         let n = self.prep.nbasis() as f64;
         let gb = n.powi(4) * 8.0 / f64::from(1u32 << 30);
         if gb > max_gb {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dense ERI tensor needs {gb:.2} GiB > max_gb={max_gb}; use jk() or eri3()/eri2(), \
                  or raise max_gb"
             )));
@@ -919,7 +922,7 @@ impl PyAoIntegrals {
         let (path, words) = ao2mo_plan(n, k, bra_pair_rows(&self.prep));
         let gb = words as f64 * 8.0 / f64::from(1u32 << 30);
         if gb > max_gb {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "ao2mo needs {gb:.2} GiB > max_gb={max_gb} (peak of its {path:?} path); use \
                  df_mo(), or raise max_gb"
             )));
@@ -1233,7 +1236,7 @@ impl PyAoIntegrals {
             .allow_threads(|| {
                 ferric_dft::ks::KsXc::new(mol, bs, functional, &grids.main, &grids.nlc)
             })
-            .map_err(|e| PyValueError::new_err(format!("functional '{functional}': {e}")))?;
+            .map_err(|e| crate::errors::input_err(format!("functional '{functional}': {e}")))?;
         let k = closed.k_mix();
         let x = PyXcFunctional {
             name: functional.to_string(),
@@ -1476,9 +1479,7 @@ impl PyAoIntegrals {
         let h = py
             .allow_threads(|| ferric_scf::x2c::x2c1e_hcore(mol, bs, c))
             .map_err(|e| match e {
-                FerricError::Basis(_) | FerricError::General(_) => {
-                    PyValueError::new_err(e.to_string())
-                }
+                FerricError::Basis(_) | FerricError::General(_) => crate::errors::input_err(e),
                 other => make_err(other),
             })?;
         self.log.note(
@@ -1525,7 +1526,7 @@ struct PyDfJk {
 impl PyDfJk {
     fn build_j(&mut self, d: &Array2<f64>) -> PyResult<Array2<f64>> {
         let dfj = self.j.as_mut().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
+            crate::make_err(format!(
                 "RI-J is unavailable for this operator/aux basis ({e}); k() still works"
             ))
         })?;
@@ -1647,7 +1648,7 @@ impl PyXcFunctional {
     )> {
         let cfg = &self.grids.main;
         ferric_scf::hessian::xc_blocks::check(&self.mol, &self.bs, &self.name, cfg)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            .map_err(crate::errors::input_err)?;
         Ok((&self.mol, &self.prep, &self.name, cfg))
     }
     fn open(&mut self) -> PyResult<&ferric_dft::ks::KsXcUks> {
@@ -2166,14 +2167,14 @@ impl SpinFrame {
     fn new(c: &Array2<f64>, e: &[f64], nocc: usize, what: &str) -> PyResult<Self> {
         let nmo = c.ncols();
         if e.len() != nmo || nocc == 0 || nocc >= nmo {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{what}: need mo_energy of length {nmo} (got {}) and 0 < nocc < {nmo} (got {nocc})",
                 e.len()
             )));
         }
         let denom = Array2::from_shape_fn((nmo - nocc, nocc), |(a, i)| e[nocc + a] - e[i]);
         if denom.iter().any(|&x| !(x > 0.0)) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "{what}: e_a - e_i must be positive for every virtual/occupied pair (not an \
                  aufbau reference, or orbital energies out of order)"
             )));
@@ -2318,7 +2319,7 @@ fn checked_rotations(
     u: Vec<PyReadonlyArray2<'_, f64>>,
 ) -> PyResult<Vec<Array2<f64>>> {
     if u.len() != frames.len() {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "expected {} rotation matrix(es), got {}",
             frames.len(),
             u.len()
@@ -2331,14 +2332,14 @@ fn checked_rotations(
         .map(|(sp, (f, x))| {
             let x = x.as_array().to_owned();
             if x.dim() != f.denom.dim() {
-                return Err(PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "rotation {sp} has shape {:?}, expected (nvir, nocc) = {:?}",
                     x.dim(),
                     f.denom.dim()
                 )));
             }
             if !x.iter().all(|v| v.is_finite()) {
-                return Err(PyValueError::new_err("rotation contains NaN or inf"));
+                return Err(crate::errors::input_err("rotation contains NaN or inf"));
             }
             Ok(x)
         })
@@ -2424,7 +2425,7 @@ fn check_tol(tol: f64) -> PyResult<()> {
     if tol.is_finite() && tol > 0.0 {
         return Ok(());
     }
-    Err(PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "solve: tol must be positive and finite, got {tol}"
     )))
 }
@@ -2644,7 +2645,7 @@ pub(crate) fn checked_dm0(
     let what = format!("{who}: dm0");
     let d = checked_start_density(dm0, &s, nelec, &what)?;
     d.map_err(|(count, tol)| {
-        PyValueError::new_err(format!(
+        crate::errors::input_err(format!(
             "{what} holds tr(D S) = {count:.12} electrons, the system has {nelec} \
              (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
              dm0 must be the total closed-shell density for this molecule, charge and basis"
@@ -2668,7 +2669,7 @@ pub(crate) fn checked_dm0_spin(
         return Ok(None);
     };
     let pair = || {
-        PyValueError::new_err(format!(
+        crate::errors::input_err(format!(
             "{who}: dm0 must be a pair (D_alpha, D_beta) of (n, n) arrays; \
              for a closed-shell total density D pass (D / 2, D / 2)"
         ))
@@ -2687,7 +2688,7 @@ pub(crate) fn checked_dm0_spin(
         let what = format!("{who}: dm0[{i}] ({name})");
         let d: PyReadonlyArray2<'_, f64> = dm0.get_item(i)?.extract().map_err(|_| pair())?;
         let d = checked_start_density(d, &s, n_s as f64, &what)?.map_err(|(count, tol)| {
-            PyValueError::new_err(format!(
+            crate::errors::input_err(format!(
                 "{what} holds tr(D S) = {count:.12} electrons, the system has {n_s} \
                  (|difference| above the round-off bound n^2 eps sum|D*S| = {tol:.3e}); \
                  dm0 must be (D_alpha, D_beta) for this molecule, charge, multiplicity and basis"
@@ -2715,7 +2716,7 @@ fn checked_start_density(
     let asym = asymmetry(&d, what)?;
     let tol = roundoff_symmetry_tol(&d);
     if !within_roundoff_symmetry(&d, asym) {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what} is not symmetric (max |D - D^T| = {asym:.3e}, above the round-off \
              bound 4 n eps ||D||_F = {tol:.3e})"
         )));
@@ -2724,7 +2725,7 @@ fn checked_start_density(
     let count = d.iter().zip(s.iter()).map(|(x, y)| x * y).sum::<f64>();
     let tol = electron_count_tol(&d, s);
     if !count.is_finite() || !tol.is_finite() {
-        return Err(PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{what}: tr(D S) = {count} or its round-off bound {tol} is not finite; \
              the density entries overflow the electron-count check"
         )));
@@ -2789,7 +2790,7 @@ impl PyFockHook {
         let v = v.as_array().to_owned();
         let n = self.nao;
         if v.dim() != (n, n) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "fock_hook returned {name} of shape {:?}, expected ({n}, {n})",
                 v.dim()
             )));
@@ -2797,7 +2798,7 @@ impl PyFockHook {
         let asym = asymmetry(&v, &format!("fock_hook's {name}"))?;
         let tol = roundoff_symmetry_tol(&v);
         if !within_roundoff_symmetry(&v, asym) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "fock_hook returned a non-symmetric {name} (max |{name} - {name}^T| = {asym:.3e}, \
                  above the round-off bound 4 n eps ||{name}||_F = {tol:.3e})"
             )));
@@ -2809,7 +2810,7 @@ impl PyFockHook {
         if e.is_finite() {
             Ok(e)
         } else {
-            Err(PyValueError::new_err(format!(
+            Err(crate::errors::input_err(format!(
                 "fock_hook returned a non-finite energy {e}"
             )))
         }
@@ -2967,13 +2968,13 @@ impl PyFockHookGrad {
         let g = g.as_array().to_owned();
         let natoms = mol.atoms.len();
         if g.dim() != (natoms, 3) {
-            return Err(PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "fock_hook_grad returned shape {:?}, expected ({natoms}, 3)",
                 g.dim()
             )));
         }
         if g.iter().any(|v| !v.is_finite()) {
-            return Err(PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "fock_hook_grad returned a non-finite value",
             ));
         }
@@ -3064,8 +3065,7 @@ pub(crate) fn solve_open_shell(
         let r = py.allow_threads(|| solve(None)).map_err(make_err)?;
         return Ok((r, 0.0));
     };
-    ferric_scf::rhf::validate_fock_hook(config)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    ferric_scf::rhf::validate_fock_hook(config).map_err(crate::errors::input_err)?;
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
     let r = py.allow_threads(|| {
         let mut f = |d_a: &Array2<f64>, d_b: &Array2<f64>| h.call_spin(d_a, d_b);
@@ -3088,8 +3088,7 @@ pub(crate) fn solve_rhf_hooked(
     hook: &Bound<'_, PyAny>,
 ) -> PyResult<(ferric_scf::result::ScfResult, f64)> {
     let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
-    ferric_scf::rhf::validate_fock_hook(config)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    ferric_scf::rhf::validate_fock_hook(config).map_err(crate::errors::input_err)?;
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
     let r = py.allow_threads(|| {
         let mut f = |d: &Array2<f64>| h.call(d);
@@ -3116,7 +3115,7 @@ pub(crate) fn solve_ks_ladder(
     hooked: Option<(&Bound<'_, PyAny>, bool, bool)>,
 ) -> PyResult<(ferric_scf::result::ScfResult, ferric_scf::rhf::RhfConfig)> {
     let refuse = |what: &str| {
-        Err(PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "run_dft: fock_hook cannot be combined with {what}"
         )))
     };
@@ -3168,8 +3167,7 @@ fn solve_hooked_ladder(
     let (ctx, mol, prep, op, bounds) = (sys.ctx(), sys.mol(), sys.basis(), sys.op(), sys.bounds());
     let configs: Vec<_> = ladder.iter().map(hooked_rung_config).collect();
     for cfg in &configs {
-        ferric_scf::rhf::validate_fock_hook(cfg)
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        ferric_scf::rhf::validate_fock_hook(cfg).map_err(crate::errors::input_err)?;
     }
     let mut h = PyFockHook::new(hook, prep.nbasis())?;
     let r = py.allow_threads(|| {
@@ -3235,7 +3233,7 @@ pub(crate) fn refuse_symmetric_dft(
     hooked: bool,
 ) -> PyResult<()> {
     if hooked {
-        return Err(PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_dft: fock_hook cannot be combined with symmetry=True / irrep_nelec",
         ));
     }
@@ -3270,7 +3268,7 @@ fn einsum(
     let views: Vec<_> = operands.iter().map(|a| a.as_array()).collect();
     let out = py
         .allow_threads(|| ferric_tensors::einsum_chain_dyn(spec, &views, scale))
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(crate::errors::input_err)?;
     if out.ndim() == 0 {
         let v = *out
             .iter()

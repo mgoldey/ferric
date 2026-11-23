@@ -50,6 +50,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::cholesky_inverse_sqrt;
 use ferric_mp2::spinorbital::{asym_oovv, asym_same, build_b};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
@@ -116,6 +117,28 @@ impl LadderVariant {
     fn needs_oooo(self) -> bool {
         matches!(self, LadderVariant::Hh | LadderVariant::Full)
     }
+}
+
+/// [`linlccd`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn linlccd_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &CcConfig,
+    variant: LadderVariant,
+) -> Result<CcResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    linlccd(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        cfg,
+        variant,
+    )
 }
 
 /// Solve the linearized ladder CCD amplitude equations.

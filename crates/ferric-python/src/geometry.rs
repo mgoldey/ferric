@@ -286,12 +286,12 @@ pub(crate) fn run_optimize(
     if let Some(s) = initial_hessian {
         opt_config.initial_hessian = Some(
             ferric_scf::optimize::InitialHessian::parse_config_str(s)
-                .map_err(pyo3::exceptions::PyValueError::new_err)?,
+                .map_err(crate::errors::input_err)?,
         );
     }
     if let Some(s) = trust_update {
         opt_config.trust_update = ferric_scf::optimize::TrustUpdate::parse_config_str(s)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            .map_err(crate::errors::input_err)?;
     }
     ferric_scf::optimize::refuse_internal_coordinates_in_fixed_frame(opt_config.coord_system, &cfg)
         .map_err(|e| value_error(format!("run_optimize: {e}")))?;
@@ -403,7 +403,7 @@ pub(crate) fn run_optimize_uhf(
 /// the SCF: the X2C-1e core Hamiltonian has no nuclear derivative.
 fn refuse_relativistic_kwarg(kwarg: Option<&str>, what: &str) -> PyResult<()> {
     ferric_scf::x2c::refuse_relativistic(crate::scf::parse_relativistic(kwarg)?, what)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 /// The surface `run_optimize` differentiates.
@@ -460,7 +460,7 @@ pub(crate) struct OptimizeKwargs<'a> {
 }
 
 fn value_error(msg: String) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(msg)
+    crate::errors::input_err(msg)
 }
 
 /// Strict `method=`.
@@ -652,7 +652,7 @@ fn optimize_config(
     let coord_system = match coordinates {
         None => ferric_scf::optimize::CoordSystem::Cartesian,
         Some(s) => ferric_scf::optimize::CoordSystem::parse_config_str(s)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?,
+            .map_err(crate::errors::input_err)?,
     };
     Ok(OptimizeConfig {
         max_steps: max_steps.unwrap_or(100),
@@ -2250,14 +2250,14 @@ pub(crate) fn run_frequencies(
         Some("uhf") => FrequencyReference::Uhf,
         Some("rohf") => FrequencyReference::Rohf,
         Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown reference \"{other}\"; expected \"rhf\", \"uhf\" or \"rohf\""
             )))
         }
     };
     if let Some(d) = delta {
         if !(d.is_finite() && d > 0.0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "delta must be finite and > 0 (got {d})"
             )));
         }
@@ -2292,8 +2292,7 @@ pub(crate) fn run_frequencies(
     refuse_relativistic_kwarg(scf_relativistic, "Hessian or gradient (run_frequencies)")?;
     let mut fcfg = FrequencyConfig {
         reference: refr,
-        hessian: HessianMethod::parse_config_str(hessian)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        hessian: HessianMethod::parse_config_str(hessian).map_err(crate::errors::input_err)?,
         ..Default::default()
     };
     if let Some(d) = delta {
@@ -2862,7 +2861,7 @@ pub(crate) fn xtb_config(
 ) -> PyResult<ferric_xtb::XtbConfig> {
     let mut cfg = ferric_xtb::XtbConfig {
         method: ferric_xtb::XtbMethod::parse_config_str(method)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+            .map_err(crate::errors::input_err)?,
         ..Default::default()
     };
     if let Some(a) = accuracy {
@@ -2879,7 +2878,7 @@ pub(crate) fn xtb_config(
 
 #[cfg(not(feature = "xtb"))]
 pub(crate) fn xtb_unavailable() -> PyErr {
-    pyo3::exceptions::PyRuntimeError::new_err(
+    crate::make_err(
         "this ferric build was compiled without the `xtb` feature (libxtb); \
          rebuild with `cargo build --release -p ferric-python --features xtb`",
     )
@@ -2993,7 +2992,7 @@ pub(crate) fn run_xtb_frequencies(
         let cfg = xtb_config(method, accuracy, scc_max_iter, electronic_temp)?;
         let delta = delta.unwrap_or(ferric_xtb::DEFAULT_HESSIAN_DELTA);
         if !(delta.is_finite() && delta > 0.0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "delta must be finite and > 0 (got {delta})"
             )));
         }
@@ -3052,7 +3051,7 @@ pub(crate) fn resolve_frequency_dispersion(
         return Ok(None);
     };
     let xc_name = xc.ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(
+        crate::errors::input_err(
             "dispersion= requires xc=: D3(BJ) and MBD@rsSCS parameters are fitted per \
              functional, so there is no dispersion correction for Hartree-Fock",
         )
@@ -3068,7 +3067,7 @@ pub(crate) fn resolve_frequency_dispersion(
             FrequencyReference::Rohf => ferric_scf::zvector_ks::unsupported_reason_roks(scf_cfg),
         };
         if let Some(why) = unsupported {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dispersion=\"mbd\": the exact MBD@rsSCS gradient is not available: {why}"
             )));
         }

@@ -16,16 +16,14 @@
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_core::parallel::ParallelContext;
-use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::gradient::{total_rpa_gradient_by, RpaGradientMethod};
 use ferric_rpa::gradient_analytic::{rpa_analytic_gradient_on, RingOrder};
 use ferric_rpa::PdepRpaConfig;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::rhf::RhfConfig;
 use ferric_scf::warm_start::ScfWarmStart;
+use ferric_scf::PreparedSystem;
 
 const XYZ: &str = "3\nstrained water\nO 0 0 0\nH 0 0.9 0.1\nH 0 -0.3 0.85\n";
 
@@ -58,19 +56,16 @@ fn python_route_equals_the_cli_optimize_gradient_bit_for_bit() {
     )
     .unwrap();
 
-    // The binding: its own RHF at density_conv 1e-9, then `_on`.
-    let ctx = ParallelContext::default();
-    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    // The binding: its own system and RHF at density_conv 1e-9, then `_on`.
+    let sys = PreparedSystem::new(mol.clone(), &obs_bs).unwrap();
+    let aux = sys.prepare_aux(&aux_bs).unwrap();
     let rhf_cfg = RhfConfig {
         density_conv: 1e-9,
         ..Default::default()
     };
-    let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
+    let rhf = sys.solve_rhf(&rhf_cfg).unwrap();
     assert!(rhf.converged);
-    let r = rpa_analytic_gradient_on(&mol, &obs, &dfbs, op, &bounds, &rhf, &cfg, RingOrder::Full)
-        .unwrap();
+    let r = rpa_analytic_gradient_on(&aux, &rhf, &cfg, RingOrder::Full).unwrap();
 
     assert_eq!(e_cli.to_bits(), r.energy.to_bits());
     for (a, b) in g_cli.iter().zip(r.gradient.iter()) {

@@ -71,7 +71,32 @@ use ferric_integrals::threeindex;
 use ferric_scf::gradient::{ecp_gradient, oneelectron_gradient, overlap_deriv_contract};
 use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedAux;
 use ndarray::Array2;
+
+/// [`oo_ri_mp2_gradient`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// the optimised orbitals of `result` (`mos`, `orbital_energies`) are
+/// checked against that system first
+/// ([`ferric_scf::PreparedSystem::check_closed_shell_orbitals`]).
+pub fn oo_ri_mp2_gradient_on(
+    aux: &PreparedAux<'_>,
+    result: &OoRiMp2Result,
+    frozen_core: usize,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let sys = aux.system();
+    sys.check_closed_shell_orbitals(&result.mos, &result.orbital_energies)?;
+    oo_ri_mp2_gradient(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        result,
+        frozen_core,
+        ext,
+    )
+}
 
 /// Compute the analytical nuclear gradient for OO-RI-MP2.
 ///

@@ -9,6 +9,7 @@ use ferric_mp2::rimp2::{
     compute_rpa_intermediates, spin_components_from_b_ov, spin_components_from_signed_b_ov,
     RiMp2Config, SignedBOv,
 };
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 use crate::{run_pdep_rpa_from_intermediates, PdepRpaConfig};
@@ -371,6 +372,19 @@ fn refuse_unsupported_signed_drpa(cfg: &RsMp2RpaConfig, mol: &Molecule) -> Resul
     }
 }
 
+/// [`rs_mp2_lr_rpa`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn rs_mp2_lr_rpa_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &RsMp2RpaConfig,
+) -> Result<RsMp2RpaResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    rs_mp2_lr_rpa(sys.mol(), sys.basis(), aux.basis(), rhf, cfg)
+}
+
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
 ///
 /// **DeltaLr (B)**: replaces MP2's long-range direct ring series with its dRPA\[erf\]
@@ -410,6 +424,29 @@ fn operators_from_cfg(cfg: &RsMp2RpaConfig) -> (Operator, Operator) {
             None => (Operator::terf(cfg.r0), Operator::terfc(cfg.r0)),
         },
     }
+}
+
+/// [`rs_mp2_lr_rpa_scan`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn rs_mp2_lr_rpa_scan_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &RsMp2RpaConfig,
+    omegas: &[f64],
+    formulations: &[RsMp2RpaFormulation],
+) -> Result<Vec<RsMp2RpaResult>, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    rs_mp2_lr_rpa_scan(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        rhf,
+        cfg,
+        omegas,
+        formulations,
+    )
 }
 
 /// SR-MP2 + LR-RPA at several ω values and formulations in one run.

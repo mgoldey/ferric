@@ -171,23 +171,23 @@ pub(crate) fn run_tddft(
 ) -> PyResult<PyTddftResult> {
     use ferric_tddft::{ResponseSpin, TddftConfig, TddftMethod, TddftSolver};
     let solver = TddftSolver::parse_config_str(solver)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_tddft: {e}")))?;
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("run_tddft: {e}")))?;
     let spin = ResponseSpin::parse_config_str(spin)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_tddft: {e}")))?;
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("run_tddft: {e}")))?;
 
     let unrestricted = match reference.to_ascii_lowercase().as_str() {
         "auto" => mol.inner.multiplicity > 1,
         "unrestricted" | "uhf" | "uks" => true,
         "restricted" | "rhf" | "rks" if mol.inner.multiplicity == 1 => false,
         "restricted" | "rhf" | "rks" => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "run_tddft: reference=\"{reference}\" needs a closed-shell molecule; this one has \
                  multiplicity {}",
                 mol.inner.multiplicity
             )))
         }
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "run_tddft: reference '{other}' is not one of \"auto\", \"restricted\", \
                  \"unrestricted\""
             )))
@@ -195,7 +195,7 @@ pub(crate) fn run_tddft(
     };
 
     if unrestricted && spin == ResponseSpin::Triplet {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_tddft: spin=\"triplet\" on an unrestricted reference; its spin-conserving \
              roots are not spin-adapted. Run the default and read TddftResult.s2.",
         ));
@@ -208,7 +208,7 @@ pub(crate) fn run_tddft(
         "tda" | "cis" => TddftMethod::Tda,
         "casida" | "rpa" | "tddft" | "tdhf" => TddftMethod::Casida,
         _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "Unknown TDDFT method '{method}'; expected 'tda' or 'casida'"
             )))
         }
@@ -221,7 +221,7 @@ pub(crate) fn run_tddft(
     // without one) is refused before the SCF is spent on it.
     if let Some(xc_name) = functional {
         ferric_dft::lr_kernel::resolve_response_xc(xc_name, "run_tddft")
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+            .map_err(crate::errors::input_err)?;
     }
     if functional.is_none()
         && (grid_radial.is_some()
@@ -229,7 +229,7 @@ pub(crate) fn run_tddft(
             || grid_prune.is_some()
             || grid_weight_cut.is_some())
     {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_tddft: grid_radial / grid_angular / grid_prune / grid_weight_cut size the \
              Kohn-Sham grid, and functional=None (an HF reference) builds none",
         ));

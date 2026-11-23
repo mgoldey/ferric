@@ -26,7 +26,7 @@ reference (@sec:opmp3-reference), and what is anchored (@sec:opmp3-anchored).
 
 | Entry point | Location |
 |---|---|
-| Rust | `ferric-mp2/src/opmp3_driver.rs::{run_opmp3,opmp3_on_reference}`; matrices and models in `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`; reference in `ferric-mp2/src/opmp3_reference.rs::opmp3_reference` |
+| Rust | `ferric-mp2/src/opmp3_driver.rs::{run_opmp3,opmp3_on}`; matrices and models in `ferric-mp2/src/opmp3.rs::{w_channels,pade,op_mp3,sop_mp3,ssd_opmp3}`; reference in `ferric-mp2/src/opmp3_reference.rs::opmp3_reference` |
 | CLI | `method.kind = "opmp3"` with `[opmp3] reference` (`examples/oh-opmp3-pbe0.toml`) |
 | Python | `run_opmp3(reference=, x_ss=, auxbasis=)` |
 
@@ -284,7 +284,7 @@ of each $F_\sigma$ are diagonalized separately in the SCF orbitals
 unchanged and gives the orbital energies of the denominators of (@eq:mp3-u-spin-blocks);
 what remains of $F^\sigma_{ia}$ enters through $E_{\mathrm{NBS}}$. The driver
 runs RHF or RKS for a singlet and ROHF or ROKS otherwise, with exact
-$J$ and $K$ and an unconverged SCF as an error; `opmp3_on_reference` also
+$J$ and $K$ and an unconverged SCF as an error; `opmp3_on` also
 takes a converged UHF, for which $F^\sigma_{ia} = 0$ and $E_{\mathrm{NBS}} = 0$.
 The amplitude stage uses exact four-centre integrals by default, or RI when
 an auxiliary basis is given.

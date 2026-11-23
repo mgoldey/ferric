@@ -12,7 +12,7 @@
 use crate::config::Config;
 use crate::error::CliError;
 use ferric_ci::casscf::{CasScfIntegrals, CasScfOptimizer, CasScfStabilityMode};
-use ferric_ci::driver::{casscf_on_rhf, nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
+use ferric_ci::driver::{casscf_on, nevpt2_on, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::certificate::BuildStamp;
@@ -436,7 +436,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
     };
     let (energy, converged) = match plan.nevpt2 {
         None => {
-            let r = casscf_on_rhf(&sys, &rhf, &cas).map_err(CliError::msg)?;
+            let r = casscf_on(&sys, &rhf, &cas).map_err(CliError::msg)?;
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::casscf_certificate(&r, &cas).with_build(build_stamp()),
                 "CASSCF",
@@ -483,7 +483,7 @@ pub fn run_cas(cfg: &Config, gpu_flag: bool) -> Result<(), CliError> {
             (r.e_total, r.converged)
         }
         Some(on) => {
-            let run = nevpt2_on_rhf(&sys, &rhf, on, &cas).map_err(CliError::msg)?;
+            let run = nevpt2_on(&sys, &rhf, on, &cas).map_err(CliError::msg)?;
             let cert = ferric_mp2::certificate::with_anchor_envelope(
                 ferric_ci::certificate::nevpt2_certificate(
                     on,

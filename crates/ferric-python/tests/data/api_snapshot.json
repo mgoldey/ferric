@@ -778,6 +778,14 @@
     }
    }
   },
+  "BasisError": {
+   "bases": [
+    "InputError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "BasisSet": {
    "constructor": null,
    "members": {
@@ -1264,6 +1272,14 @@
     }
    }
   },
+  "ComputationError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "ConformerEnsemble": {
    "constructor": null,
    "members": {
@@ -1469,6 +1485,14 @@
      ]
     }
    }
+  },
+  "ConvergenceError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
   },
   "Cphf": {
    "constructor": null,
@@ -1813,6 +1837,13 @@
      "kind": "attribute"
     }
    }
+  },
+  "FerricError": {
+   "bases": [
+    "Exception"
+   ],
+   "constructor": null,
+   "members": {}
   },
   "FrequencyResult": {
    "constructor": null,
@@ -2321,6 +2352,14 @@
     }
    }
   },
+  "InputError": {
+   "bases": [
+    "FerricError",
+    "ValueError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "IrcBranch": {
    "constructor": null,
    "members": {
@@ -2826,6 +2865,14 @@
     }
    }
   },
+  "MemoryBudgetError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
+  },
   "MmTopology": {
    "constructor": null,
    "members": {
@@ -3145,6 +3192,14 @@
      "kind": "attribute"
     }
    }
+  },
+  "NumericalError": {
+   "bases": [
+    "FerricError",
+    "RuntimeError"
+   ],
+   "constructor": null,
+   "members": {}
   },
   "OmegaRiResult": {
    "constructor": null,
@@ -4535,6 +4590,14 @@
      "kind": "attribute"
     }
    }
+  },
+  "UnsupportedError": {
+   "bases": [
+    "FerricError",
+    "NotImplementedError"
+   ],
+   "constructor": null,
+   "members": {}
   },
   "WeightedStats": {
    "constructor": null,

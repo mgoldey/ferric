@@ -31,11 +31,13 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::properties::{pdep_polarizability_becke, pdep_polarizability_becke_dynamic};
 use ferric_rpa::property_bundle::{
-    compute_pdep_properties, PdepPropertyRequest, PropertyInputs, PropertyReporter,
+    compute_pdep_properties, PdepPropertyRequest, PropertyBundleError, PropertyInputs,
+    PropertyReporter,
 };
 use ferric_rpa::PdepRpaConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedSystem;
 
 #[derive(Default)]
 struct Collect {
@@ -50,6 +52,10 @@ impl PropertyReporter for Collect {
 }
 
 struct Water {
+    /// The same molecule and orbital basis as `mol` / `obs`, for the bundle's
+    /// `PreparedAux` (`aux_bs` prepared on it).
+    sys: PreparedSystem,
+    aux_bs: ferric_core::basis::BasisSet,
     mol: Molecule,
     obs_bs: ferric_core::basis::BasisSet,
     obs: PreparedBasis,
@@ -82,6 +88,8 @@ fn water_with(charge: i32, mult: usize) -> Water {
         ferric_scf::uhf::solve_uhf(&ctx, &mol, &obs, &bounds, &rhf_cfg).unwrap()
     };
     Water {
+        sys: PreparedSystem::new(mol.clone(), &obs_bs).unwrap(),
+        aux_bs: aux,
         mol,
         obs_bs,
         obs,
@@ -93,7 +101,7 @@ fn water_with(charge: i32, mult: usize) -> Water {
 }
 
 type Run = (
-    Result<ferric_rpa::property_bundle::PdepProperties, String>,
+    Result<ferric_rpa::property_bundle::PdepProperties, PropertyBundleError>,
     Vec<String>,
 );
 
@@ -105,14 +113,10 @@ fn run(w: &Water, req: &PdepPropertyRequest) -> Run {
         Operator::coulomb(),
         &w.rhf_cfg,
     );
+    let aux = w.sys.prepare_aux(&w.aux_bs).unwrap();
     let inputs = PropertyInputs {
-        ctx: &ctx,
-        mol: &w.mol,
-        prep: &w.obs,
-        bs: &w.obs_bs,
-        dfbs: &w.dfbs,
+        aux: &aux,
         result: &w.rhf,
-        op: Operator::coulomb(),
         rpa_cfg: &w.cfg,
         rhf_config: &w.rhf_cfg,
         proatom: &proatom,
@@ -241,8 +245,47 @@ fn unknown_c6_strings_are_errors() {
                 r.c6_partition = part.map(String::from);
             }),
         );
-        assert!(out.is_err(), "{src:?} {part:?} must be rejected");
+        match out {
+            Err(PropertyBundleError::Config(msg)) => {
+                assert!(msg.starts_with("unknown c6_"), "{src:?} {part:?}: {msg}")
+            }
+            other => panic!("{src:?} {part:?} must be a config error, got {other:?}"),
+        }
     }
+}
+
+/// A reference of another system is a `Reference` error (the CLI's run
+/// error, Python's `RuntimeError`), raised before any property and kept
+/// apart from the configuration errors above.
+#[test]
+fn a_reference_of_another_system_is_a_reference_error() {
+    let w = water();
+    let other = PreparedSystem::new(w.mol.clone(), &basis::bundled("6-31g").unwrap()).unwrap();
+    let aux = other.prepare_aux(&w.aux_bs).unwrap();
+    let proatom = ferric_scf::properties::scf_proatom_provider(
+        other.ctx(),
+        &w.obs_bs,
+        Operator::coulomb(),
+        &w.rhf_cfg,
+    );
+    let inputs = PropertyInputs {
+        aux: &aux,
+        result: &w.rhf,
+        rpa_cfg: &w.cfg,
+        rhf_config: &w.rhf_cfg,
+        proatom: &proatom,
+    };
+    let mut rep = Collect::default();
+    match compute_pdep_properties(&inputs, &PdepPropertyRequest::default(), &mut rep) {
+        Err(PropertyBundleError::Reference(e)) => {
+            assert!(
+                e.to_string().contains("does not belong to this system"),
+                "{e}"
+            )
+        }
+        other => panic!("expected a reference error, got {:?}", other.map(|_| ())),
+    }
+    assert!(rep.warnings.is_empty());
 }
 
 #[test]
