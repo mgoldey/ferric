@@ -11,7 +11,9 @@ refused, and the objects still work from several threads at once (the RI
 These cases also pass without `frozen`: a pyclass with no setter already
 refuses assignment, and shared borrows did not conflict. The real guarantee
 is at compile time: `frozen` forbids `&mut self` methods, `PyRefMut` and
-setters, so adding one to these classes no longer compiles. (Thread safety
+`#[pyo3(set)]` field setters, so adding one to these classes no longer
+compiles (a custom `#[setter]` taking `&self` with interior mutability would
+still be allowed). (Thread safety
 itself comes from pyo3 0.23 requiring every non-`unsendable` pyclass to be
 `Sync`, frozen or not, so these classes must not hold non-`Sync` fields.)
 """

@@ -182,7 +182,8 @@ def test_gil_is_released_during_the_call(tmp_path, water, slow_reference, prop):
         try:
             # Start only once the reader has its first timestamp, so the
             # measured interval covers the whole call.
-            ready.wait(timeout=30)
+            if not ready.wait(timeout=30):
+                raise RuntimeError("the reader never took its first timestamp")
             t0 = time.perf_counter()
             fn(water, bs, r, tmp_path / "slow.cube")
             out["duration"] = time.perf_counter() - t0
