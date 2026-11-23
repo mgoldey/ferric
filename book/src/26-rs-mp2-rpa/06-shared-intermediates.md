@@ -112,7 +112,19 @@ With an open-shell reference the signed loop is sized the same way, beside
 both spins' planes. The open-shell eigenbasis frequency loop is not
 panelled (`eval_eigenvalues_at_frequencies_unrestricted` runs at full
 width), so the pre-flight charges it at full width; panelling that loop is
-a follow-up.
+a follow-up. The scan's dRPA calls run with `need_inv_dielectric_freq` and
+`run_diagnostics` off: both are side outputs the scan never reports.
+
+Known gaps, recorded as follow-ups: the per-frequency `eigvalsh_dc` copy and
+workspace (about $m^2$ per worker) of the dense and Laplace eigenvalue loops
+is not in the frequency scratch charge; and the full-basis RI-dRPA
+diagnostic (`diagnostics::ri_drpa_energy`, `run_diagnostics = true` on the
+PDEP-RPA, energy-route and MPI drivers) sizes its workers against the whole
+resolved budget, not what the run's resident planes leave. On the RI-J side,
+the f32 conversion of a raw tensor that is not held counts no stream
+buffers: the spill read-ahead or recompute block of `for_each_packed_block`
+is soft-charged and sized by the source's own block, and an upper bound
+independent of the source would decline f32 on the dress-first route.
 
 | Test | What it pins |
 |---|---|

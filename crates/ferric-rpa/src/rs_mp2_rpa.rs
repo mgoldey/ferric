@@ -390,7 +390,8 @@ fn signed_drpa_bytes(
 }
 
 /// The dRPA configuration of a scan's dRPA calls: the caller's, with the
-/// scan's `frozen_core` and `need_inv_dielectric_freq` off. The scan reports
+/// scan's `frozen_core`, and `need_inv_dielectric_freq` and `run_diagnostics`
+/// off. The scan reports
 /// energies only, so the per-frequency inverse-dielectric stack (`n_quad`
 /// matrices of `naux²`) would be built, never read, and not charged by the
 /// pre-flight (`scan_shape` sets `need_inv_dielectric: false`); with the
@@ -400,6 +401,10 @@ fn energy_only_drpa_cfg(cfg: &RsMp2RpaConfig) -> PdepRpaConfig {
     PdepRpaConfig {
         frozen_core: cfg.frozen_core,
         need_inv_dielectric_freq: false,
+        // The full-basis RI-dRPA diagnostic is a side output the scan never
+        // reports, and its workers are sized against the whole budget beside
+        // the scan's planes, uncharged by its pre-flight.
+        run_diagnostics: false,
         ..cfg.drpa.clone()
     }
 }
@@ -1433,9 +1438,11 @@ mod tests {
             ..Default::default()
         };
         cfg.drpa.need_inv_dielectric_freq = true;
+        cfg.drpa.run_diagnostics = true;
         cfg.drpa.frozen_core = 0;
         let d = energy_only_drpa_cfg(&cfg);
         assert!(!d.need_inv_dielectric_freq);
+        assert!(!d.run_diagnostics);
         assert_eq!(d.frozen_core, 3);
         assert_eq!(d.quadrature.n_points, cfg.drpa.quadrature.n_points);
         let shape = scan_shape_for_test();

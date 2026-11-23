@@ -528,21 +528,13 @@ pub fn dielectric_matrix_from_projection_into_panelled(
             .and_broadcast(scale_row)
             .for_each(|x, &s| *x *= s);
 
-        // syrk_aat_accumulate_into requires a contiguous row-major view. A
-        // `..w` column sub-slice of the (m, panel_width) scratch IS contiguous
-        // whenever w == panel_width (a full-column-range slice of a row-major
-        // array is the whole array, unchanged strides) — true for every panel
-        // except a ragged final one (w < panel_width), where the sub-slice's
-        // row stride (panel_width) no longer matches its row length (w), so
-        // `.as_slice()` would fail. Only that ragged tail needs an owned,
-        // right-sized copy; every full-width panel is passed straight through
-        // with no copy at all.
-        if w == panel_width {
-            syrk_aat_accumulate_into(panel_view.view(), out);
-        } else {
-            let owned_panel = panel_view.to_owned();
-            syrk_aat_accumulate_into(owned_panel.view(), out);
-        }
+        // A ragged final panel (w < panel_width) is a column slice of the
+        // (m, panel_width) scratch; it is passed as that strided view (row
+        // stride = BLAS leading dimension), so no copy is ever made and the
+        // per-worker footprint is the scratch alone, as `quad_panel_width`
+        // charges it. Bitwise the copy's result
+        // (`syrk_on_a_strided_column_slice_is_the_copy_bitwise`).
+        syrk_aat_accumulate_into(panel_view.view(), out);
 
         col0 = col1;
     }

@@ -423,6 +423,9 @@ impl ThreeIndexSource {
         {
             packed
         } else {
+            // Not held. The buffers a conversion streams it through are
+            // soft-charged by `for_each_packed_block` and sized by the
+            // source's own block, so they are not counted here (a follow-up).
             0
         }
     }

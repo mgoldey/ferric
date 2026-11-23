@@ -161,6 +161,11 @@ SLOW = {
 # s, a ratio of at most 0.13). The bar is half the call's duration.
 MAX_PAUSE_FRACTION = 0.5
 
+# The consumer repeats the call until this many seconds have passed (at most
+# `MAX_CALLS` calls), so the measured span is long enough on a fast machine.
+MIN_SPAN = 0.3
+MAX_CALLS = 50
+
 
 @pytest.fixture(scope="module")
 def slow_reference(water):
@@ -184,8 +189,15 @@ def test_gil_is_released_during_the_call(tmp_path, water, slow_reference, prop):
             # measured interval covers the whole call.
             if not ready.wait(timeout=30):
                 raise RuntimeError("the reader never took its first timestamp")
+            # Repeat the call until the span is long enough for a frozen
+            # reader to stand out: one call can finish in under 0.2 s on a
+            # fast runner (0.18 s seen on macOS CI). The reader's pause is
+            # measured across the whole span, every call included.
             t0 = time.perf_counter()
-            fn(water, bs, r, tmp_path / "slow.cube")
+            for _ in range(MAX_CALLS):
+                fn(water, bs, r, tmp_path / "slow.cube")
+                if time.perf_counter() - t0 >= MIN_SPAN:
+                    break
             out["duration"] = time.perf_counter() - t0
         except BaseException as exc:  # noqa: BLE001 - reported below
             errors.append(exc)
