@@ -375,6 +375,8 @@ fn refuse_unsupported_signed_drpa(cfg: &RsMp2RpaConfig, mol: &Molecule) -> Resul
 /// [`rs_mp2_lr_rpa`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn rs_mp2_lr_rpa_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -382,6 +384,7 @@ pub fn rs_mp2_lr_rpa_on(
 ) -> Result<RsMp2RpaResult, FerricError> {
     let sys = aux.system();
     aux.check_reference(rhf)?;
+    aux.check_virtual_orbitals("rs_mp2_lr_rpa_on", rhf)?;
     rs_mp2_lr_rpa(sys.mol(), sys.basis(), aux.basis(), rhf, cfg)
 }
 
@@ -429,6 +432,8 @@ fn operators_from_cfg(cfg: &RsMp2RpaConfig) -> (Operator, Operator) {
 /// [`rs_mp2_lr_rpa_scan`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn rs_mp2_lr_rpa_scan_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -438,6 +443,7 @@ pub fn rs_mp2_lr_rpa_scan_on(
 ) -> Result<Vec<RsMp2RpaResult>, FerricError> {
     let sys = aux.system();
     aux.check_reference(rhf)?;
+    aux.check_virtual_orbitals("rs_mp2_lr_rpa_scan_on", rhf)?;
     rs_mp2_lr_rpa_scan(
         sys.mol(),
         sys.basis(),

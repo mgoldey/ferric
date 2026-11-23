@@ -591,12 +591,17 @@ pub fn run_pdep_rpa(
 
 /// [`run_pdep_rpa`] on the system `aux` was prepared on; see [`PreparedAux`] for
 /// what such an entry point reads from the system.
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn run_pdep_rpa_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("run_pdep_rpa_on", rhf)?;
     let sys = aux.system();
     run_pdep_rpa(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, config)
 }
@@ -627,6 +632,10 @@ fn check_fit_supported(
 /// [`run_pdep_rpa_fitted`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn run_pdep_rpa_fitted_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -634,7 +643,8 @@ pub fn run_pdep_rpa_fitted_on(
     fit: &RiFit,
 ) -> Result<PdepRpaResult, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("run_pdep_rpa_fitted_on", rhf)?;
     run_pdep_rpa_fitted(
         sys.mol(),
         sys.basis(),
