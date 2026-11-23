@@ -67,11 +67,13 @@ def test_bad_gpu_preset_is_a_usage_error():
 
 
 def test_missing_input_exits_one_without_traceback(tmp_path):
-    r = _cli(str(tmp_path / "nope.toml"))
+    missing = tmp_path / "nope.toml"
+    r = _cli(str(missing))
     assert r.returncode == 1
-    assert r.stderr.startswith(
-        f'error: cannot read config file "{tmp_path / "nope.toml"}": '
-    )
+    # The CLI quotes the path with Rust's `{:?}`, which doubles backslashes
+    # (Windows paths).
+    quoted = str(missing).replace("\\", "\\\\")
+    assert r.stderr.startswith(f'error: cannot read config file "{quoted}": ')
     assert r.stderr.count("\n") == 1
     assert r.stdout == ""
 
@@ -79,7 +81,7 @@ def test_missing_input_exits_one_without_traceback(tmp_path):
 def test_small_run_exits_zero(tmp_path):
     toml = tmp_path / "in.toml"
     toml.write_text(
-        f'[molecule]\nxyz = "{_WATER}"\n[basis]\nname = "sto-3g"\n[method]\nkind = "rhf"\n'
+        f'[molecule]\nxyz = "{_WATER.as_posix()}"\n[basis]\nname = "sto-3g"\n[method]\nkind = "rhf"\n'
     )
     r = _cli(str(toml), "--no-json", cwd=tmp_path)
     assert r.returncode == 0, r.stderr
