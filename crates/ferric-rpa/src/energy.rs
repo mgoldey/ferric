@@ -338,11 +338,11 @@ pub enum PanelAllowance {
     Unbudgeted,
     /// A whole budget, which the loop's frequency-independent projection `y`
     /// (`m·nov·8`) and its per-worker scratch must both fit
-    /// ([`quad_panel_width`]).
+    /// (`quad_panel_width`).
     Total(usize),
     /// Bytes for the per-worker scratch alone: the caller has charged
     /// everything else that is resident beside the loop, `y` included when
-    /// the loop holds one ([`quad_panel_width_beside`]).
+    /// the loop holds one (`quad_panel_width_beside`).
     Scratch(usize),
     /// The resident planes leave nothing: the narrowest panel. A caller that
     /// produces this refuses before any loop runs (the rs-mp2-rpa driver's

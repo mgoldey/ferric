@@ -469,11 +469,14 @@ fn build_df_jk_impl<'a>(
                             j_pair_thresh,
                         )?))
                     } else {
-                        RiJ::Stored(DfJ::from_source(
+                        RiJ::Stored(DfJ::from_source_beside(
                             raw,
                             op,
                             &dfbs,
-                            ooc_budget,
+                            (
+                                ooc_budget,
+                                df_k.as_ref().map_or(0, DfK::resident_tensor_bytes),
+                            ),
                             Some(ctx),
                             j_precision,
                         )?)

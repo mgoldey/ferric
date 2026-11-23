@@ -781,8 +781,24 @@ impl<'a> DfJ<'a> {
         ctx: Option<&'a ParallelContext>,
         precision: RiJPrecision,
     ) -> Result<Self, FerricError> {
+        Self::from_source_beside(source, op, dfbs, (budget_bytes, 0), ctx, precision)
+    }
+
+    /// [`DfJ::from_source`] when the caller already holds `beside_bytes`
+    /// (the dressed DF-K band of a shared RI-JK set-up): an f32 conversion
+    /// must fit the budget left beside them, so the stored precision depends
+    /// on the budget and the shapes only, never on the pool's state.
+    pub(crate) fn from_source_beside(
+        source: ThreeIndexSource,
+        op: Operator,
+        dfbs: &PreparedBasis,
+        (budget_bytes, beside_bytes): (usize, usize),
+        ctx: Option<&'a ParallelContext>,
+        precision: RiJPrecision,
+    ) -> Result<Self, FerricError> {
         let source = if dfj_f32_wanted(precision) {
-            let (s, declined) = source.into_ri_j_f32(budget_bytes, f32_rounding())?;
+            let room = budget_bytes.saturating_sub(beside_bytes);
+            let (s, declined) = source.into_ri_j_f32(room, f32_rounding())?;
             if let Some(why) = declined {
                 note_f32_declined(&why);
             }

@@ -377,7 +377,9 @@ impl ThreeIndexSource {
     ///
     /// Used where the raw tensor was built in f64 for another consumer first
     /// (the shared RI-JK path, where DF-K dresses it). Whether it converts is
-    /// decided by the budget alone; the f32 charge is then taken (hard) while
+    /// decided by the budget alone (the f32 tensor plus this f64 tensor's
+    /// resident bytes; the caller passes the budget left beside anything else
+    /// it holds, such as the dressed DF-K band); the f32 charge is then taken (hard) while
     /// the f64 tensor still holds its own, so a pool that cannot hold both at
     /// once refuses (`MemoryExhausted`) instead of leaving the precision to the
     /// pool. Returns the source (the f32 one, or this one unchanged) and, when
@@ -407,9 +409,13 @@ impl ThreeIndexSource {
         };
         let cols = screen.as_ref().map_or(packed_pair_len(nao), |s| s.ncols());
         let bytes = Self::ri_j_f32_bytes(rows, cols);
-        if bytes > budget_bytes {
+        // The conversion holds this f64 tensor beside the new f32 one until it
+        // returns, so both count: a deterministic function of the shapes and
+        // the budget, as the pool will see them.
+        let need = bytes.saturating_add(self.kept_f64_bytes().unwrap_or(0));
+        if need > budget_bytes {
             let declined = F32Declined::DoesNotFit {
-                need: bytes,
+                need,
                 budget: budget_bytes,
             };
             return Ok((self, Some(declined)));

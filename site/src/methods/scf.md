@@ -166,6 +166,24 @@ why is recorded in the certificate (`ri-j` entry: "aux …, f64 tensor storage
 `dfj-f32` entry in the precision record) and `result.ri_j_precision` in
 Python.
 
+**The default f32 tensor and the memory budget.** The f32 tensor is held in
+memory only. When it does not fit the memory budget, an f32 request (the
+default included) keeps the f64 tensor and says so on stderr ("…
+`ri_j_precision = "f32"` (default) but the tensor stays f64 …") and in the
+certificate. That choice reads the budget alone, never what else the shared
+memory pool happens to hold, so one input under one budget always gets one
+precision; a budget that admits the f32 tensor while the pool cannot hold it
+beside what is already reserved is refused with a `MemoryExhausted` error
+naming the two ways out. Because the default switches precision with the
+budget, an energy (and everything correlated on that reference) can move by
+up to ~1e-5 Ha between a budget that fits the f32 tensor and one that does
+not: the f32 and f64 tensors of benzene/aug-cc-pVDZ (def2-universal-jkfit)
+give RHF references 5.3e-6 Ha apart and rs-mp2-rpa totals 7.8e-6 Ha apart.
+Set `ri_j_precision = "f64"` for energies that do not depend on the budget
+(with it, the same benzene run agrees to 7e-13 Ha from 0.12 GiB to an
+unset budget). The f32 default is kept: it halves the tensor and its error
+is the measured one below.
+
 Measured, def2-SVP, `def2-universal-jkfit`, default grid and thresholds,
 f32 minus f64 (2026-11-07):
 
