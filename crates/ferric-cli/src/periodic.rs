@@ -13,7 +13,7 @@
 //! by the plan; energies are Hartree PER CELL.
 
 use crate::config::{Config, PeriodicJk, PeriodicPlan, PeriodicRoute, ANGSTROM_TO_BOHR};
-use crate::error::die;
+use crate::error::CliError;
 use ferric_core::basis::{self, BasisSet};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -86,14 +86,16 @@ fn effective_max_iter(plan: &PeriodicPlan) -> usize {
     }
 }
 
-pub fn run_periodic(cfg: &Config) {
+pub fn run_periodic(cfg: &Config) -> Result<(), CliError> {
     let Some(plan0) = cfg.periodic.as_ref() else {
-        die("internal: run_periodic called without a periodic plan");
+        return Err(CliError::msg(
+            "internal: run_periodic called without a periodic plan",
+        ));
     };
     // `gdf_omega = "auto"`: price the cell, then run as if the chosen value
     // had been written (an explicit `gdf_omega` never reaches this).
-    let mut s = setup(cfg, plan0);
-    let resolved = resolve_auto_gdf_omega(plan0, &mut s);
+    let mut s = setup(cfg, plan0)?;
+    let resolved = resolve_auto_gdf_omega(plan0, &mut s)?;
     let plan = resolved.as_ref().unwrap_or(plan0);
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.run_start(
@@ -128,11 +130,11 @@ pub fn run_periodic(cfg: &Config) {
     let mut stress: Option<StressInfo> = None;
     let mut opt: Option<OptimizeInfo> = None;
     let out = if plan.optimize {
-        let (o, info) = run_periodic_optimize(cfg, plan, &s);
+        let (o, info) = run_periodic_optimize(cfg, plan, &s)?;
         opt = info;
         o
     } else if plan.stress {
-        let (o, info) = run_kstress(cfg, plan, &s);
+        let (o, info) = run_kstress(cfg, plan, &s)?;
         stress = Some(info);
         o
     } else if plan.kmesh.is_some() {
@@ -143,7 +145,7 @@ pub fn run_periodic(cfg: &Config) {
             PeriodicRoute::Uks => run_kuks(cfg, plan, &s),
             PeriodicRoute::Roks | PeriodicRoute::Rohf => run_kro(cfg, plan, &s),
             PeriodicRoute::Mp2 | PeriodicRoute::Drpa => run_kcorr(cfg, plan, &s),
-        }
+        }?
     } else {
         match plan.route {
             PeriodicRoute::Rhf => run_gamma_rhf(cfg, plan, &s),
@@ -152,7 +154,7 @@ pub fn run_periodic(cfg: &Config) {
                 run_gamma_open(cfg, plan, &s)
             }
             PeriodicRoute::Mp2 | PeriodicRoute::Drpa => run_gamma_corr(cfg, plan, &s),
-        }
+        }?
     };
     crate::print_and_note_certificate(&periodic_certificate(plan, &out));
     if let Some(rl) = ferric_scf::runlog::log() {
@@ -167,6 +169,7 @@ pub fn run_periodic(cfg: &Config) {
             run_end_extra(cfg, &out, stress.as_ref(), opt.as_ref()),
         );
     }
+    Ok(())
 }
 
 /// The periodic certificate of a finished run: capability `<route>-gamma` /
@@ -276,7 +279,7 @@ struct Setup {
     omega_bohr: f64,
 }
 
-fn load_basis(cfg: &Config) -> BasisSet {
+fn load_basis(cfg: &Config) -> Result<BasisSet, CliError> {
     if let Some(name) = &cfg.basis.name {
         basis::bundled(name)
     } else if let Some(path) = &cfg.basis.path {
@@ -284,32 +287,33 @@ fn load_basis(cfg: &Config) -> BasisSet {
     } else {
         Err(FerricError::Basis("no basis specified".into()))
     }
-    .unwrap_or_else(|e| die(e))
+    .map_err(CliError::msg)
 }
 
-fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
+fn setup(cfg: &Config, plan: &PeriodicPlan) -> Result<Setup, CliError> {
     let mut mol = Molecule::load_xyz_with_charge(
         &cfg.molecule.xyz,
         cfg.molecule.charge,
         cfg.molecule.multiplicity,
     )
-    .unwrap_or_else(|e| die(e));
-    let bs = load_basis(cfg);
+    .map_err(CliError::msg)?;
+    let bs = load_basis(cfg)?;
     // The ECP (if the basis carries one) is applied before the Cell is built;
     // periodic_hcore(_kpts) adds the lattice-summed V_ECP and re-checks it.
     mol.apply_ecp(&bs);
     if plan.route.closed_shell() {
         let nelec = mol.nelec();
         if nelec <= 0 || nelec % 2 != 0 {
-            die(format!(
+            return Err(CliError::msg(format!(
                 "[cell]: {nelec} electrons per cell; the periodic {} driver is closed-shell \
                  and needs a positive even count (use method.kind = \"uhf\"/\"rohf\")",
                 plan.route.label()
-            ));
+            )));
         }
     }
-    let cell = Cell::new(mol, plan.lattice_bohr).unwrap_or_else(|e| die(format!("[cell]: {e}")));
-    let prep = PreparedBasis::new(cell.mol(), &bs).unwrap_or_else(|e| die(e));
+    let cell =
+        Cell::new(mol, plan.lattice_bohr).map_err(|e| CliError::msg(format!("[cell]: {e}")))?;
+    let prep = PreparedBasis::new(cell.mol(), &bs).map_err(CliError::msg)?;
     let (aux, aux_bs) = match &plan.jk {
         PeriodicJk::Dense { max_eri_bytes } => {
             // The Gamma dense tensor is refused before any lattice sum (the
@@ -330,38 +334,38 @@ fn setup(cfg: &Config, plan: &PeriodicPlan) -> Setup {
                     && f.is_some_and(ferric_pbc::dft::is_meta_gga_name);
                 let need = ferric_pbc::gamma_rsh::gamma_dense_bytes(nao, rsh || mgga_force);
                 if need > *max_eri_bytes as u128 {
-                    die(format!(
+                    return Err(CliError::msg(format!(
                         "[cell]: the dense AFT ERI tensors need {need} bytes (nao = {nao}) > \
                          max_eri_gb cap {max_eri_bytes} bytes. This path is a toy-scale \
                          oracle; use jk = \"rsgdf\" with an auxbasis for larger cells."
-                    ));
+                    )));
                 }
             }
             (None, None)
         }
         PeriodicJk::RsGdf { auxbasis, .. } => {
-            let a = basis::bundled(auxbasis).unwrap_or_else(|e| {
-                die(format!(
+            let a = basis::bundled(auxbasis).map_err(|e| {
+                CliError::msg(format!(
                     "[cell] auxbasis {auxbasis:?} is not a bundled basis: {e}"
                 ))
-            });
-            let p = PreparedBasis::new(cell.mol(), &a).unwrap_or_else(|e| {
-                die(format!(
+            })?;
+            let p = PreparedBasis::new(cell.mol(), &a).map_err(|e| {
+                CliError::msg(format!(
                     "[cell] auxbasis {auxbasis:?} cannot be placed on this cell: {e}"
                 ))
-            });
+            })?;
             (Some(p), Some(a))
         }
     };
     let omega_bohr = default_hcore_omega(plan, &cell);
-    Setup {
+    Ok(Setup {
         bs,
         cell,
         prep,
         aux,
         aux_bs,
         omega_bohr,
-    }
+    })
 }
 
 /// The nuclear-attraction split: an explicit `[cell] omega`, else the
@@ -425,12 +429,17 @@ fn gdf_omega_is_auto(plan: &PeriodicPlan) -> bool {
 /// the input with `gdf_omega_bohr` filled in, and `s.omega_bohr` (the hcore
 /// default, which follows the RS-GDF ω through its cap) is recomputed
 /// exactly as for an explicit value; the cell and bases do not depend on ω.
-fn resolve_auto_gdf_omega(plan: &PeriodicPlan, s: &mut Setup) -> Option<PeriodicPlan> {
+fn resolve_auto_gdf_omega(
+    plan: &PeriodicPlan,
+    s: &mut Setup,
+) -> Result<Option<PeriodicPlan>, CliError> {
     if !gdf_omega_is_auto(plan) || gdf_omega_bohr(plan).is_some() {
-        return None;
+        return Ok(None);
     }
     let Some(aux) = s.aux.as_ref() else {
-        die("internal: gdf_omega = \"auto\" without an RS-GDF aux basis");
+        return Err(CliError::msg(
+            "internal: gdf_omega = \"auto\" without an RS-GDF aux basis",
+        ));
     };
     // `rsgdf_config` would refuse (the value is not resolved yet); the
     // chooser ignores `omega` anyway.
@@ -443,7 +452,7 @@ fn resolve_auto_gdf_omega(plan: &PeriodicPlan, s: &mut Setup) -> Option<Periodic
     };
     let t0 = std::time::Instant::now();
     let chosen = auto_rsgdf_omega(&s.cell, &s.prep, aux, &base)
-        .unwrap_or_else(|e| die(format!("[cell] gdf_omega = \"auto\": {e}")));
+        .map_err(|e| CliError::msg(format!("[cell] gdf_omega = \"auto\": {e}")))?;
     let table: Vec<String> = chosen
         .candidates
         .iter()
@@ -460,7 +469,7 @@ fn resolve_auto_gdf_omega(plan: &PeriodicPlan, s: &mut Setup) -> Option<Periodic
         *gdf_omega_bohr = Some(chosen.omega);
     }
     s.omega_bohr = default_hcore_omega(&out, &s.cell);
-    Some(out)
+    Ok(Some(out))
 }
 
 fn budget_bytes(plan: &PeriodicPlan) -> Option<usize> {
@@ -839,8 +848,8 @@ fn gamma_rhf_driver(
     Ok((r, sys.hc.enn, v_m, t))
 }
 
-fn run_gamma_rhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (r, enn, v_m, t) = gamma_rhf_driver(plan, s).unwrap_or_else(|e| die(e));
+fn run_gamma_rhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let (r, enn, v_m, t) = gamma_rhf_driver(plan, s).map_err(CliError::msg)?;
     print_header(cfg, plan, s);
     print_aux_counts(&t);
     println!("  iterations = {}", r.iterations);
@@ -852,12 +861,12 @@ fn run_gamma_rhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     if !r.converged {
         warn_unconverged("RHF", r.iterations);
     }
-    Outcome {
+    Ok(Outcome {
         energy: r.energy,
         converged: r.converged,
         energy_is: "total",
         iterations: Some(r.iterations),
-    }
+    })
 }
 
 fn periodic_grid(plan: &PeriodicPlan) -> PeriodicGridConfig {
@@ -960,8 +969,8 @@ fn gamma_rks_driver(
     Ok((r, sys.hc.enn, t))
 }
 
-fn run_gamma_rks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (r, enn, t) = gamma_rks_driver(plan, s).unwrap_or_else(|e| die(e));
+fn run_gamma_rks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let (r, enn, t) = gamma_rks_driver(plan, s).map_err(CliError::msg)?;
     print_header(cfg, plan, s);
     print_aux_counts(&t);
     println!(
@@ -981,12 +990,12 @@ fn run_gamma_rks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     if !r.scf.converged {
         warn_unconverged("RKS", r.scf.iterations);
     }
-    Outcome {
+    Ok(Outcome {
         energy: r.scf.energy,
         converged: r.scf.converged,
         energy_is: "total",
         iterations: Some(r.scf.iterations),
-    }
+    })
 }
 
 /// The common part of every Gamma open-shell driver's result.
@@ -1133,8 +1142,8 @@ fn ewald_start_name(plan: &PeriodicPlan) -> &'static str {
     }
 }
 
-fn run_gamma_open(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (p, enn, t) = gamma_open_driver(plan, s).unwrap_or_else(|e| die(e));
+fn run_gamma_open(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let (p, enn, t) = gamma_open_driver(plan, s).map_err(CliError::msg)?;
     print_header(cfg, plan, s);
     print_aux_counts(&t);
     println!(
@@ -1183,12 +1192,12 @@ fn run_gamma_open(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     if !p.scf.converged {
         warn_unconverged(plan.route.label(), p.scf.iterations);
     }
-    Outcome {
+    Ok(Outcome {
         energy: p.scf.energy,
         converged: p.scf.converged,
         energy_is: "total",
         iterations: Some(p.scf.iterations),
-    }
+    })
 }
 
 // ─────────────────────────────────────────────── Gamma MP2 / dRPA ──
@@ -1200,9 +1209,9 @@ fn den_name(d: Mp2Denominators) -> &'static str {
     }
 }
 
-fn denominators(plan: &PeriodicPlan) -> Mp2Denominators {
+fn denominators(plan: &PeriodicPlan) -> Result<Mp2Denominators, CliError> {
     plan.denominators
-        .unwrap_or_else(|| die("internal: periodic correlation without [cell] denominators"))
+        .ok_or_else(|| CliError::msg("internal: periodic correlation without [cell] denominators"))
 }
 
 /// The numbers both Gamma correlation drivers return.
@@ -1221,6 +1230,7 @@ struct CorrParts {
 fn gamma_corr_driver(
     plan: &PeriodicPlan,
     s: &Setup,
+    den: Mp2Denominators,
 ) -> Result<(ScfResult, CorrParts, PbcTimings), FerricError> {
     let total = StageClock::start();
     let sys = gamma_system(plan, s, false)?;
@@ -1231,7 +1241,6 @@ fn gamma_corr_driver(
             rhf.iterations, rhf.energy
         )));
     }
-    let den = denominators(plan);
     let corr_clock = StageClock::start();
     let c = if plan.route == PeriodicRoute::Mp2 {
         let c = GammaMp2Config {
@@ -1284,14 +1293,17 @@ fn gamma_corr_driver(
     Ok((rhf, c, t))
 }
 
-fn run_gamma_corr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let (rhf, c, t) = gamma_corr_driver(plan, s).unwrap_or_else(|e| die(e));
+fn run_gamma_corr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    // `[cell]` denominators are resolved for every correlated route, so this
+    // never fails; resolved before the driver, which reports `FerricError`.
+    let den = denominators(plan)?;
+    let (rhf, c, t) = gamma_corr_driver(plan, s, den).map_err(CliError::msg)?;
     let label = plan.route.label();
     print_header(cfg, plan, s);
     print_aux_counts(&t);
     println!(
         "  denominators = {} (occupied shift {:.10})",
-        den_name(denominators(plan)),
+        den_name(den),
         c.occ_shift
     );
     println!(
@@ -1312,21 +1324,21 @@ fn run_gamma_corr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     println!("  {label} corr   = {:.10} Hartree/cell", c.corr);
     println!("  Total      = {:.10} Hartree/cell", c.total);
     report_timings(&t);
-    Outcome {
+    Ok(Outcome {
         energy: c.total,
         converged: rhf.converged,
         energy_is: "correlated_total",
         iterations: Some(rhf.iterations),
-    }
+    })
 }
 
 // ─────────────────────────────────────────────────────── k-point SCF ──
 
-fn k_mesh(plan: &PeriodicPlan, s: &Setup) -> KPointMesh {
+fn k_mesh(plan: &PeriodicPlan, s: &Setup) -> Result<KPointMesh, CliError> {
     let Some((n, c)) = plan.kmesh else {
-        die("internal: k-point route without kmesh");
+        return Err(CliError::msg("internal: k-point route without kmesh"));
     };
-    KPointMesh::new(&s.cell, n, c).unwrap_or_else(|e| die(format!("[cell] kmesh: {e}")))
+    KPointMesh::new(&s.cell, n, c).map_err(|e| CliError::msg(format!("[cell] kmesh: {e}")))
 }
 
 fn kscf_config(plan: &PeriodicPlan) -> KScfConfig {
@@ -1415,9 +1427,9 @@ fn krhf_driver(
     Ok((r, v_m))
 }
 
-fn run_krhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let mesh = k_mesh(plan, s);
-    let (r, v_m) = krhf_driver(plan, s, &mesh).unwrap_or_else(|e| die(e));
+fn run_krhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let mesh = k_mesh(plan, s)?;
+    let (r, v_m) = krhf_driver(plan, s, &mesh).map_err(CliError::msg)?;
     print_header(cfg, plan, s);
     print_aux_counts(&r.timings);
     print_lindep(&r.lindep);
@@ -1434,12 +1446,12 @@ fn run_krhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     if !r.converged {
         warn_unconverged("k-point RHF", r.iterations);
     }
-    Outcome {
+    Ok(Outcome {
         energy: r.energy,
         converged: r.converged,
         energy_is: "total",
         iterations: Some(r.iterations),
-    }
+    })
 }
 
 /// The k-point closed-shell KS config of the energy AND the optimize path (a
@@ -1470,9 +1482,9 @@ fn krks_driver(
     Ok((r, v_m))
 }
 
-fn run_krks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let mesh = k_mesh(plan, s);
-    let (r, v_m) = krks_driver(plan, s, &mesh).unwrap_or_else(|e| die(e));
+fn run_krks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let mesh = k_mesh(plan, s)?;
+    let (r, v_m) = krks_driver(plan, s, &mesh).map_err(CliError::msg)?;
     print_header(cfg, plan, s);
     print_aux_counts(&r.scf.timings);
     print_lindep(&r.scf.lindep);
@@ -1494,12 +1506,12 @@ fn run_krks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     );
     println!("  energy     = {:.10} Hartree/cell", r.scf.energy);
     report_timings(&r.scf.timings);
-    Outcome {
+    Ok(Outcome {
         energy: r.scf.energy,
         converged: r.scf.converged,
         energy_is: "total",
         iterations: Some(r.scf.iterations),
-    }
+    })
 }
 
 fn kuhf_config(plan: &PeriodicPlan, s: &Setup) -> KUhfConfig {
@@ -1853,7 +1865,11 @@ fn k_stress(plan: &PeriodicPlan, s: &Setup) -> Result<KStressRun, FerricError> {
 /// `[cell] stress = true`: the k-point SCF through the retained hcore / J/K
 /// and its analytic stress tensor, printed in Hartree/Bohr^3 and GPa. The
 /// SCF must converge (the library refuses a non-converged state).
-fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, StressInfo) {
+fn run_kstress(
+    cfg: &Config,
+    plan: &PeriodicPlan,
+    s: &Setup,
+) -> Result<(Outcome, StressInfo), CliError> {
     print_header(cfg, plan, s);
     let r = match k_stress(plan, s) {
         Ok(r) => r,
@@ -1873,7 +1889,7 @@ fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, Stress
                     }),
                 );
             }
-            die(e)
+            return Err(CliError::msg(e));
         }
     };
     println!("  task       = energy + analytic {} stress", r.label);
@@ -1905,13 +1921,13 @@ fn run_kstress(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> (Outcome, Stress
         energy_is: "total",
         iterations: r.iterations,
     };
-    (
+    Ok((
         out,
         StressInfo {
             sigma: r.sigma,
             iterations: r.iterations,
         },
-    )
+    ))
 }
 
 /// The k-point mesh and derivative budget of one force evaluation.
@@ -2229,12 +2245,12 @@ fn print_kopen(cfg: &Config, plan: &PeriodicPlan, s: &Setup, r: &KOpenReport<'_>
     }
 }
 
-fn run_kuks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let mesh = k_mesh(plan, s);
+fn run_kuks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let mesh = k_mesh(plan, s)?;
     let c = kuks_config(plan, s);
-    let r = solve_kuks(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c).unwrap_or_else(|e| die(e));
+    let r = solve_kuks(&s.cell, &s.prep, s.aux.as_ref(), &mesh, &c).map_err(CliError::msg)?;
     let u = &r.scf;
-    print_kopen(
+    Ok(print_kopen(
         cfg,
         plan,
         s,
@@ -2258,12 +2274,12 @@ fn run_kuks(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
                 r.electrons_on_grid,
             )),
         },
-    )
+    ))
 }
 
 /// k-point ROKS (`plan.route == Roks`) and ROHF.
-fn run_kro(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let mesh = k_mesh(plan, s);
+fn run_kro(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let mesh = k_mesh(plan, s)?;
     let aux = s.aux.as_ref();
     let (r, label) = if plan.route == PeriodicRoute::Roks {
         let c = kroks_config(plan, s);
@@ -2278,10 +2294,10 @@ fn run_kro(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
             "k-point ROHF",
         )
     };
-    let r = r.unwrap_or_else(|e| die(e));
+    let r = r.map_err(CliError::msg)?;
     let u = &r.scf;
     let ks = plan.route == PeriodicRoute::Roks;
-    print_kopen(
+    Ok(print_kopen(
         cfg,
         plan,
         s,
@@ -2305,12 +2321,12 @@ fn run_kro(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
                 r.electrons_on_grid,
             )),
         },
-    )
+    ))
 }
 
-fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let mesh = k_mesh(plan, s);
-    let r = kuhf_driver(plan, s, &mesh).unwrap_or_else(|e| die(e));
+fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let mesh = k_mesh(plan, s)?;
+    let r = kuhf_driver(plan, s, &mesh).map_err(CliError::msg)?;
     let u = &r.scf;
     print_header(cfg, plan, s);
     println!(
@@ -2344,12 +2360,12 @@ fn run_kuhf(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     if !u.converged {
         warn_unconverged("k-point UHF", u.iterations);
     }
-    Outcome {
+    Ok(Outcome {
         energy: u.energy,
         converged: u.converged,
         energy_is: "total",
         iterations: Some(u.iterations),
-    }
+    })
 }
 
 // ─────────────────────────────────────────────── k-point MP2 / dRPA ──
@@ -2521,11 +2537,11 @@ fn kcorr_driver(
     Ok((r, out, t))
 }
 
-fn run_kcorr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
-    let mesh = k_mesh(plan, s);
-    let den = denominators(plan);
+fn run_kcorr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Result<Outcome, CliError> {
+    let mesh = k_mesh(plan, s)?;
+    let den = denominators(plan)?;
     let label = plan.route.label();
-    let (r, k, t) = kcorr_driver(plan, s, &mesh, den).unwrap_or_else(|e| die(e));
+    let (r, k, t) = kcorr_driver(plan, s, &mesh, den).map_err(CliError::msg)?;
     print_header(cfg, plan, s);
     print_aux_counts(&t);
     print_lindep(&r.lindep);
@@ -2547,12 +2563,12 @@ fn run_kcorr(cfg: &Config, plan: &PeriodicPlan, s: &Setup) -> Outcome {
     println!("  {label} corr   = {:.10} Hartree/cell", k.corr);
     println!("  Total      = {:.10} Hartree/cell", k.total);
     report_timings(&t);
-    Outcome {
+    Ok(Outcome {
         energy: k.total,
         converged: r.converged,
         energy_is: "correlated_total",
         iterations: Some(r.iterations),
-    }
+    })
 }
 
 // ───────────────────────────────────────────── Gamma optimization ──
@@ -2833,11 +2849,11 @@ fn run_periodic_optimize(
     cfg: &Config,
     plan: &PeriodicPlan,
     s: &Setup,
-) -> (Outcome, Option<OptimizeInfo>) {
+) -> Result<(Outcome, Option<OptimizeInfo>), CliError> {
     use ferric_scf::optimize::{optimize_coordinates, CoordSystem, OptimizeConfig};
     // An explicit initial_hessian = "lindh" is refused by optimize_coordinates
     // (a periodic cell has no molecular model Hessian here).
-    let (initial_hessian, trust_update) = cfg.optimize.search_options();
+    let (initial_hessian, trust_update) = cfg.optimize.search_options()?;
     let opt_config = OptimizeConfig {
         initial_hessian,
         trust_update,
@@ -2886,7 +2902,7 @@ fn run_periodic_optimize(
         plan.route.label()
     );
     let (x, energy, steps, converged) =
-        optimize_coordinates(&x0, &opt_config, energy_and_gradient).unwrap_or_else(|e| die(e));
+        optimize_coordinates(&x0, &opt_config, energy_and_gradient).map_err(CliError::msg)?;
     let fin = at(&x);
     println!("  steps      = {steps}");
     println!("  converged  = {converged}");
@@ -2919,7 +2935,7 @@ fn run_periodic_optimize(
         geometry_bohr: xe.clone(),
         gradient: g.clone(),
     });
-    (
+    Ok((
         Outcome {
             energy,
             converged,
@@ -2927,5 +2943,5 @@ fn run_periodic_optimize(
             iterations: None,
         },
         info,
-    )
+    ))
 }

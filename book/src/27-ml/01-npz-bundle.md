@@ -61,6 +61,8 @@ An absent key means the property was not requested or failed. A failed
 property does not stop the file being written. The CLI then exits nonzero,
 and Python raises `RuntimeError` after writing unless `allow_partial_npz` is
 set; Python also lists the failures in `PdepRpaResult.property_gaps`. A
+CLI run whose bundle could not be written at all exits nonzero even with
+`allow_partial_npz`. A
 dataset builder should therefore check the exit status, and not only that
 the file exists.
 

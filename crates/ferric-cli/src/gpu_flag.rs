@@ -33,22 +33,10 @@ pub fn extract(args: &[String]) -> Result<(Vec<String>, Option<GpuPreset>), Stri
     Ok((rest, preset))
 }
 
-/// The `--gpu` entry of `--help`.
-pub fn print_help() {
-    eprintln!("  --gpu <preset>  off, auto, on, mixed or auto-mixed (also --gpu=<preset>).");
-    eprintln!("                  Overrides `[gpu] preset`, `gpu = \"...\"` and FERRIC_GPU_PRESET;");
-    eprintln!(
-        "                  a [gpu] mode/precision/mixed_kernels key that disagrees is refused."
-    );
-}
-
-/// [`extract`], or print `error: ...` and exit 2 (a usage error).
-pub fn extract_or_exit(args: Vec<String>) -> (Vec<String>, Option<GpuPreset>) {
-    extract(&args).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(2);
-    })
-}
+/// The `--gpu` entry of `--help` (three lines, no final newline).
+pub const HELP: &str = "  --gpu <preset>  off, auto, on, mixed or auto-mixed (also --gpu=<preset>).
+                  Overrides `[gpu] preset`, `gpu = \"...\"` and FERRIC_GPU_PRESET;
+                  a [gpu] mode/precision/mixed_kernels key that disagrees is refused.";
 
 #[cfg(test)]
 mod tests {
