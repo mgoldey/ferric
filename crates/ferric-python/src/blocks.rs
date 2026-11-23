@@ -1023,8 +1023,8 @@ impl PyAoIntegrals {
     /// `aux` differentiates the fits `df_jk(aux, operator, omega)` builds
     /// instead (the energy of an SCF with `df_j_aux=df_k_aux=aux`): the
     /// 3-index integrals, the auxiliary-basis centres and the metric (RI-J:
-    /// Cholesky inverse; RI-K: DfK's truncated V^-1/2, see
-    /// ferric_scf::df_gradient).
+    /// Cholesky inverse; RI-K: the metric (pseudo-)inverse DfK fits, its
+    /// Cholesky L^-1 or truncated V^-1/2, see ferric_scf::df_gradient).
     #[pyo3(signature = (density, operator="coulomb", omega=None, aux=None, memory_budget_gb=None))]
     fn grad_jk<'py>(
         &self,
