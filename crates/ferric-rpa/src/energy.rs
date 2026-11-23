@@ -775,12 +775,10 @@ pub(crate) fn eval_signed_summands_panelled(
                     Zip::from(&mut panel)
                         .and_broadcast(row)
                         .for_each(|x, &f| *x *= f);
-                    if w == panel_width {
-                        syrk_aat_accumulate_into(panel.view(), out);
-                    } else {
-                        let owned = panel.to_owned();
-                        syrk_aat_accumulate_into(owned.view(), out);
-                    }
+                    // A ragged final panel is passed as the strided view
+                    // too: no copy, so the scratch charged
+                    // (`budget::signed_quad_scratch_bytes`) is all it holds.
+                    syrk_aat_accumulate_into(panel.view(), out);
                     c0 = c1;
                 }
             }

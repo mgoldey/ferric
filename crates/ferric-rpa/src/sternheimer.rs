@@ -70,7 +70,7 @@ pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
             &n_i32,
             &k_i32,
             &alpha,
-            a_slice.as_ptr(),
+            a.as_ptr(),
             &lda,
             &beta,
             c.as_mut_ptr(),
@@ -142,10 +142,11 @@ pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
 /// responsible for zeroing `c` (or pre-seeding it, e.g. with the identity
 /// diagonal) before the first panel.
 ///
-/// Takes a view (not `&Array2`) so a full-width panel — which is already a
-/// contiguous row-major sub-slice of the caller's `(m, panel_width)` scratch —
-/// can be passed directly with no copy; only the caller's ragged final panel
-/// (`w < panel_width`) needs an owned, right-sized `to_owned()` first.
+/// Takes a view (not `&Array2`) so a panel can be passed directly with no
+/// copy: a full-width panel is a contiguous row-major sub-slice of the
+/// caller's `(m, panel_width)` scratch, and a ragged final panel
+/// (`w < panel_width`) is its column slice, whose row stride `panel_width`
+/// is passed to BLAS as the leading dimension.
 pub(crate) fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
     let m = a.nrows();
     let kdim = a.ncols();
@@ -157,18 +158,25 @@ pub(crate) fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) 
     if m == 0 || kdim == 0 {
         return;
     }
-    let a_slice = a
-        .as_slice()
-        .expect("syrk_aat_accumulate_into: input must be contiguous (row-major)");
+    // Row-major with unit column stride; the row stride may exceed the width
+    // (a column slice of a wider buffer), which BLAS takes as `lda`.
+    let strides = a.strides();
+    assert!(
+        (strides[1] == 1 || kdim == 1) && strides[0] >= kdim as isize,
+        "syrk_aat_accumulate_into: input must be row-major with unit column stride"
+    );
+    let row_stride = if m == 1 { kdim } else { strides[0] as usize };
     let alpha = 1.0f64;
     let beta = 1.0f64; // accumulate, don't overwrite
     let n_i32 = m as i32;
     let k_i32 = kdim as i32;
-    let lda = kdim as i32;
+    let lda = row_stride as i32;
     let ldc = m as i32;
-    // SAFETY: same contract as syrk_aat — contiguous input (as_slice above),
-    // correctly-sized output buffer (asserted above), consistent BLAS
-    // dimensions. beta=1 accumulates into c rather than overwriting.
+    // SAFETY: `a` is row-major with unit column stride and row stride
+    // `lda >= kdim` (asserted above), so BLAS's column-major `kdim × m` view
+    // with leading dimension `lda` addresses exactly `a`'s elements; the
+    // output buffer is correctly sized (asserted above). beta=1 accumulates
+    // into c rather than overwriting.
     unsafe {
         #[allow(clippy::manual_c_str_literals)]
         dsyrk_(
@@ -177,7 +185,7 @@ pub(crate) fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) 
             &n_i32,
             &k_i32,
             &alpha,
-            a_slice.as_ptr(),
+            a.as_ptr(),
             &lda,
             &beta,
             c.as_mut_ptr(),
@@ -651,6 +659,24 @@ pub fn dielectric_matrix_unrestricted(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A ragged column slice of a wider row-major buffer, passed with its row
+    /// stride as BLAS's leading dimension, accumulates exactly what an owned
+    /// copy of it does (the signed log-det's final panel; no copy is made).
+    #[test]
+    fn syrk_on_a_strided_column_slice_is_the_copy_bitwise() {
+        let (m, width, w) = (7, 11, 4);
+        let buf = Array2::from_shape_fn((m, width), |(i, j)| {
+            ((i * 31 + j * 17) % 13) as f64 * 0.37 - 1.9
+        });
+        let view = buf.slice(ndarray::s![.., ..w]);
+        let owned = view.to_owned();
+        let (mut a, mut b) = (Array2::<f64>::eye(m), Array2::<f64>::eye(m));
+        syrk_aat_accumulate_into(view, &mut a);
+        syrk_aat_accumulate_into(owned.view(), &mut b);
+        let bits = |x: &Array2<f64>| x.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&a), bits(&b));
+    }
 
     #[test]
     fn chi_static_two_level_system() {

@@ -797,8 +797,8 @@ impl<'a> DfJ<'a> {
         precision: RiJPrecision,
     ) -> Result<Self, FerricError> {
         let source = if dfj_f32_wanted(precision) {
-            let room = budget_bytes.saturating_sub(beside_bytes);
-            let (s, declined) = source.into_ri_j_f32(room, f32_rounding())?;
+            let (s, declined) =
+                source.into_ri_j_f32_beside((budget_bytes, beside_bytes), f32_rounding())?;
             if let Some(why) = declined {
                 note_f32_declined(&why);
             }
@@ -836,8 +836,8 @@ impl<'a> DfJ<'a> {
         // The fit is checked against what is left beside the resident band:
         // without a global pool nothing else would stop both being held over
         // budget. The constructed DfJ keeps the full budget for its own blocking.
-        let room = budget_bytes.saturating_sub(beside_bytes);
-        let (source, declined) = source.into_ri_j_f32(room, f32_rounding())?;
+        let (source, declined) =
+            source.into_ri_j_f32_beside((budget_bytes, beside_bytes), f32_rounding())?;
         if declined.is_some() {
             return Ok(Err(source));
         }

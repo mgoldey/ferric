@@ -336,7 +336,12 @@ fn charge_of(
 ) -> crate::budget::ScanCharge {
     let nov = shape.nocc.saturating_mul(shape.nvir);
     let panels = panel_budgets(shape, cfg, panel_budget_of(cfg));
-    let panel_width = crate::energy::panel_width(shape.n_keep, nov, shape.n_workers, panels.drpa);
+    // The Laplace-chi0 loop ignores the allowance: charge it at full width.
+    let panel_width = if crate::frequency_loop_is_panelled(&cfg.drpa) {
+        crate::energy::panel_width(shape.n_keep, nov, shape.n_workers, panels.drpa)
+    } else {
+        nov.max(1)
+    };
     let stream = ferric_mp2::rimp2::mo_stream_scratch_bytes(shape.naux, nov);
     let base = crate::budget::scan_charge(shape, budget_bytes, panel_width, stream);
     if cfg.attenuator != Attenuator::Terf {
@@ -376,6 +381,21 @@ fn signed_drpa_bytes(
         .unwrap_or(0);
     let width = crate::energy::panel_width(2 * first.naux, nov, first.n_workers, allowance);
     crate::budget::signed_quad_scratch_bytes(first.naux, width, first.n_workers)
+}
+
+/// The dRPA configuration of a scan's dRPA calls: the caller's, with the
+/// scan's `frozen_core` and `need_inv_dielectric_freq` off. The scan reports
+/// energies only, so the per-frequency inverse-dielectric stack (`n_quad`
+/// matrices of `naux²`) would be built, never read, and not charged by the
+/// pre-flight (`scan_shape` sets `need_inv_dielectric: false`); with the
+/// flag off nothing reads or charges it. Every energy is unchanged: the
+/// stack is a side output.
+fn energy_only_drpa_cfg(cfg: &RsMp2RpaConfig) -> PdepRpaConfig {
+    PdepRpaConfig {
+        frozen_core: cfg.frozen_core,
+        need_inv_dielectric_freq: false,
+        ..cfg.drpa.clone()
+    }
 }
 
 /// The terf long-range dRPA is the signed log-det
@@ -678,8 +698,7 @@ fn scan_impl(
         spin_components_from_b_ov(&it.b_ov, eps, it.nocc, it.nvir, it.first_occ, it.nocc_total)
     };
 
-    let mut drpa_cfg = cfg.drpa.clone();
-    drpa_cfg.frozen_core = cfg.frozen_core;
+    let drpa_cfg = energy_only_drpa_cfg(cfg);
     let drpa_of =
         |it: &ferric_mp2::rimp2::RpaIntermediates, op: Operator| -> Result<f64, FerricError> {
             let _hard = ferric_core::memory::pool::reserve_global(
@@ -1200,8 +1219,7 @@ fn scan_impl_unrestricted(
         );
         open_shell_parts(a, b, eps_a, eps_b)
     };
-    let mut drpa_cfg = cfg.drpa.clone();
-    drpa_cfg.frozen_core = cfg.frozen_core;
+    let drpa_cfg = energy_only_drpa_cfg(cfg);
     let drpa_of = |(a, b): &(RpaIntermediates, RpaIntermediates)| -> Result<f64, FerricError> {
         let _hard = ferric_core::memory::pool::reserve_global(
             &format!("{label} [dRPA eigensolve]"),
@@ -1397,6 +1415,46 @@ mod tests {
         let ample = 1usize << 40;
         let wide = charge_of(shape, &cfg_with_budget(ample, Attenuator::Erf), ample);
         assert_eq!(wide, scan_charge(shape, ample, nov, stream));
+    }
+
+    /// The scan's dRPA calls never build the inverse-dielectric stack the
+    /// pre-flight does not charge, whatever the caller's flag, and run at the
+    /// scan's frozen core.
+    #[test]
+    fn scan_drpa_is_energy_only() {
+        let mut cfg = RsMp2RpaConfig {
+            frozen_core: 3,
+            ..Default::default()
+        };
+        cfg.drpa.need_inv_dielectric_freq = true;
+        cfg.drpa.frozen_core = 0;
+        let d = energy_only_drpa_cfg(&cfg);
+        assert!(!d.need_inv_dielectric_freq);
+        assert_eq!(d.frozen_core, 3);
+        assert_eq!(d.quadrature.n_points, cfg.drpa.quadrature.n_points);
+        let shape = scan_shape_for_test();
+        assert!(!shape.need_inv_dielectric, "the pre-flight charges no stack");
+    }
+
+    fn scan_shape_for_test() -> crate::budget::PeakEstimateShape {
+        let (mol, obs, dfbs, _) = setup_h2();
+        scan_shape(&mol, &obs, &dfbs, &RsMp2RpaConfig::default()).unwrap()
+    }
+
+    /// The Laplace-chi0 frequency loop is not panelled, so the scan charges
+    /// its scratch at full width under any budget.
+    #[test]
+    fn laplace_chi0_loop_is_charged_at_full_width() {
+        use crate::budget::{quad_scratch_bytes_at_width, scan_dielectric_resident_bytes};
+        let shape = panelled_shape();
+        let nov = shape.nocc * shape.nvir;
+        let budget = scan_dielectric_resident_bytes(shape, 0) + 30_000_000;
+        let mut cfg = cfg_with_budget(budget, Attenuator::Erf);
+        let dense = charge_of(shape, &cfg, budget);
+        assert!(dense.drpa_soft < quad_scratch_bytes_at_width(shape, nov));
+        cfg.drpa.chi0_backend = crate::config::Chi0Backend::Laplace { n_quad: 5 };
+        let laplace = charge_of(shape, &cfg, budget);
+        assert_eq!(laplace.drpa_soft, quad_scratch_bytes_at_width(shape, nov));
     }
 
     /// When the planes resident through the dRPA leave nothing of the

@@ -380,8 +380,59 @@ impl ThreeIndexSource {
     /// it was not converted, why. On success the f64 tensor and its charge are
     /// dropped.
     pub fn into_ri_j_f32(
-        mut self,
+        self,
         budget_bytes: usize,
+        rounding: F32Rounding,
+    ) -> Result<(Self, Option<F32Declined>), FerricError> {
+        self.into_ri_j_f32_beside((budget_bytes, 0), rounding)
+    }
+
+    /// The f64 bytes a raw tensor of this shape holds in core when placed by
+    /// the budget alone, `beside_bytes` held next to it (the placement of
+    /// `build_for_jk_beside` and `dress_first_wanted` without their pool
+    /// checks): unpacked when it and the band beside it fit, else packed when
+    /// that fits beside the band, else none (dress-first, spilled or
+    /// recomputed). The pool can only push the real placement down this
+    /// list, so this bounds the resident tensor and depends on the shapes and
+    /// the budget only. A pair-screened tensor counts its own bytes.
+    fn budget_placed_f64_bytes(&self, budget_bytes: usize, beside_bytes: usize) -> usize {
+        if let Some(bytes) = match &self.backend {
+            Backend::InCorePairScreened { data, .. } => Some(data.len().saturating_mul(8)),
+            Backend::InCoreF32 { .. } => Some(0),
+            _ => None,
+        } {
+            return bytes;
+        }
+        let (rows, nao) = (self.band_naux(), self.nao);
+        let full = rows.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let packed = rows.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+        let head = nao
+            .saturating_mul(nao)
+            .saturating_mul(8)
+            .saturating_mul(PACKED_MIN_SCRATCH_ROWS)
+            .min(PACKED_SCRATCH_CAP_BYTES);
+        if full.saturating_add(beside_bytes) <= budget_bytes {
+            full
+        } else if packed.saturating_add(head) <= budget_bytes
+            // a raw tensor that does not fit beside the dressed band is not
+            // held (dress-first, or spilled)
+            && (beside_bytes == 0 || packed.saturating_add(beside_bytes) <= budget_bytes)
+        {
+            packed
+        } else {
+            0
+        }
+    }
+
+    /// [`Self::into_ri_j_f32`] with `beside_bytes` already held next to the
+    /// tensor (the dressed DF-K band of a shared RI-JK set-up). The decision
+    /// counts the f32 tensor, the f64 tensor at its budget-only placement
+    /// (`budget_placed_f64_bytes`) and the bytes beside, against
+    /// `budget_bytes`: the shapes and the budget decide the precision, never
+    /// the pool's state or the tier the pool pushed this tensor to.
+    pub fn into_ri_j_f32_beside(
+        mut self,
+        (budget_bytes, beside_bytes): (usize, usize),
         rounding: F32Rounding,
     ) -> Result<(Self, Option<F32Declined>), FerricError> {
         if matches!(self.backend, Backend::InCoreF32 { .. }) {
@@ -404,9 +455,10 @@ impl ThreeIndexSource {
         let cols = screen.as_ref().map_or(packed_pair_len(nao), |s| s.ncols());
         let bytes = Self::ri_j_f32_bytes(rows, cols);
         // The conversion holds this f64 tensor beside the new f32 one until it
-        // returns, so both count: a deterministic function of the shapes and
-        // the budget, as the pool will see them.
-        let need = bytes.saturating_add(self.kept_f64_bytes().unwrap_or(0));
+        // returns, so both count, at the placement the budget alone gives.
+        let need = bytes
+            .saturating_add(self.budget_placed_f64_bytes(budget_bytes, beside_bytes))
+            .saturating_add(beside_bytes);
         if need > budget_bytes {
             let declined = F32Declined::DoesNotFit {
                 need,

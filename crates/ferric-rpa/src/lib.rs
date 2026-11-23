@@ -453,16 +453,26 @@ pub(crate) fn closed_shell_charge(
     // Charge the per-worker scratch at the width the frequency loop will
     // allocate: `quad_panel_width` narrows it under an explicit budget (an
     // unbudgeted run keeps the full width, which the loop then allocates).
-    let panel_width = energy::quad_panel_width(
-        n_keep,
-        nocc.saturating_mul(nvir),
-        n_workers,
-        config.memory_budget_bytes,
-    );
+    // The Laplace-chi0 loop is never panelled: full width.
+    let nov = nocc.saturating_mul(nvir);
+    let panel_width = if frequency_loop_is_panelled(config) {
+        energy::quad_panel_width(n_keep, nov, n_workers, config.memory_budget_bytes)
+    } else {
+        nov.max(1)
+    };
     Ok((
         shape,
         budget::closed_shell_run_charge(shape, planes, panel_width),
     ))
+}
+
+/// Whether the closed-shell frequency loop of `config` honours a panel
+/// allowance. The dense-chi0 loops do; the Laplace-chi0 eigenvalue loop
+/// (`energy::eval_eigenvalues_at_frequencies_laplace`) holds a full-width
+/// `(m, nov)` scratch and an `(m, m)` matrix per worker whatever the budget,
+/// so a pre-flight must charge it at full width.
+pub(crate) fn frequency_loop_is_panelled(config: &PdepRpaConfig) -> bool {
+    matches!(config.chi0_backend, Chi0Backend::Dense)
 }
 
 /// Pre-flight peak-memory gate shared by [`run_pdep_rpa`] and
@@ -1196,6 +1206,8 @@ pub(crate) fn run_pdep_rpa_from_intermediates_panelled(
                 &quad_freqs,
                 freq,
             )?,
+            // Not panelled: the pre-flights charge this loop at full width
+            // (`frequency_loop_is_panelled`), so `freq` does not apply.
             Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
                 &eigenvectors,
                 b_ov,
