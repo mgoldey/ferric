@@ -5,7 +5,7 @@
 
 use super::*;
 use ferric_mp2::omega_ri::RiFit;
-use ferric_mp2::omega_ri_cdd::{omega_ri_cdd_mp2, CddEnergy, OmegaRiCddConfig, PseudoOrbitals};
+use ferric_mp2::omega_ri_cdd::{omega_ri_cdd_mp2_on, CddEnergy, OmegaRiCddConfig, PseudoOrbitals};
 
 #[pyclass(frozen)]
 #[pyo3(name = "OmegaRiResult")]
@@ -120,8 +120,7 @@ pub(crate) fn run_omega_ri(
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     // RHF for a singlet, UHF otherwise; non-convergence is an error.
     let rhf = sys.solve_reference(&rhf_config).map_err(make_err)?;
-    let (emol, prep) = (sys.mol(), sys.basis());
-    let op = Operator::coulomb();
+    let emol = sys.mol();
     let method_s = method.to_string();
     let mut out = PyOmegaRiResult {
         total_energy: 0.0,
@@ -144,9 +143,8 @@ pub(crate) fn run_omega_ri(
                     memory_budget_bytes: budget,
                     ..Default::default()
                 };
-                let (sc, _) = ferric_mp2::rimp2::ri_mp2_spin_components_fitted(
-                    emol, prep, &dfbs, op, &rhf, &cfg, &fit,
-                )?;
+                let (sc, _) =
+                    ferric_mp2::rimp2::ri_mp2_spin_components_fitted_on(&dfbs, &rhf, &cfg, &fit)?;
                 out.e_corr = sc.e_total;
                 out.e_os = Some(sc.e_os);
                 out.e_ss = Some(sc.e_ss);
@@ -158,9 +156,9 @@ pub(crate) fn run_omega_ri(
                     ..Default::default()
                 };
                 let r = if emol.multiplicity == 1 {
-                    ferric_rpa::run_pdep_rpa_fitted(emol, prep, &dfbs, op, &rhf, &cfg, &fit)?
+                    ferric_rpa::run_pdep_rpa_fitted_on(&dfbs, &rhf, &cfg, &fit)?
                 } else {
-                    ferric_rpa::run_u_pdep_rpa_fitted(emol, prep, &dfbs, op, &rhf, &cfg, &fit)?
+                    ferric_rpa::run_u_pdep_rpa_fitted_on(&dfbs, &rhf, &cfg, &fit)?
                 };
                 out.e_corr = r.e_rpa;
             }
@@ -183,7 +181,7 @@ pub(crate) fn run_omega_ri(
                     pair_thresh: cdd_pair_thresh.unwrap_or(0.0),
                     memory_budget_bytes: budget,
                 };
-                let r = omega_ri_cdd_mp2(emol, prep, &dfbs, op, &rhf, &cfg)?;
+                let r = omega_ri_cdd_mp2_on(&dfbs, &rhf, &cfg)?;
                 out.e_corr = r.e_corr;
                 out.e_os = Some(r.e_os);
                 out.e_ss = r.e_ss;

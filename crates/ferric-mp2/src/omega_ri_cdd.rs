@@ -64,6 +64,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_quadrature::LaplaceQuadrature;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2, Axis};
 use rayon::prelude::*;
@@ -507,6 +508,19 @@ pub fn screened_exchange(
             kept_sq: a.kept_sq + x.kept_sq,
             range_sq: a.range_sq + x.range_sq,
         })
+}
+
+/// [`omega_ri_cdd_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn omega_ri_cdd_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &OmegaRiCddConfig,
+) -> Result<OmegaRiCddResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    omega_ri_cdd_mp2(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, config)
 }
 
 /// omega-RI-CDD-MP2 / -SOS-MP2 correlation energy (closed-shell RHF reference).

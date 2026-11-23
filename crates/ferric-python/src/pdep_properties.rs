@@ -172,8 +172,7 @@ pub(crate) struct BundleJob<'a> {
     pub(crate) mol: &'a Molecule,
     pub(crate) bs: &'a BasisSet,
     pub(crate) aux_bs: &'a BasisSet,
-    pub(crate) prep: &'a PreparedBasis,
-    pub(crate) dfbs: &'a PreparedBasis,
+    pub(crate) dfbs: &'a PreparedAux<'a>,
     pub(crate) rhf: &'a ScfResult,
     pub(crate) op: Operator,
     pub(crate) rpa_cfg: &'a ferric_rpa::PdepRpaConfig,
@@ -207,7 +206,8 @@ pub(crate) fn run_property_bundle(
     cert_json: &str,
 ) -> PyResult<BundleOutput> {
     use ferric_rpa::property_bundle::{
-        compute_pdep_properties, export_eigenpotential_cubes, write_pdep_npz, PropertyInputs,
+        compute_pdep_properties, export_eigenpotential_cubes, write_pdep_npz, PropertyBundleError,
+        PropertyInputs,
     };
     let mut rep = CollectingReporter::default();
     let mut out = BundleOutput::default();
@@ -230,19 +230,16 @@ pub(crate) fn run_property_bundle(
         let proatom =
             ferric_scf::properties::scf_proatom_provider(job.ctx, job.bs, job.op, job.scf_config);
         let inputs = PropertyInputs {
-            ctx: job.ctx,
-            mol: job.mol,
-            prep: job.prep,
-            bs: job.bs,
-            dfbs: job.dfbs,
+            aux: job.dfbs,
             result: job.rhf,
-            op: job.op,
             rpa_cfg: job.rpa_cfg,
             rhf_config: job.scf_config,
             proatom: &proatom,
         };
-        let props = compute_pdep_properties(&inputs, request, &mut rep)
-            .map_err(crate::errors::input_err)?;
+        let props = compute_pdep_properties(&inputs, request, &mut rep).map_err(|e| match e {
+            PropertyBundleError::Config(msg) => crate::errors::input_err(msg),
+            PropertyBundleError::Reference(e) => make_err(e),
+        })?;
         for w in &rep.warnings[n_cube_warnings..] {
             crate::scf::emit_runtime_warning(py, w.clone());
         }

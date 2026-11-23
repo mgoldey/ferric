@@ -47,6 +47,7 @@
 //! sets), exactness will instead demand radii that track the molecular
 //! DIAMETER. These predictions differ, so the sweep can distinguish them.
 
+use ferric_scf::PreparedAux;
 use ndarray::{Array1, Array2, Array3, ArrayView2, Axis};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3358,6 +3359,32 @@ pub fn assemble_pp_fitted_direct(
             })
         })
         .collect()
+}
+
+/// [`amplitude_lmp2_direct`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+pub fn amplitude_lmp2_direct_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    rhf: &ScfResult,
+    cfg: &AmplitudeLmp2Config,
+    dcfg: &DirectConfig,
+) -> Result<(AmplitudeLmp2Result, DirectStats), FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    amplitude_lmp2_direct(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        op,
+        rhf,
+        cfg,
+        dcfg,
+    )
 }
 
 /// Integral-direct amplitude-threshold LMP2 driver — the direct-path

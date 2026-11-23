@@ -15,7 +15,7 @@
 //! * `cli_casscf_equals_the_driver_bit_for_bit`: H2O CAS(4,4), N2 CAS(6,6)
 //!   at 1.0977 and 1.6 Å and O2 CAS(8,6) in the `(5, 3)` sector, 6-31G
 //!   (`testdata/reference/casscf_*_pyscf.json`). The logged total equals
-//!   `ferric_ci::driver::rhf_start` + `casscf_on_rhf` called in-process with
+//!   `ferric_ci::driver::rhf_start` + `casscf_on` called in-process with
 //!   the same settings, bit for bit (both run the same deterministic code on
 //!   the same rayon width), and it lies within 1e-9 Ha of PySCF (measured
 //!   gaps are at most 1.5e-11 Ha; the derived bar is in `casscf_vs_pyscf.rs`).
@@ -24,7 +24,7 @@
 //! * `cli_nevpt2_equals_the_driver_bit_for_bit`: H2O CAS(4,4), N2 CAS(6,6)
 //!   at 1.0977 and 2.2 Å (`testdata/reference/nevpt2_refs.json`), the CASSCF
 //!   gradient tolerance of the reference file passed as `[cas] grad_tol`.
-//!   Every class energy and the total equal `nevpt2_on_rhf` in-process bit
+//!   Every class energy and the total equal `nevpt2_on` in-process bit
 //!   for bit, and each class lies within the PySCF bar of `nevpt2.rs`.
 //! * `cli_keys_reach_the_config`: settings that move the answer reach it
 //!   (`[cas] max_iter = 2` leaves CASSCF unconverged, warned and not
@@ -46,7 +46,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ferric_ci::driver::{casscf_on_rhf, nevpt2_on_rhf, rhf_start, Nevpt2On, ScfStart};
+use ferric_ci::driver::{casscf_on, nevpt2_on, rhf_start, Nevpt2On, ScfStart};
 use ferric_ci::{CasScfConfig, Nevpt2Classes};
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -222,7 +222,7 @@ fn cli_casscf_equals_the_driver_bit_for_bit() {
                 n_core,
                 ..Default::default()
             };
-            casscf_on_rhf(&sys, &rhf, &cfg).unwrap()
+            casscf_on(&sys, &rhf, &cfg).unwrap()
         });
         assert!(lib.converged, "{name}");
         assert_eq!(
@@ -284,7 +284,7 @@ fn cli_nevpt2_equals_the_driver_bit_for_bit() {
                 grad_tol,
                 ..Default::default()
             };
-            nevpt2_on_rhf(&sys, &rhf, Nevpt2On::Casscf, &cfg).unwrap()
+            nevpt2_on(&sys, &rhf, Nevpt2On::Casscf, &cfg).unwrap()
         });
         let r = &lib.result;
         let total = res["total"].as_f64().unwrap();

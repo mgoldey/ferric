@@ -50,6 +50,7 @@ use ferric_scf::fock::{JBuilder, KBuilder};
 use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::result::DfJkRoute;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedAux;
 use ferric_scf::{ScfResult, Spin};
 use ndarray::Array2;
 
@@ -792,6 +793,29 @@ fn antisymmetric_ov(
         m[(first_occ + i, nocc_total + a)] = -x;
     }
     m
+}
+
+/// [`u_oo_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `uhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn u_oo_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    uhf: &ScfResult,
+    config: &UOoRiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<UOoRiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(uhf)?;
+    u_oo_ri_mp2(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        uhf,
+        config,
+        ext,
+    )
 }
 
 /// Drive U-OO-RI-MP2 from a converged UHF or ROHF reference.

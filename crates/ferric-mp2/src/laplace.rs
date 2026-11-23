@@ -30,6 +30,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_quadrature::LaplaceQuadrature;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
@@ -595,6 +596,30 @@ fn laplace_ao_coulomb_energy(
         m0 = m1;
     }
     j_mat.iter().map(|&x| x * x).sum()
+}
+
+/// [`laplace_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn laplace_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    n_quad: usize,
+    frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
+) -> Result<LaplaceMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    laplace_ri_mp2(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        n_quad,
+        frozen_core,
+        memory_budget_bytes,
+    )
 }
 
 /// AO-Laplace RI-MP2 via pseudo-density factorization of the denominator.
@@ -1602,6 +1627,29 @@ pub fn laplace_sos_mp2(
     formulation: SosFormulation,
 ) -> Result<SosMp2Result, FerricError> {
     sos_mp2_dispatch(mol, obs, None, dfbs, op, rhf, config, formulation)
+}
+
+/// [`laplace_sos_mp2_with_basis`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn laplace_sos_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &SosMp2Config,
+    formulation: SosFormulation,
+) -> Result<SosMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    laplace_sos_mp2_with_basis(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        config,
+        formulation,
+    )
 }
 
 /// [`laplace_sos_mp2`] with the orbital `BasisSet`, which every formulation

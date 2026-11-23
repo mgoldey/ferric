@@ -94,20 +94,12 @@ impl PyRsMp2RpaResult {
 /// (full rank, dense, Coulomb: `refuse_pdep_rpa_gradient` has screened the
 /// settings), the function behind the CLI's pdep-rpa `task = "optimize"`.
 fn pdep_rpa_total_gradient(
-    mol: &ferric_core::mol::Molecule,
-    prep: &PreparedBasis,
-    dfbs: &PreparedBasis,
-    op: Operator,
-    bounds: &SchwarzBounds,
+    dfbs: &PreparedAux<'_>,
     rhf: &ferric_scf::result::ScfResult,
     cfg: &ferric_rpa::PdepRpaConfig,
 ) -> Result<Array2<f64>, ferric_core::FerricError> {
     ferric_rpa::gradient_analytic::rpa_analytic_gradient_on(
-        mol,
-        prep,
         dfbs,
-        op,
-        bounds,
         rhf,
         cfg,
         ferric_rpa::gradient_analytic::RingOrder::Full,
@@ -240,7 +232,7 @@ pub(crate) fn run_rs_mp2_rpa(
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
     let rhf = sys.solve_reference(&cfg_rhf).map_err(make_err)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
     let (forms, forms_seq) = rs_scan_axis::<String>(formulation, "formulation")?;
     let forms = forms
         .unwrap_or_else(|| vec!["delta-lr".to_string()])
@@ -327,7 +319,7 @@ pub(crate) fn run_rs_mp2_rpa(
             omegas.clone().unwrap_or_else(|| vec![0.420])
         };
         let bohr: Vec<f64> = axis.iter().map(|w| w * to_bohr).collect();
-        let rs = ferric_rpa::rs_mp2_lr_rpa_scan(mol, prep, &dfbs, &rhf, &cfg, &bohr, &forms)
+        let rs = ferric_rpa::rs_mp2_lr_rpa_scan_on(&dfbs, &rhf, &cfg, &bohr, &forms)
             .map_err(crate::make_err)?;
         for (k, r) in rs.into_iter().enumerate() {
             let mut c = cfg.clone();
@@ -340,7 +332,7 @@ pub(crate) fn run_rs_mp2_rpa(
             points.push((c, r));
         }
     } else {
-        let r = ferric_rpa::rs_mp2_lr_rpa(mol, prep, &dfbs, &rhf, &cfg).map_err(crate::make_err)?;
+        let r = ferric_rpa::rs_mp2_lr_rpa_on(&dfbs, &rhf, &cfg).map_err(crate::make_err)?;
         points.push((cfg.clone(), r));
     }
     let base_cert = reference_certificate(mol, &rhf, &cfg_rhf, &basis_set.inner);
@@ -925,7 +917,7 @@ pub(crate) fn run_pdep_rpa(
 
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep, op, bounds) = (sys.mol(), sys.basis(), sys.op(), sys.bounds());
+    let (mol, op) = (sys.mol(), sys.op());
     // The reference SCF must see the ENVIRONMENT, or the dielectric response
     // computed from it is that of an isolated molecule. Screening a
     // ligand-pocket interaction needs the response of the ligand AS IT SITS
@@ -997,7 +989,7 @@ pub(crate) fn run_pdep_rpa(
     }
     let gradient_data = if with_gradient {
         Some(
-            py.allow_threads(|| pdep_rpa_total_gradient(mol, prep, &dfbs, op, bounds, &rhf, &cfg))
+            py.allow_threads(|| pdep_rpa_total_gradient(&dfbs, &rhf, &cfg))
                 .map_err(make_err)?,
         )
     } else {
@@ -1023,7 +1015,6 @@ pub(crate) fn run_pdep_rpa(
             mol,
             bs: &basis_set.inner,
             aux_bs: &auxbasis.inner,
-            prep,
             dfbs: &dfbs,
             rhf: &rhf,
             op,

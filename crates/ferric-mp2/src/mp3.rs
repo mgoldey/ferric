@@ -15,6 +15,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
@@ -135,6 +136,28 @@ fn mp3_peak_bytes(naux: usize, nbas: usize, no: usize, nv: usize) -> usize {
         .max(held.saturating_add(ri_build))
         .max(held.saturating_add(held_ri).saturating_add(four_index));
     coeffs.saturating_add(stage).saturating_mul(8)
+}
+
+/// [`mp3_energy`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn mp3_energy_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    frozen_core: usize,
+    memory_budget_bytes: Option<usize>,
+) -> Result<Mp3Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    mp3_energy(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        frozen_core,
+        memory_budget_bytes,
+    )
 }
 
 /// Compute the spin-orbital MP3 correlation energy via RI integrals.

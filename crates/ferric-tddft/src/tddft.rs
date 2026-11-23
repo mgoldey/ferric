@@ -1429,6 +1429,7 @@ pub fn run_tddft_on(
     scf: &ScfResult,
     config: &TddftConfig,
 ) -> Result<TddftResult, FerricError> {
+    aux.check_reference(scf)?;
     let sys = aux.system();
     run_tddft(sys.mol(), sys.basis(), aux.basis(), scf, config)
 }
@@ -1872,5 +1873,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_on_entry_refuses_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let aux = small
+            .prepare_aux(&ferric_core::basis::bundled("cc-pvdz-ri").unwrap())
+            .unwrap();
+        assert_reference_refused(
+            "run_tddft_on",
+            run_tddft_on(&aux, &rhf_large, &TddftConfig::default()),
+        );
     }
 }

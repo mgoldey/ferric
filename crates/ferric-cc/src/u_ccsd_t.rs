@@ -43,6 +43,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::with_blas_threads;
 use ferric_integrals::operator::Operator;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2, Array3, Array4, ArrayView2};
 use rayon::prelude::*;
@@ -363,6 +364,20 @@ fn per_triple_bytes(nv: [usize; 2]) -> usize {
         .saturating_pow(3)
         .saturating_mul(6)
         .saturating_mul(8)
+}
+
+/// [`u_ccsd_t`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn u_ccsd_t_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    cc: &UCcsdResult,
+    cfg: &CcConfig,
+) -> Result<UTriples, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    u_ccsd_t(sys.mol(), sys.basis(), aux.basis(), sys.op(), scf, cc, cfg)
 }
 
 /// Spin-blocked (T) correction for converged UCCSD amplitudes `cc`.

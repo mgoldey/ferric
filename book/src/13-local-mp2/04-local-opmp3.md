@@ -98,10 +98,10 @@ defect on its model problem.
 > |---|---|
 > | Proof | `scripts/local_opmp3_sympy.py` claims a1 (the trace Padé under a symbolic rotation) and a2 (the W covariance, every amplitude and integral an independent symbol), and N1 (canonical route vs a rotated route with the full Fock, OP-MP3 and SSD-OPMP3 agree to $3.3\times10^{-16}$); mutations `pade_half_rotated`, `w_virtual_once` and `semicanonical` each turn their check red |
 > | Runner | `crates/ferric-python/tests/test_local_opmp3_sympy.py` |
-> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference` (prototype: `scripts/prototypes/local_opmp3_proto.py`) |
-> | Code test | `crates/ferric-mp2/tests/local_opmp3.rs`: at $\varepsilon = 0$ every model, $E_{\mathrm{HF}}$, $E_{\mathrm{NBS}}$ and the $W$ spectra equal `opmp3_on_reference` (same RI basis) to $10^{-10}$ Ha on the HF reference, the PBE0 reference and the PBE0 reference with a frozen core |
+> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on` (prototype: `scripts/prototypes/local_opmp3_proto.py`) |
+> | Code test | `crates/ferric-mp2/tests/local_opmp3.rs`: at $\varepsilon = 0$ every model, $E_{\mathrm{HF}}$, $E_{\mathrm{NBS}}$ and the $W$ spectra equal `opmp3_on` (same RI basis) to $10^{-10}$ Ha on the HF reference, the PBE0 reference and the PBE0 reference with a frozen core |
 >
-> <!-- verified: id=local-opmp3.invariance; script=scripts/local_opmp3_sympy.py; claim=a2; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference; rust_test=ferric-mp2/tests/local_opmp3.rs::local_opmp3_matches_exact_in_the_trivial_limit_pbe0; registry=local-opmp3 -->
+> <!-- verified: id=local-opmp3.invariance; script=scripts/local_opmp3_sympy.py; claim=a2; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on; rust_test=ferric-mp2/tests/local_opmp3.rs::local_opmp3_matches_exact_in_the_trivial_limit_pbe0; registry=local-opmp3 -->
 
 ## One mask for both orders {#local-opmp3-one-mask}
 
@@ -140,10 +140,10 @@ the identity reduces to the canonical $2n+1$ identity.
 > |---|---|
 > | Proof | `scripts/local_opmp3_sympy.py` claim b (symbolic, $G\mathcal A$ symmetric and $G$ block-diagonal on $K$), b2 (two masks: a rational counterexample, $-9/7$ against $3/11$) and N2 (closed-shell model at kept fraction 0.65); mutation `two_masks` turns b and N2 red ($-8.2\times10^{-2}$) |
 > | Runner | `crates/ferric-python/tests/test_local_opmp3_sympy.py` |
-> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference` (`e3_2n1`, `e3_identity_gap`) |
+> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on` (`e3_2n1`, `e3_identity_gap`) |
 > | Code test | `finite_eps_keeps_e_nbs_and_the_2n1_identity` in `crates/ferric-mp2/tests/local_opmp3.rs` (PBE0 propane, $\varepsilon = 10^{-4}$: the two routes agree to $10^{-10}$ Ha) |
 >
-> <!-- verified: id=local-opmp3.2n1; script=scripts/local_opmp3_sympy.py; claim=b; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference; rust_test=ferric-mp2/tests/local_opmp3.rs::finite_eps_keeps_e_nbs_and_the_2n1_identity; registry=local-opmp3 -->
+> <!-- verified: id=local-opmp3.2n1; script=scripts/local_opmp3_sympy.py; claim=b; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on; rust_test=ferric-mp2/tests/local_opmp3.rs::finite_eps_keeps_e_nbs_and_the_2n1_identity; registry=local-opmp3 -->
 
 ## A Kohn-Sham reference {#local-opmp3-ks-reference}
 
@@ -175,10 +175,10 @@ after the amplitudes are formed. It does not touch the mask either.
 > |---|---|
 > | Proof | `scripts/local_opmp3_sympy.py` claim N3 (semicanonical formula vs the localized singles solve, $-4.6\times10^{-2}$ Ha model value, agreement $< 10^{-14}$); mutation `nbs_local_diag` (keep only the diagonal of the localized Fock) turns it red |
 > | Runner | `crates/ferric-python/tests/test_local_opmp3_sympy.py` |
-> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference` takes `Opmp3Reference::e_nbs` unchanged |
+> | Code | `ferric-mp2/src/local_opmp3.rs::local_opmp3_on` takes `Opmp3Reference::e_nbs` unchanged |
 > | Code test | `finite_eps_keeps_e_nbs_and_the_2n1_identity` in `crates/ferric-mp2/tests/local_opmp3.rs` ($E_{\mathrm{NBS}}$ of the local run at $\varepsilon = 10^{-4}$ equals the canonical one bit for bit) |
 >
-> <!-- verified: id=local-opmp3.nbs; script=scripts/local_opmp3_sympy.py; claim=N3; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference; rust_test=ferric-mp2/tests/local_opmp3.rs::finite_eps_keeps_e_nbs_and_the_2n1_identity; registry=local-opmp3 -->
+> <!-- verified: id=local-opmp3.nbs; script=scripts/local_opmp3_sympy.py; claim=N3; runner=crates/ferric-python/tests/test_local_opmp3_sympy.py; code=ferric-mp2/src/local_opmp3.rs::local_opmp3_on; rust_test=ferric-mp2/tests/local_opmp3.rs::finite_eps_keeps_e_nbs_and_the_2n1_identity; registry=local-opmp3 -->
 
 ## What is proven and what is not {#local-opmp3-proven}
 
@@ -197,14 +197,14 @@ derivatives away from a near-singular $A - B$ (a stretched bond).
 |---|---|
 | CLI | `method.kind = "opmp3"` with `[local] scheme = "amplitude-threshold"` |
 | Python | `run_opmp3(local="amplitude-threshold", eps=...)` |
-| Library | `ferric_mp2::local_opmp3::local_opmp3_on_reference` |
+| Library | `ferric_mp2::local_opmp3::local_opmp3_on` |
 
 The `[local]` keys `opmp3` reads are `eps`, `reference`, `fock_screen`,
 `lambda_boys` and `virtual_space` (with its `virtual_*` thresholds). It has
 no integral-direct path, so `integral_direct` and the direct maps of
 section @sec:integral-direct are errors, as is `eps_sweep`.
 
-`local_opmp3_on_reference` takes the OP-MP3 reference of
+`local_opmp3_on` takes the OP-MP3 reference of
 section @sec:opmp3 (HF or a functional), localizes against its HF Fock
 matrix, builds the LMP2 pattern with the shared pair builder (the Eq-8 mask plus the
 Fock-propagated screen, λ-Boys occupieds, VV-HV virtuals: the local MP2
@@ -214,7 +214,7 @@ $E_{\mathrm{NBS}}$ and $E_{\mathrm{HF}}$ come from the reference unchanged.
 RI integrals only, closed shell only. The two solves and the second
 route to $E^{(3)}$:
 
-<!-- excerpt: ferric-mp2/src/local_opmp3.rs::local_opmp3_on_reference -->
+<!-- excerpt: ferric-mp2/src/local_opmp3.rs::local_opmp3_on -->
 ```rust
     let rtol = local.cg_rtol.unwrap_or(LOCAL_OPMP3_CG_RTOL);
     let s1 = solve(
