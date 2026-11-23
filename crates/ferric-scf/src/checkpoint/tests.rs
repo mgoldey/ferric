@@ -841,6 +841,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         ("FERRIC_DF_GUESS_TIGHT", StateSelecting, |s| {
             s.process.env[7] = Some("0".to_string());
         }),
+        ("FERRIC_GC_ROTATE", Route, |s| {
+            s.process.env[8] = Some("off".to_string());
+        }),
         ("use_sad_guess", StateSelecting, |s| {
             s.config.use_sad_guess = false;
         }),
@@ -1713,6 +1716,7 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "FERRIC_TERF_TABLE_DIR",
         ),
         ("FERRIC_DF_GUESS_TIGHT", "0", "FERRIC_DF_GUESS_TIGHT"),
+        ("FERRIC_GC_ROTATE", "off", "FERRIC_GC_ROTATE"),
     ] {
         let changed = key(&[(variable, value)]);
         let moved: Vec<&str> = changed

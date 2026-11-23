@@ -138,33 +138,84 @@ impl PreparedBasis {
             })
             .collect();
 
+        let mut located: Vec<(usize, &ferric_core::basis::Shell)> = Vec::new();
+        for (ai, atom) in mol.atoms.iter().enumerate() {
+            let tmpls = bs
+                .for_element(atom.z)
+                .ok_or_else(|| bs.missing_element_error(atom.z))?;
+            located.extend(tmpls.iter().map(|sh| (ai, sh)));
+        }
+        Self::from_located(c_atoms, &located, bs.clone())
+    }
+
+    /// The same atoms, shell order and shell-to-atom map as `self`, with each
+    /// shell's contraction replaced by `shells[s]` (same `l` and `pure`; the
+    /// exponent list may differ). Used by
+    /// [`crate::contraction_rotation::RotatedBasis::detect_prepared`] to build
+    /// an internal, column-rotated copy of a basis.
+    ///
+    /// The copy's [`basis_set`](Self::basis_set) is the parent's element
+    /// templates renamed `name`: the rotated contractions are per atom, so they
+    /// are reachable only through the libint handle and
+    /// [`located_shells`](Self::located_shells). Rebuilding a basis from that
+    /// `BasisSet` gives the PARENT basis back.
+    pub fn with_contractions(
+        &self,
+        shells: &[ferric_core::basis::Shell],
+        name: &str,
+    ) -> Result<Self, FerricError> {
+        if shells.len() != self.nshells
+            || shells
+                .iter()
+                .enumerate()
+                .any(|(s, sh)| sh.l != self.shell_l[s] || sh.pure != self.shell_pure[s])
+        {
+            return Err(FerricError::General(format!(
+                "PreparedBasis::with_contractions: {} shells given for a basis of {}, or an \
+                 l / pure flag differs",
+                shells.len(),
+                self.nshells
+            )));
+        }
+        let located: Vec<(usize, &ferric_core::basis::Shell)> =
+            self.shell_to_atom.iter().copied().zip(shells).collect();
+        let bs = BasisSet {
+            name: name.to_string(),
+            shells: self.basis_set.shells.clone(),
+            ecps: self.basis_set.ecps.clone(),
+        };
+        Self::from_located(self.atoms.clone(), &located, bs)
+    }
+
+    /// The libint basis of `located` (`(atom index, shell)` in shell order)
+    /// on `c_atoms`, recorded with `bs`.
+    fn from_located(
+        c_atoms: Vec<CAtom>,
+        located: &[(usize, &ferric_core::basis::Shell)],
+        bs: BasisSet,
+    ) -> Result<Self, FerricError> {
         let mut c_shells = Vec::new();
         let mut shell_to_atom = Vec::new();
         let mut shell_l = Vec::new();
         let mut shell_pure = Vec::new();
         let mut keep_exps = Vec::new();
         let mut keep_coefs = Vec::new();
-        for (ai, atom) in mol.atoms.iter().enumerate() {
-            let tmpls = bs
-                .for_element(atom.z)
-                .ok_or_else(|| bs.missing_element_error(atom.z))?;
-            for sh in tmpls {
-                let exps: Vec<f64> = sh.exponents.clone();
-                let coefs: Vec<f64> = sh.coefficients.clone();
-                c_shells.push(CShell {
-                    l: sh.l as c_int,
-                    nprim: exps.len() as c_int,
-                    atom_index: ai as c_int,
-                    pure: if sh.pure { 1 } else { 0 },
-                    exponents: exps.as_ptr(),
-                    coefficients: coefs.as_ptr(),
-                });
-                shell_to_atom.push(ai);
-                shell_l.push(sh.l);
-                shell_pure.push(sh.pure);
-                keep_exps.push(exps);
-                keep_coefs.push(coefs);
-            }
+        for &(ai, sh) in located {
+            let exps: Vec<f64> = sh.exponents.clone();
+            let coefs: Vec<f64> = sh.coefficients.clone();
+            c_shells.push(CShell {
+                l: sh.l as c_int,
+                nprim: exps.len() as c_int,
+                atom_index: ai as c_int,
+                pure: if sh.pure { 1 } else { 0 },
+                exponents: exps.as_ptr(),
+                coefficients: coefs.as_ptr(),
+            });
+            shell_to_atom.push(ai);
+            shell_l.push(sh.l);
+            shell_pure.push(sh.pure);
+            keep_exps.push(exps);
+            keep_coefs.push(coefs);
         }
 
         // SAFETY: c_shells and c_atoms are valid slices with matching lengths.
@@ -212,7 +263,7 @@ impl PreparedBasis {
         unsafe { ffi::scf_basis_max_dims(handle, &mut mp, &mut ml) };
         Ok(PreparedBasis {
             handle,
-            basis_set: bs.clone(),
+            basis_set: bs,
             atoms: c_atoms,
             shell_dims,
             shell_offsets,

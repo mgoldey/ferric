@@ -460,7 +460,7 @@ fn config_fields(config: &RhfConfig, out: &mut Vec<IdentityField>) -> (f64, f64)
 ///
 /// Left out on purpose: thread counts and memory budgets (unchecked by design),
 /// trace toggles, MPI band sizes, and `FERRIC_TEST_*`.
-const ENV_SWITCHES: [(&str, FieldClass); 8] = [
+const ENV_SWITCHES: [(&str, FieldClass); 9] = [
     ("FERRIC_SCF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_UHF_INCREMENTAL", FieldClass::Route),
     ("FERRIC_SCF_COMBINED_JK", FieldClass::Route),
@@ -469,6 +469,9 @@ const ENV_SWITCHES: [(&str, FieldClass); 8] = [
     ("FERRIC_JK_STORAGE", FieldClass::Route),
     ("FERRIC_TERF_TABLE_DIR", FieldClass::Route),
     ("FERRIC_DF_GUESS_TIGHT", FieldClass::StateSelecting),
+    // The direct J/K builder's contraction rotation moves cc-pVXZ energies by
+    // up to ~1e-12 Ha (`tests/gc_rotation.rs`).
+    ("FERRIC_GC_ROTATE", FieldClass::Route),
 ];
 
 /// Process-wide state that changes an SCF's numbers and is not in `RhfConfig`. An

@@ -2370,11 +2370,11 @@ pub(super) fn sr3_rotation(
     let Some(rot) = cfg.sr_column_rotation.resolve_supported() else {
         return Ok(None);
     };
-    let Some(obs_rot) = RotatedBasis::detect(cell, obs, rot, "RsGdf")? else {
+    let Some(obs_rot) = crate::sr_rotation::detect(cell, obs, rot, "RsGdf")? else {
         return Ok(None);
     };
     let aux_rot = if rot.mutant == ColumnRotationMutant::RotateAux {
-        RotatedBasis::detect(cell, aux, rot, "RsGdf aux (mutant)")?
+        crate::sr_rotation::detect(cell, aux, rot, "RsGdf aux (mutant)")?
     } else {
         None
     };

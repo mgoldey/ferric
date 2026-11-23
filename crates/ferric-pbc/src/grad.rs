@@ -1746,7 +1746,7 @@ pub(crate) fn hcore_rotation_built(
     }
     if built == 0 {
         if hcore_cfg.sr_column_rotation.is_explicit_on() {
-            let rb = RotatedBasis::detect(cell, prep, ColumnRotation::new(), who)?;
+            let rb = crate::sr_rotation::detect(cell, prep, ColumnRotation::new(), who)?;
             if rb.is_some() {
                 return Err(FerricError::General(format!(
                     "{who}: sr_column_rotation was requested explicitly, but the hcore's SR \
@@ -1763,7 +1763,7 @@ pub(crate) fn hcore_rotation_built(
              built with"
         )));
     };
-    match RotatedBasis::detect(cell, prep, rot, who)? {
+    match crate::sr_rotation::detect(cell, prep, rot, who)? {
         Some(rb) if rb.n_rotated_columns == built => Ok(Some(rb)),
         other => Err(FerricError::General(format!(
             "{who}: the hcore's SR attraction rotated {built} columns but this basis rotates {} \

@@ -538,7 +538,7 @@ impl SrRotatedDeriv {
                 rot.mutant
             )));
         }
-        let Some(rb) = RotatedBasis::detect(cell, obs, rot, "RS-GDF derivatives")? else {
+        let Some(rb) = crate::sr_rotation::detect(cell, obs, rot, "RS-GDF derivatives")? else {
             return Err(FerricError::General(
                 "RS-GDF derivatives: the build rotated its SR walk but the orbital basis given \
                  to the derivative has nothing to rotate (another basis than the build's)"
