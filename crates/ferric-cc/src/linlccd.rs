@@ -122,6 +122,8 @@ impl LadderVariant {
 /// [`linlccd`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn linlccd_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -129,7 +131,7 @@ pub fn linlccd_on(
     variant: LadderVariant,
 ) -> Result<CcResult, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     linlccd(
         sys.mol(),
         sys.basis(),

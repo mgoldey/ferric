@@ -513,13 +513,18 @@ pub fn screened_exchange(
 /// [`omega_ri_cdd_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn omega_ri_cdd_mp2_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
     config: &OmegaRiCddConfig,
 ) -> Result<OmegaRiCddResult, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("omega_ri_cdd_mp2_on", rhf)?;
     omega_ri_cdd_mp2(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, config)
 }
 

@@ -265,13 +265,15 @@ fn unflatten_blocks(flat: &Array2<f64>, shapes: &[(usize, usize)]) -> Vec<Array2
 /// [`amplitude_drpa`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn amplitude_drpa_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
     cfg: &AmplitudeDrpaConfig,
 ) -> Result<AmplitudeDrpaResult, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     amplitude_drpa(
         sys.mol(),
         sys.basis(),
@@ -357,6 +359,8 @@ pub fn amplitude_drpa_scan(
 /// [`amplitude_drpa_scan_timed`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn amplitude_drpa_scan_timed_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -364,7 +368,7 @@ pub fn amplitude_drpa_scan_timed_on(
     eps_list: &[f64],
 ) -> Result<(Vec<AmplitudeDrpaResult>, f64, Vec<f64>), FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
     amplitude_drpa_scan_timed(
         sys.mol(),
         sys.basis(),
