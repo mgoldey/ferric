@@ -112,16 +112,16 @@ def test_core_table_names_every_variant():
 @pytest.mark.parametrize("cls", ALL + [ferric.FerricError])
 def test_pickle_round_trip(cls):
     exc = cls("message")
-    back = pickle.loads(pickle.dumps(exc))
+    back = pickle.loads(pickle.dumps(exc))  # nosec B301 -- round-trips bytes this test just pickled, not untrusted data
     assert type(back) is cls
     assert back.args == ("message",)
-    assert type(pickle.loads(pickle.dumps(cls))) is type(cls)
+    assert type(pickle.loads(pickle.dumps(cls))) is type(cls)  # nosec B301 -- round-trips bytes this test just pickled, not untrusted data
 
 
 def test_pickle_of_a_raised_exception():
     with pytest.raises(ferric.FerricError) as exc:
         ferric.ferric._raise_core_error("scf_convergence", "")
-    back = pickle.loads(pickle.dumps(exc.value))
+    back = pickle.loads(pickle.dumps(exc.value))  # nosec B301 -- round-trips bytes this test just pickled, not untrusted data
     assert type(back) is ferric.ConvergenceError
     assert str(back) == str(exc.value)
 
