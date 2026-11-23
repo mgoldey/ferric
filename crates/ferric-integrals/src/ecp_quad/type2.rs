@@ -79,6 +79,7 @@ pub(crate) fn proj_tensor(la: usize, l: usize, a: [f64; 3], truncate: bool) -> V
 /// polynomial factor at the window edge, × 1e3 safety (prototype
 /// `_prim_screen_bound`; screened == unscreened to ≤ 1e-20 on the fixtures).
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn screen_bound(
     la: usize,
     lb: usize,
@@ -209,6 +210,7 @@ pub(crate) fn contract(
 /// Cross-check construction (debug/test only): `F^A_lm(r)`, `F^B_lm(r)`
 /// formed explicitly at every node, then `Σ_m F^A F^B` — no radial tensor.
 /// Uses the same nodes and `T`, an independent contraction order.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn direct(
     sa: &QShell,
     sb: &QShell,

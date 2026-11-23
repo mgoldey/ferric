@@ -14,6 +14,7 @@ mod cdft;
 mod config;
 pub mod error;
 mod gpu_flag;
+mod info_text;
 mod md;
 mod opmp3;
 mod periodic;
@@ -700,17 +701,27 @@ struct CliArgs {
 
 /// Parse argv (`[program, user_args...]`). `Ok(None)` when `--version` or
 /// `--help` was given and its text printed; a bad command line is a
-/// [`CliError::Usage`].
+/// [`CliError::Usage`]. The text is written by [`info_text::write_info`]: a
+/// broken pipe is not an error, any other write error is a
+/// [`CliError::Msg`] (status 1), never a panic.
 fn parse_args(args: Vec<String>) -> Result<Option<CliArgs>, CliError> {
     if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
-        print!("{}", version_text());
+        info_text::write_info(
+            std::io::stdout().lock(),
+            info_text::InfoText::Version,
+            &version_text(),
+        )?;
         return Ok(None);
     }
     if args.len() < 2 {
         return Err(CliError::usage(usage_text()));
     }
     if args[1] == "--help" || args[1] == "-h" {
-        eprintln!("{}", usage_text());
+        info_text::write_info(
+            std::io::stderr().lock(),
+            info_text::InfoText::Help,
+            &format!("{}\n", usage_text()),
+        )?;
         return Ok(None);
     }
     // `--gpu <preset>` is taken out first so it can sit anywhere on the line;
@@ -2045,6 +2056,7 @@ impl DispersionGradientModel {
 /// set. Every failure is an error before any molecular SCF: an unknown functional,
 /// or (MBD@rsSCS) a configuration whose exact gradient is unavailable, which
 /// would otherwise fail after the first SCF.
+#[allow(clippy::too_many_arguments)]
 fn dispersion_gradient_model(
     cfg: &Config,
     ctx: &ParallelContext,
@@ -8379,6 +8391,7 @@ fn tddft_grid_line(xc: &str, g: &ferric_dft::grid::AtomicGridConfig, explicit: b
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_tddft_arm(
     cfg: &Config,
     sys: &PreparedSystem,

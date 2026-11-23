@@ -153,6 +153,7 @@ use ferric_scf::stability::{
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::uhf_newton::UhfNewtonInputs;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 use serde_json::Value;
@@ -224,12 +225,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn nums(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -253,7 +248,7 @@ fn load_system(system: &str, r: &Value) -> System {
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), charge, mult)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
     let ctx = format!("{system}/{BASIS}");
-    let enuc_ref = num(r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", &ctx);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -476,7 +471,7 @@ fn n2_plus_uhf_minimum_and_saddle_vs_pyscf() {
         ctx,
         "energy",
         res.energy,
-        num(&r, "/uhf/energy", ctx),
+        num_ctx(&r, "/uhf/energy", ctx),
         TOL_E,
     );
     let st = stability(&res, ctx);
@@ -521,7 +516,7 @@ fn n2_plus_uhf_minimum_and_saddle_vs_pyscf() {
         ctx,
         "energy",
         res.energy,
-        num(&r, "/uhf_default_guess_saddle/energy", ctx),
+        num_ctx(&r, "/uhf_default_guess_saddle/energy", ctx),
         TOL_E,
     );
     let st = stability(&res, ctx);
@@ -561,7 +556,7 @@ fn oh_uhf_goldstone_mode_vs_pyscf() {
         ctx,
         "energy",
         res.energy,
-        num(&r, "/uhf/energy", ctx),
+        num_ctx(&r, "/uhf/energy", ctx),
         TOL_E,
     );
 
@@ -632,7 +627,7 @@ fn water_row(system: &str, expect_external: StabilityVerdict) {
         ctx,
         "energy",
         res.energy,
-        num(&r, "/rhf/energy", ctx),
+        num_ctx(&r, "/rhf/energy", ctx),
         TOL_E,
     );
 
@@ -862,14 +857,14 @@ fn nh2_uks_pbe_vs_pyscf() {
         ctx,
         "energy",
         res.energy,
-        num(&r, "/uks_pbe/energy", ctx),
+        num_ctx(&r, "/uks_pbe/energy", ctx),
         TOL_E_KS,
     );
     must_miss(
         ctx,
         "UHF control energy",
         res.energy,
-        num(&r, "/uhf_control/energy", ctx),
+        num_ctx(&r, "/uhf_control/energy", ctx),
         TOL_E_KS,
     );
 
@@ -895,7 +890,7 @@ fn nh2_uks_pbe_vs_pyscf() {
         ctx,
         "UHF control lambda_min",
         st.lowest_eigenvalue,
-        num(&r, "/uhf_control/hessian/lowest/0", ctx),
+        num_ctx(&r, "/uhf_control/hessian/lowest/0", ctx),
         TOL_LAMBDA_KS,
     );
 }

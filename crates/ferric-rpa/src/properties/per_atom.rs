@@ -159,6 +159,7 @@ pub(crate) fn accumulate_atom_centred_dipoles_pub(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn accumulate_atom_centred_dipoles(
     npts: usize,
     natoms: usize,
@@ -906,6 +907,7 @@ fn open_shell_alpha(
 }
 
 /// [`pdep_polarizability_becke_dynamic`] for UHF/UKS and ROHF/ROKS references.
+#[allow(clippy::too_many_arguments)]
 fn becke_dynamic_open_shell(
     mol: &Molecule,
     obs: &PreparedBasis,

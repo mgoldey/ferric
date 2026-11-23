@@ -47,6 +47,7 @@ use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::RsGdfConfig;
 use ferric_pbc::uhf::GammaUhfIntegrals;
 use ferric_pbc::PeriodicGrid;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use num_complex::Complex64;
 use std::collections::HashMap;
@@ -258,6 +259,7 @@ fn moved(pos: &[[f64; 3]], a: usize, x: usize, h: f64) -> Vec<[f64; 3]> {
     p
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fd(
     pos: &[[f64; 3]],
     a: usize,
@@ -271,10 +273,6 @@ fn fd(
     (energy(&moved(pos, a, x, h), mesh_n, f, jk, grid)
         - energy(&moved(pos, a, x, -h), mesh_n, f, jk, grid))
         / (2.0 * h)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 // ------------------------------------------------------------------ anchors

@@ -502,6 +502,7 @@ mod tests {
     use super::*;
     use crate::df_gradient::{routed_two_electron_gradient, ExchangeMix, TwoElectronDensity};
     use crate::rhf::{solve_rhf, RhfConfig};
+    use ferric_testkit::compare::max_abs;
 
     const WATER: &str = "3\nwater, off C2v\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n";
 
@@ -700,10 +701,6 @@ mod tests {
         let scf = crate::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
         assert!(scf.converged);
         (mol, prep, bounds, scf)
-    }
-
-    fn max_abs(a: &Array2<f64>) -> f64 {
-        a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
     }
 
     /// Rounding bar of two evaluations of one gradient that associate their

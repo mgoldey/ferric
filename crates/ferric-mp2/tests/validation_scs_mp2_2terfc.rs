@@ -68,6 +68,7 @@ use ferric_mp2::scs::{scs_mp2_2terfc, ScsMp2TerfcConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/scs_mp2_2terfc";
@@ -147,12 +148,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) -> f64 {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<10} ferric {got:+.12} ref {want:+.12} |d| {d:.2e} (tol {tol:.0e})");
@@ -191,7 +186,7 @@ fn load_system(system: &str, basis_name: &str, auxbasis: &str) -> System {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -221,7 +216,7 @@ fn load_system(system: &str, basis_name: &str, auxbasis: &str) -> System {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&r, "/rhf_energy", &ctx),
+        num_ctx(&r, "/rhf_energy", &ctx),
         TOL_RHF,
     );
     System {
@@ -264,13 +259,13 @@ fn check_system(system: &str, basis_name: &str, auxbasis: &str) {
                 p["r0_angstrom"].as_f64().unwrap()
             );
             let sc = spin(&sys, Operator::terfc(r0), fc);
-            check_close(&ctx, "E_OS", sc.e_os, num(p, "/e_os", &ctx), TOL_CORR);
-            check_close(&ctx, "E_SS", sc.e_ss, num(p, "/e_ss", &ctx), TOL_CORR);
+            check_close(&ctx, "E_OS", sc.e_os, num_ctx(p, "/e_os", &ctx), TOL_CORR);
+            check_close(&ctx, "E_SS", sc.e_ss, num_ctx(p, "/e_ss", &ctx), TOL_CORR);
             check_close(
                 &ctx,
                 "E_total",
                 sc.e_total,
-                num(p, "/e_total", &ctx),
+                num_ctx(p, "/e_total", &ctx),
                 TOL_CORR,
             );
         }
@@ -282,22 +277,22 @@ fn check_system(system: &str, basis_name: &str, auxbasis: &str) {
             frozen_core: fc,
             ..Default::default()
         };
-        assert_eq!(cfg.c_os, num(s, "/c_os", &ctx), "{ctx}: c_OS");
-        assert_eq!(cfg.c_ss, num(s, "/c_ss", &ctx), "{ctx}: c_SS");
+        assert_eq!(cfg.c_os, num_ctx(s, "/c_os", &ctx), "{ctx}: c_OS");
+        assert_eq!(cfg.c_ss, num_ctx(s, "/c_ss", &ctx), "{ctx}: c_SS");
         let res = scs_mp2_2terfc(&sys.mol, &sys.obs, &sys.dfbs, &sys.rhf, &cfg)
             .unwrap_or_else(|e| panic!("{ctx}: scs_mp2_2terfc failed: {e:?}"));
         check_close(
             &ctx,
             "scs_corr",
             res.scs_corr,
-            num(s, "/scs_corr", &ctx),
+            num_ctx(s, "/scs_corr", &ctx),
             TOL_CORR,
         );
         check_close(
             &ctx,
             "E_total",
             res.total_energy,
-            num(s, "/total_energy", &ctx),
+            num_ctx(s, "/total_energy", &ctx),
             TOL_CORR + TOL_RHF,
         );
     }
@@ -367,10 +362,15 @@ fn scs_mp2_2terfc_negative_controls() {
         let r0_1 = first["r0_bohr"].as_f64().unwrap();
         let ctx = format!("{system}/{basis_name}");
         let e1 = spin(&sys, Operator::terfc(r0_1), 0).e_total;
-        check_misses(&ctx, "terfc(r0_2)", e1, num(last, "/e_total", &ctx));
+        check_misses(&ctx, "terfc(r0_2)", e1, num_ctx(last, "/e_total", &ctx));
         let w = 1.0 / (r0_1 * std::f64::consts::SQRT_2);
         let ee = spin(&sys, Operator::erfc(w), 0).e_total;
-        check_misses(&ctx, "terfc(r0_1) [erfc]", ee, num(first, "/e_total", &ctx));
+        check_misses(
+            &ctx,
+            "terfc(r0_1) [erfc]",
+            ee,
+            num_ctx(first, "/e_total", &ctx),
+        );
     }
 }
 

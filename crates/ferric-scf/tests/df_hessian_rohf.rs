@@ -63,6 +63,7 @@ use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::Array2;
 
 const CH2_DISTORTED: &str = "3\nCH2 triplet distorted off C2v\n\
@@ -189,17 +190,6 @@ fn fd_hessian(
         }
     }
     out
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) -> f64 {

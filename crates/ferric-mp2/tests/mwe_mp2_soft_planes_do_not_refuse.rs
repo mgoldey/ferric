@@ -67,8 +67,6 @@
 //! refusal window has to be wide enough to target: `b_ov` is 6.56 MB at
 //! benzene against 64 kB at water, and CONTRACT 1 asserts a 1 MB floor on it.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -77,30 +75,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 struct Fixture {
     mol: Molecule,

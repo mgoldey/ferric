@@ -29,8 +29,6 @@
 //! The pool is process-global, so these tests serialize on `GLOBAL_LOCK` and
 //! clear the slot on entry and exit.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -38,32 +36,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit so one test's pool can
-/// never leak into another's "unbudgeted" assertions.
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 /// Run a PBE/RI-J single point on water/6-31G and return the total energy.
 ///

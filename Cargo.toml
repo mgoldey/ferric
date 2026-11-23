@@ -26,9 +26,6 @@ repository = "https://github.com/mgoldey/ferric"
 #   - doc_lazy_continuation: doc-comment list items (field docs in
 #     oo_rimp2.rs-style structs) whose continuation lines aren't re-indented;
 #     cosmetic doc-rendering nit, not a correctness or clarity issue.
-#   - too_many_arguments: numerical routines (e.g. ff_polar.rs) whose argument
-#     lists mirror the physics (mol/basis/operator/bounds/config/...); forcing
-#     them into a config struct is real refactoring work, out of scope here.
 #   - derivable_impls / field_reassign_with_default: hand-written `Default`
 #     impls / post-default field assignment in CLI config structs
 #     (ferric-cli/src/config.rs) that predate #[derive(Default)] support for
@@ -45,6 +42,11 @@ repository = "https://github.com/mgoldey/ferric"
 #     guard conditions; not a logic bug (see the comments at the call site).
 #   - unused_parens: parenthesized block-return value in a test-only comparator
 #     closure (terfc_base_validation.rs); harmless.
+# too_many_arguments is NOT in this list any more (roadmap item 14): it is
+# warn-by-default, so a NEW function over 7 arguments fails `-D warnings`
+# unless it carries an item-level `#[allow(clippy::too_many_arguments)]`, and
+# scripts/too_many_arguments_ratchet.py then refuses to let the number of
+# those allows grow past scripts/too_many_arguments_baseline.json.
 # Deliberately NOT allow-listed (would still fail the gate if they appear):
 # everything else, including all `clippy::correctness`/`clippy::suspicious`
 # lints and plain `unused`/dead-code warnings outside the one instance above.
@@ -55,7 +57,6 @@ excessive_precision = "allow"
 neg_multiply = "allow"
 needless_range_loop = "allow"
 doc_lazy_continuation = "allow"
-too_many_arguments = "allow"
 derivable_impls = "allow"
 field_reassign_with_default = "allow"
 redundant_pattern_matching = "allow"

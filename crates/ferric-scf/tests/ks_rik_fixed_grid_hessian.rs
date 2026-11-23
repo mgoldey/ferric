@@ -93,6 +93,7 @@ use ferric_scf::ks_fixed_grid::{
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 const WATER: &str = "3\nH2O distorted off C2v\n\
@@ -207,10 +208,6 @@ fn rich(h: f64, mut f: impl FnMut(f64) -> Array2<f64>) -> Array2<f64> {
     let coarse = d(h);
     let fine = d(0.5 * h);
     (4.0 * fine - coarse) / 3.0
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {

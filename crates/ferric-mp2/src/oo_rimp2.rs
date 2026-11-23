@@ -465,6 +465,7 @@ impl<'a> OoJk<'a> {
 
     /// The route of `scf` as described on [`OoJk`]: fitted for an RI-JK
     /// reference, four-centre (with `pool`) otherwise.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn for_reference(
         ctx: &'a ferric_core::parallel::ParallelContext,
         mol: &Molecule,
@@ -1572,6 +1573,7 @@ pub fn oo_ri_mp2_on(
 /// vir-vir Fock blocks diagonal) and `orbital_energies` are their diagonal
 /// Fock elements, i.e. the MP2 denominators actually used. This is what
 /// `oo_rimp2_gradient::oo_ri_mp2_gradient` expects.
+#[allow(clippy::too_many_arguments)]
 pub fn oo_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,

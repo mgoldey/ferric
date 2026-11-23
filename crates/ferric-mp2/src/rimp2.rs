@@ -323,6 +323,7 @@ pub(crate) fn check_mo_side_alloc(
 ///
 /// See `tests/mwe_rimp2_has_no_guard.rs` for the closed-shell shapes this
 /// mirrors.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_u_mo_side_alloc(
     label: &str,
     naux: usize,
@@ -1394,6 +1395,7 @@ pub(crate) fn note_mixed_ran_on_cpu(mixed_ok: bool) {
 /// path and the device path (`rimp2_gpu`) so the two differ ONLY in how `g_i`
 /// was formed.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn pair_energy(
     g_i: &ndarray::ArrayView2<f64>,
     i: usize,

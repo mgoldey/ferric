@@ -34,6 +34,7 @@ use ferric_rpa::properties::{
 use ferric_scf::properties::{scf_proatom_radii, slater_xi_for_z};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 const H2O_XYZ: &str = "3\nwater\nO 0.000000 0.000000 0.117300\nH 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n";
@@ -154,10 +155,6 @@ fn fd_contracted_volumes(
         }
     }
     out
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn compare(label: &str, analytic: &Array2<f64>, fd: &Array2<f64>, tol_rel: f64) {

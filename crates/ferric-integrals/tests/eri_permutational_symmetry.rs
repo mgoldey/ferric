@@ -65,6 +65,7 @@ fn quartet(
 /// row-major with the first index slowest -- the SAME convention
 /// `ferric-mp2/src/canonical.rs` uses to unpack `compute_quartet`'s buffer:
 /// `q[((a * n2 + b) * n3 + c) * n4 + d]`.
+#[allow(clippy::too_many_arguments)]
 fn at(buf: &[f64], n2: usize, n3: usize, n4: usize, a: usize, b: usize, c: usize, d: usize) -> f64 {
     buf[((a * n2 + b) * n3 + c) * n4 + d]
 }

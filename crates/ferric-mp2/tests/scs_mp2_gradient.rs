@@ -73,6 +73,7 @@ use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 
 const H: f64 = 5e-4;
@@ -176,10 +177,6 @@ fn fd_gradients(
         }
     }
     out
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// The former SCS gradient: RI-MP2's correlation part scaled by

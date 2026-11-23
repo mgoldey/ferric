@@ -29,38 +29,13 @@
 //! unconditionally would fail the refusal. Both directions are exercised, so
 //! the pass condition is a measurement rather than arithmetic.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 fn h2o() -> Molecule {
     Molecule::parse_xyz(

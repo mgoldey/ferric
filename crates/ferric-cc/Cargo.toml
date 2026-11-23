@@ -22,5 +22,6 @@ rayon = { workspace = true }
 gpu = ["ferric-core/gpu", "ferric-tensors/gpu"]
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 ferric-gw = { path = "../ferric-gw" }
 serde_json = { workspace = true }

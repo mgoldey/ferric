@@ -34,6 +34,8 @@ pub use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 pub use ferric_pbc::rsgdf::RsGdfConfig;
 pub use ferric_pbc::uhf::GammaUhfIntegrals;
 pub use ferric_pbc::PeriodicGrid;
+#[allow(unused_imports)]
+pub use ferric_testkit::compare::max_abs;
 pub use ndarray::Array2;
 pub use num_complex::Complex64;
 pub use std::collections::HashMap;
@@ -326,10 +328,6 @@ pub fn fd(
 ) -> f64 {
     let e = |p: &[[f64; 3]]| scf(p, mesh_n, f, jk, exxdiv).scf.energy;
     (e(&moved(pos, a, x, h)) - e(&moved(pos, a, x, -h))) / (2.0 * h)
-}
-
-pub fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 pub fn parts_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {

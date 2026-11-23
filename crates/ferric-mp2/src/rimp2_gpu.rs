@@ -101,6 +101,7 @@ impl Tally {
 
 /// Dispatcher: `None` means "run the CPU path" (reason counted unless the
 /// mode is off). Never panics; never touches CUDA when the mode is off.
+#[allow(clippy::too_many_arguments)]
 pub fn try_spin_components_on_device(
     b_ov: &Array2<f64>,
     eps: &[f64],
@@ -193,6 +194,7 @@ fn checked_nov(nocc: usize, nvir: usize) -> Result<usize, GpuError> {
 /// f64 accumulation; it refuses with `GpuError::Kernel` (flush kernel will not
 /// load; checked before any reservation) or `GpuError::F32Range` (a finite
 /// `B_ov` element beyond `f32::MAX`), never a silent f64 run.
+#[allow(clippy::too_many_arguments)]
 pub fn spin_components_on_device(
     dev: &Device,
     pool: &DevicePool,
