@@ -486,6 +486,39 @@ pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) -> b
     over
 }
 
+/// Report, once per `what` per process, that a width derived from the memory
+/// budget (a panel, a batch, a group count, a subspace) collapsed to its
+/// minimum `width` of a possible `full`: the run is correct but serialized or
+/// blocked as finely as it can be, so a slow run under a tight budget says
+/// why. A budget changes only blocking; where a width can change a result
+/// (an iterative subspace), the caller says so in `effect`. Returns whether
+/// this call printed. `budget_bytes` is what the budget leaves for this width
+/// (the whole budget, or what remains beside planes already resident).
+pub fn warn_width_collapsed(
+    what: &'static str,
+    width: usize,
+    full: usize,
+    budget_bytes: usize,
+    effect: &str,
+) -> bool {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static SEEN: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let first = match SEEN.lock() {
+        Ok(mut seen) => seen.get_or_insert_with(HashSet::new).insert(what),
+        Err(_) => false,
+    };
+    if first {
+        eprintln!(
+            "ferric WARNING [{what}]: the {:.3} GB the memory budget leaves for it allows a \
+             width of only {width} of {full}, the minimum: {effect}. Raise [memory] budget_gb \
+             / FERRIC_MEM_BUDGET_GB for a faster run",
+            budget_bytes as f64 / 1e9
+        );
+    }
+    first
+}
+
 /// [`resolve_budget`], as if `planned_bytes` were already resident.
 ///
 /// An auto-detected budget reads live `MemAvailable`, so it falls by 0.8 x

@@ -256,6 +256,38 @@ pub fn compute_b_full_mo(
     compute_b_full_mo_with(&ao, c)
 }
 
+/// [`compute_b_full_mo`] with the metric factor `V^{-1/2}` of `op` on `dfbs`
+/// already built (as [`OoRiMp2AoTensors::build`] builds it:
+/// `cholesky_inverse_sqrt(coulomb_metric_2c(op, dfbs))`): only the raw
+/// `(P|μν)` source is built, under the same budget, and streamed through the
+/// same transform, so the result is that of [`compute_b_full_mo`] when
+/// `v_inv_sqrt` is that factor.
+pub fn compute_b_full_mo_with_metric(
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    v_inv_sqrt: &Array2<f64>,
+    c: &Array2<f64>,
+) -> Result<Array3<f64>, FerricError> {
+    let mut src = ThreeIndexSource::build(
+        op,
+        obs,
+        dfbs,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )?;
+    let (naux, nmo) = (src.naux(), c.ncols());
+    if v_inv_sqrt.dim() != (naux, naux) {
+        return Err(FerricError::General(format!(
+            "compute_b_full_mo_with_metric: V^-1/2 is {:?}, the aux basis has {naux} functions",
+            v_inv_sqrt.dim()
+        )));
+    }
+    let b_flat = crate::rimp2::stream_dressed_mo_band(&mut src, v_inv_sqrt, c, c, None)?;
+    b_flat
+        .into_shape_with_order((naux, nmo, nmo))
+        .map_err(|e| FerricError::General(format!("compute_b_full_mo_with_metric reshape: {e}")))
+}
+
 /// Full-MO 3-center B tensor from pre-built AO invariants.
 ///
 /// Delegates to the shared canonical streamer

@@ -83,8 +83,18 @@ fn lanczos_panel_width(naux: usize, nov: usize, memory_budget_bytes: Option<usiz
     // Use ~1/2 of the budget for the panel scratch (the assembled A and its
     // eigenvectors, each naux², live for the whole solve and are counted
     // separately by the caller's footprint).
-    let k = (budget / 2 / per_col_bytes).max(1);
-    k.min(naux.max(1))
+    let k = (budget / 2 / per_col_bytes).max(1).min(naux.max(1));
+    if k == 1 && naux > 1 {
+        memory::warn_width_collapsed(
+            "PDEP eigensolve panel",
+            k,
+            naux,
+            budget,
+            "the static dielectric matrix is assembled one column at a time (same \
+             eigenpairs, much slower)",
+        );
+    }
+    k
 }
 
 /// Full-rank PDEP eigensolve via **paneled dense dielectric assembly**.

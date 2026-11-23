@@ -572,7 +572,19 @@ fn davidson_default_max_vecs(naux: usize, budget_bytes: usize) -> usize {
     let per_vec_bytes = naux.max(1).saturating_mul(8).saturating_mul(4);
     let share = budget_bytes / 4;
     let derived = (share / per_vec_bytes.max(1)).max(MIN_VECS);
-    derived.min(3 * naux.max(1))
+    let max_vecs = derived.min(3 * naux.max(1));
+    if max_vecs == MIN_VECS && 3 * naux > MIN_VECS {
+        ferric_core::memory::warn_width_collapsed(
+            "PDEP Davidson subspace",
+            max_vecs,
+            3 * naux,
+            budget_bytes,
+            "the Davidson subspace restarts at its minimum size; the eigenpairs still \
+             converge to eigensolver_conv_thresh, but the energy can move within that \
+             threshold with the budget (set eigensolver_max_vecs to fix the subspace)",
+        );
+    }
+    max_vecs
 }
 
 /// Top-level PDEP-RPA energy calculation.
@@ -1051,6 +1063,34 @@ pub fn run_pdep_rpa_from_intermediates(
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
+    run_pdep_rpa_from_intermediates_panelled(
+        inter,
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        config,
+        config.memory_budget_bytes,
+    )
+}
+
+/// [`run_pdep_rpa_from_intermediates`] with the frequency loop's panel sized
+/// against `freq_budget` instead of `config.memory_budget_bytes`. A caller
+/// that holds planes beside the dRPA (the rs-mp2-rpa scan) passes what the
+/// budget leaves after them ([`budget::panel_budget_beside`]); everything
+/// else (the eigensolve, the stage-seam check) still reads `config`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_pdep_rpa_from_intermediates_panelled(
+    inter: &ferric_mp2::rimp2::RpaIntermediates,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+    freq_budget: Option<usize>,
+) -> Result<PdepRpaResult, FerricError> {
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
     let nvir = inter.nvir;
@@ -1091,7 +1131,7 @@ pub fn run_pdep_rpa_from_intermediates(
             &eps_occ,
             &eps_vir,
             &quad_freqs,
-            config.memory_budget_bytes,
+            freq_budget,
         )?)
     } else {
         None
@@ -1109,7 +1149,7 @@ pub fn run_pdep_rpa_from_intermediates(
                 &eps_occ,
                 &eps_vir,
                 &quad_freqs,
-                config.memory_budget_bytes,
+                freq_budget,
             )?,
             Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
                 &eigenvectors,

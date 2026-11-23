@@ -352,7 +352,18 @@ pub(crate) fn quad_panel_width(
     let out_bytes = m.saturating_mul(m).saturating_mul(8);
     let scratch_for_k = per_worker_budget.saturating_sub(out_bytes);
     let per_col_bytes = m.saturating_mul(8).max(1);
-    (scratch_for_k / per_col_bytes).clamp(1, nov)
+    let width = (scratch_for_k / per_col_bytes).clamp(1, nov);
+    if width == 1 && nov > 1 {
+        ferric_core::memory::warn_width_collapsed(
+            "RPA frequency panel",
+            width,
+            nov,
+            budget,
+            "the frequency loop assembles each dielectric matrix one occupied-virtual \
+             column at a time (same result, much slower)",
+        );
+    }
+    width
 }
 
 /// Budget-aware sibling of [`eval_eigenvalues_at_frequencies`]. Identical

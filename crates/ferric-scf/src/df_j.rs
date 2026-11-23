@@ -402,8 +402,23 @@ fn f32_rounding() -> F32Rounding {
 /// An f32 request that could not be honoured: say so once per builder and
 /// count it in the precision provenance (`f32_range` for a value beyond the
 /// f32 range, `cpu_f64` otherwise).
+///
+/// A tensor declined because it does not fit is a budget decision that
+/// changes the energy (by the f32 storage error, ~1e-7–1e-5 Ha on small
+/// molecules), so the notice says so and how to make the result
+/// budget-independent.
 fn note_f32_declined(why: &F32Declined) {
-    eprintln!("[ferric] RI-J: ri_j_precision = \"f32\" but the tensor stays f64 ({why})");
+    let budget_note = match why {
+        F32Declined::DoesNotFit { .. } => {
+            "; the energy therefore follows the memory budget (it differs from an f32 run by \
+             the f32 storage error): set ri_j_precision = \"f64\" for results that do not \
+             depend on the budget"
+        }
+        _ => "",
+    };
+    eprintln!(
+        "[ferric] RI-J: ri_j_precision = \"f32\" but the tensor stays f64 ({why}){budget_note}"
+    );
     let reason = match why {
         F32Declined::OutOfRange { .. } => MixedFallback::F32Range,
         _ => MixedFallback::CpuF64,

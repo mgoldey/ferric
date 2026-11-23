@@ -90,14 +90,28 @@ formulations, since they share one shape.
 With terf, `ferric-rpa/src/budget.rs::with_signed_lr` adds the held Coulomb tensor to $P$
 (and re-plans the AO tier at the smaller budget left), and charges the
 signed log-determinant's per-worker scratch, a $2N_{\mathrm{aux}}$-row panel
-and a $(2N_{\mathrm{aux}})^2$ matrix, in place of the frequency scratch
-when it is larger. `scan_peak_bytes` does not know the attenuator and
-leaves both out; `scan_charge_for` and the driver include them.
+and a $(2N_{\mathrm{aux}})^2$ matrix, as its own phase: it forms no static
+eigenbasis, so the eigensolve planes are not beside it. `scan_peak_bytes`
+does not know the attenuator and leaves both out; `scan_charge_for` and the
+driver include them.
+
+Under an explicit budget the frequency panel is sized against what the
+budget leaves beside the planes resident through the dRPA, not against the
+whole budget (`ferric-rpa/src/budget.rs::panel_budget_beside`): $P$, the
+held Coulomb tensor with terf, and the eigensolve planes for the eigenbasis
+loop; $P$ and the held tensor for the signed loop. Sizing it against the
+whole budget put a panelled run's charge at the budget plus those planes,
+so every run that needed a narrower panel was refused. The driver hands the
+loop the same panel budget it charged. When the planes alone reach the
+budget the driver refuses before any allocation and names them
+(`check_scan_resident`).
 
 | Test | What it pins |
 |---|---|
 | `preflight_estimate_is_independent_of_the_number_of_points` (`crates/ferric-rpa/tests/rs_mp2_rpa_scan.rs`) | (@eq:shared-intermediates-1) at 1, 5 and 50 points; the estimate covers the build and dRPA phases and is tensor-sized |
 | `the_charge_follows_the_tier_the_build_takes` (`crates/ferric-rpa/tests/rs_mp2_rpa_spill_tier.rs`) | in core, packed and spill are each reachable on the water dimer, each charge fits its budget, the build takes the planned tier, and the run is admitted |
+| `panel_is_sized_beside_the_resident_planes`, `resident_planes_over_budget_refuse_clearly` (`crates/ferric-rpa/src/rs_mp2_rpa.rs`) | a budget the whole-budget panel overshoots fits with the panel sized beside the planes (erf and terf); an ample budget keeps the full width and the same charge; planes at or over the budget refuse with the parts named |
+| `rs_mp2_rpa_energies_do_not_depend_on_the_budget` (`crates/ferric-rpa/tests/rs_mp2_rpa_budget_independence.rs`) | on one reference, every energy of both formulations at budgets down to the smallest admitted one (narrowed panel, packed or spilled AO tier) agrees with the ample run to $10^{-10}$ Ha |
 | `ample_budget_is_bitwise_the_in_core_path` (same file) | at an ample budget both formulations equal the public pieces called at the full budget, bit for bit |
 | `packed_and_spilled_match_in_core_within_the_reduction_order_bar` (same file) | both formulations at two $\omega$ agree with the in-core run within a bar derived from the summation order of the $\tilde{\mathbf B}$ stream |
 
