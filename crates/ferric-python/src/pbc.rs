@@ -504,10 +504,13 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
         Some(obj) => {
             let bs = gamma_auxbasis(a.fname, obj)?;
             let p = PreparedBasis::new(cell.mol(), &bs).map_err(|e| {
-                val_err(format!(
-                    "{}: auxbasis '{}' cannot be placed on this cell: {e}",
-                    a.fname, bs.name
-                ))
+                crate::errors::input_err_msg(
+                    &e,
+                    format!(
+                        "{}: auxbasis '{}' cannot be placed on this cell: {e}",
+                        a.fname, bs.name
+                    ),
+                )
             })?;
             (Some(p), Some(bs.name))
         }

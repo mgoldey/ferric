@@ -329,13 +329,14 @@ def test_failures_are_classified_by_the_ferric_exception_class(monkeypatch):
 
 
 def test_a_driver_basis_failure_is_an_input_error():
-    """An unknown auxiliary basis raised inside the driver was an
+    """A basis that has no shells for an element is refused inside the driver
+    (`run_rhf`), not by `_bundled`'s name lookup. That was an
     `execution_error` with a `RuntimeError:` prefix; it is now an `input_error`
     naming `BasisError`."""
     out = qcs.run(
-        _inp(method="mp2", basis="cc-pvdz", keywords={"auxbasis": "no-such-aux"})
+        _inp(basis="cc-pvdz", symbols=["H", "I"], geometry=[0, 0, 0, 0, 0, 3.04])
     )
-    _failed(out, "input_error", "no-such-aux")
+    _failed(out, "input_error", "BasisError: basis error:")
 
 
 def test_qcelemental_round_trip():

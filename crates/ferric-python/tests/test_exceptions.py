@@ -218,6 +218,15 @@ def test_prefixed_basis_failures_are_still_basis_errors():
     assert type(exc.value) is ferric.BasisError
 
 
+def test_unknown_guess_basis_is_a_basis_error(water):
+    """`guess_basis` resolves through the bundled-basis lookup; its failure
+    keeps the `Basis` variant (a `ValueError`, as before)."""
+    bs = ferric.BasisSet.bundled("sto-3g")
+    with pytest.raises(ValueError) as exc:
+        ferric.run_rhf(water, bs, guess_basis="no-such-basis")
+    assert type(exc.value) is ferric.BasisError
+
+
 def test_helper_names_stay_out_of_the_public_surface():
     for name in ("_raise_core_error", "_core_error_variants"):
         assert name not in ferric.__all__

@@ -1063,7 +1063,8 @@ fn parse_guess_basis(
         (None, Some(_)) => Err(bad("guess_projection is set but guess_basis is not".into())),
         (Some(b), p) => ferric_scf::basis2::GuessBasis::bundled(b, p.unwrap_or("fock"))
             .map(Some)
-            .map_err(|e| bad(e.to_string())),
+            // Keep the `FerricError` so an unknown basis is a `BasisError`.
+            .map_err(crate::errors::input_err),
     }
 }
 

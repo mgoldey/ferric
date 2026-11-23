@@ -683,10 +683,13 @@ pub(crate) fn run_rhf_gamma(
         Some(obj) => {
             let aux_bs = gamma_auxbasis("run_rhf_gamma", obj)?;
             let aux = PreparedBasis::new(cell.mol(), &aux_bs).map_err(|e| {
-                val_err(format!(
-                    "run_rhf_gamma: auxbasis '{}' cannot be placed on this cell: {e}",
-                    aux_bs.name
-                ))
+                crate::errors::input_err_msg(
+                    &e,
+                    format!(
+                        "run_rhf_gamma: auxbasis '{}' cannot be placed on this cell: {e}",
+                        aux_bs.name
+                    ),
+                )
             })?;
             let choice = GammaJk::RsGdf {
                 aux: Box::new(aux),
