@@ -225,6 +225,11 @@ pub(crate) struct BeckeTable {
     n: usize,
     xyz: Vec<[f64; 3]>,
     r_ab: Vec<f64>,
+    /// `1.0 / r_ab` (unused where `r_ab < 1e-12`), as [`becke_weights_and_grad`]
+    /// forms it per point.
+    inv_r_ab: Vec<f64>,
+    /// `R_A - R_B`, as [`becke_weights_and_grad`] forms it per point.
+    r_ab_vec: Vec<[f64; 3]>,
     a_corr: Vec<f64>,
     stop_limit: f64,
 }
@@ -239,6 +244,8 @@ impl BeckeTable {
     pub(crate) fn new(mol: &Molecule) -> Self {
         let n = mol.atoms.len();
         let mut r_ab = vec![0.0; n * n];
+        let mut inv_r_ab = vec![0.0; n * n];
+        let mut r_ab_vec = vec![[0.0; 3]; n * n];
         let mut a_corr = vec![0.0; n * n];
         let mut r_min = f64::INFINITY;
         for a in 0..n {
@@ -253,6 +260,8 @@ impl BeckeTable {
                 let dz = mol.atoms[a].zpos - mol.atoms[b].zpos;
                 let r = (dx * dx + dy * dy + dz * dz).sqrt();
                 r_ab[a * n + b] = r;
+                inv_r_ab[a * n + b] = 1.0 / r;
+                r_ab_vec[a * n + b] = [dx, dy, dz];
                 if r.is_nan() {
                     r_min = 0.0;
                 } else if r >= 1e-12 {
@@ -267,6 +276,8 @@ impl BeckeTable {
             n,
             xyz: mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect(),
             r_ab,
+            inv_r_ab,
+            r_ab_vec,
             a_corr,
             stop_limit: BECKE_STOP_RATIO * r_min,
         }
@@ -328,15 +339,24 @@ impl BeckeTable {
 }
 
 /// Per-thread work space of [`BeckeTable::home_weight_grad`].
+///
+/// The pair caches (`mu`, `s_pair`, `ds_dmu`) are `natoms²`, row `A` holding
+/// cell `A`'s pairs; only the rows of cells that survive the exact-zero screen
+/// are read, and each such row is written in full first. The `dense_*` fields
+/// belong to [`BeckeTable::home_weight_grad_unscreened`] and stay empty until a
+/// point outside the screening domain needs it.
 pub(crate) struct BeckeGradScratch {
     rd: Vec<f64>,
     unit: Vec<[f64; 3]>,
+    mu: Vec<f64>,
     s_pair: Vec<f64>,
-    ds_dra: Vec<[f64; 3]>,
-    ds_drb: Vec<[f64; 3]>,
+    ds_dmu: Vec<f64>,
     p_cell: Vec<f64>,
-    dp: Vec<[f64; 3]>,
+    dp_home: Vec<[f64; 3]>,
     dt: Vec<[f64; 3]>,
+    dense_ds_dra: Vec<[f64; 3]>,
+    dense_ds_drb: Vec<[f64; 3]>,
+    dense_dp: Vec<[f64; 3]>,
 }
 
 impl BeckeTable {
@@ -345,13 +365,35 @@ impl BeckeTable {
         BeckeGradScratch {
             rd: vec![0.0; n],
             unit: vec![[0.0; 3]; n],
+            mu: vec![0.0; n * n],
             s_pair: vec![1.0; n * n],
-            ds_dra: vec![[0.0; 3]; n * n],
-            ds_drb: vec![[0.0; 3]; n * n],
+            ds_dmu: vec![0.0; n * n],
             p_cell: vec![1.0; n],
-            dp: vec![[0.0; 3]; n * n],
+            dp_home: vec![[0.0; 3]; n],
             dt: vec![[0.0; 3]; n],
+            dense_ds_dra: Vec::new(),
+            dense_ds_drb: Vec::new(),
+            dense_dp: Vec::new(),
         }
+    }
+
+    /// Fill `s.rd` and `s.unit` for the point `r`, exactly as
+    /// [`becke_weights_and_grad`] does, and say whether the point lies in the
+    /// exact-zero domain of [`BeckeTable`] (the test of [`Self::distances`]).
+    fn grad_distances(&self, r: [f64; 3], s: &mut BeckeGradScratch) -> bool {
+        let mut in_domain = true;
+        for x in 0..self.n {
+            let dx = r[0] - self.xyz[x][0];
+            let dy = r[1] - self.xyz[x][1];
+            let dz = r[2] - self.xyz[x][2];
+            let rx = (dx * dx + dy * dy + dz * dz).sqrt();
+            s.rd[x] = rx;
+            let inv = if rx > 1e-30 { 1.0 / rx } else { 0.0 };
+            s.unit[x] = [dx * inv, dy * inv, dz * inv];
+            // Written so a NaN distance also clears it.
+            in_domain &= rx < self.stop_limit;
+        }
+        in_domain
     }
 
     /// `becke_weights_and_grad(mol, r).1[home]` — the lab-fixed derivative of the
@@ -359,13 +401,178 @@ impl BeckeTable {
     /// into `out` (length `natoms`).
     ///
     /// Same expressions on the same inputs in the same order as
-    /// [`becke_weights_and_grad`] (the pair geometry `R_AB` and `a_AB` come from
-    /// the table, which computes them with that function's exact expressions),
-    /// but with the pair geometry hoisted out of the per-point work, flat scratch
-    /// reused across points instead of ~`2·natoms` allocations per point, and
-    /// only the one `dw` row the grid response reads assembled. Pinned by
-    /// `home_weight_grad_is_becke_weights_and_grad_bit_for_bit`.
+    /// [`becke_weights_and_grad`] (the pair geometry `R_AB`, `1/R_AB`, `R_A - R_B`
+    /// and `a_AB` come from the table, which computes them with that function's
+    /// exact expressions), with the pair geometry hoisted out of the per-point
+    /// work, flat scratch reused across points, and only the one `dw` row the
+    /// grid response reads assembled. Pinned by
+    /// `home_weight_grad_is_becke_weights_and_grad_bit_for_bit` and
+    /// `screened_home_weight_grad_is_the_unscreened_one_bit_for_bit`.
+    ///
+    /// # Exact-zero cell screen
+    ///
+    /// A cell `A` whose product `P_A = Π_B s_AB` is exactly `0.0` adds nothing,
+    /// bit for bit, so its derivative row (`natoms` pairs of chain-rule work) is
+    /// skipped, and its product stops at the first exact zero. On the 98-atom
+    /// alkane chain most cells at a grid point are exactly zero (an atom far from
+    /// the point, with many atoms in between, gets many tiny factors whose
+    /// product underflows); in a compact cluster far fewer are. The argument,
+    /// for a point inside the domain of [`BeckeTable`] (every `r_X < 2^30 R_min`,
+    /// none NaN; any other point runs [`Self::home_weight_grad_unscreened`]):
+    ///
+    /// - `P_A` keeps its bits. Every factor is in `[+0.0, 1.0]` there (the
+    ///   argument on [`BeckeTable`]; `μ` here is `(r_A - r_B) · (1/R_AB)`, whose two
+    ///   extra roundings stay far inside its `2^-20` margin), so a product that
+    ///   reached `+0.0` stays `+0.0`, and a skipped coincident pair is a factor
+    ///   `1.0` in the reference.
+    /// - The reference's row of such a cell is `+0.0`. Its terms are
+    ///   `(P_A / s_AB) · ds = (+0.0 / s_AB) · ds`, with `s_AB >= 1e-30` (smaller
+    ///   factors are skipped by both) and `ds` finite (in the domain `|μ|`, `ν`
+    ///   and the `f_k` are bounded, `1/R_AB <= 1e12` and `|unit| <= 1`), so each
+    ///   is `±0.0`, and `+0.0` plus `±0.0` is `+0.0`.
+    /// - Adding a `+0.0` row entry to an accumulator `dT_C` that started at
+    ///   `+0.0` leaves its bits: `x + 0.0 = x` for `x != 0`, and the accumulator is
+    ///   never `-0.0` (round-to-nearest sums give `-0.0` only from `-0.0 + -0.0`,
+    ///   and no reference row entry is `-0.0`, each being `+0.0` plus terms). So
+    ///   `dT` has its bits without the row.
+    /// - If the home cell itself is zero, its row is `+0.0` and `P_home` is
+    ///   `+0.0`, which the final formula is given as such.
+    ///
+    /// The same zero-addition argument removes the reference's `natoms²` `dp`
+    /// matrix: each surviving cell's row goes straight into `dT`, cells in the
+    /// reference's ascending order, and only the home row is kept (as
+    /// `0.0 + term`, the reference's single-term sum, which turns a `-0.0` term
+    /// into `+0.0`).
     pub(crate) fn home_weight_grad(
+        &self,
+        r: [f64; 3],
+        home: usize,
+        s: &mut BeckeGradScratch,
+        out: &mut [[f64; 3]],
+    ) {
+        let n = self.n;
+        if n <= 1 {
+            out.iter_mut().for_each(|o| *o = [0.0; 3]);
+            return;
+        }
+        if !self.grad_distances(r, s) {
+            self.home_weight_grad_unscreened(r, home, s, out);
+            return;
+        }
+        out.iter_mut().for_each(|o| *o = [0.0; 3]);
+        // Pass 1: the cell products, stopping a cell at an exact zero, caching
+        // μ, s and ∂s/∂μ of every pair of a cell that survives.
+        for a in 0..n {
+            let row = a * n..a * n + n;
+            let ra = s.rd[a];
+            let (rab, inv_rab, ac) = (
+                &self.r_ab[row.clone()],
+                &self.inv_r_ab[row.clone()],
+                &self.a_corr[row.clone()],
+            );
+            let (mu_row, s_row, dsm_row) = (
+                &mut s.mu[row.clone()],
+                &mut s.s_pair[row.clone()],
+                &mut s.ds_dmu[row],
+            );
+            let mut p = 1.0_f64;
+            for b in 0..n {
+                if a == b || rab[b] < 1e-12 {
+                    continue;
+                }
+                let mu = (ra - s.rd[b]) * inv_rab[b];
+                let a_corr = ac[b];
+                let nu = mu + a_corr * (1.0 - mu * mu);
+                let dnu_dmu = 1.0 - 2.0 * a_corr * mu;
+                let f0 = nu;
+                let f0p = 1.5 * (1.0 - f0 * f0);
+                let f1 = 0.5 * f0 * (3.0 - f0 * f0);
+                let f1p = 1.5 * (1.0 - f1 * f1);
+                let f2 = 0.5 * f1 * (3.0 - f1 * f1);
+                let f2p = 1.5 * (1.0 - f2 * f2);
+                let f3 = 0.5 * f2 * (3.0 - f2 * f2);
+                let df3_dnu = f2p * f1p * f0p;
+                let sv = 0.5 * (1.0 - f3);
+                mu_row[b] = mu;
+                s_row[b] = sv;
+                dsm_row[b] = -0.5 * df3_dnu * dnu_dmu;
+                p *= sv;
+                if p == 0.0 {
+                    break;
+                }
+            }
+            s.p_cell[a] = p;
+        }
+        let t: f64 = s.p_cell.iter().sum();
+        if t < 1e-30 {
+            return;
+        }
+        let inv_t = 1.0 / t;
+        // Pass 2: the derivative rows of the surviving cells, summed into dT.
+        s.dt.iter_mut().for_each(|v| *v = [0.0; 3]);
+        s.dp_home.iter_mut().for_each(|v| *v = [0.0; 3]);
+        for a in 0..n {
+            let pa = s.p_cell[a];
+            if pa == 0.0 {
+                continue;
+            }
+            let row = a * n..a * n + n;
+            let (rab, inv_rab, vec_ab) = (
+                &self.r_ab[row.clone()],
+                &self.inv_r_ab[row.clone()],
+                &self.r_ab_vec[row.clone()],
+            );
+            let (mu_row, s_row, dsm_row) =
+                (&s.mu[row.clone()], &s.s_pair[row.clone()], &s.ds_dmu[row]);
+            let ua = s.unit[a];
+            let mut dpaa = [0.0_f64; 3];
+            for b in 0..n {
+                if a == b || rab[b] < 1e-12 {
+                    continue;
+                }
+                let sv = s_row[b];
+                if sv.abs() < 1e-30 {
+                    continue;
+                }
+                let ratio = pa / sv;
+                let (mu, inv_r_ab, ds_dmu) = (mu_row[b], inv_rab[b], dsm_row[b]);
+                let ub = s.unit[b];
+                let mut dpab = [0.0_f64; 3];
+                for k in 0..3 {
+                    let ab_term = mu * inv_r_ab * inv_r_ab * vec_ab[b][k];
+                    let dmu_dra = -ua[k] * inv_r_ab - ab_term;
+                    let dmu_drb = ub[k] * inv_r_ab + ab_term;
+                    dpaa[k] += ratio * (ds_dmu * dmu_dra);
+                    dpab[k] = 0.0 + ratio * (ds_dmu * dmu_drb);
+                }
+                for k in 0..3 {
+                    s.dt[b][k] += dpab[k];
+                }
+                if a == home {
+                    s.dp_home[b] = dpab;
+                }
+            }
+            for k in 0..3 {
+                s.dt[a][k] += dpaa[k];
+            }
+            if a == home {
+                s.dp_home[a] = dpaa;
+            }
+        }
+        let ph = s.p_cell[home];
+        for c in 0..n {
+            for k in 0..3 {
+                out[c][k] = inv_t * s.dp_home[c][k] - ph * inv_t * inv_t * s.dt[c][k];
+            }
+        }
+    }
+
+    /// [`Self::home_weight_grad`] without the exact-zero screen: the reference
+    /// algorithm of [`becke_weights_and_grad`] on the table's pair geometry,
+    /// every cell's derivative row assembled into a `natoms²` matrix. Used for
+    /// points outside the screening domain, and as the reference the screen is
+    /// pinned to.
+    pub(crate) fn home_weight_grad_unscreened(
         &self,
         r: [f64; 3],
         home: usize,
@@ -377,35 +584,26 @@ impl BeckeTable {
         if n <= 1 {
             return;
         }
-        for x in 0..n {
-            let dx = r[0] - self.xyz[x][0];
-            let dy = r[1] - self.xyz[x][1];
-            let dz = r[2] - self.xyz[x][2];
-            let rx = (dx * dx + dy * dy + dz * dz).sqrt();
-            s.rd[x] = rx;
-            let inv = if rx > 1e-30 { 1.0 / rx } else { 0.0 };
-            s.unit[x] = [dx * inv, dy * inv, dz * inv];
+        self.grad_distances(r, s);
+        for v in [&mut s.dense_ds_dra, &mut s.dense_ds_drb, &mut s.dense_dp] {
+            v.clear();
+            v.resize(n * n, [0.0; 3]);
         }
         s.s_pair.iter_mut().for_each(|v| *v = 1.0);
-        s.ds_dra.iter_mut().for_each(|v| *v = [0.0; 3]);
-        s.ds_drb.iter_mut().for_each(|v| *v = [0.0; 3]);
         for a in 0..n {
             for b in 0..n {
                 if a == b {
                     continue;
                 }
-                let r_ab = self.r_ab[a * n + b];
+                let ab = a * n + b;
+                let r_ab = self.r_ab[ab];
                 if r_ab < 1e-12 {
                     continue;
                 }
-                let inv_r_ab = 1.0 / r_ab;
-                let r_ab_vec = [
-                    self.xyz[a][0] - self.xyz[b][0],
-                    self.xyz[a][1] - self.xyz[b][1],
-                    self.xyz[a][2] - self.xyz[b][2],
-                ];
+                let inv_r_ab = self.inv_r_ab[ab];
+                let r_ab_vec = self.r_ab_vec[ab];
                 let mu = (s.rd[a] - s.rd[b]) * inv_r_ab;
-                let a_corr = self.a_corr[a * n + b];
+                let a_corr = self.a_corr[ab];
                 let nu = mu + a_corr * (1.0 - mu * mu);
                 let dnu_dmu = 1.0 - 2.0 * a_corr * mu;
                 let f0 = nu;
@@ -417,13 +615,13 @@ impl BeckeTable {
                 let f3 = 0.5 * f2 * (3.0 - f2 * f2);
                 let df3_dnu = f2p * f1p * f0p;
                 let ds_dmu = -0.5 * df3_dnu * dnu_dmu;
-                s.s_pair[a * n + b] = 0.5 * (1.0 - f3);
+                s.s_pair[ab] = 0.5 * (1.0 - f3);
                 for k in 0..3 {
                     let ab_term = mu * inv_r_ab * inv_r_ab * r_ab_vec[k];
                     let dmu_dra = -s.unit[a][k] * inv_r_ab - ab_term;
                     let dmu_drb = s.unit[b][k] * inv_r_ab + ab_term;
-                    s.ds_dra[a * n + b][k] = ds_dmu * dmu_dra;
-                    s.ds_drb[a * n + b][k] = ds_dmu * dmu_drb;
+                    s.dense_ds_dra[ab][k] = ds_dmu * dmu_dra;
+                    s.dense_ds_drb[ab][k] = ds_dmu * dmu_drb;
                 }
             }
         }
@@ -442,7 +640,6 @@ impl BeckeTable {
             return;
         }
         let inv_t = 1.0 / t;
-        s.dp.iter_mut().for_each(|v| *v = [0.0; 3]);
         for a in 0..n {
             for b in 0..n {
                 if a == b {
@@ -454,8 +651,8 @@ impl BeckeTable {
                 }
                 let ratio = s.p_cell[a] / sv;
                 for k in 0..3 {
-                    s.dp[a * n + a][k] += ratio * s.ds_dra[a * n + b][k];
-                    s.dp[a * n + b][k] += ratio * s.ds_drb[a * n + b][k];
+                    s.dense_dp[a * n + a][k] += ratio * s.dense_ds_dra[a * n + b][k];
+                    s.dense_dp[a * n + b][k] += ratio * s.dense_ds_drb[a * n + b][k];
                 }
             }
         }
@@ -463,14 +660,14 @@ impl BeckeTable {
         for a in 0..n {
             for c in 0..n {
                 for k in 0..3 {
-                    s.dt[c][k] += s.dp[a * n + c][k];
+                    s.dt[c][k] += s.dense_dp[a * n + c][k];
                 }
             }
         }
         let ph = s.p_cell[home];
         for c in 0..n {
             for k in 0..3 {
-                out[c][k] = inv_t * s.dp[home * n + c][k] - ph * inv_t * inv_t * s.dt[c][k];
+                out[c][k] = inv_t * s.dense_dp[home * n + c][k] - ph * inv_t * inv_t * s.dt[c][k];
             }
         }
     }
@@ -2126,6 +2323,156 @@ mod partition_over_tests {
                     assert!(becke_smoothing(x, 3) <= 1.0, "f3({x:e}) exceeds 1");
                 }
             }
+        }
+    }
+
+    /// A compact 3-D cluster: `(H2O)_{nx·ny·nz}` on a 2.9 Å cubic lattice, each
+    /// water turned by its own angle.
+    fn water_cluster(nx: u32, ny: u32, nz: u32) -> Molecule {
+        let mut s = format!("{}\nwater cluster\n", 3 * nx * ny * nz);
+        let mut i = 0.0_f64;
+        for x in 0..nx {
+            for y in 0..ny {
+                for z in 0..nz {
+                    let o = [2.9 * f64::from(x), 2.9 * f64::from(y), 2.9 * f64::from(z)];
+                    let (sa, ca) = (1.3 * i).sin_cos();
+                    let (sb, cb) = (0.7 * i).sin_cos();
+                    s.push_str(&format!("O {} {} {}\n", o[0], o[1], o[2]));
+                    for sign in [1.0, -1.0] {
+                        // (0, ±0.755, -0.589) turned about x by b, then about z by a.
+                        let (hy, hz) = (
+                            sign * 0.755 * cb + 0.589 * sb,
+                            sign * 0.755 * sb - 0.589 * cb,
+                        );
+                        let (hx, hy) = (-hy * sa, hy * ca);
+                        s.push_str(&format!("H {} {} {}\n", o[0] + hx, o[1] + hy, o[2] + hz));
+                    }
+                    i += 1.0;
+                }
+            }
+        }
+        Molecule::parse_xyz(&s, 0, 1).unwrap()
+    }
+
+    /// The exact-zero cell screen of `home_weight_grad` returns the bits of the
+    /// unscreened algorithm and of `becke_weights_and_grad`, on an elongated
+    /// molecule (C16H34, where most cells are zero) and a compact one (a water
+    /// cluster, where fewer are), and the screen really fires on both. The reach
+    /// covers the grid's radial range, a point on a nucleus, and points past the
+    /// screening domain (which take the unscreened path).
+    #[test]
+    fn screened_home_weight_grad_is_the_unscreened_one_bit_for_bit() {
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/molecules");
+        let alkane = Molecule::load_xyz(root.join("alkane_16.xyz").to_str().unwrap()).unwrap();
+        let reach = [0.0, 0.05, 0.4, 1.3, 3.0, 7.0, 15.0, 1e4, 1e11];
+        for (name, mol, min_zero_frac) in [
+            ("alkane", alkane, 0.3),
+            ("cluster", water_cluster(3, 3, 3), 0.02),
+        ] {
+            let n = mol.atoms.len();
+            let table = BeckeTable::new(&mol);
+            let (mut s, mut d) = (table.grad_scratch(), table.grad_scratch());
+            let (mut out, mut reference) = (vec![[0.0; 3]; n], vec![[0.0; 3]; n]);
+            let (pts, _) = ferric_quadrature::lebedev::lebedev(14);
+            let (mut zero, mut cells, mut checked) = (0usize, 0usize, 0usize);
+            for (home, at) in mol.atoms.iter().enumerate() {
+                for (ir, &rr) in reach.iter().enumerate() {
+                    for (ip, p) in pts.iter().enumerate() {
+                        let q = [at.x + rr * p[0], at.y + rr * p[1], at.zpos + rr * p[2]];
+                        for h in [home, (home + 7 * ip + 3 * ir) % n] {
+                            table.home_weight_grad(q, h, &mut s, &mut out);
+                            table.home_weight_grad_unscreened(q, h, &mut d, &mut reference);
+                            for c in 0..n {
+                                for k in 0..3 {
+                                    assert_eq!(
+                                        out[c][k].to_bits(),
+                                        reference[c][k].to_bits(),
+                                        "{name}: home {h} at {q:?}, atom {c} axis {k}"
+                                    );
+                                }
+                            }
+                            checked += 1;
+                        }
+                        if rr < 1e3 {
+                            zero += s.p_cell.iter().filter(|&&p| p == 0.0).count();
+                            cells += n;
+                        }
+                        // The independent per-point function too, on a sample.
+                        if ip % 5 == 0 {
+                            let (_, dw) = becke_weights_and_grad(&mol, q);
+                            table.home_weight_grad(q, home, &mut s, &mut out);
+                            for c in 0..n {
+                                for k in 0..3 {
+                                    assert_eq!(out[c][k].to_bits(), dw[home][c][k].to_bits());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let frac = zero as f64 / cells as f64;
+            assert!(
+                frac > min_zero_frac,
+                "{name}: only {zero} of {cells} cells were exactly zero, the screen is not exercised"
+            );
+            assert!(checked > 1000);
+        }
+    }
+
+    /// Timing, not a check: `home_weight_grad` (screened) against
+    /// `home_weight_grad_unscreened` (the reference algorithm the screen
+    /// replaced) on every 4th point of the production KS grid of the 98-atom
+    /// alkane C32H66 and of a compact `(H2O)36` cluster (108 atoms), one thread,
+    /// best of three alternating passes, with the fraction of exactly-zero cells.
+    /// `cargo test -p ferric-dft --lib --release -- --ignored --nocapture
+    /// time_screened_home_weight_grad`.
+    #[test]
+    #[ignore = "timing harness, run by hand"]
+    fn time_screened_home_weight_grad() {
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/molecules");
+        let alkane = Molecule::load_xyz(root.join("alkane_32.xyz").to_str().unwrap()).unwrap();
+        for (name, mol) in [("C32H66", alkane), ("(H2O)36", water_cluster(4, 3, 3))] {
+            let n = mol.atoms.len();
+            let cfg = crate::grid::AtomicGridConfig::production();
+            let pts: Vec<_> = crate::grid::atomic_quadrature_points(&mol, &cfg)
+                .into_iter()
+                .step_by(4)
+                .collect();
+            let table = BeckeTable::new(&mol);
+            let mut s = table.grad_scratch();
+            let mut out = vec![[0.0; 3]; n];
+            let (mut zero, mut home_zero) = (0usize, 0usize);
+            for &(home, q, _) in &pts {
+                table.home_weight_grad(q, home, &mut s, &mut out);
+                zero += s.p_cell.iter().filter(|&&p| p == 0.0).count();
+                home_zero += usize::from(s.p_cell[home] == 0.0);
+            }
+            let (mut best_s, mut best_u) = (f64::INFINITY, f64::INFINITY);
+            let mut sink = 0.0;
+            for _ in 0..3 {
+                let t = std::time::Instant::now();
+                for &(home, q, _) in &pts {
+                    table.home_weight_grad(q, home, &mut s, &mut out);
+                    sink += out[home][0];
+                }
+                best_s = best_s.min(t.elapsed().as_secs_f64());
+                let t = std::time::Instant::now();
+                for &(home, q, _) in &pts {
+                    table.home_weight_grad_unscreened(q, home, &mut s, &mut out);
+                    sink += out[home][0];
+                }
+                best_u = best_u.min(t.elapsed().as_secs_f64());
+            }
+            println!(
+                "{name}: {n} atoms, {} points timed; zero cells {:.1}%, zero home cells {:.2}%; \
+                 unscreened {best_u:.2} s, screened {best_s:.2} s, x{:.2} ({sink:e})",
+                pts.len(),
+                100.0 * zero as f64 / (pts.len() * n) as f64,
+                100.0 * home_zero as f64 / pts.len() as f64,
+                best_u / best_s,
+            );
         }
     }
 }
