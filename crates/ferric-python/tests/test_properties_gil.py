@@ -211,12 +211,12 @@ def test_gil_is_released_during_the_call(tmp_path, water, slow_reference, prop):
 
 def test_basis_error_beats_points_error(results):
     """`esp_at_points` prepares the basis before checking `points`, as it did
-    before the GIL was released: an element the basis lacks is reported
+    before the GIL was released: an element the basis lacks (Rb in 6-31G) is reported
     (`BasisError`, a `RuntimeError` here) even when `points` is also bad."""
-    gold = ferric.Molecule.from_xyz_string("1\n\nAu 0 0 0\n", multiplicity=2)
+    rubidium = ferric.Molecule.from_xyz_string("1\n\nRb 0 0 0\n", multiplicity=2)
     with pytest.raises(ferric.BasisError) as info:
         ferric.esp_at_points(
-            gold,
+            rubidium,
             ferric.BasisSet.bundled("6-31g"),
             results["rhf"],
             np.zeros((2, 2)),
