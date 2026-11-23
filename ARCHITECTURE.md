@@ -575,10 +575,15 @@ Done:
       do not support `copy.deepcopy`, before and after (no `__reduce__`).
       `to_dict` should stop evaluating `e_xc` (drop it from the schema) and
       decide what to do with the list/dict fields: visible output changes
-      left for their own PR. The other `DensitySource` consumers (ESP,
-      CHELPG, RESP, Löwdin/Mulliken, `write_cube`) hold the GIL throughout;
-      they could release it using `DensitySource::shared` as
-      `hirshfeld_charges` does.
+      left for their own PR. Done since: ESP (`esp_at_atoms`,
+      `esp_at_points`, `esp_on_surface`), CHELPG, RESP, Löwdin, Mulliken
+      and `write_cube` prepare and compute with the GIL released
+      (`on_density_without_gil`, through `DensitySource::shared`), bitwise
+      unchanged (old-vs-new hex floats and file hashes over 12 cases, three
+      molecules x two bases x RHF/B3LYP: 108 outputs, 24 of them cube
+      files). Still holding it: `orbital_moments`,
+      `density_second_moment`, the `eval_*_on_points` functions and
+      `hirshfeld_polarizability`.
 
 Next, each as its own PR following the patterns above:
 
