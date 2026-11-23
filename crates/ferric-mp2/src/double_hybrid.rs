@@ -22,6 +22,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 
 /// Configuration for an MP2-based double hybrid.
@@ -153,6 +154,21 @@ impl std::fmt::Display for Mp2DoubleHybridResult {
     }
 }
 
+/// [`mp2_double_hybrid`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `ks` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn mp2_double_hybrid_on(
+    aux: &PreparedAux<'_>,
+    ks: &ScfResult,
+    cfg: &Mp2DoubleHybridConfig,
+) -> Result<Mp2DoubleHybridResult, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(ks)?;
+    mp2_double_hybrid(sys.mol(), sys.basis(), aux.basis(), ks, cfg)
+}
+
 /// Compute an MP2-based double-hybrid energy on a converged KS reference.
 pub fn mp2_double_hybrid(
     mol: &Molecule,
@@ -187,6 +203,19 @@ pub fn mp2_double_hybrid(
         c_os: cfg.c_os,
         c_ss: cfg.c_ss,
     })
+}
+
+/// [`u_mp2_double_hybrid`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `ks` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn u_mp2_double_hybrid_on(
+    aux: &PreparedAux<'_>,
+    ks: &ScfResult,
+    cfg: &Mp2DoubleHybridConfig,
+) -> Result<Mp2DoubleHybridResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(ks)?;
+    u_mp2_double_hybrid(sys.mol(), sys.basis(), aux.basis(), ks, cfg)
 }
 
 /// Compute an MP2-based double-hybrid energy on a converged UNRESTRICTED

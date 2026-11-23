@@ -284,6 +284,30 @@ impl std::fmt::Display for UGwResult {
     }
 }
 
+/// [`run_u_gw`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+pub fn run_u_gw_on(
+    aux: &PreparedAux<'_>,
+    scf: &ScfResult,
+    vxc_diag: Option<(&Array1<f64>, &Array1<f64>)>,
+    pdep_cfg: &PdepRpaConfig,
+    gw_cfg: &GwConfig,
+) -> Result<UGwResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    run_u_gw(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        scf,
+        pdep_cfg,
+        gw_cfg,
+        vxc_diag,
+    )
+}
+
 /// Top-level dispatch — spin-unrestricted. Accepts UHF, ROHF, UKS or ROKS reference.
 ///
 /// A ROHF/ROKS reference is first semi-canonicalized
@@ -337,9 +361,12 @@ pub fn run_u_gw(
         .clone()
         .unwrap_or_else(|| default_u_qp_range(mol, scf));
     let nmo = scf.eps_alpha.len();
-    if qp_range.end > nmo {
+    // The range indexes both spins: bound it by the smaller MO count.
+    let nmo_beta = scf.eps_beta.as_ref().map_or(nmo, Vec::len);
+    let nmo_both = nmo.min(nmo_beta);
+    if qp_range.end > nmo_both {
         return Err(FerricError::General(format!(
-            "run_u_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo})",
+            "run_u_gw: qp_mos upper bound {} exceeds the number of MOs ({nmo_both})",
             qp_range.end
         )));
     }
@@ -534,6 +561,8 @@ pub fn run_gw(
 
 /// [`run_gw`] on the system `aux` was prepared on; see [`PreparedAux`] for
 /// what such an entry point reads from the system.
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn run_gw_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -541,6 +570,11 @@ pub fn run_gw_on(
     pdep_cfg: &PdepRpaConfig,
     gw_cfg: &GwConfig,
 ) -> Result<GwResult, FerricError> {
+    aux.check_reference(rhf)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if rhf.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_gw_on", rhf)?;
+    }
     let sys = aux.system();
     run_gw(
         sys.mol(),

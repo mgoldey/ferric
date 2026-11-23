@@ -39,6 +39,7 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::PdepRpaConfig;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, Solve, UPLO};
@@ -266,6 +267,34 @@ fn warn_suspect_qp_in_diagonal(label: &str, suspect: &[usize], n_total: usize) {
          up to 3.8e-3 Ha), but the absolute QP energies of these MOs should not be quoted.",
         suspect.len(),
     );
+}
+
+/// [`run_bse_tda`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn run_bse_tda_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+) -> Result<BseResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(rhf)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if rhf.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_bse_tda_on", rhf)?;
+    }
+    run_bse_tda(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        pdep_cfg,
+        frozen_core,
+    )
 }
 
 /// Run a BSE-TDA singlet calculation on a closed-shell RHF reference.
@@ -1317,6 +1346,36 @@ pub struct RpaxStaticPolarizabilityResult {
     pub nvir: usize,
 }
 
+/// [`run_rpax_static_polarizability`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `ks` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn run_rpax_static_polarizability_on(
+    aux: &PreparedAux<'_>,
+    ks: &ScfResult,
+    pdep_cfg: &PdepRpaConfig,
+    frozen_core: usize,
+    scissor: f64,
+) -> Result<RpaxStaticPolarizabilityResult, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(ks)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if ks.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_rpax_static_polarizability_on", ks)?;
+    }
+    run_rpax_static_polarizability(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        ks,
+        pdep_cfg,
+        frozen_core,
+        scissor,
+    )
+}
+
 /// RPAx@KS **static** polarizability (ω=0 only) on a Kohn–Sham reference.
 ///
 /// Same screened-(A±B) kernel as [`run_bse_c6_ks`] (KS orbital energies on the
@@ -1930,5 +1989,51 @@ mod tests {
         let z = [1.5];
         let conv = [false];
         assert_eq!(flag_suspect_qp(&mos, &z, &conv), vec![3]);
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let aux = small
+            .prepare_aux(&basis::bundled("cc-pvdz-ri").unwrap())
+            .unwrap();
+        let pdep = ferric_rpa::PdepRpaConfig::default();
+        assert_reference_refused("run_bse_tda_on", run_bse_tda_on(&aux, &rhf_large, &pdep, 0));
+        assert_reference_refused(
+            "run_gw_on",
+            crate::run_gw_on(&aux, &rhf_large, None, &pdep, &crate::GwConfig::default()),
+        );
+        assert_reference_refused(
+            "run_rpax_static_polarizability_on",
+            run_rpax_static_polarizability_on(&aux, &rhf_large, &pdep, 0, 0.0),
+        );
     }
 }

@@ -35,6 +35,7 @@ use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config, RpaIntermediates};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
@@ -70,6 +71,15 @@ pub fn exact_drpa_config(frozen_core: usize, memory_budget_bytes: Option<usize>)
         need_eigenvalues_freq: false,
         ..Default::default()
     }
+}
+
+/// [`aux_route_charge_bytes`] on the system `aux` was prepared on (see [`PreparedAux`]).
+pub fn aux_route_charge_bytes_on(
+    aux: &PreparedAux<'_>,
+    config: &PdepRpaConfig,
+) -> Result<usize, FerricError> {
+    let sys = aux.system();
+    aux_route_charge_bytes(sys.mol(), sys.basis(), aux.basis(), config)
 }
 
 /// The bytes [`run_pdep_rpa_energy`]'s preflight charges on the aux-basis
@@ -127,6 +137,24 @@ fn static_route_required(config: &PdepRpaConfig, n_atoms: usize) -> Option<&'sta
     } else {
         None
     }
+}
+
+/// [`run_pdep_rpa_energy`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
+pub fn run_pdep_rpa_energy_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &PdepRpaConfig,
+) -> Result<PdepRpaResult, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("run_pdep_rpa_energy_on", rhf)?;
+    run_pdep_rpa_energy(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, config)
 }
 
 /// Energy-only closed-shell PDEP-RPA: [`crate::run_pdep_rpa`]'s energy, by the
@@ -238,4 +266,74 @@ fn aux_basis_log_det_energy(
 /// One stderr line when an energy-only call keeps the static route.
 fn note_static_route(reason: &str) {
     eprintln!("[ferric] RPA energy route: static eigenbasis ({reason})");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(basis_name: &str) -> (ferric_scf::PreparedSystem, ScfResult) {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let aux = small
+            .prepare_aux(&ferric_core::basis::bundled("cc-pvdz-ri").unwrap())
+            .unwrap();
+        let cfg = PdepRpaConfig::default();
+        assert_reference_refused(
+            "run_pdep_rpa_energy_on",
+            run_pdep_rpa_energy_on(&aux, &rhf_large, &cfg),
+        );
+        assert_reference_refused(
+            "run_pdep_rpa_on",
+            crate::run_pdep_rpa_on(&aux, &rhf_large, &cfg),
+        );
+        assert_reference_refused(
+            "run_pdep_rpa_fitted_on",
+            crate::run_pdep_rpa_fitted_on(
+                &aux,
+                &rhf_large,
+                &cfg,
+                &ferric_mp2::omega_ri::RiFit::Coulomb,
+            ),
+        );
+        assert_reference_refused(
+            "rpa_analytic_gradient_on",
+            crate::gradient_analytic::rpa_analytic_gradient_on(
+                &aux,
+                &rhf_large,
+                &cfg,
+                crate::gradient_analytic::RingOrder::Full,
+            ),
+        );
+        assert_reference_refused(
+            "rs_mp2_lr_rpa_on",
+            crate::rs_mp2_rpa::rs_mp2_lr_rpa_on(&aux, &rhf_large, &Default::default()),
+        );
+    }
 }

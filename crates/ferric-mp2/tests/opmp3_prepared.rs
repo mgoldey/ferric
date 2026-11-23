@@ -3,9 +3,7 @@
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, opmp3_scf, Opmp3Config, Opmp3Integrals, Opmp3RefKind,
-};
+use ferric_mp2::opmp3_driver::{opmp3_on, opmp3_scf, Opmp3Config, Opmp3Integrals, Opmp3RefKind};
 use ferric_scf::screening::ScreeningKind;
 use ferric_scf::{EcpMolecule, PrepareOptions, PreparedSystem};
 
@@ -40,11 +38,11 @@ fn opmp3_on_reference_refuses_an_aux_of_another_system() {
     let scf = opmp3_scf(&a, &config).unwrap();
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let b_aux = b.prepare_aux(&aux_bs).unwrap();
-    let err = opmp3_on_reference(&a, &scf, Opmp3Integrals::Ri(&b_aux), &config)
+    let err = opmp3_on(&a, &scf, Opmp3Integrals::Ri(&b_aux), &config)
         .map(|_| ())
         .unwrap_err();
     assert!(err.to_string().contains("not prepared on"), "{err}");
     // The same aux prepared on `a` runs.
     let a_aux = a.prepare_aux(&aux_bs).unwrap();
-    opmp3_on_reference(&a, &scf, Opmp3Integrals::Ri(&a_aux), &config).unwrap();
+    opmp3_on(&a, &scf, Opmp3Integrals::Ri(&a_aux), &config).unwrap();
 }

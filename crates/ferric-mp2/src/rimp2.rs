@@ -1028,6 +1028,30 @@ pub fn ri_mp2_spin_components(
     ri_mp2_spin_components_fitted(mol, obs, dfbs, op, rhf, config, &RiFit::Coulomb)
 }
 
+/// [`ri_mp2_spin_components_fitted`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn ri_mp2_spin_components_fitted_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+    fit: &RiFit,
+) -> Result<(SpinComponents, Array2<f64>), FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    ri_mp2_spin_components_fitted(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        config,
+        fit,
+    )
+}
+
 /// [`ri_mp2_spin_components`] with an explicit fitting metric.
 ///
 /// `RiFit::Coulomb` is byte-identical to [`ri_mp2_spin_components`].
@@ -1580,6 +1604,24 @@ pub fn spin_components_from_signed_b_ov(
     )
 }
 
+/// [`ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn ri_mp2_with_op_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    rhf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<RiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    ri_mp2(sys.mol(), sys.basis(), aux.basis(), op, rhf, config)
+}
+
 /// Compute the RI-MP2 correlation energy.
 ///
 /// Requires converged RHF orbitals, an orbital basis (`obs`), and a density-fitting
@@ -1628,12 +1670,15 @@ pub fn ri_mp2_on(
 
 /// [`ri_mp2_fitted`] on the system `aux` was prepared on; see [`PreparedAux`] for
 /// what such an entry point reads from the system.
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
 pub fn ri_mp2_fitted_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
     fit: &RiFit,
     config: &RiMp2Config,
 ) -> Result<RiMp2Result, FerricError> {
+    aux.check_restricted_reference(rhf)?;
     let sys = aux.system();
     ri_mp2_fitted(
         sys.mol(),
@@ -3529,5 +3574,98 @@ mod tests {
                  contamination, not RI noise)"
             );
         }
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    /// The `*_on` entries check the reference against `aux`'s system: a
+    /// 6-31G result on an STO-3G system (and the reverse) is an error, where
+    /// the loose kernel, handed the same pair, panics slicing the MOs.
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, rhf_small) = reference_check_water("sto-3g");
+        let (large, rhf_large) = reference_check_water("6-31g");
+        let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
+        let aux_small = small.prepare_aux(&aux_bs).unwrap();
+        let aux_large = large.prepare_aux(&aux_bs).unwrap();
+        let cfg = RiMp2Config::default();
+        assert_reference_refused("ri_mp2_on", ri_mp2_on(&aux_small, &rhf_large, &cfg));
+        assert_reference_refused("ri_mp2_on", ri_mp2_on(&aux_large, &rhf_small, &cfg));
+        assert_reference_refused(
+            "u_ri_mp2_on",
+            crate::u_rimp2::u_ri_mp2_on(&aux_small, &rhf_large, &cfg),
+        );
+        assert_reference_refused(
+            "mp3_energy_on",
+            crate::mp3::mp3_energy_on(&aux_small, &rhf_large, 0, None),
+        );
+        assert_reference_refused(
+            "scs_mp2_on",
+            crate::scs::scs_mp2_on(&aux_small, &rhf_large, &Default::default()),
+        );
+        assert_reference_refused(
+            "laplace_ri_mp2_on",
+            crate::laplace::laplace_ri_mp2_on(&aux_small, &rhf_large, 7, 0, None),
+        );
+        assert_reference_refused(
+            "rimp2_gradient_analytical_on",
+            crate::gradient::rimp2_gradient_analytical_on(&aux_small, &rhf_large, &cfg, None),
+        );
+        // The OO-RI-MP2 gradient checks the optimised orbitals it is given.
+        let oo_large = crate::oo_rimp2::oo_ri_mp2_on(
+            &aux_large,
+            &rhf_large,
+            &crate::oo_rimp2::OoRiMp2Config::default(),
+            None,
+        )
+        .unwrap();
+        let msg = crate::oo_rimp2_gradient::oo_ri_mp2_gradient_on(&aux_small, &oo_large, 0, None)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("the orbitals do not belong to this system") && msg.contains("13 AO rows"),
+            "oo_ri_mp2_gradient_on: {msg}"
+        );
+        // What the check replaces: the loose kernel on the same pair panics.
+        let loose = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            ri_mp2(
+                small.mol(),
+                small.basis(),
+                aux_small.basis(),
+                small.op(),
+                &rhf_large,
+                &cfg,
+            )
+        }));
+        assert!(loose.is_err(), "the loose kernel did not panic");
+        // The system's own reference still runs.
+        let own = ri_mp2_on(&aux_small, &rhf_small, &cfg).unwrap();
+        assert!(own.mp2_corr < 0.0);
     }
 }

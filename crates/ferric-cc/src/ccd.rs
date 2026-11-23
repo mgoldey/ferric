@@ -7,6 +7,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
@@ -14,6 +15,21 @@ use ndarray::{ArrayD, IxDyn};
 // Permutation antisymmetrizers P(ij)/P(ab)/P(ij)P(ab) on the i,j,a,b axes are
 // shared with the CCSD residual builder — see `helpers.rs`.
 use super::helpers::{p_ab, p_ij, p_ij_ab};
+
+/// [`ccd`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn ccd_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &CcConfig,
+) -> Result<CcResult, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    ccd(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, cfg)
+}
 
 /// Compute the CCD correlation energy.
 ///
@@ -776,6 +792,56 @@ mod tests {
             (r.correlation_energy - (-0.07904596471422148)).abs() < 1e-4,
             "got {:.8}",
             r.correlation_energy
+        );
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let aux = small
+            .prepare_aux(&basis::bundled("cc-pvdz-ri").unwrap())
+            .unwrap();
+        let cfg = CcConfig::default();
+        assert_reference_refused("ccd_on", ccd_on(&aux, &rhf_large, &cfg));
+        assert_reference_refused(
+            "linlccd_on",
+            crate::linlccd::linlccd_on(&aux, &rhf_large, &cfg, crate::linlccd::LadderVariant::Hh),
+        );
+        assert_reference_refused(
+            "ccsd_closed_shell_on",
+            crate::ccsd_closed_shell::ccsd_closed_shell_on(&aux, &rhf_large, &cfg),
+        );
+        assert_reference_refused(
+            "u_ccsd_on",
+            crate::u_ccsd::u_ccsd_on(&aux, &rhf_large, &cfg),
         );
     }
 }
