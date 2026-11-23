@@ -671,6 +671,14 @@ pub fn override_dfk_metric_for_test(setting: DfkMetricSetting) -> DfkMetricOverr
     DfkMetricOverrideGuard(DFK_METRIC_OVERRIDE.with(|c| c.replace(Some(setting))))
 }
 
+/// Run `f` with every DfK built on THIS thread on `setting`, whatever
+/// `FERRIC_DFK_METRIC` says (the guess's free-atom solves, see
+/// `crate::guess`).
+pub(crate) fn with_dfk_metric<R>(setting: DfkMetricSetting, f: impl FnOnce() -> R) -> R {
+    let _guard = DfkMetricOverrideGuard(DFK_METRIC_OVERRIDE.with(|c| c.replace(Some(setting))));
+    f()
+}
+
 fn effective_metric_setting() -> Result<DfkMetricSetting, FerricError> {
     match DFK_METRIC_OVERRIDE.with(|c| c.get()) {
         Some(s) => Ok(s),

@@ -80,42 +80,7 @@ fn coords(tag: &str) -> CoordSystem {
     }
 }
 
-/// Serialises the SCFs of this file against the environment change of
-/// [`simple_hessian_and_fixed_trust_reproduce_the_recorded_trajectories`].
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Sets an environment variable until dropped (also on a panic), restoring
-/// its previous value.
-struct EnvVar(&'static str, Option<std::ffi::OsString>);
-
-impl EnvVar {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prev = std::env::var_os(key);
-        std::env::set_var(key, value);
-        EnvVar(key, prev)
-    }
-}
-
-impl Drop for EnvVar {
-    fn drop(&mut self) {
-        match self.1.take() {
-            Some(v) => std::env::set_var(self.0, v),
-            None => std::env::remove_var(self.0),
-        }
-    }
-}
-
 fn run(mol: &Molecule, cfg: &OptimizeConfig) -> OptimizeResult {
-    let _lock = env_lock();
-    run_unlocked(mol, cfg)
-}
-
-/// [`run`] for a caller that already holds [`ENV_LOCK`].
-fn run_unlocked(mol: &Molecule, cfg: &OptimizeConfig) -> OptimizeResult {
     let ctx = ParallelContext::default();
     optimize_geometry(&ctx, mol, "sto-3g", Operator::coulomb(), &rhf_cfg(), cfg).unwrap()
 }
@@ -279,18 +244,9 @@ const TRACE_BAND: f64 = 1e-12;
 
 #[test]
 fn simple_hessian_and_fixed_trust_reproduce_the_recorded_trajectories() {
-    // The trajectories were captured with DF-K dressed by the metric's `eigh`
-    // (the only route before the certified Cholesky one). Cholesky moves the
-    // SCF energies by ~1e-12 Ha, the size of this band, so the anchor pins the
-    // route it was captured on; the Cholesky route has its own tests in `df_k`.
-    // An environment variable, not the thread-local test hook: the DF-K is
-    // built on a worker thread. Held under `ENV_LOCK`, which every SCF in this
-    // file takes, so no other test reads the environment meanwhile.
-    let _lock = env_lock();
-    let _route = EnvVar::set("FERRIC_DFK_METRIC", "eigh");
     let bitwise = std::env::var("FERRIC_BITWISE_ANCHOR").is_ok_and(|v| v == "1");
     for &(tag, ctag, steps, trace) in RECORDED {
-        let r = run_unlocked(
+        let r = run(
             &molecule(tag),
             &cfg(coords(ctag), InitialHessian::Simple, TrustUpdate::Fixed),
         );
