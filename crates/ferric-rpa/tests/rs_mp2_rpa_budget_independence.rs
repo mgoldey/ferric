@@ -8,7 +8,8 @@
 //! narrow the eigensolve panel; each only regroups sums, so every energy must
 //! agree with the ample run to reassociation noise. The bar, 1e-10 Ha, is
 //! well above the reassociation differences measured here (water dimer /
-//! aug-cc-pVDZ, printed by the test) and three orders below the 2.2e-7 Ha a
+//! aug-cc-pVDZ, at most 2e-15 Ha; printed by the test) and three orders
+//! below the 2.2e-7 Ha a
 //! reported budget-dependent run moved by.
 //!
 //! That report was not a correlation-side effect: the CLI's reference SCF
