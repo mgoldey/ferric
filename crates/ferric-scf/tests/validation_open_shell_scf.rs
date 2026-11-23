@@ -207,27 +207,22 @@ fn s_squared(res: &ScfResult, s: &Array2<f64>, na: usize, nb: usize) -> f64 {
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 fn rohf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
         // ferric's ROHF deliberately skips the stability check (the Roothaan
         // Hessian is a third operator). The REFERENCE is ROHF-stable, so a
         // ferric ROHF saddle shows up as an energy miss instead.
-        check_stability: false,
-        ..Default::default()
-    }
+        .with_check_stability(false)
 }
 
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {

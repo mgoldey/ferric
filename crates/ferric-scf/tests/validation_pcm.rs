@@ -432,13 +432,12 @@ fn load(system: &str, basis_name: &str) -> Loaded {
 }
 
 fn scf_config(pcm: Option<PcmConfig>) -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        pcm,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
+    c.pcm = pcm;
+    c
 }
 
 fn run(l: &Loaded, pcm: Option<PcmConfig>, ctx: &str) -> f64 {

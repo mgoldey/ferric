@@ -397,23 +397,22 @@ fn ferric_population(s: &System, w: &Array2<f64>, ca: &Array2<f64>, cb: &Array2<
 
 /// Constrained pure-UHF config for this row. Exact J/K, 99×302 W grid.
 fn cdft_cfg(s: &System, descent: bool) -> RhfConfig {
-    RhfConfig {
-        constraints: vec![Constraint {
-            fragment: s.fragment.clone(),
-            target: s.target,
-            spin: SpinChannel::Total,
-        }],
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        level_shift: LEVEL_SHIFT,
-        cdft_lambda_tol: CDFT_LAMBDA_TOL,
-        cdft_max_outer: CDFT_MAX_OUTER,
-        cdft_stability_descent: descent,
-        use_sad_guess: false,
-        dft_grid: Some(grid_cfg()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_level_shift(LEVEL_SHIFT)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(grid_cfg());
+    c.constraints = vec![Constraint {
+        fragment: s.fragment.clone(),
+        target: s.target,
+        spin: SpinChannel::Total,
+    }];
+    c.cdft_lambda_tol = CDFT_LAMBDA_TOL;
+    c.cdft_max_outer = CDFT_MAX_OUTER;
+    c.cdft_stability_descent = descent;
+    c
 }
 
 /// How a seeded solve starts.
@@ -827,10 +826,7 @@ fn unseeded_hene_paths_land_on_nwchem_states() {
             .unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
         assert_on_state(&s, &ctx, &r, expect, &pred);
     }
-    let cfg = RhfConfig {
-        use_sad_guess: true,
-        ..cdft_cfg(&s, true)
-    };
+    let cfg = cdft_cfg(&s, true).with_guess(ferric_scf::options::Guess::Sad);
     match solve_cdft_uhf(&s.ctx, &s.mol, &s.prep, &s.bs, &s.bounds, &cfg) {
         Ok(r) => eprintln!(
             "{} unseeded (MINAO, descent ON) [MEASURE]: E {:.10} λ {:+.8} vs low {:+.3e} Ha, \
@@ -861,10 +857,8 @@ fn unseeded_lih_cation_paths_land_on_low() {
         .collect();
     for (label, sad) in [("hcore, descent ON", false), ("MINAO, descent ON", true)] {
         let ctx = format!("{} unseeded ({label})", s.tag);
-        let cfg = RhfConfig {
-            use_sad_guess: sad,
-            ..cdft_cfg(&s, true)
-        };
+        let mut cfg = cdft_cfg(&s, true);
+        cfg.use_sad_guess = sad;
         let r = solve_cdft_uhf(&s.ctx, &s.mol, &s.prep, &s.bs, &s.bounds, &cfg)
             .unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
         assert_on_state(&s, &ctx, &r, "low", &pred);

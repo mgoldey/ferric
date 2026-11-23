@@ -59,10 +59,7 @@ fn python_route_equals_the_cli_optimize_gradient_bit_for_bit() {
     // The binding: its own system and RHF at density_conv 1e-9, then `_on`.
     let sys = PreparedSystem::new(mol.clone(), &obs_bs).unwrap();
     let aux = sys.prepare_aux(&aux_bs).unwrap();
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default().with_density_conv(1e-9);
     let rhf = sys.solve_rhf(&rhf_cfg).unwrap();
     assert!(rhf.converged);
     let r = rpa_analytic_gradient_on(&aux, &rhf, &cfg, RingOrder::Full).unwrap();

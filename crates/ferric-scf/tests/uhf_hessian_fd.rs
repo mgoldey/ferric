@@ -180,23 +180,17 @@ fn water() -> Molecule {
 
 /// Exact J/K, tight convergence. (UHF with RI-J/RI-K is in df_hessian_uhf.rs.)
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 300,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(300)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 /// The reference SCF: stability-checked and descended to a stable state.
 fn reference_config() -> RhfConfig {
-    RhfConfig {
-        check_stability: true,
-        scf_stability_descent: true,
-        ..scf_config()
-    }
+    scf_config().with_stability(ferric_scf::options::Stability::Descend)
 }
 
 struct Setup {
@@ -645,10 +639,7 @@ fn wrong_references_and_unsupported_configurations_are_refused() {
     // Best effort: the refusal is on the spin kind, whatever the ROHF exit.
     let rohf = solve_rohf_best_effort(&ctx, &s.mol, &s.prep, op, &s.bounds, &cfg).unwrap();
     refused_uhf(&rohf, &cfg, "ROHF result");
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..scf_config()
-    };
+    let ks = scf_config().with_xc("PBE");
     refused_uhf(&s.uhf, &ks, "UKS config");
     let mut unconverged = s.uhf.clone();
     unconverged.converged = false;
@@ -666,10 +657,7 @@ fn wrong_references_and_unsupported_configurations_are_refused() {
     // MOM is refused BEFORE the SCF (the probe), so `Auto` falls back to
     // finite differences rather than failing the post-SCF occupation check.
     // Same triplet and config the probe accepted just above, plus MOM.
-    let mom = RhfConfig {
-        mom_after_iter: 5,
-        ..scf_config()
-    };
+    let mom = scf_config().with_mom_after_iter(5);
     assert!(
         analytic_uhf_hessian_available(&s.mol, &s.prep, op, &mom).is_err(),
         "the UHF probe must refuse a MOM configuration"

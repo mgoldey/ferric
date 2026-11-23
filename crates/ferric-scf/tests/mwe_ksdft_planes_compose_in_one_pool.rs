@@ -60,12 +60,10 @@ fn try_ksdft(basis: &str) -> Result<f64, String> {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        xc: Some("PBE".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit");
     solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg)
         .map(|r| r.energy)
         .map_err(|e| e.to_string())

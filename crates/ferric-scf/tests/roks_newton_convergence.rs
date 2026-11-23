@@ -92,15 +92,13 @@ fn run_tol(
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
     let aux = fitted.then(|| "def2-universal-jkfit".to_string());
-    let mut cfg = RohfConfig {
-        xc: Some(xc.into()),
-        energy_conv,
-        density_conv,
-        max_iter: 200,
-        df_j_aux: aux.clone(),
-        df_k_aux: aux,
-        ..Default::default()
-    };
+    let mut cfg = RohfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(energy_conv)
+        .with_density_conv(density_conv)
+        .with_max_iter(200);
+    cfg.df_j_aux = aux.clone();
+    cfg.df_k_aux = aux;
     match mode {
         Mode::Diis => {}
         Mode::Newton => cfg.newton_trigger = 1e-2,

@@ -323,34 +323,31 @@ fn stability<'a>(res: &'a ScfResult, ctx: &str) -> &'a StabilityResult {
 }
 
 fn hf_config(descent: bool) -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-11,
+    let mut c = RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
         // Tighter than the UHF/ROHF row (1e-9): the eigenvalues are FIRST
         // order in the density error, and this row asserts them at 1e-8.
-        density_conv: 1e-10,
-        check_stability: true,
-        scf_stability_descent: descent,
-        ..Default::default()
-    }
+        .with_density_conv(1e-10)
+        .with_check_stability(true);
+    c.scf_stability_descent = descent;
+    c
 }
 
 fn uks_pbe_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".to_string()),
-        // EXACT J, as the generator's dft.UKS without density_fit.
-        df_j_aux: None,
-        df_k_aux: None,
-        max_iter: 500,
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        check_stability: true,
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        .with_max_iter(500)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
         // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py:
         // prune=None), not the pruned KS default AtomicGridConfig::production().
-        dft_grid: Some(AtomicGridConfig::default()),
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+        .with_dft_grid(AtomicGridConfig::default());
+    // EXACT J, as the generator's dft.UKS without density_fit.
+    c.df_j_aux = None;
+    c.df_k_aux = None;
+    c
 }
 
 // ---------------------------------------------------------------------------

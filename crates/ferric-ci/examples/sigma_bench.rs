@@ -58,11 +58,9 @@ fn main() {
         &prep,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-9),
     )
     .expect("rhf");
     let start = (14 - n_el) / 2;

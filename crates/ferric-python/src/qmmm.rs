@@ -630,17 +630,15 @@ pub(crate) fn run_qmmm(
             .polarizable_embedding(thole_a, ids.as_deref())
             .map_err(make_err)?
     };
-    let mut config = RhfConfig {
-        max_iter: max_iter.unwrap_or_else(default_scf_max_iter),
-        energy_conv: energy_conv.unwrap_or(1e-3),
-        density_conv: density_conv.unwrap_or(1e-6),
-        level_shift: level_shift.unwrap_or(0.0),
-        mom_after_iter: mom_after_iter.unwrap_or(0),
-        use_sad_guess: parse_guess(guess)?,
-        external_potential: mm_sys.to_external_potential(),
-        polarizable,
-        ..Default::default()
-    };
+    let mut config = RhfConfig::default()
+        .with_max_iter(max_iter.unwrap_or_else(default_scf_max_iter))
+        .with_energy_conv(energy_conv.unwrap_or(1e-3))
+        .with_density_conv(density_conv.unwrap_or(1e-6))
+        .with_level_shift(level_shift.unwrap_or(0.0))
+        .with_mom_after_iter(mom_after_iter.unwrap_or(0))
+        .with_external_potential(mm_sys.to_external_potential());
+    config.use_sad_guess = parse_guess(guess)?;
+    config.polarizable = polarizable;
     if is_ks {
         config.xc = xc.map(|s| s.to_string());
         // RI-J always on for KS-DFT (matches run_ksdft's density_fit

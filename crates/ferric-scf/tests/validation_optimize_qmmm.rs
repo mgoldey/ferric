@@ -553,17 +553,15 @@ fn build_system(case: &Case, atoms: &[QmmmAtom]) -> QmmmSystem {
 
 /// `cfg.scf` handed to `optimize_qmmm` (and reproduced by [`evaluate`]).
 fn base_scf() -> RhfConfig {
-    RhfConfig {
+    RhfConfig::default()
         // The FD checks difference single-point KS energies over 5e-5 Bohr.
         // The f32 RI-J default moves each energy by ~1e-7 Ha, which misses
         // the analytic gradient by 1e-4..1e-3 Ha/Bohr. The relaxations are
         // geometry tasks and resolve to f64 without the pin.
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    }
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(300)
 }
 
 fn coords_of(atoms: &[QmmmAtom]) -> Array2<f64> {

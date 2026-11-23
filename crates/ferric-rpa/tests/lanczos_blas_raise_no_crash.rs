@@ -43,10 +43,7 @@ fn h2o_atz_rpa(blas_threads: &str) -> f64 {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            max_iter: 100,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_max_iter(100),
     )
     .unwrap();
     assert!(rhf.converged, "H2O/aug-cc-pVTZ RHF must converge");

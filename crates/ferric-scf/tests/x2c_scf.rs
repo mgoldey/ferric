@@ -61,19 +61,17 @@ fn mol(xyz_angstrom: &str, charge: i32, mult: usize) -> Molecule {
 const HBR: &str = "H 0 0 0\nBr 0 0 1.414";
 
 fn tight(xc: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        energy_conv: ENERGY_CONV,
-        density_conv: 1e-8,
-        xc: xc.map(str::to_string),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(1e-8);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 fn x2c(cfg: &RhfConfig) -> RhfConfig {
-    RhfConfig {
-        relativistic: Some(Relativistic::X2c1e),
-        ..cfg.clone()
-    }
+    let mut c = cfg.clone();
+    c.relativistic = Some(Relativistic::X2c1e);
+    c
 }
 
 struct Sys {
@@ -376,10 +374,7 @@ fn gradients_hessians_and_geometry_tasks_refuse_x2c() {
 fn injected_solves_ecp_atoms_and_unknown_spellings_are_refused() {
     // An injected solve takes the hcore guess (the SAD guess is refused
     // there for its own reason), so the base config is one it accepts.
-    let base = RhfConfig {
-        use_sad_guess: false,
-        ..Default::default()
-    };
+    let base = RhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
     ferric_scf::rhf::validate_injected(&base).unwrap();
     let rel = x2c(&base);
     let e = ferric_scf::rhf::validate_injected(&rel).unwrap_err();

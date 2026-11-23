@@ -1786,4 +1786,214 @@ mod tests {
             relativistic: _,              // lowered
         } = RhfConfig::default();
     }
+
+    /// The struct-update literals of the Python bindings that roadmap item
+    /// 11(a) moved onto `ScfOptions` (the `old_*` closures are those
+    /// literals verbatim with their inputs parsed; the `new` sides mirror the
+    /// bindings): `rhf_config_budgeted`, `run_saddle` / `run_irc` /
+    /// `run_frequencies` (xc + MM field), `run_optimize` (MM field + PCM) and
+    /// `run_cdft`.
+    #[test]
+    fn python_struct_update_sites_lower_through_options() {
+        let same = |old: &RhfConfig, new: RhfConfig| {
+            assert_eq!(format!("{old:?}"), format!("{new:?}"));
+        };
+        let lower = |o: ScfOptions| o.into_rhf_config(crate::df_j::RiJTask::Energy).unwrap();
+        let ext = all_knobs().external_potential;
+
+        // rhf_config_budgeted
+        for (k_builder, budget) in [(None, None), (Some(KBuilderKind::Link), Some(1usize << 30))] {
+            let old = RhfConfig {
+                k_builder,
+                three_index_budget_bytes: budget.unwrap_or(0),
+                ..Default::default()
+            };
+            same(
+                &old,
+                lower(ScfOptions {
+                    k_builder,
+                    three_index_budget_bytes: budget,
+                    ..Default::default()
+                }),
+            );
+        }
+
+        for (xc, ext, pcm) in [
+            (None, None, None),
+            (
+                Some("B3LYP"),
+                ext.clone(),
+                Some(ferric_pcm::PcmConfig::default()),
+            ),
+        ] {
+            // run_saddle / run_irc / run_frequencies
+            let old = RhfConfig {
+                xc: xc.map(|s| s.to_string()),
+                external_potential: ext.clone(),
+                ..Default::default()
+            };
+            same(
+                &old,
+                lower(ScfOptions {
+                    xc: xc.map(|s| s.to_string()),
+                    external_potential: ext.clone(),
+                    ..Default::default()
+                }),
+            );
+            // run_optimize
+            let old = RhfConfig {
+                external_potential: ext.clone(),
+                pcm: pcm.clone(),
+                ..Default::default()
+            };
+            same(
+                &old,
+                lower(ScfOptions {
+                    external_potential: ext.clone(),
+                    pcm: pcm.clone(),
+                    ..Default::default()
+                }),
+            );
+        }
+
+        // run_cdft: every kwarg unset, then every kwarg set (an off spelling
+        // for one auxiliary basis, a meta-GGA-relevant explicit level shift).
+        struct Cdft {
+            xc: Option<String>,
+            dft_grid: Option<AtomicGridConfig>,
+            max_iter: Option<usize>,
+            energy_conv: Option<f64>,
+            density_conv: Option<f64>,
+            diis_size: Option<usize>,
+            integral_thresh: Option<f64>,
+            k_builder: Option<KBuilderKind>,
+            df_j_aux: Option<&'static str>,
+            df_k_aux: Option<&'static str>,
+            ri_j_precision: Option<RiJPrecision>,
+            ri_k_precision: Option<RiKPrecision>,
+            level_shift: Option<f64>,
+            mom_after_iter: Option<usize>,
+            external_potential: Option<ExternalPotential>,
+            budget_bytes: Option<usize>,
+            use_sad_guess: bool,
+            constraints: Vec<ferric_dft::cdft::Constraint>,
+            lambda_tol: f64,
+            max_outer: usize,
+            stability_descent: Option<bool>,
+        }
+        let unset = Cdft {
+            xc: None,
+            dft_grid: None,
+            max_iter: None,
+            energy_conv: None,
+            density_conv: None,
+            diis_size: None,
+            integral_thresh: None,
+            k_builder: None,
+            df_j_aux: None,
+            df_k_aux: None,
+            ri_j_precision: None,
+            ri_k_precision: None,
+            level_shift: None,
+            mom_after_iter: None,
+            external_potential: None,
+            budget_bytes: None,
+            use_sad_guess: true,
+            constraints: Vec::new(),
+            lambda_tol: 1e-5,
+            max_outer: 30,
+            stability_descent: None,
+        };
+        let set = Cdft {
+            xc: Some("TPSS".to_string()),
+            dft_grid: Some(AtomicGridConfig {
+                n_radial: 75,
+                n_angular: 302,
+                ..Default::default()
+            }),
+            max_iter: Some(77),
+            energy_conv: Some(1e-7),
+            density_conv: Some(3e-9),
+            diis_size: Some(5),
+            integral_thresh: Some(1e-11),
+            k_builder: Some(KBuilderKind::Cosx),
+            df_j_aux: Some(" def2-universal-jkfit "),
+            df_k_aux: Some("OFF"),
+            ri_j_precision: Some(RiJPrecision::F64),
+            ri_k_precision: Some(RiKPrecision::F32),
+            level_shift: Some(0.1),
+            mom_after_iter: Some(4),
+            external_potential: ext,
+            budget_bytes: Some(1 << 30),
+            use_sad_guess: false,
+            constraints: vec![ferric_dft::cdft::Constraint {
+                fragment: vec![0],
+                spin: ferric_dft::cdft::SpinChannel::Total,
+                target: 2.0,
+            }],
+            lambda_tol: 1e-7,
+            max_outer: 12,
+            stability_descent: Some(false),
+        };
+        for c in [unset, set] {
+            let defaults = RhfConfig::default();
+            let old = RhfConfig {
+                constraints: c.constraints.clone(),
+                cdft_lambda_tol: c.lambda_tol,
+                cdft_max_outer: c.max_outer,
+                cdft_stability_descent: c
+                    .stability_descent
+                    .unwrap_or(defaults.cdft_stability_descent),
+                xc: c.xc.clone(),
+                dft_grid: c.dft_grid.clone(),
+                max_iter: c.max_iter.unwrap_or(defaults.max_iter),
+                energy_conv: c.energy_conv.unwrap_or(defaults.energy_conv),
+                density_conv: c.density_conv.unwrap_or(defaults.density_conv),
+                diis_size: c.diis_size.unwrap_or(defaults.diis_size),
+                integral_thresh: c.integral_thresh.unwrap_or(defaults.integral_thresh),
+                k_builder: c.k_builder,
+                df_j_aux: c.df_j_aux.map(crate::rhf::normalize_df_aux),
+                df_k_aux: c.df_k_aux.map(crate::rhf::normalize_df_aux),
+                ri_j_precision: c.ri_j_precision,
+                ri_k_precision: c.ri_k_precision,
+                level_shift: c.level_shift.unwrap_or(defaults.level_shift),
+                mom_after_iter: c.mom_after_iter.unwrap_or(defaults.mom_after_iter),
+                external_potential: c.external_potential.clone(),
+                three_index_budget_bytes: c.budget_bytes.unwrap_or(0),
+                use_sad_guess: c.use_sad_guess,
+                ..RhfConfig::default()
+            };
+            let mut new = lower(ScfOptions {
+                xc: c.xc,
+                dft_grid: c.dft_grid,
+                max_iter: c.max_iter,
+                energy_conv: c.energy_conv,
+                density_conv: c.density_conv,
+                diis_size: c.diis_size,
+                integral_thresh: c.integral_thresh,
+                k_builder: c.k_builder,
+                df_j_aux: c.df_j_aux.map(AuxBasis::parse),
+                df_k_aux: c.df_k_aux.map(AuxBasis::parse),
+                ri_j_precision: c.ri_j_precision,
+                ri_k_precision: c.ri_k_precision,
+                mom_after_iter: c.mom_after_iter,
+                external_potential: c.external_potential,
+                three_index_budget_bytes: c.budget_bytes,
+                guess: Some(if c.use_sad_guess {
+                    Guess::Sad
+                } else {
+                    Guess::Core
+                }),
+                ..Default::default()
+            });
+            new.level_shift = c.level_shift.unwrap_or(defaults.level_shift);
+            new.constraints = c.constraints;
+            new.cdft_lambda_tol = c.lambda_tol;
+            new.cdft_max_outer = c.max_outer;
+            new.cdft_stability_descent = c
+                .stability_descent
+                .unwrap_or(defaults.cdft_stability_descent);
+            same(&old, new);
+        }
+    }
 }

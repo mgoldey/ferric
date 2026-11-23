@@ -290,10 +290,7 @@ pub fn rpa_analytic_gradient_warm(
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let bounds = SchwarzBounds::compute(op, &obs)?;
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::gradient_reference(None);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {

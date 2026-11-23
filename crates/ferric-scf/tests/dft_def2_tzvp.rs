@@ -21,13 +21,11 @@ fn run_h2o(xc: &str, basis_name: &str) -> f64 {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     eprintln!(
         "{xc} H2O/{basis_name}: E = {:.8} ({} iter)",

@@ -52,14 +52,12 @@ fn solve(mol: &Molecule) -> (ScfResult, PreparedBasis, SchwarzBounds) {
     let bs = basis::bundled(BASIS).unwrap();
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = UhfConfig {
-        xc: Some(XC.to_string()),
-        fractional_occ: true,
-        energy_conv: 1e-11,
-        density_conv: 1e-8,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let mut cfg = UhfConfig::default()
+        .with_xc(XC.to_string())
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
+    cfg.fractional_occ = true;
     let r = solve_uhf(&ParallelContext::default(), mol, &prep, &bounds, &cfg).unwrap();
     assert!(r.converged);
     (r, prep, bounds)
@@ -177,13 +175,11 @@ fn integer_w_after_a_loose_scf_is_the_old_expression_bit_for_bit() {
     let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = UhfConfig {
-        xc: Some("LDA".into()),
-        energy_conv: 1e-5,
-        density_conv: 1e-3,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default()
+        .with_xc("LDA")
+        .with_energy_conv(1e-5)
+        .with_density_conv(1e-3)
+        .with_max_iter(400);
     let r = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     let (na, nb) = (5, 4);
     let old_w = |c: &Array2<f64>, eps: &[f64], nocc: usize| {
@@ -248,13 +244,11 @@ fn h2o_cation_excited(
     let bs = basis::bundled("6-31g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = UhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-9,
-        max_iter: 300,
-        mom_after_iter: 1,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-9)
+        .with_max_iter(300)
+        .with_mom_after_iter(1);
     let ctx = ParallelContext::default();
     let r = solve_uhf_with_guess(&ctx, &mol, &prep, &bounds, &cfg, guess).unwrap();
     assert!(r.converged);

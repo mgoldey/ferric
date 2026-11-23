@@ -116,12 +116,10 @@ fn check_radical_basis(r: &RadicalRef, obs_name: &str, aux_name: &str) {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("Schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        max_iter: 300,
-        level_shift: r.level_shift,
-        mom_after_iter: r.mom_after_iter,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(300)
+        .with_level_shift(r.level_shift)
+        .with_mom_after_iter(r.mom_after_iter);
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).expect("UHF");
     assert!(uhf.converged, "{}: UHF did not converge", r.name);
     // Guard: ferric must reach the SAME UHF solution PySCF used for the QP

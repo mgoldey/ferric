@@ -223,25 +223,21 @@ fn trah_aux_off_is_bit_identical() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        trah_trigger: Some(1e-2),
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    base.trah_trigger = Some(1e-2);
 
     let a0 = aux_matvecs();
     let r1 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).expect("scf 1");
     let a1 = aux_matvecs();
 
     // Explicitly-false flag must be the same code path as the default.
-    let explicit = RhfConfig {
-        trah: TrahConfig {
-            aux_curvature: false,
-            ..Default::default()
-        },
-        ..base.clone()
+    let mut explicit = base.clone();
+    explicit.trah = TrahConfig {
+        aux_curvature: false,
+        ..Default::default()
     };
     let r2 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &explicit).expect("scf 2");
     let a2 = aux_matvecs();
@@ -311,15 +307,13 @@ fn stale_aux_tangent_space_is_not_observable_here() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        trah_trigger: Some(1e-2),
-        trah: TrahConfig {
-            aux_curvature: true,
-            ..Default::default()
-        },
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.trah_trigger = Some(1e-2);
+    cfg.trah = TrahConfig {
+        aux_curvature: true,
         ..Default::default()
     };
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("aux");
@@ -348,19 +342,15 @@ fn trah_aux_reaches_the_same_fixed_point() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
 
-    let exact = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        trah_trigger: Some(1e-2),
+    let mut exact = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    exact.trah_trigger = Some(1e-2);
+    let mut aux_cfg = exact.clone();
+    aux_cfg.trah = TrahConfig {
+        aux_curvature: true,
         ..Default::default()
-    };
-    let aux_cfg = RhfConfig {
-        trah: TrahConfig {
-            aux_curvature: true,
-            ..Default::default()
-        },
-        ..exact.clone()
     };
 
     let e0 = exact_matvecs();

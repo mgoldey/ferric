@@ -79,15 +79,14 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 /// PBE with the KS defaults (75x110 grid, RI-J with def2-universal-jkfit).
 /// `energy_conv` is only a sanity bound under RI-J; the density gate decides.
 fn ks(symmetry: bool) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        symmetry,
-        xc: Some("PBE".into()),
-        density_conv: 1e-9,
-        energy_conv: 1e-8,
-        max_iter: 200,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_xc("PBE")
+        .with_density_conv(1e-9)
+        .with_energy_conv(1e-8)
+        .with_max_iter(200);
+    c.symmetry = symmetry;
+    c
 }
 
 fn exact_j(mut c: RhfConfig) -> RhfConfig {

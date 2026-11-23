@@ -51,16 +51,14 @@ fn run(solver: &str, ratio: Option<f64>) {
             weight_cut: None,
         })
     };
-    let c = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        three_index_budget_bytes: p,
-        max_iter: 1,
-        dft_grid: grid(30, 50),
-        nlc_grid: grid(10, 14),
-        ..Default::default()
-    };
+    let mut c = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_max_iter(1);
+    c.three_index_budget_bytes = p;
+    c.dft_grid = grid(30, 50);
+    c.nlc_grid = grid(10, 14);
     let ctx = ParallelContext::default();
     // One iteration is enough: the guess comes first. RHF returns Ok unconverged,
     // UHF and ROHF return this error. Anything else is a real failure, and must not

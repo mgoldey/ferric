@@ -93,19 +93,18 @@ fn cosx_pruned() -> CosxConfig {
 /// Tight SCF, four-centre J (and K when not COSX): COSX is the only exchange
 /// approximation under test.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
-    RhfConfig {
-        k_builder: cosx
-            .as_ref()
-            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx.unwrap_or_default(),
-        xc: xc.map(str::to_string),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        energy_conv: 1e-9,
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
+    c.k_builder = cosx
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 #[derive(Clone, Copy, Debug)]

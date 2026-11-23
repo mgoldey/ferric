@@ -149,13 +149,11 @@ fn solve(case: &Case, touch_aurora: bool) -> (f64, usize, bool) {
     // the PBE and B3LYP cases silently ran to max_iter. Leave the default here
     // so the DFT rows converge and the comparison is between two settled
     // answers rather than two arbitrary points on a truncated trajectory.
-    let mut cfg = RhfConfig {
-        density_conv: 1e-8,
-        max_iter: 200,
-        xc: case.xc.map(|s| s.to_string()),
-        df_j_aux: case.xc.map(|_| "def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.xc = case.xc.map(|s| s.to_string());
+    cfg.df_j_aux = case.xc.map(|_| "def2-universal-jkfit".to_string());
     if touch_aurora {
         cfg.aurora.enabled = false;
     }
@@ -234,11 +232,9 @@ fn disabled_aurora_performs_no_auxiliary_work() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     // The only way to observe "no accelerator was built" from outside is that

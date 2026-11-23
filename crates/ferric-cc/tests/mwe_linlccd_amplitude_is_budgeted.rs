@@ -165,10 +165,7 @@ fn amplitude_linlccd_ample_budget_still_runs() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();

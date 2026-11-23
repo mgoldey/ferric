@@ -324,10 +324,7 @@ fn probe_fock_floor() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();
@@ -701,10 +698,7 @@ fn probe_sweep_one() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let t_rhf = t_rhf.elapsed().as_secs_f64();

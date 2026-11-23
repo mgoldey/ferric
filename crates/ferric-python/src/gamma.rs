@@ -716,12 +716,7 @@ pub(crate) fn run_rhf_gamma(
             (GammaJk::Dense { max_bytes }, None)
         }
     };
-    let config = RhfConfig {
-        use_sad_guess: false,
-        density_conv,
-        max_iter,
-        ..Default::default()
-    };
+    let config = RhfConfig::periodic(density_conv, max_iter);
     let run = py
         .allow_threads(|| {
             gamma_rhf_driver(&cell, &prep, exx, omega_bohr, &jk_choice, &config, want)

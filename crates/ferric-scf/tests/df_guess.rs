@@ -66,11 +66,9 @@ fn df_guess_converges_to_same_energy_as_plain_scf() {
 
     // Tight thresholds so the "same fixed point" comparison is meaningful --
     // both stages' exact stage must land at the same converged basin.
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap();
     assert!(
@@ -164,11 +162,9 @@ fn df_guess_exact_stage_ignores_pre_stage_aux_choice() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let default_aux = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
     let explicit_aux = solve_rhf_with_df_guess(
@@ -235,11 +231,9 @@ fn tight_df_pre_stage_runs_longer_and_shortens_the_exact_stage() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let run = |tight: bool| {
         // SAFETY-ish: these tests run single-threaded within this binary for
@@ -290,13 +284,11 @@ fn water_ccpvdz_fitted(
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let base = RhfConfig {
-        df_j_aux: j_aux.map(str::to_string),
-        df_k_aux: k_aux.map(str::to_string),
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
+    base.df_j_aux = j_aux.map(str::to_string);
+    base.df_k_aux = k_aux.map(str::to_string);
     (mol, prep, bounds, base)
 }
 
@@ -336,16 +328,14 @@ fn df_guess_skips_its_pre_stage_when_the_scf_is_fitted_on_its_aux() {
     assert_eq!(dfg.result.density_total, single.density_total);
 
     // The two-stage path this replaces, spelled out.
-    let pre_cfg = RhfConfig {
-        max_iter: base.max_iter.min(DF_GUESS_TIGHT_MAX_ITER),
-        ..base.clone()
-    };
+    let pre_cfg = base
+        .clone()
+        .with_max_iter(base.max_iter.min(DF_GUESS_TIGHT_MAX_ITER));
     let pre = solve_rhf(&ctx, &mol, &prep, op, &bounds, &pre_cfg).unwrap();
-    let second_cfg = RhfConfig {
-        init_guess_density: Some(pre.density_total.clone()),
-        use_sad_guess: false,
-        ..base.clone()
-    };
+    let second_cfg = base
+        .clone()
+        .with_init_guess_density(pre.density_total.clone())
+        .with_guess(ferric_scf::options::Guess::Core);
     let two_stage = solve_rhf(&ctx, &mol, &prep, op, &bounds, &second_cfg).unwrap();
     assert!(dfg.result.converged && two_stage.converged);
     let de = (dfg.result.energy - two_stage.energy).abs();

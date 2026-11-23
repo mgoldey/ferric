@@ -19,11 +19,9 @@ fn main() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvtz-rifit").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     eprintln!("RHF (not timed)...");
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     eprintln!("  converged={} iters={}", rhf.converged, rhf.iterations);

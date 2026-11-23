@@ -181,11 +181,9 @@ fn check_miss(what: &str, got: &Array2<f64>, want: &Array2<f64>, floor: f64) {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 300,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(300)
 }
 
 /// RI-MP2 total energy at `mol` (exact-J/K RHF + RI-MP2).

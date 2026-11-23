@@ -46,10 +46,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 
 /// The SCF the bench runs.
 pub fn bench_scf_config() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default().with_energy_conv(1e-10)
 }
 
 /// Solve the bench's RHF, with no cache involved.

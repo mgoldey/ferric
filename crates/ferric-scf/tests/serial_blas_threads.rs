@@ -46,11 +46,9 @@ fn scf_serial_sections_follow_the_serial_blas_setting() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let run = || solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
 
     // Default: the rayon pool size.

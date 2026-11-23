@@ -29,13 +29,11 @@ fn main() {
     let bounds = SchwarzBounds::compute(op, &prep).expect("Schwarz screening failed");
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
 
     // The SCF ladder starts from a simpler functional and ramps up,
     // improving convergence robustness for DFT.

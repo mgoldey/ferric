@@ -140,12 +140,10 @@ fn run_ccsd(sys: &str, basis_name: &str) -> f64 {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            max_iter: 200,
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(200)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9),
     )
     .unwrap();
     assert!(rhf.converged, "{sys}: RHF did not converge");

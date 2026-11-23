@@ -103,10 +103,7 @@ fn energy(
     // SCF always uses the plain Coulomb operator; only the MP2 correlation is attenuated.
     let coul = Operator::coulomb();
     let bounds = SchwarzBounds::compute(coul, &obs).ok()?;
-    let cfg = RhfConfig {
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_max_iter(300);
     let rhf = solve_rhf(ctx, &mol, &obs, coul, &bounds, &cfg).ok()?;
     let mp2 = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).ok()?;
     Some(mp2.total_energy)

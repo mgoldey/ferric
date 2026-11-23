@@ -17,7 +17,6 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::operator::Operator;
 use ferric_scf::hessian::{rks_fixed_grid_hessian, rks_moving_grid_hessian};
 use ferric_scf::ks_fixed_grid::XcMutants;
-use ferric_scf::rhf::RhfConfig;
 use ks_moving_grid_common::*;
 use std::time::Instant;
 
@@ -43,11 +42,9 @@ fn density_fitted_full_hessians_match_the_production_gradient() {
         return;
     }
     for xc in ["PBE", "PBE0"] {
-        let cfg = RhfConfig {
-            df_j_aux: None,
-            df_k_aux: None,
-            ..config(xc)
-        };
+        let mut cfg = config(xc);
+        cfg.df_j_aux = None;
+        cfg.df_k_aux = None;
         full_hessian_case(&cfg, xc, "sto-3g", TOL_VALIDATION);
     }
 }
@@ -62,9 +59,10 @@ fn cc_pvdz_pieces_full_hessian_and_cost() {
     if !has_deriv2() {
         return;
     }
-    let default_grid = |xc: &str| RhfConfig {
-        dft_grid: None,
-        ..config(xc)
+    let default_grid = |xc: &str| {
+        let mut c = config(xc);
+        c.dft_grid = None;
+        c
     };
     let p = scf(&water(), "cc-pvdz", &default_grid("PBE"));
     let r = frozen_reference(&p, "PBE");

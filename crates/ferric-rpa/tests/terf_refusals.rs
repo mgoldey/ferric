@@ -57,10 +57,7 @@ fn h2() -> Sys {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-11,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-11),
     )
     .unwrap();
     assert!(scf.converged);
@@ -82,12 +79,10 @@ fn oh_uhf() -> Sys {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            max_iter: 300,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9)
+            .with_max_iter(300),
     )
     .unwrap();
     assert!(scf.converged);

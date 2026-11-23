@@ -59,12 +59,10 @@ const ANALYTIC: f64 = 2e-7;
 const ERR_MAX: f64 = 1e-9;
 
 fn tight() -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-13,
-        energy_conv: 1e-14,
-        max_iter: 300,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_density_conv(1e-13)
+        .with_energy_conv(1e-14)
+        .with_max_iter(300)
 }
 
 fn route(fit: bool) -> ScfJk {

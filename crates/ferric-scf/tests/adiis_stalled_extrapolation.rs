@@ -86,13 +86,11 @@ fn solve(
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        max_iter,
-        diis_flavor: flavor,
-        diis_switch_thresh: 1e-1,
-        external_potential: Some(ext.clone()),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_max_iter(max_iter)
+        .with_external_potential(ext.clone());
+    cfg.diis_flavor = flavor;
+    cfg.diis_switch_thresh = 1e-1;
     solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, &cfg).unwrap()
 }
 

@@ -192,15 +192,13 @@ pub fn assert_same_record(a: &Freq, b: &Freq, what: &str) {
 /// The `RhfConfig` the CLI builds from [`run_cli_ok`]'s TOML: a Kohn-Sham
 /// SCF fits J and K over the default basis, the rest are the CLI defaults.
 pub fn library_config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        max_iter: 200,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
 }
 
 /// Run `f` on a rayon pool of [`CLI_THREADS`] threads.

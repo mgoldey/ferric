@@ -145,10 +145,7 @@ fn load(system: &str) -> Sys {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            max_iter: 400,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_max_iter(400),
     )
     .unwrap_or_else(|e| panic!("{label}: UHF failed: {e:?}"));
     let (ca, ea, na) = spin_orbitals(&r, "alpha");

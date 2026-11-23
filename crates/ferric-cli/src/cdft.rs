@@ -363,16 +363,14 @@ pub fn run(
     };
     let constraints = constraints_for(c, mol).map_err(CliError::msg)?;
     let defaults = RhfConfig::default();
-    let config = RhfConfig {
-        constraints,
-        cdft_lambda_tol: c.lambda_tol.unwrap_or(defaults.cdft_lambda_tol),
-        cdft_max_outer: c.max_outer.unwrap_or(defaults.cdft_max_outer),
-        cdft_stability_descent: c
-            .stability_descent
-            .unwrap_or(defaults.cdft_stability_descent),
-        dft_grid: cdft_grid(c).map_err(CliError::msg)?,
-        ..rhf_config.clone()
-    };
+    let mut config = rhf_config.clone();
+    config.constraints = constraints;
+    config.cdft_lambda_tol = c.lambda_tol.unwrap_or(defaults.cdft_lambda_tol);
+    config.cdft_max_outer = c.max_outer.unwrap_or(defaults.cdft_max_outer);
+    config.cdft_stability_descent = c
+        .stability_descent
+        .unwrap_or(defaults.cdft_stability_descent);
+    config.dft_grid = cdft_grid(c).map_err(CliError::msg)?;
     crate::log_jk_path(&config, true);
     let r = ferric_scf::cdft_driver::solve_cdft_uhf(ctx, mol, prep, bs, bounds, &config)
         .map_err(CliError::msg)?;

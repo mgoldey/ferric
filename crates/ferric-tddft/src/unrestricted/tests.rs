@@ -32,12 +32,11 @@ fn prepare(xyz: &str, mult: usize) -> (Molecule, PreparedBasis, PreparedBasis) {
 }
 
 fn scf_config(xc: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        xc: xc.map(str::to_string),
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 /// Water/6-31G, restricted.

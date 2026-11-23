@@ -107,23 +107,18 @@ pub fn diatomic(a: &str, b: &str, r_ang: f64, charge: i32, mult: usize, basis_na
 /// A tight, plain UHF config: no level shift, no XC, no stability machinery.
 /// `check_stability` is set so every row reports its own verdict.
 pub fn tight_cfg() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        check_stability: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11)
+        .with_check_stability(true)
 }
 
 /// The PRE-FIX config: the bare hcore guess, which is what `solve_uhf` did
 /// unconditionally until the guess fix. `use_sad_guess = false` with no
 /// explicit density is the documented way to ask for it.
 pub fn hcore_cfg() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        ..tight_cfg()
-    }
+    tight_cfg().with_guess(ferric_scf::options::Guess::Core)
 }
 
 /// Number of occupied α / β orbitals for a molecule.
@@ -790,10 +785,9 @@ fn does_minao_alone_reach_the_reference_everywhere() {
 /// Config with BOTH the stability check and the descent on. The two knobs are
 /// meant to be set together: the descent reads the verdict the check produces.
 pub fn descent_cfg() -> RhfConfig {
-    RhfConfig {
-        scf_stability_descent: true,
-        ..tight_cfg()
-    }
+    let mut c = tight_cfg();
+    c.scf_stability_descent = true;
+    c
 }
 
 /// **Part 3 — proof the fix reaches the reference.** Every system in the sweep,
@@ -1176,14 +1170,9 @@ fn oh_reaches_the_pyscf_reference_after_the_fix() {
 #[test]
 fn the_descent_skips_a_reference_it_cannot_analyse() {
     let sys = diatomic("O", "H", 0.97, 0, 2, "6-31g");
-    let base = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        ..tight_cfg()
-    };
-    let with_descent = RhfConfig {
-        scf_stability_descent: true,
-        ..base.clone()
-    };
+    let base = tight_cfg().with_xc("wB97X-V");
+    let mut with_descent = base.clone();
+    with_descent.scf_stability_descent = true;
     let off = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &base);
     let on = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &with_descent);
     match (off, on) {
@@ -1315,12 +1304,10 @@ fn rohf_still_uses_hcore_measure_whether_it_matters() {
         ),
     ];
     println!("\n=== ROHF (still hcore-only) vs PySCF 2.13.0 ROHF ===");
-    let cfg = RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11);
     for (name, sys, e_ref) in &cases {
         match solve_rohf(
             &sys.ctx,

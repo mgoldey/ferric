@@ -381,16 +381,14 @@ fn system(xyz: &str, mult: usize, kind: &str) -> System {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ri_k_precision: Some(RiKPrecision::F64),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_ri_j_precision(RiJPrecision::F64);
+    cfg.ri_k_precision = Some(RiKPrecision::F64);
     let res = match kind {
         "rhf" => ferric_scf::rhf::solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg),
         "uhf" => ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg),

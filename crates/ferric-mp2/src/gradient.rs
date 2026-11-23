@@ -36,10 +36,7 @@ fn total_energy(
     // density drains cleanly to ~1e-9); energy_conv is only a loose
     // "not-descending" bound and floors above 1e-10 under DF noise, so setting it
     // tight would just hang the SCF at MaxIter (see rhf::scf_converged).
-    let rhf_config = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::gradient_reference(None);
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_config)?;
     if !rhf.converged {
@@ -1245,12 +1242,7 @@ pub(crate) fn solve_rhf_reference(
     // at the loose default — a tight 1e-10 would hang at MaxIter. See total_energy above.
     // A geometry task: an unset RI-J precision resolves to f64 (no effect on
     // the four-centre route).
-    let mut rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext.cloned(),
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut rhf_cfg = RhfConfig::gradient_reference(ext.cloned()).for_geometry_task();
     scf_jk.apply(&mut rhf_cfg);
     if let (ScfJkMode::RiJk, Some(aux)) = (scf_jk.mode, scf_jk.aux.as_deref()) {
         // The fitted route keeps the reference's RI-J/RI-K tensors through
@@ -1651,10 +1643,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1705,10 +1694,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1747,10 +1733,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1881,10 +1864,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -1947,10 +1927,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                density_conv: 1e-9,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_density_conv(1e-9),
         )
         .unwrap();
         let config = RiMp2Config {
@@ -1994,10 +1971,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2055,10 +2029,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2116,10 +2087,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                density_conv: 1e-9,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_density_conv(1e-9),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2166,10 +2134,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2220,10 +2185,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let config = RiMp2Config::default();
@@ -2256,10 +2218,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let nocc = (mol.nelec() / 2) as usize;

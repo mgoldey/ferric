@@ -127,13 +127,12 @@ fn main() {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         // Small basis ⇒ conventional J/K is fast; looser conv is fine (the
         // pseudo-density decay study doesn't need 1e-9 SCF).
-        let rhf_cfg = RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-7,
-            density_conv: 1e-6,
-            level_shift: 0.2, // help the alkane SCF converge in 6-31G
-            ..Default::default()
-        };
+        let rhf_cfg = RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-7)
+            .with_density_conv(1e-6)
+            // help the alkane SCF converge in 6-31G
+            .with_level_shift(0.2);
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg) {
             Ok(r) => r,
             Err(e) => {

@@ -187,12 +187,10 @@ fn dense_none(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore) -> DenseAft
 }
 
 fn uhf_scf() -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv: 1e-10,
-        max_iter: 400,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(400)
 }
 
 /// Gamma UHF on the dense tensor (Direct for `none`, Staged for `ewald`).
@@ -1014,11 +1012,9 @@ fn molecular_u_corr(mol: &Molecule, bs: &BasisSet, na: usize, nb: usize) -> (Scf
         mol,
         &prep,
         &bounds,
-        &RhfConfig {
-            use_sad_guess: false,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_density_conv(1e-10),
     )
     .unwrap();
     assert!(m.converged);
@@ -1235,10 +1231,7 @@ fn u_parts_entries_reproduce_the_molecular_drivers_bitwise() {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(u.converged && matches!(u.spin, Spin::Unrestricted));

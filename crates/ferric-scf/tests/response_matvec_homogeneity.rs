@@ -94,11 +94,9 @@ fn ch4_aug() -> Closed {
     let prep = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let c = res.mos_alpha.clone();
     let f_mo = c.t().dot(&res.fock_alpha).dot(&c);
@@ -190,11 +188,9 @@ fn rohf_matvec_is_homogeneous() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let n = prep.nbasis();
     let h = oneelectron::hcore(&prep);

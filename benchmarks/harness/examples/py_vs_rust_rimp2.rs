@@ -28,11 +28,9 @@ fn main() {
 
     // DF-JK just to make the (untimed) reference SCF fast; the ~1e-5 DF orbital
     // noise is irrelevant to the MP2-stage wall-clock being measured.
-    let rhf_cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let t_rhf = Instant::now();
     let rhf = solve_rhf(
         &ParallelContext::default(),

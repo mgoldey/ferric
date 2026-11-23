@@ -38,14 +38,13 @@ use ndarray::s;
 const OH_631G_EXCITED: f64 = -75.203_724_952_9;
 
 fn cfg(guard: bool) -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        use_sad_guess: false,
-        rohf_occupation_guard: guard,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11)
+        .with_guess(ferric_scf::options::Guess::Core);
+    c.rohf_occupation_guard = guard;
+    c
 }
 
 #[test]
@@ -128,10 +127,7 @@ fn give_up_exit_returns_one_self_consistent_state() {
         &prep,
         op,
         &bounds,
-        &RhfConfig {
-            init_guess_density: Some(r.density_total.clone()),
-            ..cfg(false)
-        },
+        &cfg(false).with_init_guess_density(r.density_total.clone()),
     )
     .expect("guard-off solve from the returned density");
     println!(

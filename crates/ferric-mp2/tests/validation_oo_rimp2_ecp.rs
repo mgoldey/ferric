@@ -257,12 +257,10 @@ fn load(r: &Value, bs: &BasisSet) -> Sys {
 }
 
 fn solve_closed(s: &Sys, ctx: &str) -> ScfResult {
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(400);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K"

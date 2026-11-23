@@ -39,12 +39,10 @@ fn main() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let rhf_cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        max_iter: 100,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_max_iter(100);
 
     eprintln!(
         "[setup] {mol_name}/{obs_name}, aux={aux_name}, nbasis={}",

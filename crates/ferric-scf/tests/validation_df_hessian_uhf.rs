@@ -205,17 +205,15 @@ fn must_miss(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64>, bar: 
 }
 
 fn scf_config(df_j: &str, df_k: &str) -> RhfConfig {
-    RhfConfig {
+    RhfConfig::default()
         // The PySCF references fit J in f64. The f32 RI-J default moves the
         // energy by 1e-7..1e-6 Ha, above this test's bar.
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 500,
-        energy_conv: 1e-14,
-        density_conv: 1e-12,
-        df_j_aux: Some(df_j.to_string()),
-        df_k_aux: Some(df_k.to_string()),
-        ..Default::default()
-    }
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(500)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-12)
+        .with_df_j_aux(df_j.to_string())
+        .with_df_k_aux(df_k.to_string())
 }
 
 fn check_system(system: &str, basis_name: &str, mult: u64) {

@@ -463,12 +463,10 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         "{label}: aux count"
     );
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     let scf = solve_rhf(
         &ParallelContext::default(),
         &mol,

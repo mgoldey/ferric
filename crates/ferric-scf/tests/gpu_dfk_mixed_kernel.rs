@@ -501,24 +501,20 @@ fn scf_occ(xyz: &str, mult: usize, obs_name: &str) -> (Array2<f64>, Option<Array
     let aux = Some("def2-universal-jkfit".to_string());
     FORCE_HOST.store(true, Ordering::SeqCst);
     let res = if mult == 1 {
-        let cfg = RhfConfig {
-            energy_conv: 1e-3,
-            density_conv: 1e-8,
-            max_iter: 200,
-            df_j_aux: aux.clone(),
-            df_k_aux: aux,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-3)
+            .with_density_conv(1e-8)
+            .with_max_iter(200);
+        cfg.df_j_aux = aux.clone();
+        cfg.df_k_aux = aux;
         solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg)
     } else {
-        let cfg = UhfConfig {
-            energy_conv: 1e-3,
-            density_conv: 1e-8,
-            max_iter: 300,
-            df_j_aux: aux.clone(),
-            df_k_aux: aux,
-            ..Default::default()
-        };
+        let mut cfg = UhfConfig::default()
+            .with_energy_conv(1e-3)
+            .with_density_conv(1e-8)
+            .with_max_iter(300);
+        cfg.df_j_aux = aux.clone();
+        cfg.df_k_aux = aux;
         solve_uhf(&ctx, &mol, &obs, &bounds, &cfg)
     };
     FORCE_HOST.store(false, Ordering::SeqCst);

@@ -45,13 +45,11 @@ const NH2_XYZ: &str =
 const O2_XYZ: &str = "2\nO2\nO 0.000000 0.000000 0.604000\nO 0.000000 0.000000 -0.604000\n";
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 /// FD step (Bohr) of the fast tests; `MBD_FD_H` overrides it. With the C2
@@ -434,11 +432,9 @@ fn measure_uks_full_pipeline_fd() {
                 continue;
             }
             let label = format!("{name}/6-31G {tag}");
-            let cfg = RhfConfig {
-                df_j_aux: j_aux.map(str::to_string),
-                df_k_aux: k_aux.map(str::to_string),
-                ..ks(xc)
-            };
+            let mut cfg = ks(xc);
+            cfg.df_j_aux = j_aux.map(str::to_string);
+            cfg.df_k_aux = k_aux.map(str::to_string);
             let mbd_cfg = MbdRsscsConfig::for_functional(xc).expect("beta");
             let mol = Molecule::parse_xyz(xyz, 0, mult).expect("mol");
             let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
@@ -510,11 +506,10 @@ fn uks_mbd_cosx_exact_gradient_matches_fd_of_full_scf_pipeline() {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let plain = ks("PBE0");
-    let cfg = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx_flat(),
-        ..plain.clone()
-    };
+    let cfg = plain
+        .clone()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx_flat());
     assert!(ferric_scf::cosx_gradient::scf_exchange_is_cosx(&cfg, true).unwrap());
     let mbd_cfg = MbdRsscsConfig::for_functional("PBE0").expect("beta");
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &plain).expect("cache");

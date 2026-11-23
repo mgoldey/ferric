@@ -84,11 +84,9 @@ fn u_oo_mp2_energy_shift_tracks_uhf_shift() {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap();
     assert!(uhf_vac.converged);
@@ -96,12 +94,10 @@ fn u_oo_mp2_energy_shift_tracks_uhf_shift() {
     assert!(uoo_vac.converged, "vacuum U-OO-MP2 must converge");
 
     // In the field.
-    let field_cfg = RhfConfig {
-        external_potential: Some(ext.clone()),
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let field_cfg = RhfConfig::default()
+        .with_external_potential(ext.clone())
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     let uhf_field =
         solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &field_cfg).unwrap();
     assert!(uhf_field.converged);
@@ -168,11 +164,9 @@ fn u_oo_mp2_ext_none_matches_vacuum() {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap();
     assert!(uhf.converged);

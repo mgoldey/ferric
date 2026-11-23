@@ -475,10 +475,7 @@ mod tests {
             &prep,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let e_corr = canonical_mp2(&mol, &prep, op, &rhf, 0).unwrap();
@@ -507,10 +504,7 @@ mod tests {
             &prep,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let e_canonical = canonical_mp2(&mol, &prep, op, &rhf, 0).unwrap();

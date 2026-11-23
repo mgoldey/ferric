@@ -87,12 +87,10 @@ fn setup(label: &'static str) -> Case {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let rohf = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(rohf.converged, "{label}: ROHF did not converge");
     assert_eq!(rohf.spin, Spin::RestrictedOpen);

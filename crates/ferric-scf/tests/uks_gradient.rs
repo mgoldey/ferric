@@ -17,13 +17,11 @@ fn cfg(xc: &str) -> RhfConfig {
     // even though the energy is converged to 1e-5 Ha. PBE/B3LYP don't show this.
     // The corresponding FD noise from delta=5e-4 is ~1e-3 Ha/Bohr anyway, so
     // tighter SCF buys nothing for the comparison.
-    RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-4,
-        max_iter: 400,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-4)
+        .with_max_iter(400)
 }
 
 fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, xc: &str, delta: f64) -> Array2<f64> {

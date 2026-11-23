@@ -160,43 +160,42 @@ fn build_sys() -> Sys {
 /// converges. It does not, and that gap is held open on purpose by
 /// [`minao_started_cdft_does_not_converge_at_the_integer_target`].
 fn hene_cfg() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        level_shift: HENE_LEVEL_SHIFT,
-        cdft_lambda_tol: HENE_LAMBDA_TOL,
-        // PINNED, not inherited: this file asserts "the constrained path
-        // converges", and that assertion must not double as an assertion
-        // about how many outer iterations one particular CPU needs.
-        //
-        // Measured requirement for every guess that converges at all
-        // (this box; CI's counts differ -- that is the whole point):
-        //
-        //   post-descent  7 | MINAO 10 | target 1.98  12 | SAD        14
-        //   driver/none  16 | target 1.99 14 | target 1.995 20 | hcore 23
-        //
-        // CI needed >30 for SAD where this box needs 14, so the old
-        // hardcoded 30 failed the build on a machine difference. 40 is ~1.7x
-        // the worst LOCAL count (23) and clear of CI's observed spread.
-        //
-        // Not higher: the cap is ALSO the price paid by paths that never
-        // converge, since each wasted outer iteration runs a full inner SCF.
-        // At 64 `cdft_coupling_hene` took 462 s vs 17 s at 30, because its
-        // non-convergent sigma points burn the entire cap before failing.
-        //
-        // This is NOT a "make it converge eventually" cap: at ERI precision
-        // 1e-20 the `state A (N_He=1)` start ends in a period-2 cycle of the
-        // outer loop (see `ScalarStepper` in cdft_driver.rs), which no cap
-        // rescues.
-        cdft_max_outer: 40,
-        cdft_stability_descent: false,
-        use_sad_guess: false,
-        dft_grid: Some(AtomicGridConfig {
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_level_shift(HENE_LEVEL_SHIFT)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
             ..Default::default()
-        }),
-        ..Default::default()
-    }
+        });
+    c.cdft_lambda_tol = HENE_LAMBDA_TOL;
+    // PINNED, not inherited: this file asserts "the constrained path
+    // converges", and that assertion must not double as an assertion
+    // about how many outer iterations one particular CPU needs.
+    //
+    // Measured requirement for every guess that converges at all
+    // (this box; CI's counts differ -- that is the whole point):
+    //
+    //   post-descent  7 | MINAO 10 | target 1.98  12 | SAD        14
+    //   driver/none  16 | target 1.99 14 | target 1.995 20 | hcore 23
+    //
+    // CI needed >30 for SAD where this box needs 14, so the old
+    // hardcoded 30 failed the build on a machine difference. 40 is ~1.7x
+    // the worst LOCAL count (23) and clear of CI's observed spread.
+    //
+    // Not higher: the cap is ALSO the price paid by paths that never
+    // converge, since each wasted outer iteration runs a full inner SCF.
+    // At 64 `cdft_coupling_hene` took 462 s vs 17 s at 30, because its
+    // non-convergent sigma points burn the entire cap before failing.
+    //
+    // This is NOT a "make it converge eventually" cap: at ERI precision
+    // 1e-20 the `state A (N_He=1)` start ends in a period-2 cycle of the
+    // outer loop (see `ScalarStepper` in cdft_driver.rs), which no cap
+    // rescues.
+    c.cdft_max_outer = 40;
+    c.cdft_stability_descent = false;
+    c
 }
 
 /// The lane's constrained config at a given Becke target.
@@ -226,19 +225,18 @@ fn hene_cfg() -> RhfConfig {
 /// of the unconstrained fix — it is recorded here and left for the cDFT lane
 /// to pursue, deliberately NOT tuned away by widening `max_outer`.
 fn cfg_with_target(target: f64) -> RhfConfig {
-    RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            target,
-            spin: SpinChannel::Total,
-        }],
+    let mut c = hene_cfg()
         // Redundant since `hene_cfg` now pins this too, and KEPT redundant: it
         // is the pin this function's doc above describes, and a reader who
         // deletes it should have to reckon with that doc rather than discover
         // the behaviour changed two call-levels away.
-        use_sad_guess: false,
-        ..hene_cfg()
-    }
+        .with_guess(ferric_scf::options::Guess::Core);
+    c.constraints = vec![Constraint {
+        fragment: vec![0],
+        target,
+        spin: SpinChannel::Total,
+    }];
+    c
 }
 
 fn weight_matrix(sys: &Sys, fragment: &[usize]) -> Array2<f64> {
@@ -753,10 +751,7 @@ fn sad_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
 /// ([`unconstrained_sigma_mos`]) rather than replacing one with the other —
 /// so the catalogue now spans MORE basins than before, not fewer.
 fn unconstrained_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
-    let cfg = RhfConfig {
-        use_sad_guess: false,
-        ..hene_cfg()
-    };
+    let cfg = hene_cfg().with_guess(ferric_scf::options::Guess::Core);
     let scf =
         solve_uhf_fockmod(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg, None, None).unwrap();
     let cb = scf.mos_beta.clone().unwrap();
@@ -774,10 +769,7 @@ fn unconstrained_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
 /// inheriting that pin made this entry run the same solve as
 /// [`unconstrained_mos`] (the ²Π state), bit for bit.
 fn unconstrained_sigma_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
-    let cfg = RhfConfig {
-        use_sad_guess: true,
-        ..hene_cfg()
-    };
+    let cfg = hene_cfg().with_guess(ferric_scf::options::Guess::Sad);
     let scf =
         solve_uhf_fockmod(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg, None, None).unwrap();
     let cb = scf.mos_beta.clone().unwrap();
@@ -1609,10 +1601,9 @@ fn fd_vs_analytic_gradient(
 /// The lane's config with the fix ENABLED — i.e. at `RhfConfig`'s own default
 /// for `cdft_stability_descent`. Everything else matches `hene_cfg`.
 fn hene_cfg_fixed() -> RhfConfig {
-    RhfConfig {
-        cdft_stability_descent: true,
-        ..hene_cfg()
-    }
+    let mut c = hene_cfg();
+    c.cdft_stability_descent = true;
+    c
 }
 
 /// **THE PROOF.** The fixed `solve_cdft_uhf` must reach a state at or below the
@@ -1639,37 +1630,25 @@ fn the_fixed_driver_reaches_the_lower_state_at_the_integer_target() {
     let w = weight_matrix(&sys, &[0]);
     let h = oneelectron::hcore(&sys.prep);
 
-    let before = solve_cdft_uhf(
-        &sys.ctx,
-        &sys.mol,
-        &sys.prep,
-        &sys.bs,
-        &sys.bounds,
-        &RhfConfig {
-            constraints: vec![Constraint {
-                fragment: vec![0],
-                target: 2.0,
-                spin: SpinChannel::Total,
-            }],
-            ..hene_cfg()
-        },
-    )
+    let before = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &{
+        let mut c = hene_cfg();
+        c.constraints = vec![Constraint {
+            fragment: vec![0],
+            target: 2.0,
+            spin: SpinChannel::Total,
+        }];
+        c
+    })
     .unwrap();
-    let after = solve_cdft_uhf(
-        &sys.ctx,
-        &sys.mol,
-        &sys.prep,
-        &sys.bs,
-        &sys.bounds,
-        &RhfConfig {
-            constraints: vec![Constraint {
-                fragment: vec![0],
-                target: 2.0,
-                spin: SpinChannel::Total,
-            }],
-            ..hene_cfg_fixed()
-        },
-    )
+    let after = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &{
+        let mut c = hene_cfg_fixed();
+        c.constraints = vec![Constraint {
+            fragment: vec![0],
+            target: 2.0,
+            spin: SpinChannel::Total,
+        }];
+        c
+    })
     .unwrap();
 
     let (d_b, _, _, v_b) = augmented_stability(
@@ -1755,14 +1734,12 @@ fn the_fixed_driver_reaches_the_lower_state_at_the_integer_target() {
 #[test]
 fn descent_off_reproduces_the_old_saddle() {
     let sys = build_sys();
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            target: 2.0,
-            spin: SpinChannel::Total,
-        }],
-        ..hene_cfg()
-    };
+    let mut cfg = hene_cfg();
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        target: 2.0,
+        spin: SpinChannel::Total,
+    }];
     let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap();
     eprintln!(
         "[descent off] E = {:.8}  λ = {:+.6}  N = {:.8}  outer = {}",
@@ -1792,15 +1769,13 @@ fn descent_off_reproduces_the_old_saddle() {
 fn state_a_is_untouched_by_the_descent() {
     let sys = build_sys();
     let mk = |descent: bool| {
-        let cfg = RhfConfig {
-            constraints: vec![Constraint {
-                fragment: vec![0],
-                target: 1.0,
-                spin: SpinChannel::Total,
-            }],
-            cdft_stability_descent: descent,
-            ..hene_cfg()
-        };
+        let mut cfg = hene_cfg();
+        cfg.constraints = vec![Constraint {
+            fragment: vec![0],
+            target: 1.0,
+            spin: SpinChannel::Total,
+        }];
+        cfg.cdft_stability_descent = descent;
         solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap()
     };
     let off = mk(false);
@@ -1852,14 +1827,12 @@ fn cross_partition_offsets_to_nwchems_native_states() {
     const NWCHEM_LOW: f64 = -130.447_402_218;
     const NWCHEM_HIGH: f64 = -130.423_435_597;
     let sys = build_sys();
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            target: 2.0,
-            spin: SpinChannel::Total,
-        }],
-        ..hene_cfg_fixed()
-    };
+    let mut cfg = hene_cfg_fixed();
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        target: 2.0,
+        spin: SpinChannel::Total,
+    }];
     let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap();
     let ev = 27.211_386_245_988;
     eprintln!(
@@ -1967,17 +1940,15 @@ fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
     const TOL: f64 = 3e-6;
 
     let sys = build_sys();
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![0],
-            target: 2.0,
-            spin: SpinChannel::Total,
-        }],
+    let mut cfg = hene_cfg()
         // The ONE place in this file that deliberately does NOT pin the guess:
         // the default path is the whole subject of the test.
-        use_sad_guess: true,
-        ..hene_cfg()
-    };
+        .with_guess(ferric_scf::options::Guess::Sad);
+    cfg.constraints = vec![Constraint {
+        fragment: vec![0],
+        target: 2.0,
+        spin: SpinChannel::Total,
+    }];
 
     // Convergence of the MINAO start at the integer target is machine-
     // dependent (see the 2026-09-18 correction above): 10 outer iters here,
@@ -2014,10 +1985,7 @@ fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
 
     // The driver-default start (no SAD): the catalogue's "driver default
     // (None)" row, which converges here at every libint precision measured.
-    let base_cfg = RhfConfig {
-        use_sad_guess: false,
-        ..cfg.clone()
-    };
+    let base_cfg = cfg.clone().with_guess(ferric_scf::options::Guess::Core);
     let b = solve_cdft_uhf(
         &sys.ctx,
         &sys.mol,

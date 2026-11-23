@@ -47,12 +47,11 @@ fn through_rule(mode: &str, aux: Option<&str>) -> RhfConfig {
 }
 
 fn named(j: Option<&str>, k: Option<&str>, k_builder: Option<&str>) -> RhfConfig {
-    RhfConfig {
-        df_j_aux: j.map(str::to_string),
-        df_k_aux: k.map(str::to_string),
-        k_builder: ferric_scf::options::KBuilderKind::parse_opt(k_builder).expect("spelling"),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.df_j_aux = j.map(str::to_string);
+    c.df_k_aux = k.map(str::to_string);
+    c.k_builder = ferric_scf::options::KBuilderKind::parse_opt(k_builder).expect("spelling");
+    c
 }
 
 #[test]

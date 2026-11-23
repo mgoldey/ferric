@@ -60,14 +60,12 @@ fn run_case_basis(label: &str, xyz: &str, basis_name: &str, expected_file: &str)
     // converged=false at their final rung -- the same benign density-
     // oscillation floor documented in dft_lda.rs/dft_pbe.rs. The energy
     // comparison below is the real correctness gate.
-    let cfg = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let ladder = default_ladder_from(&cfg);
     let lr = solve_rhf_ladder(&ctx, &mol, &obs, op, &bounds, &ladder).unwrap();
     let res = lr.result;

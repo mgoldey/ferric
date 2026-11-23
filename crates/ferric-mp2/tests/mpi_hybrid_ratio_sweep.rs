@@ -66,14 +66,12 @@ fn peak_rss_mib() -> f64 {
 /// world). Neither is in scope here; using the same known-good reference keeps
 /// this a measurement of RI-MP2, not of those bugs.
 fn df_rhf_config() -> RhfConfig {
-    RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        use_sad_guess: false,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 /// Time `run_mpi_ri_mp2` on one molecule/basis and print a machine-parseable

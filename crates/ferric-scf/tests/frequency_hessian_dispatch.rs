@@ -98,10 +98,10 @@ fn auto_is_analytic_for_plain_rhf_and_matches_fd() {
 #[test]
 fn auto_falls_back_for_unsupported_configurations() {
     // Fitted J/K next to an external potential is untested and refused.
-    let ri = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        external_potential: Some(ExternalPotential {
+    let ri = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_external_potential(ExternalPotential {
             point_charges: vec![PointCharge {
                 q: 0.3,
                 x: 5.0,
@@ -109,9 +109,7 @@ fn auto_falls_back_for_unsupported_configurations() {
                 z: 0.0,
             }],
             ..Default::default()
-        }),
-        ..Default::default()
-    };
+        });
     // Point charges, smeared charges and a uniform field are analytic (see
     // `embedded_point_charges_are_analytic`, `smeared_charges_are_analytic_and_match_fd`,
     // `uniform_field_is_analytic_and_matches_fd`).
@@ -143,10 +141,8 @@ fn auto_falls_back_for_unsupported_configurations() {
 /// path wired here, so it is not asserted.)
 #[test]
 fn cosmo_frequencies_refuse_every_route() {
-    let solvated = RhfConfig {
-        cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
-        ..Default::default()
-    };
+    let mut solvated = RhfConfig::default();
+    solvated.cosmo = Some(ferric_scf::cosmo::CosmoConfig::default());
     for hessian in [
         HessianMethod::Auto,
         HessianMethod::Analytic,
@@ -181,11 +177,9 @@ fn ri_j_with_exact_k_is_analytic_where_the_engines_exist_and_falls_back_otherwis
     // blocks, available everywhere); a first-derivative libint (the wheel)
     // makes the probe refuse and Auto fall back to finite differences of the
     // DF gradient, with no error. Either branch checks the frequencies agree.
-    let scf = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux(String::new());
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&water(), &bs).unwrap();
     let probe = analytic_hessian_available(&water(), &prep, Operator::coulomb(), &scf);
@@ -231,11 +225,9 @@ fn ri_k_is_analytic_alone_and_with_ri_j_and_matches_fd() {
         ("RI-K, exact J", String::new()),
         ("RI-J + RI-K", "def2-universal-jkfit".to_string()),
     ] {
-        let scf = RhfConfig {
-            df_j_aux: Some(j_aux),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..Default::default()
-        };
+        let scf = RhfConfig::default()
+            .with_df_j_aux(j_aux)
+            .with_df_k_aux("def2-universal-jkfit");
         let probe = analytic_hessian_available(&water(), &prep, Operator::coulomb(), &scf);
         let auto = run(&scf, &FrequencyConfig::default());
         let fd = run(
@@ -270,18 +262,15 @@ fn embedded_point_charges_are_analytic() {
     if !has_deriv2() {
         return;
     }
-    let scf = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            point_charges: vec![PointCharge {
-                q: 0.5,
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-            }],
-            ..Default::default()
-        }),
+    let scf = RhfConfig::default().with_external_potential(ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 0.5,
+            x: 0.0,
+            y: 0.0,
+            z: 6.0,
+        }],
         ..Default::default()
-    };
+    });
     let r = run(&scf, &FrequencyConfig::default());
     assert_eq!(r.hessian_source, HessianSource::Analytic);
     assert_eq!(r.n_gradient_evaluations, 0);
@@ -292,19 +281,16 @@ fn smeared_charges_are_analytic_and_match_fd() {
     if !has_deriv2() {
         return;
     }
-    let scf = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
-                q: 0.5,
-                x: 0.0,
-                y: 0.0,
-                z: 4.0,
-                width: 1.0,
-            }],
-            ..Default::default()
-        }),
+    let scf = RhfConfig::default().with_external_potential(ExternalPotential {
+        smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
+            q: 0.5,
+            x: 0.0,
+            y: 0.0,
+            z: 4.0,
+            width: 1.0,
+        }],
         ..Default::default()
-    };
+    });
     let an = run(&scf, &FrequencyConfig::default());
     assert_eq!(an.hessian_source, HessianSource::Analytic);
     assert_eq!(an.n_gradient_evaluations, 0);
@@ -329,13 +315,10 @@ fn uniform_field_is_analytic_and_matches_fd() {
     if !has_deriv2() {
         return;
     }
-    let scf = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            field: Some([0.01, -0.02, 0.03]),
-            ..Default::default()
-        }),
+    let scf = RhfConfig::default().with_external_potential(ExternalPotential {
+        field: Some([0.01, -0.02, 0.03]),
         ..Default::default()
-    };
+    });
     let an = run(&scf, &FrequencyConfig::default());
     assert_eq!(an.hessian_source, HessianSource::Analytic);
     assert_eq!(an.n_gradient_evaluations, 0);
@@ -436,11 +419,9 @@ fn density_fitting_is_analytic_and_matches_fd(reference: FrequencyReference) {
             "def2-universal-jkfit",
         ),
     ] {
-        let scf = RhfConfig {
-            df_j_aux: Some(j_aux.into()),
-            df_k_aux: Some(k_aux.into()),
-            ..Default::default()
-        };
+        let scf = RhfConfig::default()
+            .with_df_j_aux(j_aux)
+            .with_df_k_aux(k_aux);
         let run = |hessian| {
             harmonic_frequencies(
                 &ParallelContext::default(),
@@ -499,10 +480,7 @@ fn density_fitting_with_an_ecp_passes_the_probe_for_every_reference() {
     if !has_deriv2() {
         return;
     }
-    let scf = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let scf = RhfConfig::default().with_df_j_aux("def2-universal-jkfit");
     let svp = basis::bundled("def2-svp").unwrap();
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&svp);
@@ -560,10 +538,7 @@ fn auto_is_analytic_for_a_rohf_doublet_and_matches_fd() {
 #[ignore = "tier medium (10-60s): CI runs it when an affected crate changes (scripts/ci_test_tiers.py)"]
 #[test]
 fn roks_stays_finite_difference_and_analytic_refuses_it() {
-    let scf = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let scf = RhfConfig::default().with_xc("PBE");
     let run_roks = |hessian| {
         harmonic_frequencies(
             &ParallelContext::default(),
@@ -596,10 +571,7 @@ fn roks_stays_finite_difference_and_analytic_refuses_it() {
 /// No SCF runs, so this needs no second-derivative libint2.
 #[test]
 fn analytic_kohn_sham_requests_name_the_open_shell_route() {
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let ks = RhfConfig::default().with_xc("PBE");
     let mol = nh2();
     let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -655,26 +627,17 @@ fn rohf_probe_refuses_what_the_hessian_does_not_cover() {
     let op = Operator::coulomb();
     analytic_rohf_hessian_available(&mol, &prep, op, &RhfConfig::default())
         .expect("NH2/STO-3G ROHF is supported");
-    let charges = RhfConfig {
-        external_potential: Some(ExternalPotential {
-            point_charges: vec![PointCharge {
-                q: 0.5,
-                x: 0.0,
-                y: 0.0,
-                z: 6.0,
-            }],
-            ..Default::default()
-        }),
+    let charges = RhfConfig::default().with_external_potential(ExternalPotential {
+        point_charges: vec![PointCharge {
+            q: 0.5,
+            x: 0.0,
+            y: 0.0,
+            z: 6.0,
+        }],
         ..Default::default()
-    };
-    let cosx = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        ..Default::default()
-    };
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    });
+    let cosx = RhfConfig::default().with_k_builder(ferric_scf::options::KBuilderKind::Cosx);
+    let ks = RhfConfig::default().with_xc("PBE");
     for (what, cfg) in [("external charges", charges), ("COSX", cosx), ("KS", ks)] {
         let err = analytic_rohf_hessian_available(&mol, &prep, op, &cfg)
             .expect_err(&format!("{what} must be refused by the ROHF probe"));
@@ -710,11 +673,9 @@ fn semicanonicalized_result_gives_the_rohf_hessian_and_uhf_is_refused() {
         let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
         let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let cfg = RhfConfig {
-            density_conv: 1e-10,
-            energy_conv: 1e-12,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_density_conv(1e-10)
+            .with_energy_conv(1e-12);
         let rohf = ferric_scf::rohf::solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         let direct = rohf_hessian(&ctx, &mol, &prep, op, &bounds, &rohf, &cfg).unwrap();
         let semi = ferric_scf::semicanonical::unrestricted_reference(&mol, &rohf).unwrap();
@@ -796,11 +757,9 @@ fn ri_j_with_an_ecp_is_analytic_and_matches_fd() {
     let svp = basis::bundled("def2-svp").unwrap();
     let mut hi = Molecule::parse_xyz("2\nHI\nH 0 0 0\nI 0 0 1.75\n", 0, 1).unwrap();
     hi.apply_ecp(&svp);
-    let scf = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux(String::new());
     let prep = PreparedBasis::new(&hi, &svp).unwrap();
     let probe = analytic_hessian_available(&hi, &prep, Operator::coulomb(), &scf);
     probe.expect("RI-J + ECP is analytic");
@@ -897,10 +856,7 @@ fn kohn_sham_result_with_a_hartree_fock_config_is_refused() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let hf = RhfConfig::default();
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let ks = RhfConfig::default().with_xc("PBE");
     let expect_refused = |what: &str, err: ferric_core::error::FerricError| {
         let msg = err.to_string();
         eprintln!("{what}: {msg}");

@@ -35,12 +35,10 @@ fn pbe_ks_h2o_energy_and_homo_match_pyscf() {
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("pbe")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7);
     let rks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("PBE-KS SCF");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_ev = rks.eps_r()[nocc - 1] * HA;

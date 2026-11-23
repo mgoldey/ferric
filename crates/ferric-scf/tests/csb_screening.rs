@@ -622,12 +622,10 @@ fn csb_rhf_energy_matches_schwarz() {
     let ctx = ParallelContext::default();
     let (mol, prep) = prep_for("../../testdata/molecules/water.xyz", "cc-pvdz");
     let op = Operator::coulomb();
-    let cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-9,
-        integral_thresh: 1e-12,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-9);
+    cfg.integral_thresh = 1e-12;
 
     let b_schwarz =
         SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz).unwrap();
@@ -693,12 +691,10 @@ fn csb_rhf_energy_matches_schwarz() {
 fn csb_rhf_is_thread_count_bit_identical() {
     let (mol, prep) = prep_for("../../testdata/molecules/water.xyz", "cc-pvdz");
     let op = Operator::coulomb();
-    let cfg = RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-9,
-        integral_thresh: 1e-12,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-9);
+    cfg.integral_thresh = 1e-12;
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csb).unwrap();
     assert!(
         bounds.csb_m.is_some(),

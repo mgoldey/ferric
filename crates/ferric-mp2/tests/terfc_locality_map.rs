@@ -108,10 +108,7 @@ fn terfc_locality_map() {
         &obs,
         c,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let no = (mol.nelec() as usize) / 2 - fc;

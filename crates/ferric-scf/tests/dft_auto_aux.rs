@@ -18,21 +18,17 @@ fn run_h2(xc: &str, explicit: bool) -> f64 {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let cfg = if explicit {
-        RhfConfig {
-            xc: Some(xc.into()),
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        }
+        RhfConfig::default()
+            .with_xc(xc)
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
     } else {
-        RhfConfig {
-            xc: Some(xc.into()),
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        }
+        RhfConfig::default()
+            .with_xc(xc)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
     };
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     res.energy

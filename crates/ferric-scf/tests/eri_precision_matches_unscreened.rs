@@ -51,11 +51,9 @@ fn scf_eri_precision_matches_unscreened_integrals() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6);
     let d = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
         .unwrap()
         .density_total
