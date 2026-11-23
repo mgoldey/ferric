@@ -459,7 +459,8 @@ mod tests {
     }
 
     /// The aux-blocked (spilled, multi-block) transform must reproduce the
-    /// in-core single-block build exactly. Uses an explicit tiny budget for the
+    /// in-core single-block build up to the reassociation of its aux sum
+    /// (bound derived below; the MO transforms agree bitwise). Uses an explicit tiny budget for the
     /// AO source (no env dependence); the MO coefficient matrix is arbitrary —
     /// both paths consume the same C so any full-rank choice validates equality.
     #[test]
@@ -510,14 +511,60 @@ mod tests {
         .unwrap();
 
         assert_eq!(full.b_full.dim(), blocked.b_full.dim());
-        let maxdiff = (&full.b_full - &blocked.b_full)
-            .iter()
-            .map(|v| v.abs())
-            .fold(0.0, f64::max);
-        assert!(
-            maxdiff <= 1e-14,
-            "blocked b_full != in-core b_full, maxdiff={maxdiff:e}"
+
+        // The two builds are the same contraction b[P,mn] = sum_Q
+        // V^{-1/2}[P,Q] (Q|mn)_MO, summed in a different order: the in-core
+        // source dresses all naux rows in one GEMM (k = naux, at most
+        // MO_STREAM_CHUNK per call), the spilled one accumulates (beta = 1)
+        // one GEMM per ~3-row aux block. The MO transform of each aux row is
+        // the same computation in both (checked bitwise below), so the only
+        // difference is floating-point reassociation of a length-naux dot
+        // product. Each order is within gamma_n * sum_Q |V[P,Q]| |(Q|mn)| of
+        // the exact value (Higham, Accuracy and Stability of Numerical
+        // Algorithms, 2nd ed., eq. 3.5: any summation order, FMA or not),
+        // with gamma_n = n u / (1 - n u), u = eps / 2, so they differ by at
+        // most twice that, element by element. A fixed absolute bar (1e-14
+        // here before) is not a property of the algorithm: V^{-1/2} has large
+        // entries of both signs, so |b| <= 0.61 is a cancellation of terms
+        // whose absolute sum reaches 182. Measured (water/cc-pVDZ-RI, naux =
+        // 84, debug build): max |diff| 1.13e-14, at most 1.7% of the bound
+        // anywhere. An indexing error (a wrong block offset or row) moves an
+        // element by O(|b|), orders of magnitude above the largest bound
+        // (2 gamma_84 * 182 = 3.4e-12), so it still fails here.
+        let identity = Array2::<f64>::eye(v_inv_sqrt.nrows());
+        let undressed = |src: &mut ThreeIndexSource| {
+            let c_act = c.slice(s![.., frozen_core..]).to_owned();
+            ferric_mp2::rimp2::stream_dressed_mo_band(src, &identity, &c_act, &c_act, None).unwrap()
+        };
+        // An identity metric dresses exactly (1*x + 0*y + ... rounds to x).
+        let mo = undressed(&mut src_full);
+        assert_eq!(mo, undressed(&mut src_tiny), "MO transforms differ");
+        let bound = v_inv_sqrt.mapv(f64::abs).dot(&mo.mapv(f64::abs));
+        let n = v_inv_sqrt.nrows() as f64;
+        let u = f64::EPSILON / 2.0;
+        let gamma = n * u / (1.0 - n * u);
+        let (b_full_flat, b_blocked_flat) = (
+            full.b_full
+                .view()
+                .into_shape_with_order(bound.dim())
+                .unwrap(),
+            blocked
+                .b_full
+                .view()
+                .into_shape_with_order(bound.dim())
+                .unwrap(),
         );
+        for ((a, b), bnd) in b_full_flat
+            .iter()
+            .zip(b_blocked_flat.iter())
+            .zip(bound.iter())
+        {
+            let (d, tol) = ((a - b).abs(), 2.0 * gamma * bnd);
+            assert!(
+                d <= tol,
+                "blocked b_full != in-core b_full beyond reassociation: |diff|={d:e} > {tol:e}"
+            );
+        }
         assert_eq!(full.n_act, blocked.n_act);
         assert_eq!(full.n_occ_act, blocked.n_occ_act);
         assert_eq!(full.eps_act, blocked.eps_act);
