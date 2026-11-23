@@ -78,12 +78,10 @@ fn rs_mp2_rpa_energies_do_not_depend_on_the_budget() {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged);

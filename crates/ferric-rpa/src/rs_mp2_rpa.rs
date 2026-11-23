@@ -1433,7 +1433,10 @@ mod tests {
         assert_eq!(d.frozen_core, 3);
         assert_eq!(d.quadrature.n_points, cfg.drpa.quadrature.n_points);
         let shape = scan_shape_for_test();
-        assert!(!shape.need_inv_dielectric, "the pre-flight charges no stack");
+        assert!(
+            !shape.need_inv_dielectric,
+            "the pre-flight charges no stack"
+        );
     }
 
     fn scan_shape_for_test() -> crate::budget::PeakEstimateShape {

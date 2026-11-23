@@ -70,7 +70,7 @@ pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
             &n_i32,
             &k_i32,
             &alpha,
-            a.as_ptr(),
+            a_slice.as_ptr(),
             &lda,
             &beta,
             c.as_mut_ptr(),
@@ -162,7 +162,7 @@ pub(crate) fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) 
     // (a column slice of a wider buffer), which BLAS takes as `lda`.
     let strides = a.strides();
     assert!(
-        (strides[1] == 1 || kdim == 1) && strides[0] >= kdim as isize,
+        (strides[1] == 1 || kdim == 1) && (m == 1 || strides[0] >= kdim as isize),
         "syrk_aat_accumulate_into: input must be row-major with unit column stride"
     );
     let row_stride = if m == 1 { kdim } else { strides[0] as usize };

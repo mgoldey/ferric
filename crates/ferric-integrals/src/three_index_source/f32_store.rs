@@ -404,7 +404,10 @@ impl ThreeIndexSource {
             return bytes;
         }
         let (rows, nao) = (self.band_naux(), self.nao);
-        let full = rows.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let full = rows
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
         let packed = rows.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
         let head = nao
             .saturating_mul(nao)
