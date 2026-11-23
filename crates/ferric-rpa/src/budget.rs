@@ -484,6 +484,39 @@ pub fn closed_shell_run_charge(
     }
 }
 
+/// What the Laplace-chi0 dielectric kernel
+/// (`crate::laplace_chi0::dielectric_matrix_laplace_into`) allocates per
+/// active frequency worker beyond the full-width loop scratch
+/// ([`quad_scratch_bytes_at_width`] at `nov`): the larger of its two branches.
+/// The Laplace branch keeps a copy of the unscaled projection (`m·nov`); the
+/// high-frequency dense fallback (`sternheimer::dielectric_matrix`) builds the
+/// projection and its scaled copy (`2 m·nov`) and a fresh `m²` matrix. Both
+/// are charged with `m = naux`, as the loop scratch is.
+pub fn laplace_kernel_extra_bytes(shape: PeakEstimateShape) -> usize {
+    let m = shape.naux.max(shape.n_keep.min(shape.naux));
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    m.saturating_mul(nov)
+        .saturating_mul(2)
+        .saturating_add(m.saturating_mul(m))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1))
+}
+
+/// [`ScanCharge`] with `extra` bytes more in the dRPA phase's per-worker
+/// scratch (`drpa_soft` and the total).
+pub fn with_drpa_scratch(base: ScanCharge, extra: usize) -> ScanCharge {
+    let drpa_soft = base.drpa_soft.saturating_add(extra);
+    let build = base.ao_resident.saturating_add(base.stream_scratch);
+    let drpa = base.drpa_hard.saturating_add(drpa_soft);
+    ScanCharge {
+        total: base
+            .persistent
+            .saturating_add(build.max(base.spin_scratch).max(drpa)),
+        drpa_soft,
+        ..base
+    }
+}
+
 /// Planes the rs-mp2-rpa scan holds for its whole run: the metric buffers
 /// (`3 naux²`, as in [`estimate_peak_bytes`]) and one `b_ov` (`naux·nov`).
 /// The driver keeps one `RpaIntermediates` at a time, so one `b_ov`.

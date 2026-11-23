@@ -624,6 +624,50 @@ impl ThreeIndexSource {
 mod tests {
     use super::*;
 
+    /// The f32/f64 choice of a conversion reads the shapes, the budget and the
+    /// figure beside it, never the tier the raw tensor happens to be in (which
+    /// also reads the pool): an in-core and a spilled raw tensor of one shape
+    /// get the same decision at every budget, with and without a band beside.
+    #[test]
+    fn conversion_decision_does_not_depend_on_the_raw_tier() {
+        use ferric_core::{basis, mol::Molecule};
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let (naux, nao) = (dfbs.nbasis(), obs.nbasis());
+        let full = naux * nao * nao * 8;
+        let resident = || ThreeIndexSource::build(op, &obs, &dfbs, 1 << 40).unwrap();
+        let spilled = || ThreeIndexSource::build(op, &obs, &dfbs, full / 8).unwrap();
+        assert!(resident().is_resident());
+        assert!(!spilled().is_resident());
+        let f32_bytes = ThreeIndexSource::ri_j_f32_bytes(naux, packed_pair_len(nao));
+        let band = full / 3;
+        for beside in [0, band] {
+            for budget in [
+                f32_bytes,
+                f32_bytes + full / 2,
+                f32_bytes + full + beside,
+                2 * full + beside,
+                1 << 40,
+            ] {
+                let decide = |src: ThreeIndexSource| {
+                    src.into_ri_j_f32_beside((budget, beside), F32Rounding::Nearest)
+                        .unwrap()
+                        .1
+                        .is_some()
+                };
+                assert_eq!(
+                    decide(resident()),
+                    decide(spilled()),
+                    "budget {budget}, beside {beside}"
+                );
+            }
+        }
+    }
+
     /// Catches: a toward-zero mutant that rounds the wrong way for negative
     /// values, and a nearest mode that is not `as f32`.
     #[test]

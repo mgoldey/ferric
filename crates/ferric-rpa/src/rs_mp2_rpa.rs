@@ -343,7 +343,13 @@ fn charge_of(
         nov.max(1)
     };
     let stream = ferric_mp2::rimp2::mo_stream_scratch_bytes(shape.naux, nov);
-    let base = crate::budget::scan_charge(shape, budget_bytes, panel_width, stream);
+    let mut base = crate::budget::scan_charge(shape, budget_bytes, panel_width, stream);
+    if !crate::frequency_loop_is_panelled(&cfg.drpa) {
+        base = crate::budget::with_drpa_scratch(
+            base,
+            crate::budget::laplace_kernel_extra_bytes(shape),
+        );
+    }
     if cfg.attenuator != Attenuator::Terf {
         return base;
     }
@@ -1457,7 +1463,22 @@ mod tests {
         assert!(dense.drpa_soft < quad_scratch_bytes_at_width(shape, nov));
         cfg.drpa.chi0_backend = crate::config::Chi0Backend::Laplace { n_quad: 5 };
         let laplace = charge_of(shape, &cfg, budget);
-        assert_eq!(laplace.drpa_soft, quad_scratch_bytes_at_width(shape, nov));
+        // Full width, plus the kernel's projection copies (the Laplace
+        // branch's unscaled copy, the dense fallback's projection, scaled
+        // copy and fresh m² matrix), per worker.
+        let (m, w) = (shape.naux, shape.n_workers);
+        let copies = w * (2 * m * nov + m * m) * 8;
+        assert_eq!(
+            laplace.drpa_soft,
+            quad_scratch_bytes_at_width(shape, nov) + copies
+        );
+        assert_eq!(
+            laplace.total,
+            crate::budget::scan_persistent_bytes(shape)
+                + (laplace.drpa_hard + laplace.drpa_soft)
+                    .max(laplace.ao_resident + laplace.stream_scratch)
+                    .max(laplace.spin_scratch)
+        );
     }
 
     /// When the planes resident through the dRPA leave nothing of the

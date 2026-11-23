@@ -460,17 +460,22 @@ pub(crate) fn closed_shell_charge(
     } else {
         nov.max(1)
     };
-    Ok((
-        shape,
-        budget::closed_shell_run_charge(shape, planes, panel_width),
-    ))
+    let mut charge = budget::closed_shell_run_charge(shape, planes, panel_width);
+    if !frequency_loop_is_panelled(config) {
+        // The Laplace kernel's own copies of the projection.
+        let extra = budget::laplace_kernel_extra_bytes(shape);
+        charge.soft = charge.soft.saturating_add(extra);
+        charge.total = charge.total.saturating_add(extra);
+    }
+    Ok((shape, charge))
 }
 
 /// Whether the closed-shell frequency loop of `config` honours a panel
 /// allowance. The dense-chi0 loops do; the Laplace-chi0 eigenvalue loop
 /// (`energy::eval_eigenvalues_at_frequencies_laplace`) holds a full-width
 /// `(m, nov)` scratch and an `(m, m)` matrix per worker whatever the budget,
-/// so a pre-flight must charge it at full width.
+/// plus its kernel's own copies ([`budget::laplace_kernel_extra_bytes`]), so a
+/// pre-flight must charge it at full width with those added.
 pub(crate) fn frequency_loop_is_panelled(config: &PdepRpaConfig) -> bool {
     matches!(config.chi0_backend, Chi0Backend::Dense)
 }

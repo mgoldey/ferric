@@ -445,7 +445,7 @@ fn build_df_jk_impl<'a>(
                         op,
                         &dfbs,
                         ooc_budget,
-                        df_k.as_ref().map_or(0, DfK::resident_tensor_bytes),
+                        budget_placed_band_bytes(beside, ooc_budget),
                         Some(ctx),
                         j_precision,
                     )? {
@@ -473,10 +473,7 @@ fn build_df_jk_impl<'a>(
                             raw,
                             op,
                             &dfbs,
-                            (
-                                ooc_budget,
-                                df_k.as_ref().map_or(0, DfK::resident_tensor_bytes),
-                            ),
+                            (ooc_budget, budget_placed_band_bytes(beside, ooc_budget)),
                             Some(ctx),
                             j_precision,
                         )?)
@@ -538,6 +535,20 @@ fn build_df_jk_impl<'a>(
     };
     yield_device_to_k(&mut df_j, &df_k);
     Ok((df_j, df_k))
+}
+
+/// The dressed DF-K band an f32 RI-J conversion counts beside it: its
+/// packed size `band_bytes` (`DfK::packed_band_bytes`, the figure the raw
+/// placement reserves room for) when the budget alone holds it, else 0
+/// (spilled). Not the live `DfK::resident_tensor_bytes`: whether the band
+/// stayed in core also reads the pool, and the f32/f64 choice must depend on
+/// the shapes and the budget only.
+fn budget_placed_band_bytes(band_bytes: usize, budget: usize) -> usize {
+    if band_bytes <= budget {
+        band_bytes
+    } else {
+        0
+    }
 }
 
 /// Dress-first RI-JK ([`ThreeIndexSource::dress_first_wanted`]) for a shared
@@ -1088,6 +1099,19 @@ pub(crate) fn subtract_rsh_exchange(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The band an f32 RI-J conversion counts beside it is placed by the
+    /// budget alone: the same figure whether the live DF-K band stayed in core
+    /// or was spilled (the live residency is not an input), the band when the
+    /// budget holds it, else nothing.
+    #[test]
+    fn f32_conversion_counts_the_band_at_its_budget_placement() {
+        let band = 1_000_000;
+        assert_eq!(budget_placed_band_bytes(band, band), band);
+        assert_eq!(budget_placed_band_bytes(band, 10 * band), band);
+        assert_eq!(budget_placed_band_bytes(band, band - 1), 0);
+        assert_eq!(budget_placed_band_bytes(0, 0), 0);
+    }
 
     /// Dress first, at a budget where raw and DF-K's packed band do not fit
     /// together but the band and the dressing's stream do: DF-K holds just the
