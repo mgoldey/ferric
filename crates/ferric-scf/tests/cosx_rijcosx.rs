@@ -139,20 +139,20 @@ fn sgx(cfg: CosxConfig, n_radial: usize) -> CosxConfig {
 /// `xc = None`: HF. `j_fit`: RI-J on (named), else exact J (`""`).
 /// `cosx = None`: exact K (direct, or `""` DF-K for a functional).
 fn cfg(xc: Option<&str>, j_fit: bool, cosx: Option<CosxConfig>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
+        .with_df_j_aux(if j_fit { JK.to_string() } else { String::new() })
+        .with_df_k_aux(String::new())
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-10)
+        .with_max_iter(300)
+        // The gradients here are checked against finite differences of the
+        // energy, which the f32 RI-J tensor makes jagged; pin f64.
+        .with_ri_j_precision(RiJPrecision::F64);
     c.k_builder = cosx
         .as_ref()
         .map(|_| ferric_scf::options::KBuilderKind::Cosx);
-    c.cosx = cosx.unwrap_or_default();
     c.xc = xc.map(str::to_string);
-    c.df_j_aux = Some(if j_fit { JK.to_string() } else { String::new() });
-    c.df_k_aux = Some(String::new());
-    c.energy_conv = 1e-8;
-    c.density_conv = 1e-10;
-    c.max_iter = 300;
-    // The gradients here are checked against finite differences of the
-    // energy, which the f32 RI-J tensor makes jagged; pin f64.
-    c.ri_j_precision = Some(RiJPrecision::F64);
     c
 }
 
@@ -207,10 +207,9 @@ fn fd(mol: &Molecule, solve: &(dyn Fn(&Molecule) -> f64 + Sync)) -> Array2<f64> 
 }
 
 fn seeded(c: &RhfConfig, seed: &Array2<f64>) -> RhfConfig {
-    let mut cfg = c.clone();
-    cfg.init_guess_density = Some(seed.clone());
-    cfg.use_sad_guess = false;
-    cfg
+    c.clone()
+        .with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 // ---------------------------------------------------------------------------

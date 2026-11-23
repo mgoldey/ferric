@@ -52,11 +52,12 @@ fn solve(mol: &Molecule) -> (ScfResult, PreparedBasis, SchwarzBounds) {
     let bs = basis::bundled(BASIS).unwrap();
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let mut cfg = UhfConfig::default().with_xc(XC.to_string());
+    let mut cfg = UhfConfig::default()
+        .with_xc(XC.to_string())
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
     cfg.fractional_occ = true;
-    cfg.energy_conv = 1e-11;
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 300;
     let r = solve_uhf(&ParallelContext::default(), mol, &prep, &bounds, &cfg).unwrap();
     assert!(r.converged);
     (r, prep, bounds)
@@ -243,11 +244,11 @@ fn h2o_cation_excited(
     let bs = basis::bundled("6-31g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let mut cfg = UhfConfig::default()
+    let cfg = UhfConfig::default()
         .with_energy_conv(1e-12)
         .with_density_conv(1e-9)
-        .with_max_iter(300);
-    cfg.mom_after_iter = 1;
+        .with_max_iter(300)
+        .with_mom_after_iter(1);
     let ctx = ParallelContext::default();
     let r = solve_uhf_with_guess(&ctx, &mol, &prep, &bounds, &cfg, guess).unwrap();
     assert!(r.converged);

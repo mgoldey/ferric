@@ -85,11 +85,11 @@ fn run_with(
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let mut cfg = RhfConfig::default()
         .with_xc(xc)
-        .with_df_j_aux("def2-universal-jkfit");
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_density_conv(1e-6)
+        .with_max_iter(3);
     cfg.df_k_aux = k_aux.then(|| "def2-universal-jkfit".into());
     cfg.ri_j_precision = ri_j_precision;
-    cfg.density_conv = 1e-6;
-    cfg.max_iter = 3;
     let (a, o0) = (stats(), JXC_OVERLAP_BUILDS.load(Ordering::Relaxed));
     let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let (b, o1) = (stats(), JXC_OVERLAP_BUILDS.load(Ordering::Relaxed));

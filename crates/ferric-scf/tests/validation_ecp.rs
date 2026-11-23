@@ -293,13 +293,11 @@ fn rhf_config() -> RhfConfig {
 }
 
 fn uhf_config() -> RhfConfig {
-    let mut c = RhfConfig::default()
+    RhfConfig::default()
         .with_max_iter(400)
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)
-        .with_check_stability(true);
-    c.scf_stability_descent = true;
-    c
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 fn max_abs(a: &Array2<f64>) -> f64 {

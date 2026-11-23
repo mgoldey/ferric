@@ -94,13 +94,12 @@ const LAMBDA_TOL: f64 = 1e-6;
 /// both verdicts reachable, which `both_verdicts_are_reachable_through_the_
 /// config_flag` exists specifically to demonstrate.
 fn tight(check_stability: bool) -> RhfConfig {
-    let mut c = RhfConfig::default()
+    RhfConfig::default()
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)
         .with_max_iter(400)
-        .with_check_stability(check_stability);
-    c.use_sad_guess = false;
-    c
+        .with_check_stability(check_stability)
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 fn run_uhf(xyz: &str, charge: i32, mult: usize, basis_name: &str, check: bool) -> ScfResult {
@@ -478,7 +477,7 @@ fn ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian() {
         .with_density_conv(1e-9)
         .with_max_iter(400)
         .with_check_stability(true)
-        .with_xc("PBE".to_string());
+        .with_xc("PBE");
     let res = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(res.converged, "RKS/PBE must converge");
     let wired = res

@@ -71,11 +71,11 @@ fn hydroxyl() -> Molecule {
 }
 
 fn scf(xc: Option<&str>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_density_conv(DC)
+        .with_energy_conv(DC)
+        .with_max_iter(300);
     c.xc = xc.map(str::to_string);
-    c.density_conv = DC;
-    c.energy_conv = DC;
-    c.max_iter = 300;
     c
 }
 

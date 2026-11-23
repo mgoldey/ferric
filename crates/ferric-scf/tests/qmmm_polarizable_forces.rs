@@ -77,11 +77,11 @@ fn run_polarizable(sys: &QmmmSystem) -> PolarizableRun {
         })
     };
     let ext = sys.to_external_potential();
-    let mut cfg = RhfConfig::default();
-    cfg.external_potential = ext.clone();
+    let mut cfg = RhfConfig::default()
+        .with_external_potential(ext.clone())
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
     cfg.polarizable = polarizable;
-    cfg.density_conv = 1e-10;
-    cfg.max_iter = 300;
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "polarizable-embedded SCF failed to converge");
     let qm_gradient = rhf_gradient_with_polarizable(
@@ -129,9 +129,9 @@ fn full_gradient_with_polarizable_matches_plain_full_gradient_when_not_polarizab
     let (prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
     let ext = sys.to_external_potential();
-    let mut cfg = RhfConfig::default();
-    cfg.external_potential = ext.clone();
-    cfg.density_conv = 1e-10;
+    let cfg = RhfConfig::default()
+        .with_external_potential(ext.clone())
+        .with_density_conv(1e-10);
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     let qm_grad =

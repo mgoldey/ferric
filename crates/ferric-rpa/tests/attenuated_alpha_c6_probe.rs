@@ -130,9 +130,9 @@ fn attenuated_water_rpa_pbe_c6_probe() {
     let scf_bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
     let scf_cfg = RhfConfig::default()
         .with_energy_conv(1e-9)
-        .with_xc("PBE".to_string())
-        .with_df_j_aux("def2-universal-jkfit".to_string())
-        .with_df_k_aux("def2-universal-jkfit".to_string());
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &scf_bounds, &scf_cfg).unwrap();
     assert!(rhf.converged, "RPA@PBE reference SCF did not converge");
 
@@ -299,9 +299,9 @@ fn screening_omega_vs_gap() {
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
-            .with_xc("PBE".to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
         assert!(rhf.converged, "{label}: PBE SCF not converged");
 
@@ -427,9 +427,9 @@ fn attenuation_structure_vs_scalar() {
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
-            .with_xc("PBE".to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
 
         let dp0 = pdep_dynamic_polarizability(
@@ -584,9 +584,9 @@ fn erf_rpa_c6_and_structure() {
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
-            .with_xc("PBE".to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
 
         // Full-Coulomb baseline C6 for reference.

@@ -55,11 +55,11 @@ fn reference(name: &str) -> serde_json::Value {
 }
 
 fn cfg(rohf: bool) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
+        .with_max_iter(300);
     c.symmetry = true;
-    c.density_conv = 1e-10;
-    c.energy_conv = 1e-12;
-    c.max_iter = 300;
     c.rohf_occupation_guard = !rohf;
     c
 }
@@ -193,12 +193,11 @@ fn stretched_h2_negative_control_matches_pyscf() {
     let bs = basis::bundled("6-31g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let mut c = RhfConfig::default();
-    c.scf_stability_descent = true;
-    c.check_stability = true;
-    c.density_conv = 1e-10;
-    c.energy_conv = 1e-12;
-    c.max_iter = 300;
+    let c = RhfConfig::default()
+        .with_stability(ferric_scf::options::Stability::Descend)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
+        .with_max_iter(300);
     let broken = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &c).unwrap();
     let e_off = want["unblocked"]["energy"].as_f64().unwrap();
     assert!(

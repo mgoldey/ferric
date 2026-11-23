@@ -148,13 +148,13 @@ fn check(stem: &str, uhf: bool) {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig::default();
-    cfg.external_potential = Some(ext);
-    cfg.energy_conv = 1e-12;
-    cfg.density_conv = 1e-10;
-    cfg.max_iter = 300;
-    cfg.df_j_aux = Some(String::new());
-    cfg.df_k_aux = Some(String::new());
+    let cfg = RhfConfig::default()
+        .with_external_potential(ext)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(300)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new());
     let ctx = ParallelContext::default();
     let (res, h) = if uhf {
         let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();

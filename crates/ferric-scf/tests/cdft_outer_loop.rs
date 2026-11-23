@@ -84,7 +84,12 @@ fn build_sys() -> Sys {
 fn cfg(target: f64, use_sad: bool) -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_max_iter(400)
-        .with_level_shift(HENE_LEVEL_SHIFT);
+        .with_level_shift(HENE_LEVEL_SHIFT)
+        .with_dft_grid(AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 302,
+            ..Default::default()
+        });
     c.cdft_lambda_tol = HENE_LAMBDA_TOL;
     // Pinned so "this path converges" is not also an assertion about
     // how many outer iterations a particular CPU needs -- CI and this
@@ -98,11 +103,6 @@ fn cfg(target: f64, use_sad: bool) -> RhfConfig {
     c.cdft_max_outer = 40;
     c.cdft_stability_descent = false;
     c.use_sad_guess = use_sad;
-    c.dft_grid = Some(AtomicGridConfig {
-        n_radial: 99,
-        n_angular: 302,
-        ..Default::default()
-    });
     c.constraints = vec![Constraint {
         fragment: vec![0],
         target,

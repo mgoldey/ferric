@@ -108,11 +108,11 @@ fn diatomic(
 
 /// The F6 report's settings.
 fn cfg(xc: Option<&str>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_energy_conv(1e-10)
+        .with_max_iter(200);
     c.xc = xc.map(str::to_string);
-    c.density_conv = 1e-8;
-    c.energy_conv = 1e-10;
-    c.max_iter = 200;
     c
 }
 
@@ -375,11 +375,8 @@ fn a_converged_excited_state_is_not_returned() {
          {OH_631G_EXCITED:.10}; got {:.10}",
         excited.energy
     );
-    let seeded = |guard: bool| {
-        let mut c = tight(false, guard);
-        c.init_guess_density = Some(excited.density_total.clone());
-        c
-    };
+    let seeded =
+        |guard: bool| tight(false, guard).with_init_guess_density(excited.density_total.clone());
 
     // 2. Negative control: guard OFF holds the excited state it is given.
     let held = run(&seeded(false));

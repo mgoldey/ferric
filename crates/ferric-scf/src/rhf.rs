@@ -668,6 +668,9 @@ impl RhfConfig {
     /// tight one floors under DF noise and would hang at `max_iter`, see
     /// `scf_converged`) and `external_potential` (an embedding field, or
     /// `None`).
+    ///
+    /// It leaves [`Self::ri_j_task`] at `Energy`: a geometry driver adds
+    /// [`Self::for_geometry_task`] itself.
     pub fn gradient_reference(
         external_potential: Option<ferric_core::external_potential::ExternalPotential>,
     ) -> Self {
@@ -690,70 +693,134 @@ impl RhfConfig {
         }
     }
 
+    // The `with_*` setters each write exactly one field (`with_stability`
+    // the pair it names) and nothing else; `construction_oracle` checks that
+    // one setter at a time.
+
     /// Set the maximum number of SCF iterations.
+    #[must_use]
     pub fn with_max_iter(mut self, max_iter: usize) -> Self {
         self.max_iter = max_iter;
         self
     }
     /// Set the density convergence threshold (dp_rms).
+    #[must_use]
     pub fn with_density_conv(mut self, thresh: f64) -> Self {
         self.density_conv = thresh;
         self
     }
     /// Set the energy convergence threshold (|ΔE|, Ha).
+    #[must_use]
     pub fn with_energy_conv(mut self, thresh: f64) -> Self {
         self.energy_conv = thresh;
         self
     }
     /// Set the XC functional (e.g. "PBE", "B3LYP", "wB97X-V").
+    #[must_use]
     pub fn with_xc(mut self, xc: impl Into<String>) -> Self {
         self.xc = Some(xc.into());
         self
     }
     /// Set the virtual-block level shift (Ha) for convergence damping.
+    ///
+    /// Only [`Self::level_shift`]: [`Self::meta_gga_auto_level_shift`] keeps
+    /// its value, so on the defaults `with_level_shift(0.0)` still gives a
+    /// meta-GGA the automatic 0.5 Ha shift. The options lowering differs:
+    /// [`ScfOptions::level_shift`](crate::options::ScfOptions::level_shift)
+    /// also clears `meta_gga_auto_level_shift`, so an explicit 0 runs
+    /// unshifted. A frontend lowering a user's `level_shift` should go
+    /// through `ScfOptions`; this setter is the literal field write.
+    #[must_use]
     pub fn with_level_shift(mut self, shift: f64) -> Self {
         self.level_shift = shift;
         self
     }
     /// Set the K-matrix builder strategy.
+    #[must_use]
     pub fn with_k_builder(mut self, builder: KBuilderKind) -> Self {
         self.k_builder = Some(builder);
         self
     }
     /// Set the COSX knobs (only read when the builder is
     /// [`KBuilderKind::Cosx`]).
+    #[must_use]
     pub fn with_cosx(mut self, cosx: crate::cosx_k::CosxConfig) -> Self {
         self.cosx = cosx;
         self
     }
     /// Set the RI-J storage precision ([`Self::ri_j_precision`]).
+    #[must_use]
     pub fn with_ri_j_precision(mut self, precision: crate::df_j::RiJPrecision) -> Self {
         self.ri_j_precision = Some(precision);
         self
     }
     /// Set an explicit main Kohn-Sham grid ([`Self::dft_grid`]).
+    #[must_use]
     pub fn with_dft_grid(mut self, grid: ferric_dft::grid::AtomicGridConfig) -> Self {
         self.dft_grid = Some(grid);
         self
     }
     /// Set the auxiliary basis for density-fitted Coulomb (RI-J).
+    #[must_use]
     pub fn with_df_j_aux(mut self, aux: impl Into<String>) -> Self {
         self.df_j_aux = Some(aux.into());
         self
     }
     /// Set the auxiliary basis for density-fitted exchange (RI-K).
+    #[must_use]
     pub fn with_df_k_aux(mut self, aux: impl Into<String>) -> Self {
         self.df_k_aux = Some(aux.into());
         self
     }
     /// Enable verbose per-iteration SCF output.
+    #[must_use]
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
     }
     /// Enable the opt-in post-convergence internal stability analysis.
+    #[must_use]
     pub fn with_check_stability(mut self, check: bool) -> Self {
         self.check_stability = check;
+        self
+    }
+    /// Set [`Self::check_stability`] and [`Self::scf_stability_descent`]
+    /// from a [`Stability`](crate::options::Stability), as the options
+    /// lowering does.
+    #[must_use]
+    pub fn with_stability(mut self, stability: crate::options::Stability) -> Self {
+        self.check_stability = stability.checks();
+        self.scf_stability_descent = stability == crate::options::Stability::Descend;
+        self
+    }
+    /// Set the initial-guess family ([`Self::use_sad_guess`]):
+    /// [`Guess::Sad`](crate::options::Guess::Sad) or
+    /// [`Guess::Core`](crate::options::Guess::Core).
+    #[must_use]
+    pub fn with_guess(mut self, guess: crate::options::Guess) -> Self {
+        self.use_sad_guess = guess == crate::options::Guess::Sad;
+        self
+    }
+    /// Start from the density `d` ([`Self::init_guess_density`]).
+    #[must_use]
+    pub fn with_init_guess_density(mut self, d: Array2<f64>) -> Self {
+        self.init_guess_density = Some(d);
+        self
+    }
+    /// Set (or, with `None`, clear) the embedding field
+    /// ([`Self::external_potential`]).
+    #[must_use]
+    pub fn with_external_potential(
+        mut self,
+        external_potential: impl Into<Option<ferric_core::external_potential::ExternalPotential>>,
+    ) -> Self {
+        self.external_potential = external_potential.into();
+        self
+    }
+    /// Arm MOM after `iter` iterations ([`Self::mom_after_iter`]; 0 is off).
+    #[must_use]
+    pub fn with_mom_after_iter(mut self, iter: usize) -> Self {
+        self.mom_after_iter = iter;
         self
     }
 }
@@ -6840,52 +6907,245 @@ mod construction_oracle {
         }
     }
 
-    /// Each setter writes its field and nothing else, from the defaults and
-    /// from a non-default base (`..base` updates).
+    /// Each setter, applied alone, is the one-field struct update it
+    /// replaces, from the defaults and from a non-default base, so a setter
+    /// that also wrote another field would fail here.
     #[test]
-    fn setters_are_the_struct_update() {
-        let grid = AtomicGridConfig {
-            n_radial: 30,
-            n_angular: 50,
-            ..Default::default()
-        };
-        let cosx = CosxConfig {
-            overlap_fit: !CosxConfig::default().overlap_fit,
-            ..CosxConfig::default()
-        };
-        let base = RhfConfig::periodic(1e-10, 50);
-        for b in [RhfConfig::default(), base] {
-            let old = RhfConfig {
-                max_iter: 77,
-                energy_conv: 1e-7,
-                density_conv: 3e-9,
-                level_shift: 0.25,
-                verbose: true,
-                check_stability: true,
-                cosx: cosx.clone(),
-                xc: Some("PBE0".to_string()),
-                df_j_aux: Some("def2-universal-jkfit".to_string()),
-                df_k_aux: Some(String::new()),
-                k_builder: Some(KBuilderKind::Cosx),
-                ri_j_precision: Some(RiJPrecision::F64),
-                dft_grid: Some(grid.clone()),
-                ..b.clone()
-            };
-            let new = b
-                .with_max_iter(77)
-                .with_energy_conv(1e-7)
-                .with_density_conv(3e-9)
-                .with_level_shift(0.25)
-                .with_verbose(true)
-                .with_check_stability(true)
-                .with_cosx(cosx.clone())
-                .with_xc("PBE0")
-                .with_df_j_aux("def2-universal-jkfit")
-                .with_df_k_aux(String::new())
-                .with_k_builder(KBuilderKind::Cosx)
-                .with_ri_j_precision(RiJPrecision::F64)
-                .with_dft_grid(grid.clone());
-            assert_same(&old, &new);
+    fn each_setter_is_its_one_field_struct_update() {
+        use crate::options::{Guess, Stability};
+        type Case = (
+            &'static str,
+            fn(RhfConfig) -> RhfConfig,
+            fn(RhfConfig) -> RhfConfig,
+        );
+        fn grid() -> AtomicGridConfig {
+            AtomicGridConfig {
+                n_radial: 30,
+                n_angular: 50,
+                ..Default::default()
+            }
+        }
+        fn cosx() -> CosxConfig {
+            CosxConfig {
+                overlap_fit: !CosxConfig::default().overlap_fit,
+                ..CosxConfig::default()
+            }
+        }
+        fn dm() -> Array2<f64> {
+            Array2::from_shape_fn((2, 2), |(i, j)| (i + 2 * j) as f64 * 0.25)
+        }
+        let cases: Vec<Case> = vec![
+            (
+                "max_iter",
+                |b| RhfConfig { max_iter: 77, ..b },
+                |b| b.with_max_iter(77),
+            ),
+            (
+                "energy_conv",
+                |b| RhfConfig {
+                    energy_conv: 1e-7,
+                    ..b
+                },
+                |b| b.with_energy_conv(1e-7),
+            ),
+            (
+                "density_conv",
+                |b| RhfConfig {
+                    density_conv: 3e-9,
+                    ..b
+                },
+                |b| b.with_density_conv(3e-9),
+            ),
+            (
+                "level_shift",
+                |b| RhfConfig {
+                    level_shift: 0.25,
+                    ..b
+                },
+                |b| b.with_level_shift(0.25),
+            ),
+            (
+                "level_shift 0",
+                |b| RhfConfig {
+                    level_shift: 0.0,
+                    ..b
+                },
+                |b| b.with_level_shift(0.0),
+            ),
+            (
+                "verbose",
+                |b| RhfConfig { verbose: true, ..b },
+                |b| b.with_verbose(true),
+            ),
+            (
+                "check_stability",
+                |b| RhfConfig {
+                    check_stability: true,
+                    ..b
+                },
+                |b| b.with_check_stability(true),
+            ),
+            (
+                "cosx",
+                |b| RhfConfig { cosx: cosx(), ..b },
+                |b| b.with_cosx(cosx()),
+            ),
+            (
+                "xc",
+                |b| RhfConfig {
+                    xc: Some("PBE0".to_string()),
+                    ..b
+                },
+                |b| b.with_xc("PBE0"),
+            ),
+            (
+                "df_j_aux",
+                |b| RhfConfig {
+                    df_j_aux: Some("def2-universal-jkfit".to_string()),
+                    ..b
+                },
+                |b| b.with_df_j_aux("def2-universal-jkfit"),
+            ),
+            (
+                "df_k_aux",
+                |b| RhfConfig {
+                    df_k_aux: Some(String::new()),
+                    ..b
+                },
+                |b| b.with_df_k_aux(""),
+            ),
+            (
+                "k_builder",
+                |b| RhfConfig {
+                    k_builder: Some(KBuilderKind::Cosx),
+                    ..b
+                },
+                |b| b.with_k_builder(KBuilderKind::Cosx),
+            ),
+            (
+                "ri_j_precision",
+                |b| RhfConfig {
+                    ri_j_precision: Some(RiJPrecision::F64),
+                    ..b
+                },
+                |b| b.with_ri_j_precision(RiJPrecision::F64),
+            ),
+            (
+                "dft_grid",
+                |b| RhfConfig {
+                    dft_grid: Some(grid()),
+                    ..b
+                },
+                |b| b.with_dft_grid(grid()),
+            ),
+            (
+                "guess core",
+                |b| RhfConfig {
+                    use_sad_guess: false,
+                    ..b
+                },
+                |b| b.with_guess(Guess::Core),
+            ),
+            (
+                "guess sad",
+                |b| RhfConfig {
+                    use_sad_guess: true,
+                    ..b
+                },
+                |b| b.with_guess(Guess::Sad),
+            ),
+            (
+                "init_guess_density",
+                |b| RhfConfig {
+                    init_guess_density: Some(dm()),
+                    ..b
+                },
+                |b| b.with_init_guess_density(dm()),
+            ),
+            (
+                "external_potential",
+                |b| RhfConfig {
+                    external_potential: Some(field()),
+                    ..b
+                },
+                |b| b.with_external_potential(field()),
+            ),
+            (
+                "external_potential Some",
+                |b| RhfConfig {
+                    external_potential: Some(field()),
+                    ..b
+                },
+                |b| b.with_external_potential(Some(field())),
+            ),
+            (
+                "external_potential None",
+                |b| RhfConfig {
+                    external_potential: None,
+                    ..b
+                },
+                |b| b.with_external_potential(None),
+            ),
+            (
+                "mom_after_iter",
+                |b| RhfConfig {
+                    mom_after_iter: 5,
+                    ..b
+                },
+                |b| b.with_mom_after_iter(5),
+            ),
+            (
+                "stability off",
+                |b| RhfConfig {
+                    check_stability: false,
+                    scf_stability_descent: false,
+                    ..b
+                },
+                |b| b.with_stability(Stability::Off),
+            ),
+            (
+                "stability check",
+                |b| RhfConfig {
+                    check_stability: true,
+                    scf_stability_descent: false,
+                    ..b
+                },
+                |b| b.with_stability(Stability::Check),
+            ),
+            (
+                "stability descend",
+                |b| RhfConfig {
+                    check_stability: true,
+                    scf_stability_descent: true,
+                    ..b
+                },
+                |b| b.with_stability(Stability::Descend),
+            ),
+        ];
+        // A base where every field a setter writes differs from its default
+        // and from the value the cases write.
+        let mut other = RhfConfig::periodic(1e-10, 50)
+            .with_energy_conv(2e-4)
+            .with_level_shift(0.5)
+            .with_xc("B3LYP")
+            .with_df_j_aux("cc-pvdz-jkfit")
+            .with_df_k_aux("cc-pvdz-jkfit")
+            .with_k_builder(KBuilderKind::Link)
+            .with_ri_j_precision(RiJPrecision::F32)
+            .with_external_potential(ExternalPotential::default())
+            .with_mom_after_iter(2)
+            .with_stability(Stability::Descend)
+            .with_init_guess_density(Array2::zeros((2, 2)));
+        other.meta_gga_auto_level_shift = false;
+        other.dft_grid = Some(AtomicGridConfig::default());
+        for base in [RhfConfig::default(), other] {
+            for (name, old, new) in &cases {
+                assert_eq!(
+                    format!("{:?}", old(base.clone())),
+                    format!("{:?}", new(base.clone())),
+                    "{name}"
+                );
+            }
         }
     }
 }

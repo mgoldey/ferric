@@ -54,9 +54,9 @@ fn run(solver: &str, ratio: Option<f64>) {
     let mut c = RhfConfig::default()
         .with_xc("wB97X-V")
         .with_df_j_aux(AUX)
-        .with_df_k_aux(AUX);
+        .with_df_k_aux(AUX)
+        .with_max_iter(1);
     c.three_index_budget_bytes = p;
-    c.max_iter = 1;
     c.dft_grid = grid(30, 50);
     c.nlc_grid = grid(10, 14);
     let ctx = ParallelContext::default();

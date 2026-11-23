@@ -40,9 +40,7 @@ fn internal() -> OptimizeConfig {
 }
 
 fn with_ext(ext: ExternalPotential) -> RhfConfig {
-    let mut c = RhfConfig::default();
-    c.external_potential = Some(ext);
-    c
+    RhfConfig::default().with_external_potential(ext)
 }
 
 fn point_charge() -> ExternalPotential {

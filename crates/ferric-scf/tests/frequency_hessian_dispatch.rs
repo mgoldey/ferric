@@ -98,18 +98,18 @@ fn auto_is_analytic_for_plain_rhf_and_matches_fd() {
 #[test]
 fn auto_falls_back_for_unsupported_configurations() {
     // Fitted J/K next to an external potential is untested and refused.
-    let mut ri = RhfConfig::default()
+    let ri = RhfConfig::default()
         .with_df_j_aux("def2-universal-jkfit")
-        .with_df_k_aux("def2-universal-jkfit");
-    ri.external_potential = Some(ExternalPotential {
-        point_charges: vec![PointCharge {
-            q: 0.3,
-            x: 5.0,
-            y: 0.0,
-            z: 0.0,
-        }],
-        ..Default::default()
-    });
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_external_potential(ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: 0.3,
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
+            }],
+            ..Default::default()
+        });
     // Point charges, smeared charges and a uniform field are analytic (see
     // `embedded_point_charges_are_analytic`, `smeared_charges_are_analytic_and_match_fd`,
     // `uniform_field_is_analytic_and_matches_fd`).
@@ -262,8 +262,7 @@ fn embedded_point_charges_are_analytic() {
     if !has_deriv2() {
         return;
     }
-    let mut scf = RhfConfig::default();
-    scf.external_potential = Some(ExternalPotential {
+    let scf = RhfConfig::default().with_external_potential(ExternalPotential {
         point_charges: vec![PointCharge {
             q: 0.5,
             x: 0.0,
@@ -282,8 +281,7 @@ fn smeared_charges_are_analytic_and_match_fd() {
     if !has_deriv2() {
         return;
     }
-    let mut scf = RhfConfig::default();
-    scf.external_potential = Some(ExternalPotential {
+    let scf = RhfConfig::default().with_external_potential(ExternalPotential {
         smeared_charges: vec![ferric_core::external_potential::SmearedCharge {
             q: 0.5,
             x: 0.0,
@@ -317,8 +315,7 @@ fn uniform_field_is_analytic_and_matches_fd() {
     if !has_deriv2() {
         return;
     }
-    let mut scf = RhfConfig::default();
-    scf.external_potential = Some(ExternalPotential {
+    let scf = RhfConfig::default().with_external_potential(ExternalPotential {
         field: Some([0.01, -0.02, 0.03]),
         ..Default::default()
     });
@@ -630,8 +627,7 @@ fn rohf_probe_refuses_what_the_hessian_does_not_cover() {
     let op = Operator::coulomb();
     analytic_rohf_hessian_available(&mol, &prep, op, &RhfConfig::default())
         .expect("NH2/STO-3G ROHF is supported");
-    let mut charges = RhfConfig::default();
-    charges.external_potential = Some(ExternalPotential {
+    let charges = RhfConfig::default().with_external_potential(ExternalPotential {
         point_charges: vec![PointCharge {
             q: 0.5,
             x: 0.0,

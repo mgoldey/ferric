@@ -189,9 +189,7 @@ fn scf_config() -> RhfConfig {
 
 /// The reference SCF: stability-checked and descended to a stable state.
 fn reference_config() -> RhfConfig {
-    let mut c = scf_config().with_check_stability(true);
-    c.scf_stability_descent = true;
-    c
+    scf_config().with_stability(ferric_scf::options::Stability::Descend)
 }
 
 struct Setup {
@@ -669,8 +667,7 @@ fn wrong_references_and_unsupported_configurations_are_refused() {
     // MOM is refused BEFORE the SCF (the probe), so `Auto` falls back to
     // finite differences rather than failing the post-SCF occupation check.
     // Same triplet and config the probe accepted just above, plus MOM.
-    let mut mom = scf_config();
-    mom.mom_after_iter = 5;
+    let mom = scf_config().with_mom_after_iter(5);
     assert!(
         analytic_uhf_hessian_available(&s.mol, &s.prep, op, &mom).is_err(),
         "the UHF probe must refuse a MOM configuration"

@@ -75,9 +75,7 @@ fn tight() -> RhfConfig {
 }
 
 fn cases() -> Vec<Case> {
-    let ri_pbe = tight()
-        .with_xc("PBE".to_string())
-        .with_df_j_aux("def2-universal-jkfit".to_string());
+    let ri_pbe = tight().with_xc("PBE").with_df_j_aux("def2-universal-jkfit");
     let case = |name, xyz, mult, basis, spin, config| Case {
         name,
         xyz,
@@ -216,8 +214,7 @@ fn a_different_guess_can_converge_to_a_different_state_and_identity_sees_it() {
         config,
     };
     let default = tight();
-    let mut hcore = tight();
-    hcore.use_sad_guess = false;
+    let hcore = tight().with_guess(ferric_scf::options::Guess::Core);
     let (from_default, from_hcore) = (
         solve(&case(default.clone()), &mol, &prep),
         solve(&case(hcore.clone()), &mol, &prep),

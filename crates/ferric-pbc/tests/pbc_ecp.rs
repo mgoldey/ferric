@@ -303,11 +303,10 @@ fn gamma_ecp(cell: &Cell, p: &PreparedBasis, cfg: &PeriodicEcpConfig) -> Array2<
 /// RHF config without the SAD guess, `density_conv = 1e-10` and the given
 /// `max_iter`.
 fn scf_cfg(max_iter: usize) -> RhfConfig {
-    let mut c = RhfConfig::default();
-    c.use_sad_guess = false;
-    c.density_conv = 1e-10;
-    c.max_iter = max_iter;
-    c
+    RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(max_iter)
 }
 
 /// Gamma RHF on `(S, h, E_nn)` + dense pure-AFT J/K.

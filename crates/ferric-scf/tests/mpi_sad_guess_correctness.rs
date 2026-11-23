@@ -3,7 +3,7 @@
 //!
 //! Background: `ferric_scf::guess::free_atom_density` (guess.rs) builds each
 //! element's free-atom density via a sub-`solve_rhf`/`solve_uhf` call using
-//! `RhfConfig { use_sad_guess: false, ..Default::default() }` — i.e. with
+//! a config with `use_sad_guess = false` (`with_guess(Guess::Core)`) — i.e. with
 //! `df_j_aux`/`df_k_aux` left `None`, which routes the free-atom sub-solve
 //! through the DIRECT `build_jk` path (rhf.rs), not DF-JK. That sub-solve
 //! uses its own fresh `ParallelContext::default()`.
@@ -68,15 +68,15 @@ fn sad_direct_rhf_energy(ctx: &ParallelContext, mol: &Molecule) -> ferric_scf::r
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Sad)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
     // Deliberately unset: forces BOTH the SAD free-atom guess sub-solves
     // AND the outer molecular SCF through the direct (non-DF) build_jk
     // Fock-builder path.
     cfg.df_j_aux = None;
     cfg.df_k_aux = None;
-    cfg.use_sad_guess = true; // default, but explicit: this is the case under test
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-9;
     solve_rhf(ctx, mol, &prep, op, &bounds, &cfg).unwrap()
 }
 

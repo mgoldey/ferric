@@ -986,16 +986,16 @@ fn cosx_and_external_potential_results_are_refused() {
     let err = hessian_of(c, &cosx, &scf_config()).expect_err("COSX");
     assert!(err.to_string().contains("COSX"), "{err}");
 
-    let mut ext_cfg = scf_config();
-    ext_cfg.external_potential = Some(ferric_core::external_potential::ExternalPotential {
-        point_charges: vec![ferric_core::external_potential::PointCharge {
-            q: 0.5,
-            x: 6.0,
-            y: 0.0,
-            z: 0.0,
-        }],
-        ..Default::default()
-    });
+    let ext_cfg =
+        scf_config().with_external_potential(ferric_core::external_potential::ExternalPotential {
+            point_charges: vec![ferric_core::external_potential::PointCharge {
+                q: 0.5,
+                x: 6.0,
+                y: 0.0,
+                z: 0.0,
+            }],
+            ..Default::default()
+        });
     let err = hessian_of(c, &c.rohf, &ext_cfg).expect_err("external potential");
     eprintln!("{err}");
     assert!(err.to_string().contains("external potential"), "{err}");

@@ -121,8 +121,7 @@ fn builtin(
     b: &SchwarzBounds,
 ) -> (f64, Array2<f64>) {
     let ctx = ParallelContext::default();
-    let mut c = config(kind);
-    c.external_potential = Some(charge());
+    let c = config(kind).with_external_potential(charge());
     let r = match kind {
         Kind::Rhf | Kind::Rks => solve_rhf(&ctx, m, prep, Operator::coulomb(), b, &c),
         Kind::Uhf => solve_uhf(&ctx, m, prep, b, &c),

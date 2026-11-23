@@ -160,9 +160,9 @@ fn dress_first_scf_is_bitwise_the_resident_run() {
             .with_energy_conv(1e-3)
             .with_density_conv(1e-8)
             .with_df_j_aux(AUX)
-            .with_df_k_aux(AUX);
+            .with_df_k_aux(AUX)
+            .with_ri_j_precision(RiJPrecision::F32);
         cfg.three_index_budget_bytes = budget;
-        cfg.ri_j_precision = Some(RiJPrecision::F32);
         cfg.ri_k_precision = Some(RiKPrecision::F64);
         solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap()
     };

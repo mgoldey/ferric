@@ -177,12 +177,12 @@ fn water_iteration_and_walltime_comparison() {
         ("RHF", None, 0.0),
         ("RKS/PBE", Some("PBE".to_string()), 0.2),
     ] {
-        let mut diis = RhfConfig::default();
+        let mut diis = RhfConfig::default()
+            .with_level_shift(ls)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(300);
         diis.xc = xc.clone();
-        diis.level_shift = ls;
-        diis.energy_conv = 1e-10;
-        diis.density_conv = 1e-8;
-        diis.max_iter = 300;
         let mut newton = diis.clone();
         newton.newton_trigger = 1e-2;
         let mut trah = diis.clone();

@@ -53,10 +53,11 @@ fn oh_doublet() -> (Molecule, PreparedBasis, SchwarzBounds) {
 fn roks_pbe_converges_with_mom() {
     let (mol, obs, bounds) = oh_doublet();
     let ctx = ParallelContext::default();
-    let mut cfg = RhfConfig::default().with_xc("PBE");
-    cfg.mom_after_iter = 3;
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 100;
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_mom_after_iter(3)
+        .with_density_conv(1e-8)
+        .with_max_iter(100);
 
     let res = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg)
         .expect("ROKS/PBE with MOM must converge");

@@ -378,23 +378,23 @@ fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) -> f64 {
 
 fn scf_config(m: &Method) -> RhfConfig {
     let unrestricted = m.kind == Kind::Uhf;
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        // Explicit EXACT J/K: `None` auto-enables RI-J for closed-shell KS.
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_energy_conv(SCF_ENERGY_CONV)
+        .with_density_conv(SCF_DENSITY_CONV)
+        .with_max_iter(500)
+        // UHF/UKS end on a stable state, as the reference does. ferric's ROHF
+        // skips stability by design (see the UHF/ROHF row); the reference is
+        // ROHF-stable, so a ferric saddle shows as an energy/geometry miss.
+        .with_check_stability(unrestricted)
+        // The KS references are PySCF on the flat (75,110) grid
+        // (gen_geometry_optimization.py: prune=None), not the pruned KS default
+        // AtomicGridConfig::production(). Unused by the HF methods.
+        .with_dft_grid(AtomicGridConfig::default());
     c.xc = m.xc.map(str::to_string);
-    // Explicit EXACT J/K: `None` auto-enables RI-J for closed-shell KS.
-    c.df_j_aux = Some(String::new());
-    c.df_k_aux = Some(String::new());
-    c.energy_conv = SCF_ENERGY_CONV;
-    c.density_conv = SCF_DENSITY_CONV;
-    c.max_iter = 500;
-    // UHF/UKS end on a stable state, as the reference does. ferric's ROHF
-    // skips stability by design (see the UHF/ROHF row); the reference is
-    // ROHF-stable, so a ferric saddle shows as an energy/geometry miss.
-    c.check_stability = unrestricted;
     c.scf_stability_descent = unrestricted;
-    // The KS references are PySCF on the flat (75,110) grid
-    // (gen_geometry_optimization.py: prune=None), not the pruned KS default
-    // AtomicGridConfig::production(). Unused by the HF methods.
-    c.dft_grid = Some(AtomicGridConfig::default());
     c
 }
 

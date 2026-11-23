@@ -144,16 +144,16 @@ fn build_sys() -> Sys {
 fn cfg(target: f64) -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_max_iter(400)
-        .with_level_shift(0.5);
+        .with_level_shift(0.5)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 302,
+            ..Default::default()
+        });
     c.cdft_lambda_tol = LAMBDA_TOL;
     c.cdft_max_outer = 40;
     c.cdft_stability_descent = false;
-    c.use_sad_guess = false;
-    c.dft_grid = Some(AtomicGridConfig {
-        n_radial: 99,
-        n_angular: 302,
-        ..Default::default()
-    });
     c.constraints = vec![Constraint {
         fragment: vec![0],
         target,

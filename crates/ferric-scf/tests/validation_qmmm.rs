@@ -287,28 +287,24 @@ fn config(
     ext: Option<ferric_core::external_potential::ExternalPotential>,
 ) -> RhfConfig {
     match xc {
-        None => {
-            let mut c = RhfConfig::default();
-            c.external_potential = ext;
-            c.energy_conv = 1e-11;
-            c.density_conv = 1e-10;
-            c.max_iter = 300;
-            c
-        }
+        None => RhfConfig::default()
+            .with_external_potential(ext)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10)
+            .with_max_iter(300),
         Some(xc) => {
-            let mut c = RhfConfig::default()
+            RhfConfig::default()
                 .with_xc(ferric_xc(xc))
                 // Exact four-centre J and K, matching PySCF RKS without density_fit.
                 .with_df_j_aux(String::new())
-                .with_df_k_aux(String::new());
-            c.external_potential = ext;
-            c.energy_conv = 1e-10;
-            c.density_conv = 1e-8;
-            c.max_iter = 300;
-            // The references are PySCF on the flat (75,110) grid (gen_qmmm.py:
-            // prune=None), not the pruned KS default AtomicGridConfig::production().
-            c.dft_grid = Some(AtomicGridConfig::default());
-            c
+                .with_df_k_aux(String::new())
+                .with_external_potential(ext)
+                .with_energy_conv(1e-10)
+                .with_density_conv(1e-8)
+                .with_max_iter(300)
+                // The references are PySCF on the flat (75,110) grid (gen_qmmm.py:
+                // prune=None), not the pruned KS default AtomicGridConfig::production().
+                .with_dft_grid(AtomicGridConfig::default())
         }
     }
 }

@@ -271,7 +271,7 @@ fn oh_radical_uhf_nve_conserves_energy() {
 
 #[test]
 fn h2_rks_lda_nve_conserves_energy() {
-    let scf = tight_scf().with_xc("LDA".to_string());
+    let scf = tight_scf().with_xc("LDA");
     let r = run(&h2(), &scf, Spin::Restricted, &nve(10, 0.2, Some(300.0), 6));
     let drift = report("H2 RKS/LDA NVE", &r);
     assert_eq!(r.md.label, "rks:LDA/sto-3g");

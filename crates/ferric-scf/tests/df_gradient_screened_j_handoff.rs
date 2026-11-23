@@ -52,11 +52,13 @@ const BASIS: &str = "def2-svp";
 
 fn config(thresh: f64) -> RhfConfig {
     {
-        let mut c = RhfConfig::default().with_xc("PBE").with_df_j_aux(AUX);
+        let mut c = RhfConfig::default()
+            .with_xc("PBE")
+            .with_df_j_aux(AUX)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9);
         c.df_k_aux = None;
         c.integral_thresh = thresh;
-        c.energy_conv = 1e-11;
-        c.density_conv = 1e-9;
         c
     }
     .for_geometry_task()

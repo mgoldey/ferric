@@ -152,7 +152,7 @@ fn scissor_scan_min_eigs_water() {
         &obs,
         op,
         &bounds,
-        &RhfConfig::default().with_xc("PBE".to_string()),
+        &RhfConfig::default().with_xc("PBE"),
     )
     .unwrap();
 

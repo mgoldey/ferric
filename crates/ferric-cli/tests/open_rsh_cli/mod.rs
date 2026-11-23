@@ -623,11 +623,10 @@ fn sizing(rsgdf: bool) -> GammaRshSizing {
 
 /// `crate::periodic::gamma_scf_config` (density_conv 1e-10, 200 iterations).
 fn gamma_scf() -> RhfConfig {
-    let mut c = RhfConfig::default();
-    c.use_sad_guess = false;
-    c.density_conv = 1e-10;
-    c.max_iter = 200;
-    c
+    RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(200)
 }
 
 /// The Gamma SCF of a range-separated hybrid on the CLI's `gamma_system(..,

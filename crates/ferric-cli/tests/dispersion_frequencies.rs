@@ -58,7 +58,7 @@ const H2_XYZ: &str = "2\nh2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n";
 
 fn rks_pbe() -> RhfConfig {
     RhfConfig::default()
-        .with_xc("PBE".to_string())
+        .with_xc("PBE")
         .with_max_iter(300)
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)

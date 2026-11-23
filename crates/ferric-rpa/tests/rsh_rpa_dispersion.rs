@@ -63,8 +63,8 @@ fn lc_reference_survey() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) if r.converged && om.is_finite() => {
                 // static LR-RPA α at the native ω (the dispersion-relevant α magnitude).
@@ -110,8 +110,8 @@ fn rsh_reference_lc_wpbe_converges() {
         let cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         match solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg) {
             Ok(r) if r.converged => {
                 let eps = r.eps_r();
@@ -197,8 +197,8 @@ fn run_rsh_rpa_c6(lc_name: &str) -> f64 {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = match solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             _ => {
@@ -301,8 +301,8 @@ fn dielectric_omega_calibration() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = match solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             _ => {
@@ -414,8 +414,8 @@ fn debug_erf_c6_curve_lc_ref() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         eprint!("  {label:>4} (DOSD {dosd}): ");
         for &w in &ws {
@@ -486,8 +486,8 @@ fn dielectric_omega_loo_c6() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         let alpha = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg)
             .unwrap()
@@ -656,8 +656,8 @@ fn reference_omega_sensitivity() {
             let scf_cfg = RhfConfig::default()
                 .with_energy_conv(1e-9)
                 .with_xc(rname.to_string())
-                .with_df_j_aux("def2-universal-jkfit".to_string())
-                .with_df_k_aux("def2-universal-jkfit".to_string());
+                .with_df_j_aux("def2-universal-jkfit")
+                .with_df_k_aux("def2-universal-jkfit");
             let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
                 Ok(r) if r.converged => r,
                 _ => {
@@ -741,8 +741,8 @@ fn dielectric_eigenvalue_descriptors() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         // Static dielectric spectrum (full Coulomb). λ are screening eigenvalues (>1).
@@ -849,8 +849,8 @@ fn lambda_max_loo_c6() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         // λ_max of the static Coulomb dielectric.
@@ -1003,8 +1003,8 @@ fn parameter_free_lambda_omega_c6() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         let spec =
@@ -1096,8 +1096,8 @@ fn parameter_free_full_dosd() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             _ => {
@@ -1200,8 +1200,8 @@ fn full_dosd_calibration_dump() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             _ => {
@@ -1305,8 +1305,8 @@ fn directional_descriptor_dump() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             _ => {
@@ -1418,8 +1418,8 @@ fn a3_directional_loo_c6() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         let at =
             pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg).unwrap();
@@ -1562,8 +1562,8 @@ fn dielectric_spectrum_validation_dump() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc_name.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         let spec =
@@ -1665,8 +1665,8 @@ fn screen_sum_loo_c6() {
         let scf_cfg = RhfConfig::default()
             .with_energy_conv(1e-9)
             .with_xc(lc.to_string())
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         let _at =
             pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg).unwrap();

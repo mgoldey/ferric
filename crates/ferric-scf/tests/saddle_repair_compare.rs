@@ -60,9 +60,9 @@ fn n2_saddle_descent_vs_trah() {
                 let mut cfg = RhfConfig::default()
                     .with_energy_conv(1e-10)
                     .with_density_conv(1e-8)
-                    .with_max_iter(300);
+                    .with_max_iter(300)
+                    .with_check_stability(true);
                 cfg.use_sad_guess = sad;
-                cfg.check_stability = true;
                 cfg.scf_stability_descent = arm == "descent";
                 cfg.trah_trigger = match arm {
                     "trah-tail" => Some(1e-2),
@@ -135,9 +135,9 @@ fn coh_uhf_descent_vs_trah() {
             let mut cfg = RhfConfig::default()
                 .with_energy_conv(1e-10)
                 .with_density_conv(1e-8)
-                .with_max_iter(300);
+                .with_max_iter(300)
+                .with_check_stability(true);
             cfg.use_sad_guess = sad;
-            cfg.check_stability = true;
             cfg.scf_stability_descent = arm == "descent";
             cfg.trah_trigger = match arm {
                 "trah-tail" => Some(1e-2),

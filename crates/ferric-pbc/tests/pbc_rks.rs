@@ -796,8 +796,7 @@ fn uhf_injected_refuses_a_closed_shell_only_xc_builder() {
         k: Box::new(su.eri.k_builder()),
         xc: Some(Box::new(ClosedOnly(pxc))),
     };
-    let mut cfg = UhfConfig::default();
-    cfg.use_sad_guess = false;
+    let cfg = UhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
     let e = solve_uhf_injected(
         &ParallelContext::default(),
         su.cell.mol(),

@@ -286,8 +286,7 @@ fn check_vs_numpy(system: &str) {
         num(&r, "/nuclear_repulsion", &ctx),
         1e-9,
     );
-    let mut uhf_cfg = scf_config().with_check_stability(true);
-    uhf_cfg.scf_stability_descent = true;
+    let uhf_cfg = scf_config().with_stability(ferric_scf::options::Stability::Descend);
     let uhf = solve_uhf(
         &ParallelContext::default(),
         &s.mol,

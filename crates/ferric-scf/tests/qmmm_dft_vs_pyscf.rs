@@ -165,8 +165,7 @@ fn run(r: &QmmmDftRef) -> Run {
         .with_df_j_aux("def2-universal-jkfit")
         .with_df_k_aux("def2-universal-jkfit")
         .with_density_conv(1e-8);
-    let mut cfg = base_cfg.clone();
-    cfg.external_potential = Some(ep);
+    let cfg = base_cfg.clone().with_external_potential(ep);
     let ext = cfg.external_potential.clone();
 
     let (energy, energy_gas, d_total, qm_gradient) = match r.method.as_str() {

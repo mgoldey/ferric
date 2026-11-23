@@ -58,7 +58,7 @@ const HCO_XYZ: &str =
 
 fn pbe() -> RhfConfig {
     RhfConfig::default()
-        .with_xc("PBE".to_string())
+        .with_xc("PBE")
         .with_max_iter(300)
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)

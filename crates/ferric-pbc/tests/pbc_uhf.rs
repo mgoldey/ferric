@@ -590,9 +590,9 @@ fn h_atom_box_residual_is_exactly_c3_over_a3() {
     let prep_mol = PreparedBasis::new(&mol, &basis).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep_mol).unwrap();
-    let mut mcfg = RhfConfig::default();
-    mcfg.use_sad_guess = false;
-    mcfg.density_conv = 1e-10;
+    let mcfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10);
     let m = solve_uhf(&ParallelContext::default(), &mol, &prep_mol, &bounds, &mcfg).unwrap();
     close(m.energy, H_E_MOL_UHF, 1e-9, "molecular UHF H atom E");
     let (c3, omega) = uhf_c3_closed_form(&mol, &prep_mol, &m, 1, 0);
@@ -719,11 +719,7 @@ fn gamma_uhf_refuses_injected_path_features_by_name() {
     let hc = hcore(&cell, &prep);
     let eri = dense_none(&cell, &prep, &hc);
     let cfg = GammaUhfConfig {
-        scf: {
-            let mut c = RhfConfig::default();
-            c.use_sad_guess = true;
-            c
-        },
+        scf: { RhfConfig::default().with_guess(ferric_scf::options::Guess::Sad) },
         ..Default::default()
     };
     let e = gamma_uhf(&cell, &prep, &hc, GammaUhfIntegrals::DenseAft(&eri), &cfg)

@@ -155,12 +155,12 @@ fn h2o(r: &Value) -> H2o {
 fn ks_config(xc: &str, exact_k: bool) -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_xc(xc)
-        .with_df_j_aux(String::new());
+        .with_df_j_aux(String::new())
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_dft_grid(AtomicGridConfig::default());
     c.df_k_aux = exact_k.then(String::new);
-    c.max_iter = 400;
-    c.energy_conv = 1e-11;
-    c.density_conv = 1e-10;
-    c.dft_grid = Some(AtomicGridConfig::default());
     c
 }
 

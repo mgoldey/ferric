@@ -128,19 +128,19 @@ fn cosx_production_nofit() -> CosxConfig {
 /// sanity bound (see `cosx_scf.rs::tight`), reachable here because nothing is
 /// density-fitted.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
     c.k_builder = cosx
         .as_ref()
         .map(|_| ferric_scf::options::KBuilderKind::Cosx);
-    c.cosx = cosx.unwrap_or_default();
     c.xc = xc.map(str::to_string);
     // Conventional four-centre J (and K when not COSX): the ONLY exchange
     // approximation under test is COSX.
     c.df_j_aux = xc.map(|_| String::new());
     c.df_k_aux = xc.map(|_| String::new());
-    c.energy_conv = 1e-8;
-    c.density_conv = 1e-10;
-    c.max_iter = 300;
     c
 }
 
@@ -195,12 +195,10 @@ fn restricted_grads(
 /// from the reference density (keeps all 2*3N solves in one basin).
 fn fd_restricted(mol: &Molecule, basis: &str, cfg: &RhfConfig, seed: &Array2<f64>) -> Array2<f64> {
     let n = mol.atoms.len();
-    let cfg = {
-        let mut c = cfg.clone();
-        c.init_guess_density = Some(seed.clone());
-        c.use_sad_guess = false;
-        c
-    };
+    let cfg = cfg
+        .clone()
+        .with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core);
     let pairs: Vec<(usize, usize)> = (0..n).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
     let vals: Vec<f64> = pairs
         .par_iter()

@@ -264,17 +264,18 @@ fn rks_config(xc: &str, j: &str) -> RhfConfig {
         "exact" => Some(String::new()),
         other => panic!("unknown J mode {other}"),
     };
-    let mut c = RhfConfig::default().with_xc(ferric_xc(xc));
+    let mut c = RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(500)
+        // The references are PySCF on the flat (75,110) grid (gen_mgga_energies.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
     c.df_j_aux = df_j_aux;
-    // The PySCF references fit J in f64; pin it (the f32 RI-J default's
-    // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
-    c.ri_j_precision = Some(RiJPrecision::F64);
-    c.energy_conv = 1e-10;
-    c.density_conv = 1e-8;
-    c.max_iter = 500;
-    // The references are PySCF on the flat (75,110) grid (gen_mgga_energies.py:
-    // prune=None), not the pruned KS default AtomicGridConfig::production().
-    c.dft_grid = Some(AtomicGridConfig::default());
     c
 }
 

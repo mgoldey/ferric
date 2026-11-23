@@ -59,7 +59,7 @@ fn wred_probe_water_pbe() {
         &obs,
         op,
         &bounds,
-        &RhfConfig::default().with_xc("PBE".to_string()),
+        &RhfConfig::default().with_xc("PBE"),
     )
     .unwrap();
 

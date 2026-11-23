@@ -331,8 +331,8 @@ impl Saddle {
         let mut c = RohfConfig::default()
             .with_max_iter(400)
             .with_density_conv(1e-10)
-            .with_energy_conv(1e-11);
-        c.use_sad_guess = false;
+            .with_energy_conv(1e-11)
+            .with_guess(ferric_scf::options::Guess::Core);
         c.rohf_occupation_guard = false;
         c
     }
@@ -461,8 +461,7 @@ fn escape_from_saddle(s: &Saddle, eps: f64) -> Escape {
     // iteration 4 on (trigger 1.0), occupation guard off.
     let (da, db) = s.densities(&c_d);
     let cfg = {
-        let mut c = Saddle::cfg();
-        c.init_guess_density = Some(&da + &db);
+        let mut c = Saddle::cfg().with_init_guess_density(&da + &db);
         c.newton_trigger = 1.0;
         c
     };
@@ -602,11 +601,11 @@ fn rohf_newton_escapes_a_saddle_from_a_small_displacement() {
 fn rohf_newton_honours_a_tight_density_conv() {
     let s = Saddle::new();
     let cfg = {
-        let mut c = Saddle::cfg();
-        c.use_sad_guess = true;
+        let mut c = Saddle::cfg()
+            .with_guess(ferric_scf::options::Guess::Sad)
+            .with_density_conv(1e-10)
+            .with_energy_conv(1e-12);
         c.newton_trigger = 1e-2;
-        c.density_conv = 1e-10;
-        c.energy_conv = 1e-12;
         c
     };
     let r = solve_rohf(
@@ -653,11 +652,11 @@ fn rohf_ah_honours_a_tight_density_conv() {
     use ferric_scf::rohf_newton::hvp_calls_on_this_thread;
     let s = Saddle::new();
     let cfg = {
-        let mut c = Saddle::cfg();
-        c.use_sad_guess = true;
+        let mut c = Saddle::cfg()
+            .with_guess(ferric_scf::options::Guess::Sad)
+            .with_density_conv(1e-12)
+            .with_energy_conv(1e-12);
         c.ah_trigger = 1e-2;
-        c.density_conv = 1e-12;
-        c.energy_conv = 1e-12;
         c
     };
     let (h0, f0) = (hvp_calls_on_this_thread(), ah_fallbacks_on_this_thread());

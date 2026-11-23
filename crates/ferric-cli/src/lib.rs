@@ -8997,12 +8997,15 @@ mod energy_conv_advisory_tests {
 mod scf_config_lowering_tests {
     //! [`try_scf_config`] must reproduce, field by field, the `RhfConfig`
     //! literal `run` built before the `[scf]` section went through
-    //! `ferric_scf::options`. [`old_literal`] is that literal, copied verbatim
-    //! (with the helpers it called), except that the one global it read, the
-    //! installed `[gpu]` settings, is the `router_allowed` argument both sides
-    //! receive. Configs are compared through their `Debug` text, except
-    //! `guess_basis`, whose `BasisSet` keeps shells in a `HashMap` (its `Debug`
-    //! order differs between equal values) and is compared with `PartialEq`.
+    //! `ferric_scf::options`. [`old_literal`] is that literal (with the
+    //! helpers it called), one field assignment per field on
+    //! `RhfConfig::default()` since `RhfConfig` became `#[non_exhaustive]`
+    //! (same values; a new field no longer fails to compile here), except
+    //! that the one global it read, the installed `[gpu]` settings, is the
+    //! `router_allowed` argument both sides receive. Configs are compared
+    //! through their `Debug` text, except `guess_basis`, whose `BasisSet` keeps
+    //! shells in a `HashMap` (its `Debug` order differs between equal values)
+    //! and is compared with `PartialEq`.
     use super::*;
     use crate::config::Config;
     use crate::error::CliError;

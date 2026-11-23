@@ -25,8 +25,8 @@ fn main() {
         .with_max_iter(200)
         .with_energy_conv(1e-7)
         .with_density_conv(1e-6)
-        .with_df_j_aux("def2-universal-jkfit".to_string())
-        .with_df_k_aux("def2-universal-jkfit".to_string());
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let ctx = ParallelContext::default();
     let t0 = Instant::now();
     eprintln!("[probe] entering solve_rhf...");

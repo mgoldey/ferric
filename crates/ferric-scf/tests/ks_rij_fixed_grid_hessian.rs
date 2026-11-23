@@ -112,11 +112,12 @@ fn scf(grid: &FixedGridKs, mol: &Molecule, basis_name: &str, aux: Option<&str>) 
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let dfbs = aux.map(|a| PreparedBasis::new(mol, &basis::bundled(a).unwrap()).unwrap());
-    let mut cfg = RhfConfig::default().with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
-    cfg.use_sad_guess = false;
-    cfg.max_iter = 200;
-    cfg.energy_conv = 1e-13;
-    cfg.density_conv = 1e-11;
+    let cfg = RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let res =
         solve_rks_fixed_grid_df(&ctx, mol, &prep, op, &bounds, grid, dfbs.as_ref(), &cfg).unwrap();
     assert!(

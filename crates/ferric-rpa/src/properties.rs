@@ -2022,8 +2022,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let mut cfg = RhfConfig::default();
-        cfg.mom_after_iter = 5;
+        let cfg = RhfConfig::default().with_mom_after_iter(5);
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
         (mol, obs, dfbs, op, uhf)
     }

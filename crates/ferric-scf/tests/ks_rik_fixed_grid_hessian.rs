@@ -157,11 +157,11 @@ fn scf(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let (jbs, kbs) = (aux_at(mol, j), aux_at(mol, k));
-    let mut cfg = RhfConfig::default();
-    cfg.use_sad_guess = false;
-    cfg.max_iter = 200;
-    cfg.energy_conv = 1e-13;
-    cfg.density_conv = 1e-11;
+    let cfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let res = solve_rks_fixed_grid_dfjk(
         &ctx,
         mol,

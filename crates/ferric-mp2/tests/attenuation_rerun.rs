@@ -191,14 +191,13 @@ fn attenuated_alpha_finite_field_nh3() {
     let cfg = mp2_cfg();
     let cb = Operator::coulomb();
     let scf_cfg = |field: Option<[f64; 3]>| {
-        let mut c = RhfConfig::default()
+        RhfConfig::default()
             .with_energy_conv(1e-13)
-            .with_density_conv(1e-11);
-        c.external_potential = field.map(|f| ExternalPotential {
-            field: Some(f),
-            ..Default::default()
-        });
-        c
+            .with_density_conv(1e-11)
+            .with_external_potential(field.map(|f| ExternalPotential {
+                field: Some(f),
+                ..Default::default()
+            }))
     };
     for w in [0.42, 1.0] {
         let op = Operator::erfc(w);

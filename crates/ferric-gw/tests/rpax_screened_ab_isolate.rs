@@ -62,7 +62,7 @@ fn screened_a_minus_b_vs_direct_amb() {
         &obs,
         op,
         &bounds,
-        &RhfConfig::default().with_xc("PBE".to_string()),
+        &RhfConfig::default().with_xc("PBE"),
     )
     .unwrap();
 

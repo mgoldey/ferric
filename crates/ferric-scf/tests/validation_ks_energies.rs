@@ -325,20 +325,20 @@ fn uks_config(xc: &str) -> RhfConfig {
         "wb97x-v" => (None, Some(AUX.to_string())),
         other => panic!("unknown functional {other}"),
     };
-    let mut c = RhfConfig::default().with_xc(ferric_xc(xc));
+    let mut c = RhfConfig::default()
+        .with_xc(ferric_xc(xc))
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_max_iter(500)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-7)
+        .with_stability(ferric_scf::options::Stability::Descend)
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
     c.df_j_aux = df_j_aux;
     c.df_k_aux = df_k_aux;
-    // The PySCF references fit J in f64; pin it (the f32 RI-J default's
-    // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
-    c.ri_j_precision = Some(RiJPrecision::F64);
-    c.max_iter = 500;
-    c.energy_conv = 1e-10;
-    c.density_conv = 1e-7;
-    c.check_stability = true;
-    c.scf_stability_descent = true;
-    // The references are PySCF on the flat (75,110) grid (generator: prune=None),
-    // not the pruned KS default AtomicGridConfig::production().
-    c.dft_grid = Some(AtomicGridConfig::default());
     c
 }
 
@@ -357,16 +357,16 @@ fn rks_config(xc: &str) -> RhfConfig {
     };
     let mut c = RhfConfig::default()
         .with_xc(ferric_xc(xc))
-        .with_df_j_aux(df_j_aux);
+        .with_df_j_aux(df_j_aux)
+        // The PySCF references fit J in f64; pin it (the f32 RI-J default's
+        // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
     c.df_k_aux = df_k_aux;
-    // The PySCF references fit J in f64; pin it (the f32 RI-J default's
-    // storage rounding is 1e-7..1e-6 Ha, far above this test's bar).
-    c.ri_j_precision = Some(RiJPrecision::F64);
-    c.energy_conv = 1e-10;
-    c.density_conv = 1e-8;
-    // The references are PySCF on the flat (75,110) grid (generator: prune=None),
-    // not the pruned KS default AtomicGridConfig::production().
-    c.dft_grid = Some(AtomicGridConfig::default());
     c
 }
 

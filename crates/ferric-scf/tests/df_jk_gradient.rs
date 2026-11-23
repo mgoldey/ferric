@@ -167,14 +167,11 @@ fn fd(
     seed: &Array2<f64>,
 ) -> Array2<f64> {
     let natoms = mol.atoms.len();
-    let cfg = {
-        let mut c = cfg
-            .clone()
-            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
-        c.init_guess_density = Some(seed.clone());
-        c.use_sad_guess = false;
-        c
-    };
+    let cfg = cfg
+        .clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core);
     let pairs: Vec<(usize, usize)> = (0..natoms)
         .flat_map(|a| (0..3).map(move |c| (a, c)))
         .collect();

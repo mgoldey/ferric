@@ -221,11 +221,12 @@ fn ri_with_an_external_potential_stays_refused() {
         return;
     }
     let (mol, prep) = iodine(HOI, 1);
-    let mut cfg = config(Fit::J(AUX_OK)).with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
-    cfg.external_potential = Some(ferric_core::external_potential::ExternalPotential {
-        field: Some([0.0, 0.0, 0.004]),
-        ..Default::default()
-    });
+    let cfg = config(Fit::J(AUX_OK))
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_external_potential(ferric_core::external_potential::ExternalPotential {
+            field: Some([0.0, 0.0, 0.004]),
+            ..Default::default()
+        });
     let err =
         ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
             .expect_err("RI + environment stays refused");

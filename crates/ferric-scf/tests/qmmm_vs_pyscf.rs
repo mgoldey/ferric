@@ -148,9 +148,9 @@ fn run(r: &QmmmRef) -> Run {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let mut cfg = RhfConfig::default();
-    cfg.external_potential = Some(ep);
-    cfg.density_conv = 1e-10;
+    let cfg = RhfConfig::default()
+        .with_external_potential(ep)
+        .with_density_conv(1e-10);
     let gas_cfg = RhfConfig::default().with_density_conv(1e-10);
 
     let (scf, gas, grad) = match r.method.as_str() {

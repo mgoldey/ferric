@@ -148,17 +148,17 @@ fn setup_on(refj: &Value, xc: Option<&str>, grid: AtomicGridConfig) -> Setup {
     let ctx = ParallelContext::default();
     // density_conv 1e-8: far below what moves an excitation energy by 1e-6 eV;
     // energy_conv stays at its default (a sanity bound, not a target).
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_dft_grid(grid)
+        .with_df_j_aux(SCF_JK_AUX.to_string())
+        .with_df_k_aux(SCF_JK_AUX.to_string())
+        // The PySCF reference SCF fits J in f64. The f32 RI-J default moves
+        // the B3LYP/aug-cc-pVDZ roots by up to 9.4e-5 eV, above
+        // SAME_GRID_BAR_EV.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     cfg.xc = xc.map(str::to_string);
-    cfg.dft_grid = Some(grid);
-    cfg.df_j_aux = Some(SCF_JK_AUX.to_string());
-    cfg.df_k_aux = Some(SCF_JK_AUX.to_string());
-    // The PySCF reference SCF fits J in f64. The f32 RI-J default moves
-    // the B3LYP/aug-cc-pVDZ roots by up to 9.4e-5 eV, above
-    // SAME_GRID_BAR_EV.
-    cfg.ri_j_precision = Some(ferric_scf::df_j::RiJPrecision::F64);
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 200;
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(
         scf.converged,

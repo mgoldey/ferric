@@ -289,11 +289,16 @@ fn check_harness(s: &Setup, r: &Value) {
 /// `xc = None` is RHF. J is always exact four-centre (`df_j_aux = ""` for KS,
 /// which otherwise defaults to RI-J), so COSX is the only approximation.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
+        // density_conv is ferric's primary criterion; energy_conv is a sanity
+        // bound, reachable here because nothing is density-fitted.
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
     c.k_builder = cosx
         .as_ref()
         .map(|_| ferric_scf::options::KBuilderKind::Cosx);
-    c.cosx = cosx.unwrap_or_default();
     c.xc = xc.map(str::to_string);
     c.df_j_aux = xc.map(|_| String::new());
     c.df_k_aux = xc.map(|_| String::new());
@@ -303,19 +308,12 @@ fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
         n_angular: 110,
         ..Default::default()
     });
-    // density_conv is ferric's primary criterion; energy_conv is a sanity
-    // bound, reachable here because nothing is density-fitted.
-    c.energy_conv = 1e-9;
-    c.density_conv = 1e-9;
-    c.max_iter = 300;
     c
 }
 
 fn seeded(cfg: RhfConfig, seed: &Array2<f64>) -> RhfConfig {
-    let mut c = cfg;
-    c.init_guess_density = Some(seed.clone());
-    c.use_sad_guess = false;
-    c
+    cfg.with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 fn solve(s: &Setup, cfg: &RhfConfig, what: &str) -> ScfResult {

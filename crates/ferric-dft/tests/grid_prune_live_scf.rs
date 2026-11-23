@@ -116,7 +116,22 @@ fn run_scf(xyz: &str, basis_name: &str, xc: &str, prune: Option<PruneScheme>) ->
 
     let mut cfg = RhfConfig::default()
         .with_xc(xc)
-        .with_df_j_aux("def2-universal-jkfit");
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        // dft_lda.rs uses 1e-7 here; PBE/B3LYP use 1e-8. Take the tighter of
+        // the two everywhere so the SCF floor cannot be mistaken for a
+        // pruning effect.
+        .with_density_conv(1e-8)
+        .with_max_iter(800)
+        // The single variable under test. 75x110 is `AtomicGridConfig::
+        // default()`'s shape and the shape the PySCF references were
+        // generated at.
+        .with_dft_grid(AtomicGridConfig {
+            n_radial: 75,
+            n_angular: 110,
+            prune,
+            weight_cut: None,
+        });
     // B3LYP is a hybrid and `dft_b3lyp.rs` fits K as well as J. Matching
     // that matters: an unfitted K would change the energy by far more than
     // pruning does and would swamp the effect under test.
@@ -125,21 +140,6 @@ fn run_scf(xyz: &str, basis_name: &str, xc: &str, prune: Option<PruneScheme>) ->
     } else {
         None
     };
-    cfg.energy_conv = 1e-10;
-    // dft_lda.rs uses 1e-7 here; PBE/B3LYP use 1e-8. Take the tighter of
-    // the two everywhere so the SCF floor cannot be mistaken for a
-    // pruning effect.
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 800;
-    // The single variable under test. 75x110 is `AtomicGridConfig::
-    // default()`'s shape and the shape the PySCF references were
-    // generated at.
-    cfg.dft_grid = Some(AtomicGridConfig {
-        n_radial: 75,
-        n_angular: 110,
-        prune,
-        weight_cut: None,
-    });
     // The ladder, as dft_pbe.rs / dft_b3lyp.rs use. dft_lda.rs uses plain
     // solve_rhf, but the ladder's rung 0 IS that plain solve, so running the
     // ladder for every functional is a superset — it cannot make a case pass

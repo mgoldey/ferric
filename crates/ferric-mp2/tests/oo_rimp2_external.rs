@@ -106,10 +106,10 @@ fn oo_mp2_energy_shift_tracks_rhf_shift() {
     assert!(oo_vac.converged, "vacuum OO-MP2 must converge");
 
     // In the field.
-    let mut field_cfg = RhfConfig::default();
-    field_cfg.external_potential = Some(ext.clone());
-    field_cfg.energy_conv = 1e-11;
-    field_cfg.density_conv = 1e-10;
+    let field_cfg = RhfConfig::default()
+        .with_external_potential(ext.clone())
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     let rhf_field = solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -227,10 +227,10 @@ fn oo_mp2_gradient_matches_fd_in_field() {
         let obs = PreparedBasis::new(m, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(m, &aux_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let mut cfg = RhfConfig::default();
-        cfg.external_potential = Some(ext.clone());
-        cfg.energy_conv = 1e-11;
-        cfg.density_conv = 1e-10;
+        let cfg = RhfConfig::default()
+            .with_external_potential(ext.clone())
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10);
         let rhf = solve_rhf(&ParallelContext::default(), m, &obs, op, &bounds, &cfg).unwrap();
         assert!(rhf.converged);
         let oo = oo_ri_mp2(m, &obs, &dfbs, op, &bounds, &rhf, &oo_config, Some(&ext)).unwrap();
@@ -244,10 +244,10 @@ fn oo_mp2_gradient_matches_fd_in_field() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let mut cfg = RhfConfig::default();
-    cfg.external_potential = Some(ext.clone());
-    cfg.energy_conv = 1e-11;
-    cfg.density_conv = 1e-10;
+    let cfg = RhfConfig::default()
+        .with_external_potential(ext.clone())
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged);
     let oo = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, Some(&ext)).unwrap();

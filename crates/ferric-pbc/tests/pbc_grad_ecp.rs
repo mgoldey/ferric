@@ -339,9 +339,8 @@ fn rhf(
     let op = Operator::coulomb();
     // Never read on the injected path; required by the signature.
     let bounds = SchwarzBounds::compute(op, p).expect("schwarz");
-    let mut cfg = gamma_config();
+    let mut cfg = gamma_config().with_max_iter(300);
     cfg.init_guess_density = seed.cloned();
-    cfg.max_iter = 300;
     let inj = PeriodicInjection {
         s: hc.s.clone(),
         h: hc.h.clone(),

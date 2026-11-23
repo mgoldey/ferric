@@ -187,11 +187,10 @@ fn dense_none(cell: &Cell, prep: &PreparedBasis, hc: &PeriodicHcore) -> DenseAft
 }
 
 fn uhf_scf() -> RhfConfig {
-    let mut c = RhfConfig::default();
-    c.use_sad_guess = false;
-    c.density_conv = 1e-10;
-    c.max_iter = 400;
-    c
+    RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(400)
 }
 
 /// Gamma UHF on the dense tensor (Direct for `none`, Staged for `ewald`).
@@ -1008,12 +1007,15 @@ fn molecular_u_corr(mol: &Molecule, bs: &BasisSet, na: usize, nb: usize) -> (Scf
     let prep = PreparedBasis::new(mol, bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let m = solve_uhf(&ParallelContext::default(), mol, &prep, &bounds, &{
-        let mut c = RhfConfig::default();
-        c.use_sad_guess = false;
-        c.density_conv = 1e-10;
-        c
-    })
+    let m = solve_uhf(
+        &ParallelContext::default(),
+        mol,
+        &prep,
+        &bounds,
+        &RhfConfig::default()
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_density_conv(1e-10),
+    )
     .unwrap();
     assert!(m.converged);
     let n = prep.nbasis();

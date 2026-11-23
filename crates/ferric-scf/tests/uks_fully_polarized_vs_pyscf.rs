@@ -54,13 +54,14 @@ fn uks_pbe(xyz: &str, mult: usize, df_j_aux: Option<&str>) -> f64 {
     let bs = basis::bundled("sto-3g").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let mut cfg = RhfConfig::default().with_xc("PBE");
+    let mut cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200)
+        .with_dft_grid(AtomicGridConfig::default());
     cfg.df_j_aux = df_j_aux.map(str::to_string);
-    cfg.ri_j_precision = Some(RiJPrecision::F64);
-    cfg.energy_conv = 1e-11;
-    cfg.density_conv = 1e-9;
-    cfg.max_iter = 200;
-    cfg.dft_grid = Some(AtomicGridConfig::default());
     let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     assert!(res.converged, "{xyz}: SCF did not converge");
     res.energy

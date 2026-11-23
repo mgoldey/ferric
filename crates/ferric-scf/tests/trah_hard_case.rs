@@ -266,8 +266,8 @@ fn a_rejected_trah_step_is_retried_not_handed_to_diis() {
     let mut cfg = RhfConfig::default()
         .with_energy_conv(1e-10)
         .with_density_conv(1e-8)
-        .with_max_iter(200);
-    cfg.use_sad_guess = false;
+        .with_max_iter(200)
+        .with_guess(ferric_scf::options::Guess::Core);
     cfg.trah_trigger = Some(1e-2);
     let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(std::sync::atomic::Ordering::Relaxed);
     let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
@@ -312,8 +312,8 @@ fn handoffs_after_rejection(uhf: bool) -> (usize, usize, f64) {
     let mut cfg = RhfConfig::default()
         .with_energy_conv(1e-10)
         .with_density_conv(1e-8)
-        .with_max_iter(200);
-    cfg.use_sad_guess = false;
+        .with_max_iter(200)
+        .with_guess(ferric_scf::options::Guess::Core);
     cfg.trah_trigger = Some(1e-2);
     let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
     let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
@@ -396,13 +396,13 @@ fn uhf_dfk_trah_refreshes_the_occupied_orbital_cache() {
     let mut cfg = RhfConfig::default()
         .with_energy_conv(1e-10)
         .with_density_conv(1e-8)
-        .with_max_iter(200);
-    cfg.use_sad_guess = false;
+        .with_max_iter(200)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        // The golden below is an f64 RI-J energy at 1e-8.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
     cfg.trah_trigger = Some(1e-2);
-    cfg.df_j_aux = Some("def2-universal-jkfit".into());
-    cfg.df_k_aux = Some("def2-universal-jkfit".into());
-    // The golden below is an f64 RI-J energy at 1e-8.
-    cfg.ri_j_precision = Some(ferric_scf::df_j::RiJPrecision::F64);
     let r0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);
     let h0 = ferric_scf::trah::TRAH_HANDOFFS_AFTER_REJECTION.load(Relaxed);
     let r = ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)

@@ -54,14 +54,13 @@ fn field() -> ExternalPotential {
 }
 
 fn config(ext: Option<&ExternalPotential>) -> RhfConfig {
-    let mut c = RhfConfig::default()
+    RhfConfig::default()
         .with_max_iter(200)
         .with_energy_conv(1e-13)
         .with_density_conv(1e-11)
         .with_df_j_aux(String::new())
-        .with_df_k_aux(String::new());
-    c.external_potential = ext.cloned();
-    c
+        .with_df_k_aux(String::new())
+        .with_external_potential(ext.cloned())
 }
 
 struct Solved {

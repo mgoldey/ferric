@@ -234,10 +234,10 @@ fn ecp_with_ri_and_environment_is_refused_by_the_probe() {
     let bs = basis::bundled("def2-svp").unwrap();
     let mol = ecp_mol(HOI, 0, 1, &bs);
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
-    let mut cfg = RhfConfig::default()
+    let cfg = RhfConfig::default()
         .with_df_j_aux("def2-universal-jkfit")
-        .with_df_k_aux("def2-universal-jkfit");
-    cfg.external_potential = Some(point_environment());
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_external_potential(point_environment());
     let err =
         ferric_scf::hessian::analytic_hessian_available(&mol, &prep, Operator::coulomb(), &cfg)
             .expect_err("RI + environment + ECP must be refused");

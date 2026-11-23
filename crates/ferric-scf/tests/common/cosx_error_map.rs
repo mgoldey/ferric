@@ -39,17 +39,17 @@ pub fn pool() -> rayon::ThreadPool {
 }
 
 fn rhf_cfg(cosx: CosxConfig, cosx_k: bool) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx)
+        .with_df_j_aux(JK.to_string())
+        .with_df_k_aux(if cosx_k {
+            String::new()
+        } else {
+            JK.to_string()
+        })
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-8);
     c.k_builder = cosx_k.then_some(ferric_scf::options::KBuilderKind::Cosx);
-    c.cosx = cosx;
-    c.df_j_aux = Some(JK.to_string());
-    c.df_k_aux = Some(if cosx_k {
-        String::new()
-    } else {
-        JK.to_string()
-    });
-    c.energy_conv = 1e-9;
-    c.density_conv = 1e-8;
     c
 }
 

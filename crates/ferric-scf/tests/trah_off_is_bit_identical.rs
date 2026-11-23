@@ -278,11 +278,11 @@ fn newton_trigger_path_is_unaffected_by_trah_being_compiled_in() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let mut newton = RhfConfig::default();
+    let mut newton = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     newton.newton_trigger = 1e-2;
-    newton.energy_conv = 1e-10;
-    newton.density_conv = 1e-8;
-    newton.max_iter = 200;
     let mut newton_plus_trah_cfg = newton.clone();
     newton_plus_trah_cfg.trah = ferric_scf::trah::TrahConfig {
         radius0: 0.001,

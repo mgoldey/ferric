@@ -514,10 +514,10 @@ fn open_shell_end_to_end_via_roks() {
     let ctx = ParallelContext::default();
 
     // 1. Converge the open-shell KOHN-SHAM reference with the custom functional.
-    let mut scf = RhfConfig::default()
+    let scf = RhfConfig::default()
         .with_density_conv(1e-8)
-        .with_max_iter(200);
-    scf.xc = Some(WB97X_L_V_NAME.to_string());
+        .with_max_iter(200)
+        .with_xc(WB97X_L_V_NAME.to_string());
     let roks = ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
         .expect("ROKS/wB97X-L-V should solve");
     eprintln!(

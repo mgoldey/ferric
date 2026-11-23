@@ -931,7 +931,9 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     // plateau, so the achievable localized hole is N≈1.01; tol=1e-2 matches the
     // physically flat response (∂N/∂λ≈1e-3) and lands the driver on the
     // localized plateau rather than walking λ over the cliff.
-    let mut cfg0 = RhfConfig::default();
+    let mut cfg0 = RhfConfig::default()
+        .with_dft_grid(gcfg.clone())
+        .with_level_shift(0.2);
     cfg0.constraints = vec![Constraint {
         fragment: vec![0],
         spin: SpinChannel::Total,
@@ -949,9 +951,9 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     // R = 2.5/3.0 sigma points burn the whole cap before failing.
     cfg0.cdft_max_outer = 40;
     cfg0.fractional_occ = false;
-    cfg0.dft_grid = Some(gcfg.clone());
-    cfg0.level_shift = 0.2;
-    let mut cfg1 = RhfConfig::default();
+    let mut cfg1 = RhfConfig::default()
+        .with_dft_grid(gcfg.clone())
+        .with_level_shift(0.2);
     cfg1.constraints = vec![Constraint {
         fragment: vec![1],
         spin: SpinChannel::Total,
@@ -969,8 +971,6 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     // R = 2.5/3.0 sigma points burn the whole cap before failing.
     cfg1.cdft_max_outer = 40;
     cfg1.fractional_occ = false;
-    cfg1.dft_grid = Some(gcfg.clone());
-    cfg1.level_shift = 0.2;
     let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg0).unwrap();
     let rb = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg1).unwrap();
 
@@ -1112,8 +1112,8 @@ fn hene() -> Hene {
 fn hene_base_cfg() -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_level_shift(0.5)
-        .with_max_iter(400);
-    c.use_sad_guess = false;
+        .with_max_iter(400)
+        .with_guess(ferric_scf::options::Guess::Core);
     c.fractional_occ = false;
     c
 }
@@ -1146,7 +1146,11 @@ fn hene_diabat_with(
     target: f64,
     descent: bool,
 ) -> ferric_scf::cdft_driver::CdftResult {
-    let mut cfg = hene_base_cfg();
+    let mut cfg = hene_base_cfg().with_dft_grid(AtomicGridConfig {
+        n_radial: 99,
+        n_angular: 302,
+        ..Default::default()
+    });
     cfg.cdft_stability_descent = descent;
     cfg.constraints = vec![Constraint {
         fragment: vec![fragment],
@@ -1154,11 +1158,6 @@ fn hene_diabat_with(
         target,
     }];
     cfg.cdft_lambda_tol = 1e-5;
-    cfg.dft_grid = Some(AtomicGridConfig {
-        n_radial: 99,
-        n_angular: 302,
-        ..Default::default()
-    });
     let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("HeNe+ N(atom {fragment}) = {target}: {e}"));
     assert!(r.scf.converged, "inner SCF did not converge");

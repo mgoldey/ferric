@@ -36,10 +36,10 @@ pub fn real_case(xyz: &str, charge: i32, mult: usize) -> Case {
     let mut cfg = UhfConfig::default()
         .with_max_iter(200)
         .with_energy_conv(1e-8)
-        .with_density_conv(1e-6);
+        .with_density_conv(1e-6)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     cfg.integral_thresh = 1e-9;
-    cfg.df_j_aux = Some("def2-universal-jkfit".into());
-    cfg.df_k_aux = Some("def2-universal-jkfit".into());
     let scf = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg).unwrap();
     assert!(scf.converged, "{xyz}: UHF did not converge");
     let amps =

@@ -20,8 +20,7 @@ fn base() -> RhfConfig {
 /// A +1 point charge 3 Bohr from the origin (where the free atom is solved)
 /// and a uniform field: an environment that strongly polarizes an atom there.
 fn embedded() -> RhfConfig {
-    let mut c = base();
-    c.external_potential = Some(ExternalPotential {
+    let mut c = base().with_external_potential(ExternalPotential {
         point_charges: vec![PointCharge {
             q: 1.0,
             x: 0.0,
@@ -97,8 +96,7 @@ fn free_atom_volume_ignores_the_molecular_starting_density() {
     let ctx = ParallelContext::default();
     let bs = basis::bundled("6-31g").expect("6-31g");
     let op = Operator::coulomb();
-    let mut with_dm0 = base();
-    with_dm0.init_guess_density = Some(ndarray::Array2::eye(13));
+    let with_dm0 = base().with_init_guess_density(ndarray::Array2::eye(13));
     for z in [8usize, 10] {
         let vac = live_free_atom_volume(&ctx, z, &bs, op, &base()).expect("default guess");
         let dm0 = live_free_atom_volume(&ctx, z, &bs, op, &with_dm0)

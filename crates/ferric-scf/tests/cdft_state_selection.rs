@@ -162,7 +162,13 @@ fn build_sys() -> Sys {
 fn hene_cfg() -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_max_iter(400)
-        .with_level_shift(HENE_LEVEL_SHIFT);
+        .with_level_shift(HENE_LEVEL_SHIFT)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 302,
+            ..Default::default()
+        });
     c.cdft_lambda_tol = HENE_LAMBDA_TOL;
     // PINNED, not inherited: this file asserts "the constrained path
     // converges", and that assertion must not double as an assertion
@@ -189,12 +195,6 @@ fn hene_cfg() -> RhfConfig {
     // rescues.
     c.cdft_max_outer = 40;
     c.cdft_stability_descent = false;
-    c.use_sad_guess = false;
-    c.dft_grid = Some(AtomicGridConfig {
-        n_radial: 99,
-        n_angular: 302,
-        ..Default::default()
-    });
     c
 }
 
@@ -225,17 +225,17 @@ fn hene_cfg() -> RhfConfig {
 /// of the unconstrained fix — it is recorded here and left for the cDFT lane
 /// to pursue, deliberately NOT tuned away by widening `max_outer`.
 fn cfg_with_target(target: f64) -> RhfConfig {
-    let mut c = hene_cfg();
+    let mut c = hene_cfg()
+        // Redundant since `hene_cfg` now pins this too, and KEPT redundant: it
+        // is the pin this function's doc above describes, and a reader who
+        // deletes it should have to reckon with that doc rather than discover
+        // the behaviour changed two call-levels away.
+        .with_guess(ferric_scf::options::Guess::Core);
     c.constraints = vec![Constraint {
         fragment: vec![0],
         target,
         spin: SpinChannel::Total,
     }];
-    // Redundant since `hene_cfg` now pins this too, and KEPT redundant: it
-    // is the pin this function's doc above describes, and a reader who
-    // deletes it should have to reckon with that doc rather than discover
-    // the behaviour changed two call-levels away.
-    c.use_sad_guess = false;
     c
 }
 
@@ -751,8 +751,7 @@ fn sad_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
 /// ([`unconstrained_sigma_mos`]) rather than replacing one with the other —
 /// so the catalogue now spans MORE basins than before, not fewer.
 fn unconstrained_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
-    let mut cfg = hene_cfg();
-    cfg.use_sad_guess = false;
+    let cfg = hene_cfg().with_guess(ferric_scf::options::Guess::Core);
     let scf =
         solve_uhf_fockmod(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg, None, None).unwrap();
     let cb = scf.mos_beta.clone().unwrap();
@@ -770,8 +769,7 @@ fn unconstrained_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
 /// inheriting that pin made this entry run the same solve as
 /// [`unconstrained_mos`] (the ²Π state), bit for bit.
 fn unconstrained_sigma_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
-    let mut cfg = hene_cfg();
-    cfg.use_sad_guess = true;
+    let cfg = hene_cfg().with_guess(ferric_scf::options::Guess::Sad);
     let scf =
         solve_uhf_fockmod(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg, None, None).unwrap();
     let cb = scf.mos_beta.clone().unwrap();
@@ -1942,15 +1940,15 @@ fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
     const TOL: f64 = 3e-6;
 
     let sys = build_sys();
-    let mut cfg = hene_cfg();
+    let mut cfg = hene_cfg()
+        // The ONE place in this file that deliberately does NOT pin the guess:
+        // the default path is the whole subject of the test.
+        .with_guess(ferric_scf::options::Guess::Sad);
     cfg.constraints = vec![Constraint {
         fragment: vec![0],
         target: 2.0,
         spin: SpinChannel::Total,
     }];
-    // The ONE place in this file that deliberately does NOT pin the guess:
-    // the default path is the whole subject of the test.
-    cfg.use_sad_guess = true;
 
     // Convergence of the MINAO start at the integer target is machine-
     // dependent (see the 2026-09-18 correction above): 10 outer iters here,
@@ -1987,8 +1985,7 @@ fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
 
     // The driver-default start (no SAD): the catalogue's "driver default
     // (None)" row, which converges here at every libint precision measured.
-    let mut base_cfg = cfg.clone();
-    base_cfg.use_sad_guess = false;
+    let base_cfg = cfg.clone().with_guess(ferric_scf::options::Guess::Core);
     let b = solve_cdft_uhf(
         &sys.ctx,
         &sys.mol,

@@ -81,9 +81,11 @@ fn water() -> Sys {
 }
 
 fn cfg(budget: usize, max_iter: usize) -> RhfConfig {
-    let mut c = RhfConfig::default().with_xc("PBE").with_df_j_aux(AUX);
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        .with_df_j_aux(AUX)
+        .with_max_iter(max_iter);
     c.three_index_budget_bytes = budget;
-    c.max_iter = max_iter;
     c
 }
 
@@ -307,15 +309,15 @@ fn vv10_cfg(budget: usize, max_iter: usize) -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_xc("wB97X-V")
         .with_df_j_aux(AUX)
-        .with_df_k_aux(AUX);
+        .with_df_k_aux(AUX)
+        .with_max_iter(max_iter)
+        .with_dft_grid(AtomicGridConfig {
+            n_radial: 30,
+            n_angular: 50,
+            prune: None,
+            weight_cut: None,
+        });
     c.three_index_budget_bytes = budget;
-    c.max_iter = max_iter;
-    c.dft_grid = Some(AtomicGridConfig {
-        n_radial: 30,
-        n_angular: 50,
-        prune: None,
-        weight_cut: None,
-    });
     c.nlc_grid = Some(AtomicGridConfig {
         n_radial: 10,
         n_angular: 14,

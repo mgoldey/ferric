@@ -194,8 +194,8 @@ pub fn assert_same_record(a: &Freq, b: &Freq, what: &str) {
 pub fn library_config(xc: &str) -> RhfConfig {
     RhfConfig::default()
         .with_xc(xc.to_string())
-        .with_df_j_aux("def2-universal-jkfit".to_string())
-        .with_df_k_aux("def2-universal-jkfit".to_string())
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
         .with_max_iter(200)
         .with_energy_conv(1e-13)
         .with_density_conv(1e-11)

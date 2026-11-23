@@ -324,11 +324,7 @@ fn symmetry_blocked_solve_refuses_guess_basis() {
 #[test]
 fn injected_path_refuses_guess_basis() {
     let cfg = with_guess(
-        &{
-            let mut c = RhfConfig::default();
-            c.use_sad_guess = false;
-            c
-        },
+        &RhfConfig::default().with_guess(ferric_scf::options::Guess::Core),
         "sto-3g",
         "fock",
     );
@@ -484,8 +480,8 @@ fn ladder_escalates_past_a_failing_secondary() {
 #[test]
 fn report_survives_the_stability_descent() {
     let (mol, prep, bounds) = setup("2\n\nH 0 0 0\nH 0 0 2.5\n", 1, "cc-pvdz");
-    let mut cfg = with_guess(&tight(None), "6-31g", "fock").with_check_stability(true);
-    cfg.scf_stability_descent = true;
+    let cfg = with_guess(&tight(None), "6-31g", "fock")
+        .with_stability(ferric_scf::options::Stability::Descend);
     let mut plain = cfg.clone();
     plain.scf_stability_descent = false;
     let first = solve(Kind::Uhf, &mol, &prep, &bounds, &plain);
@@ -573,8 +569,8 @@ fn cdft_runs_the_secondary_scf_once() {
 fn explicit_density_outranks_guess_basis() {
     let (mol, prep, bounds) = setup(WATER, 1, "6-31g");
     let reference = solve(Kind::Rhf, &mol, &prep, &bounds, &tight(None));
-    let mut cfg = with_guess(&tight(None), "sto-3g", "fock");
-    cfg.init_guess_density = Some(reference.density_total.clone());
+    let cfg = with_guess(&tight(None), "sto-3g", "fock")
+        .with_init_guess_density(reference.density_total.clone());
     let before = b2::secondary_runs_on_this_thread();
     let r = solve(Kind::Rhf, &mol, &prep, &bounds, &cfg);
     assert_eq!(b2::secondary_runs_on_this_thread(), before);

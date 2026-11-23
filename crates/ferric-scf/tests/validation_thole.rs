@@ -346,12 +346,12 @@ fn scf(
     uhf: bool,
     ctx: &str,
 ) -> ScfResult {
-    let mut cfg = RhfConfig::default();
-    cfg.external_potential = ext;
+    let mut cfg = RhfConfig::default()
+        .with_external_potential(ext)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(300);
     cfg.polarizable = pol;
-    cfg.energy_conv = 1e-11;
-    cfg.density_conv = 1e-10;
-    cfg.max_iter = 300;
     let ctx_p = ParallelContext::default();
     let res = if uhf {
         solve_uhf(&ctx_p, &qm.mol, &qm.prep, &qm.bounds, &cfg)

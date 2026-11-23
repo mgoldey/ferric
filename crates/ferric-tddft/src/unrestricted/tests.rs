@@ -32,10 +32,10 @@ fn prepare(xyz: &str, mult: usize) -> (Molecule, PreparedBasis, PreparedBasis) {
 }
 
 fn scf_config(xc: Option<&str>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
     c.xc = xc.map(str::to_string);
-    c.density_conv = 1e-9;
-    c.max_iter = 300;
     c
 }
 

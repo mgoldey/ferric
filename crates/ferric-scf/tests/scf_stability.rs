@@ -125,11 +125,11 @@ fn converge_uhf_from(
     // the eigenvalues, tolerances and dense cross-checks. Pinning the guess
     // keeps the known-unstable reference reachable instead of silently
     // re-baselining these tests onto a different state.
-    let mut cfg = RhfConfig::default()
+    let cfg = RhfConfig::default()
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)
-        .with_max_iter(400);
-    cfg.use_sad_guess = false;
+        .with_max_iter(400)
+        .with_guess(ferric_scf::options::Guess::Core);
     let res = match guess.as_ref() {
         Some((a, b)) => {
             solve_uhf_with_guess(&ctx, &mol, &prep, &bounds, &cfg, Some((a, b))).unwrap()

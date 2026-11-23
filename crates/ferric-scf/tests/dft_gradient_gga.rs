@@ -16,25 +16,25 @@ use rayon::prelude::*;
 fn rhf_cfg(xc: &str, hybrid: bool) -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_xc(xc)
-        .with_df_j_aux("def2-universal-jkfit");
+        .with_df_j_aux("def2-universal-jkfit")
+        // energy_conv follows rhf.rs's documented convergence philosophy
+        // (RhfConfig::default doc comment): dp_rms is the real convergence
+        // signal; ΔE floors with naux (DF-J/DF-K are in play here) and is
+        // only a loose "not still descending" sanity bound. The previous
+        // energy_conv=1e-10 demanded a gate scf_converged is designed to
+        // never satisfy under DF, so affected perturbed geometries silently
+        // ran to max_iter with a stale (sometimes wrong-basin) density —
+        // root cause of the FD reference blowing up at isolated
+        // displacements while every other component tracked the analytic
+        // gradient.
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-8)
+        .with_max_iter(500);
     c.df_k_aux = if hybrid {
         Some("def2-universal-jkfit".into())
     } else {
         None
     };
-    // energy_conv follows rhf.rs's documented convergence philosophy
-    // (RhfConfig::default doc comment): dp_rms is the real convergence
-    // signal; ΔE floors with naux (DF-J/DF-K are in play here) and is
-    // only a loose "not still descending" sanity bound. The previous
-    // energy_conv=1e-10 demanded a gate scf_converged is designed to
-    // never satisfy under DF, so affected perturbed geometries silently
-    // ran to max_iter with a stale (sometimes wrong-basin) density —
-    // root cause of the FD reference blowing up at isolated
-    // displacements while every other component tracked the analytic
-    // gradient.
-    c.energy_conv = 1e-8;
-    c.density_conv = 1e-8;
-    c.max_iter = 500;
     c
 }
 
@@ -67,9 +67,9 @@ fn fd_gradient(xyz: &str, basis_name: &str, xc: &str, hybrid: bool, delta: f64) 
         &base_cfg,
     )
     .unwrap();
-    let mut cfg = base_cfg;
-    cfg.init_guess_density = Some(res0.density_r().clone());
-    cfg.use_sad_guess = false;
+    let cfg = base_cfg
+        .with_init_guess_density(res0.density_r().clone())
+        .with_guess(ferric_scf::options::Guess::Core);
 
     // Each (atom, coord) displacement pair is independent given the shared
     // `cfg` (which embeds the common equilibrium-density seed established

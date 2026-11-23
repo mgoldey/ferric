@@ -300,10 +300,9 @@ fn hf_starts_h2o_defaults_within_bar() {
 #[ignore = "validation: GW defaults vs validated settings"]
 fn u_g0w0_uhf_oh_defaults_within_bar() {
     let sys = load("oh", 2);
-    let mut cfg = scf_config(None)
+    let cfg = scf_config(None)
         .with_density_conv(1e-9)
-        .with_check_stability(true);
-    cfg.scf_stability_descent = true;
+        .with_stability(ferric_scf::options::Stability::Descend);
     let scf = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("oh: UHF failed: {e:?}"));
     assert!(scf.converged, "oh: UHF did not converge");
@@ -448,8 +447,7 @@ const UKS_COARSE_N_QUAD: usize = 16;
 /// every QP solve returned a root.
 fn uks_frontier(system: &str) -> impl Fn(&PdepRpaConfig, &GwConfig) -> [[f64; 2]; 2] {
     let sys = load(system, 2);
-    let mut cfg = scf_config(Some("pbe"));
-    cfg.mom_after_iter = 5;
+    let cfg = scf_config(Some("pbe")).with_mom_after_iter(5);
     let scf = solve_uhf(&sys.ctx, &sys.mol, &sys.obs, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("{system}: UKS failed: {e:?}"));
     assert!(scf.converged, "{system}: UKS did not converge");

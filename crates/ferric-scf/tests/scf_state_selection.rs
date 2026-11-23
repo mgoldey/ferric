@@ -118,9 +118,7 @@ pub fn tight_cfg() -> RhfConfig {
 /// unconditionally until the guess fix. `use_sad_guess = false` with no
 /// explicit density is the documented way to ask for it.
 pub fn hcore_cfg() -> RhfConfig {
-    let mut c = tight_cfg();
-    c.use_sad_guess = false;
-    c
+    tight_cfg().with_guess(ferric_scf::options::Guess::Core)
 }
 
 /// Number of occupied α / β orbitals for a molecule.

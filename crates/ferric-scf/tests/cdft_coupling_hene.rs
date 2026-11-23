@@ -214,7 +214,10 @@ fn hene_coupling_capped(r_ang: f64, use_sad: bool, max_outer: usize) -> Option<P
     // so the two weight matrices are identical and only the target differs.
     // A: N(He) = 2 -> the hole sits on Ne.  B: N(He) = 1 -> hole on He.
     let mk = |target: f64| {
-        let mut c = RhfConfig::default();
+        let mut c = RhfConfig::default()
+            .with_dft_grid(gcfg.clone())
+            .with_level_shift(0.5)
+            .with_max_iter(400);
         c.constraints = vec![Constraint {
             fragment: vec![0],
             spin: SpinChannel::Total,
@@ -232,9 +235,6 @@ fn hene_coupling_capped(r_ang: f64, use_sad: bool, max_outer: usize) -> Option<P
         // R = 2.5/3.0 sigma points burn the whole cap before failing.
         c.cdft_max_outer = max_outer;
         c.fractional_occ = false;
-        c.dft_grid = Some(gcfg.clone());
-        c.level_shift = 0.5;
-        c.max_iter = 400;
         c.use_sad_guess = use_sad;
         c
     };
@@ -619,7 +619,9 @@ fn he2_plus_s_ab_is_monotone_and_unchanged() {
         let w0 = build_weight_matrix(&mol, &grid, &chi, &[0]);
         let w1 = build_weight_matrix(&mol, &grid, &chi, &[1]);
         let mk = |frag: usize| {
-            let mut c = RhfConfig::default();
+            let mut c = RhfConfig::default()
+                .with_dft_grid(gcfg.clone())
+                .with_level_shift(0.2);
             c.constraints = vec![Constraint {
                 fragment: vec![frag],
                 spin: SpinChannel::Total,
@@ -631,8 +633,6 @@ fn he2_plus_s_ab_is_monotone_and_unchanged() {
             // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
             c.cdft_max_outer = 40;
             c.fractional_occ = false;
-            c.dft_grid = Some(gcfg.clone());
-            c.level_shift = 0.2;
             c
         };
         let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &mk(0)).unwrap();

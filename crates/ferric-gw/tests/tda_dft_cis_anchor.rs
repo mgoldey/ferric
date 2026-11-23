@@ -216,7 +216,7 @@ fn fxc_term_is_not_a_no_op() {
         // lucky dE). Convergence is decided by density_conv.
         .with_energy_conv(1e-3)
         .with_density_conv(1e-9)
-        .with_xc("LDA".to_string());
+        .with_xc("LDA");
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(ks.converged, "reference RKS/LDA did not converge");
 

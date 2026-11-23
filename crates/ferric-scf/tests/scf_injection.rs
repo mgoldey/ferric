@@ -109,9 +109,7 @@ fn molecular_one_electron(su: &Setup) -> (Array2<f64>, Array2<f64>, f64) {
 /// A config the injected path accepts: everything default except the MINAO
 /// guess (projects onto molecular atoms, refused by `validate_injected`).
 fn injectable_config() -> RhfConfig {
-    let mut c = RhfConfig::default();
-    c.use_sad_guess = false;
-    c
+    RhfConfig::default().with_guess(ferric_scf::options::Guess::Core)
 }
 
 fn assert_bitwise(label: &str, a: &ScfResult, b: &ScfResult) {
@@ -402,16 +400,16 @@ fn rejected_cases() -> Vec<(&'static str, RhfConfig)> {
             c.trah_trigger = Some(1e-2);
             c
         }),
-        ("use_sad_guess", {
-            let mut c = base();
-            c.use_sad_guess = true;
-            c
-        }),
-        ("external_potential", {
-            let mut c = base();
-            c.external_potential = Some(Default::default());
-            c
-        }),
+        (
+            "use_sad_guess",
+            base().with_guess(ferric_scf::options::Guess::Sad),
+        ),
+        (
+            "external_potential",
+            base().with_external_potential(
+                ferric_core::external_potential::ExternalPotential::default(),
+            ),
+        ),
         ("cosmo", {
             let mut c = base();
             c.cosmo = Some(Default::default());
@@ -438,9 +436,9 @@ fn baseline_injectable_config_is_accepted() {
     validate_injected(&injectable_config()).expect("baseline must validate");
     // use_sad_guess is irrelevant once an explicit density is supplied (same
     // precedence as the molecular path), so it is not refused then.
-    let mut with_density = RhfConfig::default();
-    with_density.use_sad_guess = true;
-    with_density.init_guess_density = Some(Array2::zeros((2, 2)));
+    let with_density = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Sad)
+        .with_init_guess_density(Array2::zeros((2, 2)));
     validate_injected(&with_density).expect("explicit density overrides the guess choice");
 }
 
@@ -692,9 +690,9 @@ fn injected_uhf_explicit_density_guess_reaches_the_same_state() {
     };
     let (j0, k0) = mk();
     let base = run_uhf_injected(&su, &cfg, 0.0, j0, k0);
-    let mut guess_cfg = injectable_config();
-    guess_cfg.use_sad_guess = true;
-    guess_cfg.init_guess_density = Some(base.density_total.clone());
+    let guess_cfg = injectable_config()
+        .with_guess(ferric_scf::options::Guess::Sad)
+        .with_init_guess_density(base.density_total.clone());
     let (j1, k1) = mk();
     let from_d = run_uhf_injected(&su, &guess_cfg, 0.0, j1, k1);
     let de = (from_d.energy - base.energy).abs();
@@ -705,8 +703,7 @@ fn injected_uhf_explicit_density_guess_reaches_the_same_state() {
     assert!(de < 1e-8, "|dE| = {de:.3e}");
 
     // Wrong-shape density is a named error, not a silent core-guess fallback.
-    let mut bad_cfg = injectable_config();
-    bad_cfg.init_guess_density = Some(Array2::zeros((2, 2)));
+    let bad_cfg = injectable_config().with_init_guess_density(Array2::zeros((2, 2)));
     let (j2, k2) = mk();
     let (s, h, vnn) = molecular_one_electron(&su);
     let inj = PeriodicInjection {
@@ -976,9 +973,9 @@ fn injected_rohf_density_and_mo_guesses_reach_the_same_state() {
     let (j0, k0) = direct_pair(&su, &cfg);
     let base = run_rohf_injected(&su, &cfg, 0.0, j0, k0, None);
 
-    let mut guess_cfg = injectable_config();
-    guess_cfg.use_sad_guess = true;
-    guess_cfg.init_guess_density = Some(base.density_total.clone());
+    let guess_cfg = injectable_config()
+        .with_guess(ferric_scf::options::Guess::Sad)
+        .with_init_guess_density(base.density_total.clone());
     let (j1, k1) = direct_pair(&su, &guess_cfg);
     let from_d = run_rohf_injected(&su, &guess_cfg, 0.0, j1, k1, None);
     let de = (from_d.energy - base.energy).abs();
@@ -1004,8 +1001,7 @@ fn injected_rohf_density_and_mo_guesses_reach_the_same_state() {
     );
 
     let n = su.prep.nbasis();
-    let mut bad_cfg = injectable_config();
-    bad_cfg.init_guess_density = Some(Array2::zeros((2, 2)));
+    let bad_cfg = injectable_config().with_init_guess_density(Array2::zeros((2, 2)));
     for (label, c, needle) in [
         (
             "bad density",

@@ -58,11 +58,11 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 }
 
 fn cfg(symmetry: bool) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
+        .with_max_iter(200);
     c.symmetry = symmetry;
-    c.density_conv = 1e-10;
-    c.energy_conv = 1e-12;
-    c.max_iter = 200;
     c
 }
 

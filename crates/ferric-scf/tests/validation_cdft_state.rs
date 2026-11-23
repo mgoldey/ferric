@@ -402,21 +402,21 @@ fn ferric_population(s: &System, w: &Array2<f64>, ca: &Array2<f64>, cb: &Array2<
 
 /// Constrained pure-UHF config for this row. Exact J/K, 99×302 W grid.
 fn cdft_cfg(s: &System, descent: bool) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_level_shift(LEVEL_SHIFT)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(grid_cfg());
     c.constraints = vec![Constraint {
         fragment: s.fragment.clone(),
         target: s.target,
         spin: SpinChannel::Total,
     }];
-    c.max_iter = 400;
-    c.energy_conv = 1e-11;
-    c.density_conv = 1e-9;
-    c.level_shift = LEVEL_SHIFT;
     c.cdft_lambda_tol = CDFT_LAMBDA_TOL;
     c.cdft_max_outer = CDFT_MAX_OUTER;
     c.cdft_stability_descent = descent;
-    c.use_sad_guess = false;
-    c.dft_grid = Some(grid_cfg());
     c
 }
 
@@ -831,8 +831,7 @@ fn unseeded_hene_paths_land_on_nwchem_states() {
             .unwrap_or_else(|e| panic!("{ctx}: {e:?}"));
         assert_on_state(&s, &ctx, &r, expect, &pred);
     }
-    let mut cfg = cdft_cfg(&s, true);
-    cfg.use_sad_guess = true;
+    let cfg = cdft_cfg(&s, true).with_guess(ferric_scf::options::Guess::Sad);
     match solve_cdft_uhf(&s.ctx, &s.mol, &s.prep, &s.bs, &s.bounds, &cfg) {
         Ok(r) => eprintln!(
             "{} unseeded (MINAO, descent ON) [MEASURE]: E {:.10} λ {:+.8} vs low {:+.3e} Ha, \

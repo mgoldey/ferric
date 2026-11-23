@@ -180,20 +180,19 @@ fn child_nonconverged_exits() {
         return;
     }
     eprintln!("PHASE_CASE maxiter");
-    let r = run_water(&{
-        let mut c = RhfConfig::default().with_max_iter(3);
-        c.use_sad_guess = false;
-        c
-    });
+    let r = run_water(
+        &RhfConfig::default()
+            .with_max_iter(3)
+            .with_guess(ferric_scf::options::Guess::Core),
+    );
     assert_eq!(r.exit, ScfExit::MaxIter, "case must hit max_iter");
     eprintln!("PHASE_CASE diverged");
     // A -inf tolerance counts every iteration as "energy rising", so the
     // 3-iteration divergence streak fires deterministically at iter 3, ahead
     // of the convergence test.
     let r = run_water(&{
-        let mut c = RhfConfig::default();
+        let mut c = RhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
         c.divergence_tol = Some(f64::NEG_INFINITY);
-        c.use_sad_guess = false;
         c
     });
     assert_eq!(r.exit, ScfExit::Diverged, "case must diverge");

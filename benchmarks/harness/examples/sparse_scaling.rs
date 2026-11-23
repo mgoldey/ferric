@@ -214,7 +214,7 @@ fn main() {
             .with_max_iter(200)
             .with_energy_conv(1e-7)
             .with_density_conv(1e-6)
-            .with_df_j_aux("cc-pvdz-ri".to_string())
+            .with_df_j_aux("cc-pvdz-ri")
             .with_k_builder(ferric_scf::options::KBuilderKind::Link);
 
         let t0 = Instant::now();

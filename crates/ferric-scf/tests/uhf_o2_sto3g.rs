@@ -184,9 +184,9 @@ fn default_uhf_does_not_land_on_the_hcore_saddle() {
 fn hcore_guess_reproduces_the_reported_saddle_and_it_is_flagged() {
     let e_hcore = ref_energy("energy_hcore_guess");
     let s = o2("sto-3g");
-    let mut cfg = tight_cfg();
-    cfg.use_sad_guess = false;
-    cfg.check_stability = true;
+    let cfg = tight_cfg()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_check_stability(true);
     let r = uhf(&s, &cfg);
     let e_rohf = rohf(&s, &tight_cfg()).energy;
     println!(
@@ -237,11 +237,10 @@ fn the_default_state_is_a_saddle_and_the_descent_reaches_the_uhf_minimum() {
     let s = o2("sto-3g");
 
     let checked = uhf(&s, &tight_cfg().with_check_stability(true));
-    let descended = uhf(&s, &{
-        let mut c = tight_cfg().with_check_stability(true);
-        c.scf_stability_descent = true;
-        c
-    });
+    let descended = uhf(
+        &s,
+        &tight_cfg().with_stability(ferric_scf::options::Stability::Descend),
+    );
     println!(
         "O2/STO-3G: default E = {:.10} ({}, lambda_min {:+.4e}); descent E = {:.10} ({}, \
          lambda_min {:+.4e}); PySCF minimum {e_min:.10}",
@@ -291,13 +290,12 @@ fn the_default_state_is_a_saddle_and_the_descent_reaches_the_uhf_minimum() {
 fn the_descent_also_escapes_the_hcore_saddle() {
     let e_min = ref_energy("energy");
     let s = o2("sto-3g");
-    let r = uhf(&s, &{
-        let mut c = tight_cfg();
-        c.use_sad_guess = false;
-        c.check_stability = true;
-        c.scf_stability_descent = true;
-        c
-    });
+    let r = uhf(
+        &s,
+        &tight_cfg()
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_stability(ferric_scf::options::Stability::Descend),
+    );
     println!(
         "O2/STO-3G hcore + descent: E = {:.10} ({}, lambda_min {:+.4e}); minimum {e_min:.10}",
         r.energy,

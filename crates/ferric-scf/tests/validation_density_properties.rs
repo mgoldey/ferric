@@ -319,13 +319,11 @@ fn rhf_config() -> RhfConfig {
 }
 
 fn uhf_config() -> RhfConfig {
-    let mut c = RhfConfig::default()
+    RhfConfig::default()
         .with_max_iter(400)
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)
-        .with_check_stability(true);
-    c.scf_stability_descent = true;
-    c
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 /// One molecule × basis: same-density, controls, full chain. Returns ferric's
@@ -532,15 +530,16 @@ fn atom_row(symbol_lc: &str) {
     let frac = r["uks"]["fractional_occupation"]
         .as_bool()
         .expect("uks.fractional_occupation");
-    let mut cfg = RhfConfig::default().with_xc("PBE".to_string());
+    let mut cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_mom_after_iter(if sys.mol.multiplicity > 1 { 5 } else { 0 })
+        .with_max_iter(400)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        // The references are PySCF on the flat (75,110) grid (generator: prune=None),
+        // not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
     cfg.fractional_occ = sys.mol.multiplicity > 1;
-    cfg.mom_after_iter = if sys.mol.multiplicity > 1 { 5 } else { 0 };
-    cfg.max_iter = 400;
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
-    // The references are PySCF on the flat (75,110) grid (generator: prune=None),
-    // not the pruned KS default AtomicGridConfig::production().
-    cfg.dft_grid = Some(AtomicGridConfig::default());
     let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_uhf (UKS-PBE) failed: {e:?}"));
     assert!(res.converged, "{ctx}: ferric UKS not converged");

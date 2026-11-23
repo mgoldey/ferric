@@ -271,11 +271,11 @@ fn solve(sy: &Sys, spin: Spin, config: &RhfConfig) -> ScfResult {
 }
 
 fn tight(xc: Option<&str>, j: Option<&str>, k: Option<&str>, kb: Option<&str>) -> RhfConfig {
-    let mut c = cfg(j, k, kb);
+    let mut c = cfg(j, k, kb)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_ri_j_precision(RiJPrecision::F64);
     c.xc = xc.map(str::to_string);
-    c.energy_conv = 1e-10;
-    c.density_conv = 1e-8;
-    c.ri_j_precision = Some(RiJPrecision::F64);
     c
 }
 

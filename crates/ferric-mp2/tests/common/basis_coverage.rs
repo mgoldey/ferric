@@ -106,13 +106,13 @@ fn scf_config(case: &Case) -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_energy_conv(1e-12)
         .with_density_conv(1e-10)
-        .with_max_iter(400);
+        .with_max_iter(400)
+        // f64 RI-J tensor: PySCF's DF-HF reference is f64, and the f32
+        // default moves these energies by up to 1.1e-6 Ha (measured), above
+        // the bar.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
     c.df_j_aux = df.clone();
     c.df_k_aux = df;
-    // f64 RI-J tensor: PySCF's DF-HF reference is f64, and the f32
-    // default moves these energies by up to 1.1e-6 Ha (measured), above
-    // the bar.
-    c.ri_j_precision = Some(ferric_scf::df_j::RiJPrecision::F64);
     c
 }
 

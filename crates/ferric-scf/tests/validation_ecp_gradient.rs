@@ -328,13 +328,11 @@ fn rhf_config() -> RhfConfig {
 }
 
 fn uhf_config() -> RhfConfig {
-    let mut c = RhfConfig::default()
+    RhfConfig::default()
         .with_max_iter(400)
         .with_energy_conv(1e-11)
         .with_density_conv(1e-10)
-        .with_check_stability(true);
-    c.scf_stability_descent = true;
-    c
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 /// KS config: PBE with EXACT four-centre J, to match plain PySCF KS. The
@@ -342,16 +340,17 @@ fn uhf_config() -> RhfConfig {
 /// `Some("")`; the open-shell solvers read `df_j_aux` verbatim, so `None` is
 /// exact there. `check_case` asserts the SCF recorded no RI-J either way.
 fn ks_config(kind: Kind) -> RhfConfig {
-    let mut c = RhfConfig::default().with_xc(KS_XC);
+    let mut c = RhfConfig::default()
+        .with_xc(KS_XC)
+        .with_max_iter(500)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9)
+        .with_check_stability(kind == Kind::Uks);
     c.df_j_aux = if kind == Kind::Rks {
         Some(String::new())
     } else {
         None
     };
-    c.max_iter = 500;
-    c.energy_conv = 1e-10;
-    c.density_conv = 1e-9;
-    c.check_stability = kind == Kind::Uks;
     c.scf_stability_descent = kind == Kind::Uks;
     c
 }

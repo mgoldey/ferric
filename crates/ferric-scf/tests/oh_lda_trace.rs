@@ -63,10 +63,9 @@ fn trace_oh_lda_plateau() {
     // basin. Sweep the activation iter — too early and MOM locks onto a bad
     // guess; too late and the oscillation has already set in.
     for after in [3usize, 5, 8, 12] {
-        run(&format!("MOM (after iter {after})"), &{
-            let mut c = base();
-            c.mom_after_iter = after;
-            c
-        });
+        run(
+            &format!("MOM (after iter {after})"),
+            &base().with_mom_after_iter(after),
+        );
     }
 }

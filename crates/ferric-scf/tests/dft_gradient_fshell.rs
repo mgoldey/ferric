@@ -61,9 +61,9 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
         &base_cfg,
     )
     .unwrap();
-    let mut cfg = base_cfg;
-    cfg.init_guess_density = Some(res0.density_r().clone());
-    cfg.use_sad_guess = false;
+    let cfg = base_cfg
+        .with_init_guess_density(res0.density_r().clone())
+        .with_guess(ferric_scf::options::Guess::Core);
 
     // Each (atom, coord) displacement pair is independent given the shared
     // `cfg` (which embeds the common equilibrium-density seed established

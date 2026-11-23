@@ -91,9 +91,9 @@ fn main() -> Result<(), FerricError> {
 
     // THE FIXED-FIELD APPROXIMATION, made once and then held. See scope note 1.
     let ext = system.to_external_potential();
-    let mut scf = RhfConfig::default();
-    scf.external_potential = ext.clone();
-    scf.max_iter = 100;
+    let scf = RhfConfig::default()
+        .with_external_potential(ext.clone())
+        .with_max_iter(100);
 
     let qm0 = system.to_qm_molecule();
     println!(
@@ -276,9 +276,9 @@ fn embedded_nh3_inversion() -> Result<(), FerricError> {
     ];
     let system = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3]), 0, 1)?;
     let ext = system.to_external_potential();
-    let mut scf = RhfConfig::default();
-    scf.external_potential = ext.clone();
-    scf.max_iter = 300;
+    let scf = RhfConfig::default()
+        .with_external_potential(ext.clone())
+        .with_max_iter(300);
 
     let mol = Molecule::parse_xyz(&xyz, 0, 1)?;
     println!(

@@ -668,7 +668,7 @@ fn h_atom_sto3g_pbe0_box_limit_is_hyb_times_the_uhf_c3() {
     let prep_mol = PreparedBasis::new(&mol, &basis).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep_mol).unwrap();
     let molecular = |xc: &str| {
-        let mut cfg = RhfConfig::default()
+        let cfg = RhfConfig::default()
             .with_xc(xc.to_string())
             .with_dft_grid(AtomicGridConfig {
                 n_radial: 75,
@@ -677,10 +677,10 @@ fn h_atom_sto3g_pbe0_box_limit_is_hyb_times_the_uhf_c3() {
                 weight_cut: None,
             })
             .with_df_j_aux(String::new())
-            .with_df_k_aux(String::new());
-        cfg.use_sad_guess = false;
-        cfg.density_conv = 1e-10;
-        cfg.max_iter = 200;
+            .with_df_k_aux(String::new())
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_density_conv(1e-10)
+            .with_max_iter(200);
         let r = solve_uhf(&ParallelContext::default(), &mol, &prep_mol, &bounds, &cfg).unwrap();
         assert!(r.converged);
         r

@@ -537,12 +537,12 @@ fn run_pe_case(tag: &str) {
 
     let mut cfg = RhfConfig::default()
         .with_density_conv(1e-11)
-        .with_max_iter(200);
-    cfg.external_potential = Some(ExternalPotential {
-        point_charges,
-        smeared_charges: vec![],
-        field: None,
-    });
+        .with_max_iter(200)
+        .with_external_potential(ExternalPotential {
+            point_charges,
+            smeared_charges: vec![],
+            field: None,
+        });
     cfg.polarizable = Some(PolarizableSites {
         sites,
         thole_a: r.thole_a,
@@ -876,8 +876,8 @@ fn scf_energy_polarizable(
     let ctx = ParallelContext::default();
     let mut cfg = RhfConfig::default()
         .with_density_conv(1e-12)
-        .with_max_iter(300);
-    cfg.external_potential = Some(ext.clone());
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
     cfg.polarizable = Some(sites.clone());
     let r = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
@@ -893,8 +893,8 @@ fn qm_gradient_with_polarizable_sites_matches_finite_difference() {
     let ctx = ParallelContext::default();
     let mut cfg = RhfConfig::default()
         .with_density_conv(1e-12)
-        .with_max_iter(300);
-    cfg.external_potential = Some(ext.clone());
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
     cfg.polarizable = Some(sites.clone());
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
@@ -956,8 +956,8 @@ fn site_force_with_polarizable_sites_matches_finite_difference() {
     let ctx = ParallelContext::default();
     let mut cfg = RhfConfig::default()
         .with_density_conv(1e-12)
-        .with_max_iter(300);
-    cfg.external_potential = Some(ext.clone());
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
     cfg.polarizable = Some(sites.clone());
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
@@ -1144,8 +1144,8 @@ fn charge_gradient_contribution_matches_finite_difference() {
     let ctx = ParallelContext::default();
     let mut cfg = RhfConfig::default()
         .with_density_conv(1e-12)
-        .with_max_iter(300);
-    cfg.external_potential = Some(ext.clone());
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
     cfg.polarizable = Some(sites.clone());
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);

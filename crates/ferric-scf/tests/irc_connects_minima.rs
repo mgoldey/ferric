@@ -217,9 +217,9 @@ fn the_irc_runs_under_qmmm_embedding() {
     ];
     let system =
         QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3]), 0, 1).expect("qmmm system");
-    let mut scf = RhfConfig::default();
-    scf.external_potential = system.to_external_potential();
-    scf.max_iter = 300;
+    let scf = RhfConfig::default()
+        .with_external_potential(system.to_external_potential())
+        .with_max_iter(300);
     let op = Operator::coulomb();
 
     let eg = move |m: &Molecule| -> Result<(f64, Array1<f64>), FerricError> {

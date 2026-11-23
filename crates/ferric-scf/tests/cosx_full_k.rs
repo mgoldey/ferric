@@ -240,12 +240,15 @@ fn cosx_full_k_cell() {
             // "direct": the plain direct J+K SCF (incremental Fock), no
             // 3-index tensors — the exact, low-memory route for nbf >= ~400.
             "link" | "cosx" | "direct" => {
-                let mut c = RhfConfig::default();
+                let mut c = RhfConfig::default()
+                    .with_density_conv(env_num("COSX_FK_SCF_DCONV", 1e-5))
+                    .with_max_iter(env_num(
+                        "COSX_FK_SCF_MAXITER",
+                        RhfConfig::default().max_iter,
+                    ))
+                    .with_verbose(true);
                 c.k_builder = (scf_mode != "direct")
                     .then(|| ferric_scf::options::KBuilderKind::parse(&scf_mode).expect("mode"));
-                c.density_conv = env_num("COSX_FK_SCF_DCONV", 1e-5);
-                c.max_iter = env_num("COSX_FK_SCF_MAXITER", RhfConfig::default().max_iter);
-                c.verbose = true;
                 c.init_guess_density = std::env::var("COSX_FK_SCF_RESTART_IN").ok().map(|p| {
                     let (d0, _) = load_density(&p, nbf, nocc);
                     println!("SCF restart density loaded from {p}");

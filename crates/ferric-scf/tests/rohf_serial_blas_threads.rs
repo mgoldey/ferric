@@ -56,12 +56,12 @@ fn setup(xyz: &str, mult: usize) -> Setup {
 }
 
 fn cfg(xc: Option<&str>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_level_shift(0.3)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     c.xc = xc.map(String::from);
-    c.level_shift = 0.3;
-    c.energy_conv = 1e-11;
-    c.density_conv = 1e-9;
-    c.max_iter = 200;
     c
 }
 

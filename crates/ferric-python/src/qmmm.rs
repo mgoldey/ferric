@@ -634,10 +634,10 @@ pub(crate) fn run_qmmm(
         .with_max_iter(max_iter.unwrap_or_else(default_scf_max_iter))
         .with_energy_conv(energy_conv.unwrap_or(1e-3))
         .with_density_conv(density_conv.unwrap_or(1e-6))
-        .with_level_shift(level_shift.unwrap_or(0.0));
-    config.mom_after_iter = mom_after_iter.unwrap_or(0);
+        .with_level_shift(level_shift.unwrap_or(0.0))
+        .with_mom_after_iter(mom_after_iter.unwrap_or(0))
+        .with_external_potential(mm_sys.to_external_potential());
     config.use_sad_guess = parse_guess(guess)?;
-    config.external_potential = mm_sys.to_external_potential();
     config.polarizable = polarizable;
     if is_ks {
         config.xc = xc.map(|s| s.to_string());

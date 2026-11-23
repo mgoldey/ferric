@@ -121,8 +121,7 @@ fn every_refusal_is_named() {
     let water = Molecule::parse_xyz(WATER, 0, 1).unwrap();
     let h2_triplet = Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 3).unwrap();
     let rhf = FrequencyReference::Rhf;
-    let mut embedded = ks("LDA");
-    embedded.external_potential = Some(ExternalPotential {
+    let embedded = ks("LDA").with_external_potential(ExternalPotential {
         point_charges: vec![PointCharge {
             q: 0.5,
             x: 0.0,
@@ -170,16 +169,7 @@ fn every_refusal_is_named() {
         ),
         (
             "MOM",
-            run(
-                &water,
-                "sto-3g",
-                {
-                    let mut c = ks("LDA");
-                    c.mom_after_iter = 3;
-                    c
-                },
-                rhf,
-            ),
+            run(&water, "sto-3g", ks("LDA").with_mom_after_iter(3), rhf),
             vec![PREFIX, "maximum-overlap (MOM) occupations"],
         ),
         (

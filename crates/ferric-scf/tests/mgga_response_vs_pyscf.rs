@@ -146,16 +146,18 @@ fn grid() -> AtomicGridConfig {
 /// r2SCAN, exact J (`Some("")` forces four-centre J on the restricted path;
 /// the open-shell solvers read `None` as exact J).
 fn config(restricted: bool) -> RhfConfig {
-    let mut c = RhfConfig::default().with_xc(XC).with_dft_grid(grid());
+    let mut c = RhfConfig::default()
+        .with_xc(XC)
+        .with_dft_grid(grid())
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     c.df_j_aux = if restricted {
         Some(String::new())
     } else {
         None
     };
     c.df_k_aux = None;
-    c.max_iter = 500;
-    c.energy_conv = 1e-11;
-    c.density_conv = 1e-9;
     c
 }
 

@@ -19,10 +19,10 @@ fn scf_config() -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_max_iter(200)
         .with_energy_conv(1e-8)
-        .with_density_conv(1e-6);
+        .with_density_conv(1e-6)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     c.integral_thresh = 1e-9;
-    c.df_j_aux = Some("def2-universal-jkfit".into());
-    c.df_k_aux = Some("def2-universal-jkfit".into());
     c
 }
 

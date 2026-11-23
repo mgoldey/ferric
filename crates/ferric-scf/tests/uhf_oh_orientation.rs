@@ -72,7 +72,7 @@ fn sys(tilt_deg: f64) -> Sys {
 
 fn lda(energy_conv: f64, density_conv: f64) -> RhfConfig {
     RhfConfig::default()
-        .with_xc("LDA".to_string())
+        .with_xc("LDA")
         .with_energy_conv(energy_conv)
         .with_density_conv(density_conv)
         .with_max_iter(60)
@@ -268,7 +268,7 @@ fn oh_uks_lda_descends_to_the_minimum_from_inside_its_basin() {
 /// iterations, 13° unconverged at 200). With the DF-J response: 12 and 8.
 #[test]
 fn oh_uks_lda_ri_j_converges_at_tilted_orientations() {
-    let cfg = lda(1e-10, 1e-9).with_df_j_aux("def2-universal-jkfit".to_string());
+    let cfg = lda(1e-10, 1e-9).with_df_j_aux("def2-universal-jkfit");
     for tilt in [5.0, 13.0] {
         let s = sys(tilt);
         let r = solve_uhf(
@@ -343,8 +343,7 @@ fn oh_uks_pbe_hole_orientation_is_below_the_gw_bars_on_99x590() {
         .with_max_iter(200)
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9);
-    let mut hcore = cfg.clone();
-    hcore.use_sad_guess = false;
+    let hcore = cfg.clone().with_guess(ferric_scf::options::Guess::Core);
     let ctx = ParallelContext::default();
     let runs: Vec<ScfResult> = [("default guess", &cfg), ("core-Hamiltonian guess", &hcore)]
         .into_iter()

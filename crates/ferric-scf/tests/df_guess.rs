@@ -284,11 +284,11 @@ fn water_ccpvdz_fitted(
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let mut base = RhfConfig::default();
+    let mut base = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
     base.df_j_aux = j_aux.map(str::to_string);
     base.df_k_aux = k_aux.map(str::to_string);
-    base.energy_conv = 1e-10;
-    base.density_conv = 1e-9;
     (mol, prep, bounds, base)
 }
 
@@ -332,9 +332,10 @@ fn df_guess_skips_its_pre_stage_when_the_scf_is_fitted_on_its_aux() {
         .clone()
         .with_max_iter(base.max_iter.min(DF_GUESS_TIGHT_MAX_ITER));
     let pre = solve_rhf(&ctx, &mol, &prep, op, &bounds, &pre_cfg).unwrap();
-    let mut second_cfg = base.clone();
-    second_cfg.init_guess_density = Some(pre.density_total.clone());
-    second_cfg.use_sad_guess = false;
+    let second_cfg = base
+        .clone()
+        .with_init_guess_density(pre.density_total.clone())
+        .with_guess(ferric_scf::options::Guess::Core);
     let two_stage = solve_rhf(&ctx, &mol, &prep, op, &bounds, &second_cfg).unwrap();
     assert!(dfg.result.converged && two_stage.converged);
     let de = (dfg.result.energy - two_stage.energy).abs();

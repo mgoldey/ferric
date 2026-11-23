@@ -191,7 +191,7 @@ fn hybrid_reference_runs_with_the_xc_kernel_under_an_ample_budget() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
     let ks_cfg = RhfConfig::default()
-        .with_xc("B3LYP".to_string())
+        .with_xc("B3LYP")
         .with_density_conv(1e-8)
         .with_max_iter(200);
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &ks_cfg).unwrap();

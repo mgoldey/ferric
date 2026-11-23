@@ -60,11 +60,12 @@ fn roks_oh(mom_after_iter: usize) -> Run {
     let mol = Molecule::parse_xyz("2\n\nO 0 0 0\nH 0 0 0.97\n", 0, 2).unwrap();
     let prep = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let mut cfg = RhfConfig::default().with_xc("pbe");
-    cfg.mom_after_iter = mom_after_iter;
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-9;
-    cfg.max_iter = 200;
+    let cfg = RhfConfig::default()
+        .with_xc("pbe")
+        .with_mom_after_iter(mom_after_iter)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let roks = solve_rohf(
         &ParallelContext::default(),
         &mol,

@@ -354,9 +354,8 @@ fn fd_frequencies_rebuild_the_store_per_displacement() {
     // Core guess: the SAD guess runs free-atom SCFs of its own, and a
     // store-reuse defect that those SCFs happened to mask would go unseen.
     let run = |eri: EriMode| {
-        let mut cfg = RhfConfig::default();
+        let mut cfg = RhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
         cfg.eri = eri;
-        cfg.use_sad_guess = false;
         harmonic_frequencies(&ctx, &mol, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap()
     };
     let direct = run(EriMode::Direct);

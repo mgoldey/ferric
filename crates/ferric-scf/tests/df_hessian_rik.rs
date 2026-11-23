@@ -1075,19 +1075,19 @@ fn unsupported_exchange_fitting_configurations_are_refused() {
     }
     uhf_hessian_preflight(op, &s.cfg).expect("UHF RI-K preflight");
     // External potential next to RI-K.
-    let mut with_field = s
+    let with_field = s
         .cfg
         .clone()
-        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
-    with_field.external_potential = Some(ferric_core::external_potential::ExternalPotential {
-        point_charges: vec![ferric_core::external_potential::PointCharge {
-            q: 0.3,
-            x: 5.0,
-            y: 0.0,
-            z: 0.0,
-        }],
-        ..Default::default()
-    });
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_external_potential(ferric_core::external_potential::ExternalPotential {
+            point_charges: vec![ferric_core::external_potential::PointCharge {
+                q: 0.3,
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
+            }],
+            ..Default::default()
+        });
     let e = rhf_hessian_preflight(op, &with_field)
         .unwrap_err()
         .to_string();

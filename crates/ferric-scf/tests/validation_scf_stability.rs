@@ -340,18 +340,18 @@ fn hf_config(descent: bool) -> RhfConfig {
 }
 
 fn uks_pbe_config() -> RhfConfig {
-    let mut c = RhfConfig::default().with_xc("PBE".to_string());
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        .with_max_iter(500)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
+        // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
     // EXACT J, as the generator's dft.UKS without density_fit.
     c.df_j_aux = None;
     c.df_k_aux = None;
-    c.max_iter = 500;
-    c.energy_conv = 1e-10;
-    c.density_conv = 1e-9;
-    c.check_stability = true;
-    // The references are PySCF on the flat (75,110) grid (gen_scf_stability.py:
-    // prune=None), not the pruned KS default AtomicGridConfig::production().
-    c.dft_grid = Some(AtomicGridConfig::default());
-    c.scf_stability_descent = true;
     c
 }
 

@@ -80,8 +80,7 @@ fn u_g0w0_roks_oh(mom_after_iter: usize) -> UGwResult {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let mut cfg = scf_cfg().with_xc("pbe");
-    cfg.mom_after_iter = mom_after_iter;
+    let cfg = scf_cfg().with_xc("pbe").with_mom_after_iter(mom_after_iter);
     let roks = solve_rohf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(roks.converged);
     // v_xc in the QP equation's own (semi-canonical) basis, as Python does.

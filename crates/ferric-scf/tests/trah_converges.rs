@@ -433,11 +433,11 @@ fn trah_rho_is_order_unity_on_a_real_scf() {
         let prep = PreparedBasis::new(&mol, &bs6).unwrap();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let mut cfg = RhfConfig::default();
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(200);
         cfg.trah_trigger = Some(1e-2);
-        cfg.energy_conv = 1e-10;
-        cfg.density_conv = 1e-8;
-        cfg.max_iter = 200;
         let before = steps();
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         assert_trah_engaged(before, "RHF ρ-scale probe");
@@ -458,12 +458,12 @@ fn trah_rho_is_order_unity_on_a_real_scf() {
         let prep = PreparedBasis::new(&mol, &bs6).unwrap();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let mut cfg = RhfConfig::default();
+        let mut cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7)
+            .with_max_iter(300)
+            .with_level_shift(0.2);
         cfg.trah_trigger = Some(1e-2);
-        cfg.energy_conv = 1e-9;
-        cfg.density_conv = 1e-7;
-        cfg.max_iter = 300;
-        cfg.level_shift = 0.2;
         let before = steps();
         let r = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
         assert_trah_engaged(before, "UHF ρ-scale probe");
@@ -503,7 +503,10 @@ fn trah_rejection_is_wired_into_the_loop() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
     cfg.trah_trigger = Some(1e-2);
     cfg.trah = TrahConfig {
         // Reject anything that does not beat the model by 20× — reachable
@@ -511,9 +514,6 @@ fn trah_rejection_is_wired_into_the_loop() {
         rho_reject: 20.0,
         ..Default::default()
     };
-    cfg.energy_conv = 1e-9;
-    cfg.density_conv = 1e-7;
-    cfg.max_iter = 200;
 
     let rej_before = rejections();
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
@@ -565,11 +565,11 @@ fn trah_energy_is_thread_count_independent() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
 
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     cfg.trah_trigger = Some(1e-2);
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 200;
 
     let mut out = Vec::new();
     for width in [1usize, 2, 4, 12] {
@@ -613,12 +613,12 @@ fn trah_takes_precedence_over_newton_when_both_are_armed() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     cfg.newton_trigger = 1e-2;
     cfg.trah_trigger = Some(1e-2);
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 200;
 
     let before = steps();
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();

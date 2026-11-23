@@ -104,10 +104,10 @@ fn analytic(mol: &Molecule, xc: &str) -> (f64, Array2<f64>, ScfResult) {
 }
 
 fn fd(mol: &Molecule, xc: &str, res0: &ScfResult, delta: f64) -> Array2<f64> {
-    let mut seeded = cfg(xc);
-    // Spin-summed (UKS splits it D/2 per spin and reconverges).
-    seeded.init_guess_density = Some(res0.density_total.clone());
-    seeded.use_sad_guess = false;
+    let seeded = cfg(xc)
+        // Spin-summed (UKS splits it D/2 per spin and reconverges).
+        .with_init_guess_density(res0.density_total.clone())
+        .with_guess(ferric_scf::options::Guess::Core);
     let n = mol.atoms.len();
     let pairs: Vec<(usize, usize)> = (0..n).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
     let vals: Vec<f64> = pairs

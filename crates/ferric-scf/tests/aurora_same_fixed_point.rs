@@ -271,8 +271,8 @@ fn the_low_exchange_gate_is_reachable_in_both_directions() {
         .with_energy_conv(1e-10)
         .with_density_conv(1e-8)
         .with_max_iter(300)
-        .with_xc("PBE".to_string())
-        .with_df_j_aux("def2-universal-jkfit".to_string());
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit");
     let (declined, declined_steps) = solve_counting_steps(&ctx, &mol, &prep, op, &bounds, &{
         let mut c = base.clone();
         c.aurora = AuroraConfig {

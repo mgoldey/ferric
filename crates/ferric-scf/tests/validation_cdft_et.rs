@@ -1056,7 +1056,9 @@ fn mirror_det(sys: &System, a: &Det) -> Det {
 /// Constrained UKS/PBE solve of the diabat with the hole on `frag`.
 /// The end-to-end cDFT config for one diabat (hole on fragment `frag`).
 fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
-    let mut c = base_config();
+    let mut c = base_config()
+        .with_level_shift(E2E_LEVEL_SHIFT)
+        .with_max_iter(E2E_INNER_MAX_ITER);
     c.constraints = vec![Constraint {
         fragment: vec![frag],
         spin: SpinChannel::Total,
@@ -1068,8 +1070,6 @@ fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
     // Skipped on KS references anyway (no f_xc response kernel); off so
     // the run cannot pay for an eigensolve it will not use.
     c.cdft_stability_descent = false;
-    c.level_shift = E2E_LEVEL_SHIFT;
-    c.max_iter = E2E_INNER_MAX_ITER;
     c
 }
 

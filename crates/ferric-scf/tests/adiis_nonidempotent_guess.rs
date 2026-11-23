@@ -83,8 +83,9 @@ fn the_scaled_guess_energy_is_below_the_ground_state() {
     let w = water();
     let d = &w.d_conv * 1.25;
     // One SCF iteration reports the energy of the guess density.
-    let mut cfg = RhfConfig::default().with_max_iter(1);
-    cfg.init_guess_density = Some(d);
+    let cfg = RhfConfig::default()
+        .with_max_iter(1)
+        .with_init_guess_density(d);
     let r = solve_rhf(
         &ParallelContext::default(),
         &w.mol,

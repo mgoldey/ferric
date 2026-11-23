@@ -350,7 +350,7 @@ fn measure_translation_sum_with_fixed_lattice() {
 
 fn rks_pbe() -> RhfConfig {
     RhfConfig::default()
-        .with_xc("PBE".to_string())
+        .with_xc("PBE")
         .with_max_iter(300)
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)
@@ -507,7 +507,7 @@ fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline() {
 /// Without the τ kernel blocks in the Z-vector Hessian it fails (mutation).
 #[test]
 fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
-    let cfg = rks_pbe().with_xc("r2SCAN".to_string());
+    let cfg = rks_pbe().with_xc("r2SCAN");
     full_pipeline_fd_check("r2SCAN", &cfg, &MbdRsscsConfig::with_beta(0.83));
 }
 
@@ -519,7 +519,7 @@ fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_r2scan() {
 /// 6.2e-7 (mutation).
 #[test]
 fn mbd_exact_gradient_matches_fd_of_full_scf_pipeline_tpssh() {
-    let cfg = rks_pbe().with_xc("TPSSh".to_string());
+    let cfg = rks_pbe().with_xc("TPSSh");
     full_pipeline_fd_check("TPSSh", &cfg, &MbdRsscsConfig::with_beta(0.83));
 }
 
@@ -583,7 +583,7 @@ fn measure_full_pipeline_fd() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(1e-3);
     let only: Option<String> = std::env::var("MBD_FD_ONLY").ok();
-    let ri_j = rks_pbe().with_df_j_aux("def2-universal-jkfit".to_string());
+    let ri_j = rks_pbe().with_df_j_aux("def2-universal-jkfit");
     let with_xc = |xc: &str| rks_pbe().with_xc(xc.to_string());
     let cases: Vec<(&str, &str, RhfConfig, &str)> = vec![
         ("H2O", H2O_XYZ, rks_pbe(), "PBE"),

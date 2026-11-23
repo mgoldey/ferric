@@ -21,14 +21,13 @@ fn cfg(xc: &str) -> RhfConfig {
     // descended into a basin, which converges these cases tightly — see
     // mom-fixes-oh-lda-plateau. We enable it for every functional (it is a
     // no-op once orbitals are well-separated, as for B3LYP/wB97X-V).
-    let mut c = RhfConfig::default()
+    RhfConfig::default()
         .with_xc(xc)
         .with_energy_conv(1e-6)
         .with_density_conv(1e-3)
         .with_max_iter(400)
-        .with_level_shift(0.2);
-    c.mom_after_iter = 5;
-    c
+        .with_level_shift(0.2)
+        .with_mom_after_iter(5)
 }
 
 /// Run a single ROKS calculation. The level shift plus MOM (mom_after_iter)

@@ -40,8 +40,8 @@ fn cfg(guard: bool) -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_max_iter(400)
         .with_density_conv(1e-10)
-        .with_energy_conv(1e-11);
-    c.use_sad_guess = false;
+        .with_energy_conv(1e-11)
+        .with_guess(ferric_scf::options::Guess::Core);
     c.rohf_occupation_guard = guard;
     c
 }
@@ -124,11 +124,14 @@ fn give_up_exit_returns_one_self_consistent_state() {
     // 5. Independent recompute: start the pre-F6 solver (guard off) FROM the
     //    returned density. It is a converged ROHF stationary point, so the
     //    solver must stay there and reproduce the returned energy and density.
-    let back = solve_rohf(&ctx, &mol, &prep, op, &bounds, &{
-        let mut c = cfg(false);
-        c.init_guess_density = Some(r.density_total.clone());
-        c
-    })
+    let back = solve_rohf(
+        &ctx,
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &cfg(false).with_init_guess_density(r.density_total.clone()),
+    )
     .expect("guard-off solve from the returned density");
     println!(
         "recomputed from the returned density: E={:.10} ({} iters)",

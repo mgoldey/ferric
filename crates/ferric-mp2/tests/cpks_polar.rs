@@ -792,14 +792,13 @@ fn attenuated_relaxed_alpha_matches_energy_finite_field() {
         ..Default::default()
     };
     let scf_cfg = |field: Option<[f64; 3]>| {
-        let mut c = RhfConfig::default()
+        RhfConfig::default()
             .with_energy_conv(1e-13)
-            .with_density_conv(1e-11);
-        c.external_potential = field.map(|f| ExternalPotential {
-            field: Some(f),
-            ..Default::default()
-        });
-        c
+            .with_density_conv(1e-11)
+            .with_external_potential(field.map(|f| ExternalPotential {
+                field: Some(f),
+                ..Default::default()
+            }))
     };
     let energy = |field: Option<[f64; 3]>| -> f64 {
         let rhf = solve_rhf(&ctx, &mol, &obs, cb, &cb_bounds, &scf_cfg(field)).unwrap();

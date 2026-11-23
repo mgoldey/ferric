@@ -141,14 +141,14 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
     let obs = PreparedBasis::new(&mol, &basis::bundled(BASIS).unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux_name).unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_dft_grid(flat_grid())
+        .with_df_j_aux(SCF_JK_AUX.to_string())
+        .with_df_k_aux(SCF_JK_AUX.to_string())
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
     cfg.xc = xc.map(str::to_string);
-    cfg.dft_grid = Some(flat_grid());
-    cfg.df_j_aux = Some(SCF_JK_AUX.to_string());
-    cfg.df_k_aux = Some(SCF_JK_AUX.to_string());
-    cfg.ri_j_precision = Some(ferric_scf::df_j::RiJPrecision::F64);
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 300;
     let scf = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg).unwrap();
     assert!(scf.converged, "{xc:?}: reference SCF did not converge");
     Setup {

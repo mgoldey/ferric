@@ -45,10 +45,10 @@ fn run(xc: &str, storage: JkStorage, budget: usize) -> (f64, usize) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let mut cfg = RhfConfig::default()
         .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
-        .with_xc(xc);
+        .with_xc(xc)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     cfg.three_index_budget_bytes = budget;
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
     set_jk_storage(Some(storage));
     let before = constructed_count();
     let r = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg);

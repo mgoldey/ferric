@@ -495,13 +495,10 @@ fn gamma_rks_rsh(s: &System, f: &str, x: &[f64], with_force: bool) -> (f64, Vec<
     let (hc, eri) = gamma_ints(&cell, &prep);
     let mut c = GammaRksConfig::new(f);
     (c.grid, c.exxdiv) = (grid(), ExxDiv::Ewald);
-    c.scf = {
-        let mut c = RhfConfig::default();
-        c.use_sad_guess = false;
-        c.density_conv = 1e-10;
-        c.max_iter = 200;
-        c
-    };
+    c.scf = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let (r, ex) = gamma_rks_any_keep(
         &cell,
         &prep,
@@ -550,13 +547,10 @@ pub fn lib_gamma_uks_rsh_force(s: &System, f: &str, x: &[f64]) -> (f64, Vec<f64>
     let (hc, eri) = gamma_ints(&cell, &prep);
     let mut c = GammaUksConfig::new(f);
     (c.grid, c.exxdiv, c.ewald_start) = (grid(), ExxDiv::Ewald, ferric_pbc::EwaldStart::Staged);
-    c.scf = {
-        let mut c = RhfConfig::default();
-        c.use_sad_guess = false;
-        c.density_conv = 1e-10;
-        c.max_iter = 200;
-        c
-    };
+    c.scf = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let (r, ex) = gamma_uks_any_keep(
         &cell,
         &prep,

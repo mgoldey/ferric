@@ -280,13 +280,14 @@ fn tpssh_energy_decomposes_at_fixed_density() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
     let exact = |xc: Option<&str>| {
-        let mut c = RhfConfig::default().with_dft_grid(AtomicGridConfig::default());
+        let mut c = RhfConfig::default()
+            .with_dft_grid(AtomicGridConfig::default())
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new())
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-9)
+            .with_max_iter(300);
         c.xc = xc.map(Into::into);
-        c.df_j_aux = Some(String::new());
-        c.df_k_aux = Some(String::new());
-        c.energy_conv = 1e-10;
-        c.density_conv = 1e-9;
-        c.max_iter = 300;
         c
     };
     let h = oneelectron::hcore(&prep);

@@ -342,8 +342,8 @@ fn ks_config(exact_j: bool) -> RhfConfig {
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)
         // `Default` of `AtomicGridConfig` is the flat (75,110) grid.
-        .with_dft_grid(Default::default());
-    cfg.xc = Some(WB97X_L_V_NAME.to_string());
+        .with_dft_grid(Default::default())
+        .with_xc(WB97X_L_V_NAME.to_string());
     assert!(cfg.nlc_grid.is_none(), "default VV10 grid expected");
     if exact_j {
         cfg.df_j_aux = Some(String::new());
@@ -657,11 +657,10 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
     for (name, cfg) in [
         ("minao", ks_config(false)),
         ("minao ls0.5", ks_config(false).with_level_shift(0.5)),
-        ("hcore", {
-            let mut c = ks_config(false);
-            c.use_sad_guess = false;
-            c
-        }),
+        (
+            "hcore",
+            ks_config(false).with_guess(ferric_scf::options::Guess::Core),
+        ),
     ] {
         let res = solve_rohf(
             &pctx,

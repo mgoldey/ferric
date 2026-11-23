@@ -207,17 +207,13 @@ fn tight_cfg() -> RhfConfig {
 /// unconditionally until this lane. `use_sad_guess = false` with no explicit
 /// density is the documented way to ask for it.
 fn hcore_cfg() -> RhfConfig {
-    let mut c = tight_cfg();
-    c.use_sad_guess = false;
-    c
+    tight_cfg().with_guess(ferric_scf::options::Guess::Core)
 }
 
 /// The MINAO-projection guess, which is what `use_sad_guess = true` resolves to
 /// and what `rhf.rs` has defaulted to for a long time.
 fn minao_cfg() -> RhfConfig {
-    let mut c = tight_cfg();
-    c.use_sad_guess = true;
-    c
+    tight_cfg().with_guess(ferric_scf::options::Guess::Sad)
 }
 
 /// The PRE-F6 hcore path: the hcore guess AND `rohf_occupation_guard = false`.
@@ -832,11 +828,11 @@ fn an_explicit_init_guess_density_reaches_the_rohf_solver() {
     // The MINAO density, handed over explicitly instead of via use_sad_guess.
     let d = ferric_scf::guess::minao_projection_guess(&sys.mol, &sys.prep, sys.prep.basis_set())
         .expect("MINAO projection for OH/6-31G");
-    let mut cfg = tight_cfg();
-    // use_sad_guess is OFF, so if the explicit density were ignored this
-    // would fall through to hcore and land on the pre-fix answer.
-    cfg.use_sad_guess = false;
-    cfg.init_guess_density = Some(d);
+    let cfg = tight_cfg()
+        // use_sad_guess is OFF, so if the explicit density were ignored this
+        // would fall through to hcore and land on the pre-fix answer.
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_init_guess_density(d);
     let e = run(&sys, &cfg).expect("OH/6-31G from an explicit guess density");
     println!("OH/6-31G explicit init_guess_density = {e:.10} (ref {OH_631G:.10})");
     assert!(
@@ -856,8 +852,7 @@ fn an_explicit_init_guess_density_reaches_the_rohf_solver() {
 fn a_misshaped_init_guess_density_is_rejected() {
     let sys = diatomic("O", "H", 0.97, 0, 2, "6-31g");
     let n = sys.prep.nbasis();
-    let mut cfg = tight_cfg();
-    cfg.init_guess_density = Some(ndarray::Array2::<f64>::zeros((n + 3, n + 3)));
+    let cfg = tight_cfg().with_init_guess_density(ndarray::Array2::<f64>::zeros((n + 3, n + 3)));
     let err = run(&sys, &cfg).expect_err("a misshaped init_guess_density must be an error");
     println!("misshaped init_guess_density -> {err}");
     assert!(
@@ -911,10 +906,10 @@ fn the_df_path_reaches_one_state_from_both_guesses() {
         let mut c = tight_cfg()
             .with_df_j_aux("def2-universal-jkfit")
             .with_df_k_aux("def2-universal-jkfit")
-            .with_max_iter(2000);
+            .with_max_iter(2000)
+            .with_density_conv(dconv)
+            .with_energy_conv(econv);
         c.use_sad_guess = sad;
-        c.density_conv = dconv;
-        c.energy_conv = econv;
         c
     };
     // BOTH threshold settings, because one of them is what made the earlier
@@ -1121,9 +1116,9 @@ fn rohf_holds_a_correct_guess_density_so_h_degen_is_refuted() {
         // 2. Hand that density straight back in as the guess. `use_sad_guess`
         //    is off so nothing else can supply a guess: if the field were
         //    ignored we would fall through to hcore.
-        let mut cfg = tight_cfg();
-        cfg.use_sad_guess = false;
-        cfg.init_guess_density = Some(r.density_total.clone());
+        let cfg = tight_cfg()
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_init_guess_density(r.density_total.clone());
         let back = run(&sys, &cfg).unwrap_or_else(|m| panic!("{name} re-run: {m}"));
         println!(
             "{name:12} converged {:.10} -> fed back as guess -> {back:.10}  (delta {:.2e})",

@@ -211,7 +211,13 @@ fn hene_xyz() -> String {
 fn hene_cfg() -> RhfConfig {
     let mut c = RhfConfig::default()
         .with_max_iter(400)
-        .with_level_shift(HENE_LEVEL_SHIFT);
+        .with_level_shift(HENE_LEVEL_SHIFT)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 302,
+            ..Default::default()
+        });
     c.cdft_lambda_tol = HENE_LAMBDA_TOL;
     // Pinned so "this path converges" is not also an assertion about
     // how many outer iterations a particular CPU needs -- CI and this
@@ -224,12 +230,6 @@ fn hene_cfg() -> RhfConfig {
     // R = 2.5/3.0 sigma points burn the whole cap before failing.
     c.cdft_max_outer = 40;
     c.cdft_stability_descent = false;
-    c.use_sad_guess = false;
-    c.dft_grid = Some(AtomicGridConfig {
-        n_radial: 99,
-        n_angular: 302,
-        ..Default::default()
-    });
     c
 }
 
@@ -935,8 +935,7 @@ fn lambda_zero_augmented_hessian_is_bit_identical_to_unconstrained() {
 fn unconstrained_hene_is_unstable_known_reference() {
     let sys = build_sys(&hene_xyz(), 1, 2, "def2-svp");
     let h = oneelectron::hcore(&sys.prep);
-    let mut cfg = hene_cfg_tight();
-    cfg.use_sad_guess = false;
+    let cfg = hene_cfg_tight().with_guess(ferric_scf::options::Guess::Core);
     let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
     assert!(res.converged, "the reference state must be a CONVERGED one");
     let c_a = res.mos_alpha.clone();

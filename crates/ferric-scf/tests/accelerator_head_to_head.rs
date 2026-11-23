@@ -80,11 +80,11 @@ fn run(xyz: &str, bas: &str, xc: Option<&str>, arm: Arm) -> Row {
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
 
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
     cfg.xc = xc.map(|s| s.to_string());
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 300;
     cfg.aurora = AuroraConfig {
         enabled: arm == Arm::Aurora,
         ..Default::default()

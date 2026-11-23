@@ -793,9 +793,9 @@ fn scf(sys: &System, f32: bool) -> ScfResult {
         .with_density_conv(1e-9)
         .with_max_iter(200)
         .with_df_j_aux(AUX)
-        .with_df_k_aux(AUX);
+        .with_df_k_aux(AUX)
+        .with_ri_j_precision(precision(f32));
     cfg.three_index_budget_bytes = 3 << 30;
-    cfg.ri_j_precision = Some(precision(f32));
     let _r = Request::set(None);
     let k0 = kernel_counters()[MixedKernel::DfjF32.index()];
     let res = solve_rhf(

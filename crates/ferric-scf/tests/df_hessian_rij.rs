@@ -1020,19 +1020,19 @@ fn unsupported_density_fitted_configurations_are_refused() {
     eprintln!("route/config mismatch: {e}");
     assert!(e.contains("differs from the configuration"), "{e}");
     // RI-J with an external potential is untested and refused.
-    let mut with_field = s
+    let with_field = s
         .cfg
         .clone()
-        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
-    with_field.external_potential = Some(ferric_core::external_potential::ExternalPotential {
-        point_charges: vec![ferric_core::external_potential::PointCharge {
-            q: 0.3,
-            x: 5.0,
-            y: 0.0,
-            z: 0.0,
-        }],
-        ..Default::default()
-    });
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_external_potential(ferric_core::external_potential::ExternalPotential {
+            point_charges: vec![ferric_core::external_potential::PointCharge {
+                q: 0.3,
+                x: 5.0,
+                y: 0.0,
+                z: 0.0,
+            }],
+            ..Default::default()
+        });
     let e = rhf_hessian_preflight(op, &with_field)
         .unwrap_err()
         .to_string();
@@ -1065,9 +1065,9 @@ fn df_off_configurations_take_the_exact_path() {
             .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
             .with_max_iter(200)
             .with_energy_conv(1e-12)
-            .with_density_conv(1e-10);
+            .with_density_conv(1e-10)
+            .with_df_k_aux(String::new());
         cfg.df_j_aux = df_j;
-        cfg.df_k_aux = Some(String::new());
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
         assert!(rhf.df_jk.is_none(), "exact SCF must carry no DF route");
         rhf_hessian(

@@ -192,8 +192,8 @@ fn rhf_polarizable_cfg(sites: &PolarizableSites, ext: &ExternalPotential) -> Rhf
     let mut c = RhfConfig::default()
         .with_density_conv(1e-10)
         .with_energy_conv(1e-9)
-        .with_max_iter(300);
-    c.external_potential = Some(ext.clone());
+        .with_max_iter(300)
+        .with_external_potential(ext.clone());
     c.polarizable = Some(sites.clone());
     c
 }
@@ -542,8 +542,8 @@ fn uks_polarizable_cfg(sites: &PolarizableSites, ext: &ExternalPotential, xc: &s
         .with_xc(xc)
         .with_energy_conv(1e-7)
         .with_density_conv(1e-4)
-        .with_max_iter(400);
-    c.external_potential = Some(ext.clone());
+        .with_max_iter(400)
+        .with_external_potential(ext.clone());
     c.polarizable = Some(sites.clone());
     c
 }

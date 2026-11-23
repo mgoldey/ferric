@@ -303,7 +303,7 @@ fn cdft_composes_with_external_point_charge() {
         smeared_charges: Vec::new(),
         field: None,
     };
-    let mut perturbed_cfg = RhfConfig::default();
+    let mut perturbed_cfg = RhfConfig::default().with_external_potential(ext);
     perturbed_cfg.constraints = vec![Constraint {
         fragment: vec![0],
         spin: SpinChannel::Total,
@@ -321,7 +321,6 @@ fn cdft_composes_with_external_point_charge() {
     // R = 2.5/3.0 sigma points burn the whole cap before failing.
     perturbed_cfg.cdft_max_outer = 40;
     perturbed_cfg.fractional_occ = false;
-    perturbed_cfg.external_potential = Some(ext);
     let perturbed = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &perturbed_cfg).unwrap();
     assert!(
         perturbed.scf.converged,
@@ -563,16 +562,16 @@ fn loose_tolerance_met_after_lambda_moved_is_accepted() {
     let ctx = ParallelContext::default();
     let target = 9.0;
     let tol = 5e-2;
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_dft_grid(gcfg.clone())
+        .with_level_shift(0.5)
+        .with_max_iter(400);
     cfg.constraints = vec![Constraint {
         fragment: vec![1],
         spin: SpinChannel::Total,
         target,
     }];
     cfg.cdft_lambda_tol = tol;
-    cfg.dft_grid = Some(gcfg.clone());
-    cfg.level_shift = 0.5;
-    cfg.max_iter = 400;
     cfg.fractional_occ = false;
     cfg.cdft_stability_descent = false;
     let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg)
@@ -605,15 +604,15 @@ fn cliff_side_targets_with_tight_tolerance_are_accepted() {
     let ctx = ParallelContext::default();
     let mut energies = Vec::new();
     for &(frag, target) in &[(1usize, 9.0_f64), (0usize, 2.0_f64)] {
-        let mut cfg = RhfConfig::default();
+        let mut cfg = RhfConfig::default()
+            .with_dft_grid(gcfg.clone())
+            .with_level_shift(0.5);
         cfg.constraints = vec![Constraint {
             fragment: vec![frag],
             spin: SpinChannel::Total,
             target,
         }];
         cfg.cdft_lambda_tol = 1e-5;
-        cfg.dft_grid = Some(gcfg.clone());
-        cfg.level_shift = 0.5;
         cfg.fractional_occ = false;
         let res = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg).unwrap_or_else(|e| {
             panic!("frag {frag} target {target} must still solve at tol 1e-5: {e}")
@@ -764,10 +763,10 @@ fn two_constraint_loose_tolerance_still_applies_the_constraint() {
     let ctx = ParallelContext::default();
     let mut base = RhfConfig::default()
         .with_level_shift(0.5)
-        .with_dft_grid(gcfg.clone());
+        .with_dft_grid(gcfg.clone())
+        .with_max_iter(400);
     base.fractional_occ = false;
     base.cdft_stability_descent = false;
-    base.max_iter = 400;
     let scf = solve_uhf(&ctx, &mol, &prep, &bounds, &base).unwrap();
     let grid = build_atomic_grid(&mol, &gcfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();

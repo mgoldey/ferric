@@ -537,15 +537,15 @@ fn newton_matches_diis(xyz: &str, mult: usize, xc: Option<&str>, hybrid: bool, r
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let mut cfg_diis = RhfConfig::default();
+    let mut cfg_diis = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        // As in uhf_newton_smoke / rohf_newton_smoke: the UKS tests shift,
+        // the ROKS ones do not (the ROKS Newton step uses its own shift floor).
+        .with_level_shift(if rohf { 0.0 } else { 0.2 })
+        .with_df_j_aux(AUX);
     cfg_diis.xc = xc.map(Into::into);
-    cfg_diis.energy_conv = 1e-9;
-    cfg_diis.density_conv = 1e-7;
-    cfg_diis.max_iter = 200;
-    // As in uhf_newton_smoke / rohf_newton_smoke: the UKS tests shift,
-    // the ROKS ones do not (the ROKS Newton step uses its own shift floor).
-    cfg_diis.level_shift = if rohf { 0.0 } else { 0.2 };
-    cfg_diis.df_j_aux = Some(AUX.into());
     cfg_diis.df_k_aux = hybrid.then(|| AUX.into());
     let mut cfg_newton = cfg_diis.clone();
     cfg_newton.newton_trigger = 1e-2;

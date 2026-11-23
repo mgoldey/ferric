@@ -171,11 +171,13 @@ fn system(name: &str, scf_kind: &str) -> Sys {
     let ctx = ParallelContext::default();
     let scf = match scf_kind {
         "rhf" => solve_rhf(&ctx, &mol, &obs, op, &bounds, &tight()),
-        "uhf" => solve_uhf(&ctx, &mol, &obs, &bounds, &{
-            let mut c = tight().with_check_stability(true);
-            c.scf_stability_descent = true;
-            c
-        }),
+        "uhf" => solve_uhf(
+            &ctx,
+            &mol,
+            &obs,
+            &bounds,
+            &tight().with_stability(ferric_scf::options::Stability::Descend),
+        ),
         "rohf" => solve_rohf(&ctx, &mol, &obs, op, &bounds, &tight()),
         _ => panic!("unknown reference {scf_kind}"),
     }

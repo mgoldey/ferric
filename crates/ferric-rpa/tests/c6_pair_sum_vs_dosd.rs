@@ -183,9 +183,9 @@ fn molecular_c6_matches_dosd_n2o() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
     let scf_cfg = RhfConfig::default()
-        .with_xc("PBE".to_string())
-        .with_df_j_aux("def2-universal-jkfit".to_string())
-        .with_df_k_aux("def2-universal-jkfit".to_string());
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
     // Mirrors scripts/dosd2/runs/augccpvdz/n2o_rpa_pbe.toml exactly:

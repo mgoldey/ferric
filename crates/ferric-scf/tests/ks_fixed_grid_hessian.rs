@@ -122,11 +122,11 @@ fn fixed_grid_scf(grid: &FixedGridKs, mol: &Molecule, basis_name: &str) -> Pt {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = RhfConfig::default();
-    cfg.use_sad_guess = false;
-    cfg.max_iter = 200;
-    cfg.energy_conv = 1e-13;
-    cfg.density_conv = 1e-11;
+    let cfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let res = solve_rks_fixed_grid(&ctx, mol, &prep, op, &bounds, grid, &cfg).unwrap();
     assert!(
         res.converged,
@@ -732,14 +732,12 @@ fn unsupported_configurations_are_refused_naming_the_next_unit() {
     );
     assert!(msg.contains("not a converged"), "{msg}");
     let msg = refusal_with(
-        &{
-            let mut c = hessian_config();
-            c.external_potential = Some(ferric_core::external_potential::ExternalPotential {
+        &hessian_config().with_external_potential(
+            ferric_core::external_potential::ExternalPotential {
                 field: Some([0.0, 0.0, 0.01]),
                 ..Default::default()
-            });
-            c
-        },
+            },
+        ),
         &r,
         res,
     );
@@ -862,9 +860,8 @@ fn a_result_of_another_energy_is_refused_by_the_fock_consistency_guard() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let exact = |xc: Option<&str>, ext: Option<ExternalPotential>| {
-        let mut c = production_config(Some(grid_cfg()));
+        let mut c = production_config(Some(grid_cfg())).with_external_potential(ext);
         c.xc = xc.map(str::to_string);
-        c.external_potential = ext;
         c
     };
     let solve = |cfg: &RhfConfig| solve_rhf(&ctx, &r.mol, &r.prep, op, &r.bounds, cfg).unwrap();
@@ -985,19 +982,15 @@ fn point_charges_in_the_configuration_are_refused() {
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     let r = reference("sto-3g");
     let msg = refusal_with(
-        &{
-            let mut c = hessian_config();
-            c.external_potential = Some(ExternalPotential {
-                point_charges: vec![PointCharge {
-                    q: 0.5,
-                    x: 0.0,
-                    y: 0.3,
-                    z: 4.0,
-                }],
-                ..Default::default()
-            });
-            c
-        },
+        &hessian_config().with_external_potential(ExternalPotential {
+            point_charges: vec![PointCharge {
+                q: 0.5,
+                x: 0.0,
+                y: 0.3,
+                z: 4.0,
+            }],
+            ..Default::default()
+        }),
         &r,
         &r.fixed.res,
     );

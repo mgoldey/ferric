@@ -339,8 +339,8 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         // slower per iteration. solve_uhf honors df_j_aux/df_k_aux for plain HF (omega=0).
         let uhf_cfg = UhfConfig::default()
             .with_max_iter(200)
-            .with_df_j_aux("def2-universal-jkfit".to_string())
-            .with_df_k_aux("def2-universal-jkfit".to_string());
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let c_seed = rhf_n.mos_alpha.clone();
         let _t_uhf = ferric_rpa::timing::Stage::start("phase:cation_UHF");
         let (uhf_c, diag_method) = match solve_uhf_with_guess(
@@ -569,7 +569,7 @@ fn run_g0w0_pbe(
                     .with_xc("pbe")
                     .with_level_shift(shift)
                     .with_max_iter(200)
-                    .with_df_j_aux("def2-universal-jkfit".to_string());
+                    .with_df_j_aux("def2-universal-jkfit");
                 match solve_rhf(ctx, neutral, obs_n, op, bounds_n, &sc) {
                     Ok(r) if is_physical(&r) => {
                         let eps = r.eps_r();
@@ -690,8 +690,8 @@ fn run_u_g0w0_pbe(
     // Cu2 — its @HF GW columns all succeeded). α keeps the RHF occupied set; β
     // swaps HOMO↔LUMO so the two spins localize on opposite atoms.
     let hf_cfg = RhfConfig::default()
-        .with_df_j_aux("def2-universal-jkfit".to_string())
-        .with_df_k_aux("def2-universal-jkfit".to_string());
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let rhf_n = solve_rhf(ctx, neutral, obs_n, op, bounds_n, &hf_cfg).ok()?;
     let nocc = (neutral.nelec() as usize) / 2; // singlet
     if nocc == 0 || nocc >= rhf_n.mos_alpha.ncols() {
@@ -723,8 +723,8 @@ fn run_u_g0w0_pbe(
     let uks_cfg = UhfConfig::default()
         .with_max_iter(300)
         .with_xc("pbe")
-        .with_df_j_aux("def2-universal-jkfit".to_string())
-        .with_df_k_aux("def2-universal-jkfit".to_string());
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let uks =
         solve_uhf_with_guess(ctx, neutral, obs_n, bounds_n, &uks_cfg, Some((&c_a, &c_b))).ok()?;
     // Always print the spin state of the @PBE reference actually used. ⟨S²⟩ ≈ 0

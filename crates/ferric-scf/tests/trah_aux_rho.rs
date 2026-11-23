@@ -75,11 +75,11 @@ fn run_with_aux(
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
 
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
     cfg.xc = xc.map(|s| s.to_string());
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 300;
     cfg.trah_trigger = Some(1e-2);
     cfg.trah = TrahConfig {
         aux_curvature: aux,
@@ -261,11 +261,11 @@ fn run_diis(xyz: &str, bas: &str, xc: Option<&str>) -> usize {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let mut cfg = RhfConfig::default();
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(300);
     cfg.xc = xc.map(|s| s.to_string());
-    cfg.energy_conv = 1e-10;
-    cfg.density_conv = 1e-8;
-    cfg.max_iter = 300;
     solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
         .expect("scf")
         .iterations

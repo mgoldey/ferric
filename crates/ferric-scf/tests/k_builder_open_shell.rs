@@ -95,11 +95,11 @@ fn setup(
 }
 
 fn cfg(kb: Option<&str>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     c.k_builder = ferric_scf::options::KBuilderKind::parse_opt(kb).expect("spelling");
-    c.energy_conv = 1e-10;
-    c.density_conv = 1e-8;
-    c.max_iter = 200;
     c
 }
 

@@ -221,8 +221,7 @@ fn total_energy(atoms: &[QmmmAtom], top: &MmTopology) -> f64 {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = tight_scf();
-    cfg.external_potential = sys.to_external_potential();
+    let cfg = tight_scf().with_external_potential(sys.to_external_potential());
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "SCF did not converge in the FD energy probe");
     let (mm_e, _) = qmmm_mm_terms(&sys, top, &coords_of(atoms)).unwrap();
@@ -239,8 +238,7 @@ fn analytic_full_gradient(atoms: &[QmmmAtom], top: &MmTopology) -> Array2<f64> {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut cfg = tight_scf();
-    cfg.external_potential = sys.to_external_potential();
+    let cfg = tight_scf().with_external_potential(sys.to_external_potential());
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     let qm_grad = rhf_gradient(

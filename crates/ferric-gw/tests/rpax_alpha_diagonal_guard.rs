@@ -76,7 +76,7 @@ fn run_water_sto3g(
         &obs,
         op,
         &bounds,
-        &RhfConfig::default().with_xc("PBE".to_string()),
+        &RhfConfig::default().with_xc("PBE"),
     )
     .unwrap();
     assert!(

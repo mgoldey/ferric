@@ -192,9 +192,9 @@ fn fd_anchor(xc: &str, k_mix: f64, screen_thresh: f64) -> Anchor {
         .with_max_iter(200)
         .with_level_shift(0.2)
         .with_dft_grid(grid.clone())
-        .with_df_j_aux(AUX);
+        .with_df_j_aux(AUX)
+        .with_ri_j_precision(RiJPrecision::F64);
     cfg.df_k_aux = (k_mix != 0.0).then(|| AUX.into());
-    cfg.ri_j_precision = Some(RiJPrecision::F64);
     cfg.ri_k_precision = Some(ferric_scf::df_k::RiKPrecision::F64);
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);

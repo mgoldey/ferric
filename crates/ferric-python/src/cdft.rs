@@ -583,10 +583,13 @@ pub(crate) fn run_cdft(
         ..Default::default()
     }
     .into_rhf_config(ferric_scf::df_j::RiJTask::Energy)
-    .py()?;
-    // Assigned, not `ScfOptions::level_shift`, which would also clear the
-    // meta-GGA automatic shift.
-    config.level_shift = level_shift.unwrap_or(defaults.level_shift);
+    .py()?
+    // The field write keeps run_cdft's existing behaviour: an explicit
+    // `level_shift=` leaves the meta-GGA automatic shift on, against the
+    // convention documented on `RhfConfig::meta_gga_auto_level_shift`
+    // (`ScfOptions::level_shift` would clear it). A known bug, shared with
+    // run_qmmm, left for its own PR (ARCHITECTURE.md, 11a follow-ups).
+    .with_level_shift(level_shift.unwrap_or(defaults.level_shift));
     config.constraints = cons;
     config.cdft_lambda_tol = lambda_tol;
     config.cdft_max_outer = max_outer;

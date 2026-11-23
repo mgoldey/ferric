@@ -102,11 +102,11 @@ fn water_reference() -> (
         let co = c.slice(ndarray::s![.., ..nocc]);
         2.0 * co.dot(&co.t())
     };
-    let mut cfg_one = RhfConfig::default()
+    let cfg_one = RhfConfig::default()
         .with_energy_conv(1e-10)
         .with_density_conv(1e-8)
-        .with_max_iter(1);
-    cfg_one.init_guess_density = Some(d_pert);
+        .with_max_iter(1)
+        .with_init_guess_density(d_pert);
     let r1 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_one).unwrap();
     let f_mo = c.t().dot(&r1.fock_alpha).dot(&c);
     (mol, prep, c, f_mo, nocc)
@@ -129,11 +129,11 @@ fn target_f_mo(
     let ctx = ParallelContext::default();
     let co = c.slice(ndarray::s![.., ..nocc]);
     let d = 2.0 * co.dot(&co.t());
-    let mut cfg = RhfConfig::default()
+    let cfg = RhfConfig::default()
         .with_energy_conv(1e-10)
         .with_density_conv(1e-8)
-        .with_max_iter(1);
-    cfg.init_guess_density = Some(d);
+        .with_max_iter(1)
+        .with_init_guess_density(d);
     let r = solve_rhf(&ctx, mol, prep, op, &bounds, &cfg).unwrap();
     c.t().dot(&r.fock_alpha).dot(c)
 }

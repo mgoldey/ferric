@@ -374,8 +374,7 @@ fn gradients_hessians_and_geometry_tasks_refuse_x2c() {
 fn injected_solves_ecp_atoms_and_unknown_spellings_are_refused() {
     // An injected solve takes the hcore guess (the SAD guess is refused
     // there for its own reason), so the base config is one it accepts.
-    let mut base = RhfConfig::default();
-    base.use_sad_guess = false;
+    let base = RhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
     ferric_scf::rhf::validate_injected(&base).unwrap();
     let rel = x2c(&base);
     let e = ferric_scf::rhf::validate_injected(&rel).unwrap_err();

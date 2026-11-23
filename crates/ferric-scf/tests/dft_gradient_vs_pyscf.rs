@@ -41,14 +41,14 @@ fn run_case(label: &str, xyz: &str, xc: &str, hybrid: bool, ref_file: &str, tol:
 
     let mut cfg = RhfConfig::default()
         .with_xc(xc)
-        .with_df_j_aux("def2-universal-jkfit");
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-3)
+        .with_density_conv(1e-8);
     cfg.df_k_aux = if hybrid {
         Some("def2-universal-jkfit".into())
     } else {
         None
     };
-    cfg.energy_conv = 1e-3;
-    cfg.density_conv = 1e-8;
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let g_ferric = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
 

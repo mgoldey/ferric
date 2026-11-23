@@ -41,11 +41,11 @@ fn run_sym(mol: &Molecule, basis_name: &str, cfg: &RhfConfig) -> Result<Symmetri
 }
 
 fn cfg(symmetry: bool) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
+        .with_max_iter(200);
     c.symmetry = symmetry;
-    c.density_conv = 1e-10;
-    c.energy_conv = 1e-12;
-    c.max_iter = 200;
     c
 }
 
@@ -135,18 +135,18 @@ fn matches_pyscf_symmetry_references() {
 /// def2-universal-jkfit against PySCF `dft.RKS` with symmetry on the same
 /// recipe (`rks_pbe` blocks of the references).
 fn ks_cfg(irrep_nelec: Option<Vec<(String, usize)>>) -> RhfConfig {
-    let mut c = RhfConfig::default();
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        // The PySCF references fit J in f64. The f32 RI-J default moves the
+        // energy by 1e-7..1e-6 Ha, above this test's bar.
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-8)
+        .with_max_iter(200)
+        // The references are PySCF on the flat (75,110) grid (gen_scf_symmetry.py:
+        // prune=None), not the pruned KS default AtomicGridConfig::production().
+        .with_dft_grid(AtomicGridConfig::default());
     c.symmetry = true;
-    c.xc = Some("PBE".into());
-    // The PySCF references fit J in f64. The f32 RI-J default moves the
-    // energy by 1e-7..1e-6 Ha, above this test's bar.
-    c.ri_j_precision = Some(ferric_scf::df_j::RiJPrecision::F64);
-    c.density_conv = 1e-10;
-    c.energy_conv = 1e-8;
-    c.max_iter = 200;
-    // The references are PySCF on the flat (75,110) grid (gen_scf_symmetry.py:
-    // prune=None), not the pruned KS default AtomicGridConfig::production().
-    c.dft_grid = Some(AtomicGridConfig::default());
     c.irrep_nelec = irrep_nelec;
     c
 }

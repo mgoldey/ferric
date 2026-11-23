@@ -90,8 +90,7 @@ fn becke_h2o_origin_independent_with_external_point_charge() {
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let mut rhf_cfg = RhfConfig::default();
-        rhf_cfg.external_potential = Some(ext);
+        let rhf_cfg = RhfConfig::default().with_external_potential(ext);
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
 
         let alpha_mol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();

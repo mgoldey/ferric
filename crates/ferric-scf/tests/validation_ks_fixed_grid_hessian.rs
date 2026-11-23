@@ -337,11 +337,11 @@ fn run_system_case(system: &str, case: &Case) {
         "geometry/constants mismatch: dVnn = {enuc:.3e}"
     );
 
-    let mut scf_cfg = RhfConfig::default();
-    scf_cfg.use_sad_guess = false;
-    scf_cfg.max_iter = 200;
-    scf_cfg.energy_conv = 1e-13;
-    scf_cfg.density_conv = 1e-11;
+    let scf_cfg = RhfConfig::default()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_max_iter(200)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11);
     let dfbs = case
         .aux
         .map(|a| PreparedBasis::new(&mol, &basis::bundled(a).unwrap()).unwrap());
