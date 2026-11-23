@@ -1987,6 +1987,8 @@ const CHILD_ENV: &str = "FERRIC_CKPT_TEST_CHILD";
 fn child(test: &str, envs: &[(&str, &str)]) -> Vec<String> {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args(["--exact", test, "--nocapture", "--test-threads=1"]);
+    // An inherited debug route switch would move the unset baseline.
+    cmd.env_remove("FERRIC_DFK_METRIC");
     for (k, v) in envs {
         cmd.env(k, v);
     }

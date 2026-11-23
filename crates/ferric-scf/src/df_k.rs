@@ -2167,7 +2167,9 @@ H 0.93 0 -0.26
                 assert!(err < 1e-8, "L^-1 V L^-T - I = {err:e}");
                 assert!((0..n).all(|i| (i + 1..n).all(|j| linv[(i, j)] == 0.0)));
             }
-            if lmin > 0.0 {
+            // At the cut itself `metric_lindep_cut` keeps or drops the mode by
+            // the sign of rounding noise, so compare only away from it.
+            if lmin > 0.0 && (lmin / DFK_LINDEP_THRESH - 1.0).abs() > 1e-3 {
                 let (ev, _) =
                     ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper).unwrap();
                 // Certified exactly when nothing would be dropped (on these spectra).
