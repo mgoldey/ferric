@@ -443,6 +443,7 @@ fn uhf_cfg(xc: &str) -> RhfConfig {
         .with_max_iter(500)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_uks_vs_pyscf(
     label: &str,
     xyz: &str,

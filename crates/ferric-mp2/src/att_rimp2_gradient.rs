@@ -558,6 +558,7 @@ mod tests {
     use ferric_scf::rhf::solve_rhf;
     use ferric_scf::scf_jk::ScfJkMode;
     use ferric_scf::Spin;
+    use ferric_testkit::compare::max_abs_diff;
 
     const WATER: &str = "3\nwater, off C2v\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n";
     const OH: &str = "2\nOH\nO 0 0 0\nH 0 0 0.97\n";
@@ -587,10 +588,6 @@ mod tests {
             screen_thresh: None,
             memory_budget_bytes: None,
         }
-    }
-
-    fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-        (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
     }
 
     /// The RHF `rhf` written as the UHF with identical α and β orbitals,

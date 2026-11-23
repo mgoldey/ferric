@@ -27,8 +27,6 @@
 //! The production-shape peak numbers live in the `#[ignore]`d
 //! `gradient_pool_peak_measurement.rs`.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -41,48 +39,12 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
 
 /// A pool large enough that nothing is ever refused, so a width it produces is
 /// "the whole grid" and a peak it records is pure demand.
 const AMPLE: usize = 200_000_000_000;
-
-/// The memory pool is PROCESS-GLOBAL, and cargo runs these tests on parallel
-/// threads by default. Every test here installs a pool of its own and reads
-/// back a width or a peak, so without serialization one test's `install_global`
-/// silently becomes another's budget.
-///
-/// MEASURED, and the reason this exists: under mutation `m7_charge_whole_grid`
-/// the parallel run reported `the_batch_width_is_a_function_of_the_pool_ledger`
-/// as failing — a test that never calls the gradient at all and could not
-/// possibly see that mutation. Serially it passed and only the intended killer
-/// failed. A cross-talking test attributes failures to the wrong cause, which
-/// is worse than no test: it would have sent a future reader after the wrong
-/// defect. Same `CleanSlot` pattern as
-/// `mwe_gradient_planes_compose_in_one_pool.rs`.
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Case {
     mol: Molecule,

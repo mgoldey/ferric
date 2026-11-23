@@ -1321,6 +1321,7 @@ struct EspGridPoint {
 /// resolver. Every production caller passes `None` (the ambient budget); the
 /// parameter is a TEST SEAM so the guard's refusal can be exercised at a
 /// chosen budget, not a user-facing knob.
+#[allow(clippy::too_many_arguments)]
 fn chelpg_grid_esp(
     mol: &Molecule,
     prep: &PreparedBasis,

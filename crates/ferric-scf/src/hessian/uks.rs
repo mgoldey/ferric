@@ -437,6 +437,7 @@ fn uks_occupied_factors(
 /// uses (`J[D1^α + D1^β] − a K[D1^s] + V1^s_xc`, the SCF's fitted J/K where it
 /// fitted them), for the matvec anchors. NOT public API.
 #[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
 pub fn uks_response_operator(
     ctx: &ParallelContext,
     mol: &Molecule,

@@ -83,6 +83,7 @@ use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config, OoRiMp2Result};
 use ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 
 const H: f64 = 2e-3;
@@ -200,10 +201,6 @@ fn richardson_fd(
         }
     }
     g
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// `max |Σ_A g_A|` and `max |Σ_A r_A × g_A|` (about the origin, Bohr).

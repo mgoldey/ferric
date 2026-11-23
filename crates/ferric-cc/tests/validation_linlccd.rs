@@ -83,6 +83,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/linlccd";
@@ -137,12 +138,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
@@ -205,7 +200,7 @@ fn check_system(system: &str, basis_name: &str) {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -251,7 +246,7 @@ fn check_system(system: &str, basis_name: &str) {
         &ctx,
         "E_SCF",
         scf.energy,
-        num(&r, "/e_scf", &ctx),
+        num_ctx(&r, "/e_scf", &ctx),
         TOL_E_SCF,
     );
 
@@ -267,15 +262,15 @@ fn check_system(system: &str, basis_name: &str) {
     };
 
     // ---- anchor: ladder off == MP2 ----
-    let ref_mp2 = num(&r, "/mp2/e_corr", &ctx);
-    let ref_hh = num(&r, "/linlccd_hh/e_corr", &ctx);
+    let ref_mp2 = num_ctx(&r, "/mp2/e_corr", &ctx);
+    let ref_hh = num_ctx(&r, "/linlccd_hh/e_corr", &ctx);
     let e_drv = run(LadderVariant::DriversOnly);
     check_close(&ctx, "DriversOnly vs ref MP2", e_drv, ref_mp2, TOL_E_CORR);
     check_close(
         &ctx,
         "DriversOnly vs PySCF",
         e_drv,
-        num(&r, "/mp2/pyscf_df_mp2_e_corr", &ctx),
+        num_ctx(&r, "/mp2/pyscf_df_mp2_e_corr", &ctx),
         TOL_E_CORR,
     );
     if !open_shell {

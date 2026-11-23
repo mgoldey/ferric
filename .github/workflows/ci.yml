@@ -281,6 +281,19 @@ jobs:
           key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-v3-${{ runner.os }}-
 
+      # The count of item-level `#[allow(clippy::too_many_arguments)]` per
+      # crate may only go down (scripts/too_many_arguments_baseline.json);
+      # clippy below rejects a new offender that has no allow. Cheap, so it
+      # runs before the build steps. A crate below its baseline is only a
+      # notice here (two PRs that each lower it must not turn main red).
+      - name: too_many_arguments ratchet
+        run: python3 scripts/too_many_arguments_ratchet.py
+
+      # ferric-testkit may only be a dev-dependency (never shipped, and a
+      # normal dependency could close a cycle through ferric-core).
+      - name: ferric-testkit is dev-only
+        run: python3 scripts/check_testkit_dev_only.py
+
       - name: Check (all targets)
         timeout-minutes: 60
         # --locked from here on every cargo invocation in this workflow.

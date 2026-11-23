@@ -30,6 +30,7 @@ use ferric_scf::rhf::{ks_vxc_closed, solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use std::sync::atomic::Ordering;
 
@@ -128,10 +129,6 @@ const LOOSE_CONV: f64 = 1e-3;
 /// arithmetic up to the dense-vs-occupied density pass and the J rebuild,
 /// O(1e-15)·|F| (see `ks_vxc_tests`); a mixed V_xc is off by ~1e-7.
 const F64_FOCK_TOL: f64 = 1e-11;
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
-}
 
 /// Catches: a converged RKS exit diagonalising (and returning) the Fock
 /// matrix of a mixed build. With `density_conv` 1e-3 the exit iteration's

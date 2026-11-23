@@ -13,7 +13,7 @@ use super::*;
 /// Units: constructor takes AMBER-convention units (kcal/mol, Angstrom,
 /// degrees), matching most published force fields; internally converted
 /// once to Hartree/Bohr/radians.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "MmTopology")]
 #[derive(Clone)]
 pub(crate) struct PyMmTopology {
@@ -85,7 +85,7 @@ impl PyMmTopology {
 /// `point_charges=` kwarg are in **Bohr**. `qm_molecule()` /
 /// `point_charges()` feed the existing `run_rhf` / `run_uhf` / `run_optimize`
 /// unchanged, or use `run_qmmm` for energy + gradients in one call.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "QmmmSystem")]
 #[derive(Clone)]
 pub(crate) struct PyQmmmSystem {

@@ -127,6 +127,7 @@ use ferric_scf::rhf::RhfConfig;
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::Spin;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/roks_energies";
@@ -188,12 +189,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn tol_e(system: &str) -> f64 {
@@ -267,7 +262,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let prep = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -281,7 +276,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
 
     // The reference itself: the generator's acceptance, re-checked so a
     // hand-edited JSON cannot slip through.
-    let spread = num(&r, &format!("/{block}/accepted_spread"), &ctx);
+    let spread = num_ctx(&r, &format!("/{block}/accepted_spread"), &ctx);
     eprintln!("{ctx}: PySCF accepted-start spread {spread:.2e} Ha");
     assert!(
         spread < 0.5 * tol_e(system),
@@ -306,12 +301,12 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
     );
     eprintln!("{ctx}: {} iterations", res.iterations);
 
-    let e_ref = num(&r, &format!("/{block}/energy"), &ctx);
+    let e_ref = num_ctx(&r, &format!("/{block}/energy"), &ctx);
     check_close(&ctx, "energy", res.energy, e_ref, tol_e(system));
 
     // ---- negative controls ----
     // ROKS is a constrained UKS: strictly above the UKS minimum.
-    let e_uks = num(&r, &format!("/uks_{xc}_control/energy"), &ctx);
+    let e_uks = num_ctx(&r, &format!("/uks_{xc}_control/energy"), &ctx);
     let gap = res.energy - e_uks;
     eprintln!("{ctx}: ROKS - UKS(ref) {gap:+.3e} Ha (must exceed {MIN_ROKS_MINUS_UKS:.0e})");
     assert!(
@@ -321,7 +316,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
         res.energy
     );
     // Functional applied at all.
-    let e_rohf = num(&r, "/rohf_control/energy", &ctx);
+    let e_rohf = num_ctx(&r, "/rohf_control/energy", &ctx);
     assert!(
         (res.energy - e_rohf).abs() > CONTROL_GAP,
         "{ctx}: ROKS {:.10} within {CONTROL_GAP:.0e} of the ROHF control {e_rohf:.10} — the \
@@ -331,7 +326,7 @@ fn check_roks(system: &str, basis_name: &str, xc: &str) -> f64 {
     // Functional discriminates.
     let must_miss = MUST_MISS_FACTOR * tol_e(system);
     for other in XCS.iter().filter(|o| **o != xc) {
-        let e_other = num(&r, &format!("/roks_{other}/energy"), &ctx);
+        let e_other = num_ctx(&r, &format!("/roks_{other}/energy"), &ctx);
         assert!(
             (res.energy - e_other).abs() > must_miss,
             "{ctx}: ferric {xc} energy within {must_miss:.0e} of the {other} reference — the \
@@ -349,7 +344,7 @@ fn roks_row(system: &str, xc: &str) {
     let must_miss = MUST_MISS_FACTOR * tol_e(system);
     for (i, b_self) in BASES.iter().enumerate() {
         let b_other = BASES[1 - i];
-        let other = num(
+        let other = num_ctx(
             &reference(system, b_other),
             &format!("/roks_{xc}/energy"),
             system,

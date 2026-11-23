@@ -77,8 +77,6 @@
 //! i.e. an unrelated reservation moves the reported correlation energy in the
 //! last digits, which is precisely the failure mode this file forbids.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -87,6 +85,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{mo_stream_chunk_for_test as chunk_for, ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::pool::CleanSlot;
 
 /// The budget at which the MO-stream chunk is strictly between its 32 floor
 /// and its 256 cap for this fixture. MEASURED, not guessed -- see the module
@@ -101,30 +100,6 @@ const MO_STREAM_FLOOR: usize = 32;
 /// they ever coincide again).
 const POOL_CAPACITY: usize = 800_000_000;
 const BALLAST_BYTES: usize = 700_000_000;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Fixture {
     mol: Molecule,

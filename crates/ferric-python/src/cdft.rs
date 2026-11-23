@@ -41,7 +41,7 @@ pub(crate) fn cdft_kind_name(spin: ferric_dft::cdft::SpinChannel) -> &'static st
 /// operator of the fragment (`ferric_dft::cdft`). With an ECP basis only the
 /// explicitly-treated (valence) electrons are counted. Atom indices are
 /// range-checked against the molecule when the constraint is used.
-#[pyclass]
+#[pyclass(frozen)]
 #[pyo3(name = "CdftConstraint")]
 #[derive(Clone)]
 pub(crate) struct PyCdftConstraint {

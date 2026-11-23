@@ -141,6 +141,7 @@ use ferric_scf::frequencies::{
     FrequencyReference, FrequencyResult, HessianMethod, DEFAULT_DELTA,
 };
 use ferric_scf::rhf::RhfConfig;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -252,12 +253,6 @@ fn all_references() -> Vec<(String, String, Value)> {
     out
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -295,7 +290,7 @@ fn load_mol(system: &str, reference: &Value) -> Molecule {
 /// Harness like-for-like: geometry, AO count, masses and FD step. Runs before
 /// any number is compared, so a harness slip fails as itself.
 fn check_harness(ctx: &str, mol: &Molecule, basis_name: &str, r: &Value) {
-    let enuc_ref = num(r, "/nuclear_repulsion", ctx);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", ctx);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -403,7 +398,7 @@ fn check_method(system: &str, basis_name: &str, method: &str) -> FrequencyResult
     check_harness(&ctx, &mol, basis_name, &r);
     let blk = format!("/{method}");
     assert!(
-        (num(&r, &format!("{blk}/fd/fd_step_bohr"), &ctx) - DEFAULT_DELTA).abs() < 1e-15,
+        (num_ctx(&r, &format!("{blk}/fd/fd_step_bohr"), &ctx) - DEFAULT_DELTA).abs() < 1e-15,
         "{ctx}: reference FD step differs from ferric's DEFAULT_DELTA — the same-step \
          comparison would no longer cancel the truncation error"
     );
@@ -434,7 +429,7 @@ fn check_method(system: &str, basis_name: &str, method: &str) -> FrequencyResult
     );
 
     // Centre state/geometry/functional anchor.
-    let e_ref = num(&r, &format!("{blk}/energy"), &ctx);
+    let e_ref = num_ctx(&r, &format!("{blk}/energy"), &ctx);
     assert!(
         (res.energy - e_ref).abs() < TOL_ENERGY,
         "{ctx}: centre energy {:.12} vs reference {e_ref:.12} (|d| {:.2e})",
@@ -461,7 +456,7 @@ fn check_method(system: &str, basis_name: &str, method: &str) -> FrequencyResult
     } else {
         let h_an = matrix(&r, &format!("{blk}/hessian_analytic"), &ctx);
         let f_an = vec_f64(&r, &format!("{blk}/freq_analytic_cm"), &ctx);
-        let gap = num(
+        let gap = num_ctx(
             &r,
             &format!("{blk}/pyscf_fd_vs_analytic_freq_max_abs_cm"),
             &ctx,

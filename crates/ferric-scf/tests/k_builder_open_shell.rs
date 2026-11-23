@@ -46,6 +46,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 
 /// CH3 radical (doublet), planar D3h, Angstrom — the same geometry the
@@ -338,10 +339,6 @@ fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {
         && a.iter()
             .zip(b.iter())
             .all(|(x, y)| x.to_bits() == y.to_bits())
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// K(D_α), K(D_β), K(D_α) again from ONE instance: both K(D_α) bitwise equal,

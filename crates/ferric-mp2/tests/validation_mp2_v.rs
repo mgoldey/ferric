@@ -110,6 +110,7 @@ use ferric_mp2::att_vv10::{
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -236,12 +237,6 @@ fn reference(c: &Case) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn mat(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
     let rows = v
         .pointer(ptr)
@@ -297,7 +292,7 @@ fn load(c: &Case) -> Loaded {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let bs = basis::bundled(c.basis).unwrap();
@@ -339,14 +334,14 @@ fn load(c: &Case) -> Loaded {
         &ctx,
         "grid sum w",
         sum_w,
-        num(&r, "/nlc_grid/sum_weights", &ctx),
+        num_ctx(&r, "/nlc_grid/sum_weights", &ctx),
         TOL_GRID_REL * sum_w,
     );
     check_close(
         &ctx,
         "grid int rho",
         n_el,
-        num(&r, "/nlc_grid/n_electrons_on_grid", &ctx),
+        num_ctx(&r, "/nlc_grid/n_electrons_on_grid", &ctx),
         TOL_GRID,
     );
     Loaded {
@@ -390,11 +385,11 @@ fn check_vv10(c: &Case) {
 
         // Anchor 1: undamped vs PySCF _vv10nlc.
         let undamped = e_nl(&l, b, Vv10Damping::None, &grid);
-        let undamped_ref = num(blk, "/undamped_pyscf_vv10nlc", &ctx);
+        let undamped_ref = num_ctx(blk, "/undamped_pyscf_vv10nlc", &ctx);
         check_close(&ctx, "E_nl undamped", undamped, undamped_ref, TOL_VV10);
 
         // Anchor 2: r0 -> 0 leaves only the self pair damped.
-        let r0_tiny = num(blk, "/r0_to_zero/r0_bohr", &ctx);
+        let r0_tiny = num_ctx(blk, "/r0_to_zero/r0_bohr", &ctx);
         let tiny = e_nl(
             &l,
             b,
@@ -408,16 +403,16 @@ fn check_vv10(c: &Case) {
             &ctx,
             "E_nl r0->0",
             tiny,
-            num(blk, "/r0_to_zero/undamped_minus_self_pair", &ctx),
+            num_ctx(blk, "/r0_to_zero/undamped_minus_self_pair", &ctx),
             TOL_VV10,
         );
 
         // Damped, through the config the method actually uses.
         let damping = cfg.effective_vv10_damping().unwrap();
         let damped = e_nl(&l, b, damping, &grid);
-        let damped_ref = num(blk, "/damped/e_nl_numpy", &ctx);
+        let damped_ref = num_ctx(blk, "/damped/e_nl_numpy", &ctx);
         assert!(
-            (num(blk, "/damped/r0_bohr", &ctx) - cfg.r0_bohr).abs() < 1e-12,
+            (num_ctx(blk, "/damped/r0_bohr", &ctx) - cfg.r0_bohr).abs() < 1e-12,
             "{ctx}: config r0 differs from the reference's"
         );
         check_close(&ctx, "E_nl damped", damped, damped_ref, TOL_VV10);
@@ -473,7 +468,7 @@ fn erfc_config(r: &Value, ctx: &str) -> AttVv10Config {
     cfg.frozen_core = r["frozen_core"].as_u64().unwrap() as usize;
     let omega = 1.0 / (cfg.r0_bohr * std::f64::consts::SQRT_2);
     assert!(
-        (omega - num(r, "/mp2_erfc_control/omega_bohr_inv", ctx)).abs() < 1e-12,
+        (omega - num_ctx(r, "/mp2_erfc_control/omega_bohr_inv", ctx)).abs() < 1e-12,
         "{ctx}: erfc control omega differs from the reference's"
     );
     cfg
@@ -485,14 +480,14 @@ fn check_result(ctx: &str, r: &Value, res: &AttVv10Result, tol_corr: f64, tol_nl
         ctx,
         "E_c(erfc)",
         res.e_c_att_mp2,
-        num(r, "/mp2_erfc_control/e_corr", ctx),
+        num_ctx(r, "/mp2_erfc_control/e_corr", ctx),
         tol_corr,
     );
     check_close(
         ctx,
         "E_nl damped (own density)",
         res.e_nl_vv10,
-        num(r, "/vv10/b=11.0/damped/e_nl_numpy", ctx),
+        num_ctx(r, "/vv10/b=11.0/damped/e_nl_numpy", ctx),
         tol_nl,
     );
     let resid = res.components_sum_to_total();
@@ -505,7 +500,7 @@ fn check_result(ctx: &str, r: &Value, res: &AttVv10Result, tol_corr: f64, tol_nl
         ctx,
         "E_c(erfc) vs Coulomb ref",
         res.e_c_att_mp2,
-        num(r, "/mp2_erfc_control/coulomb_e_corr", ctx),
+        num_ctx(r, "/mp2_erfc_control/coulomb_e_corr", ctx),
     );
 }
 
@@ -557,7 +552,7 @@ fn terfc_reference(c: &Case, frozen_core: usize, rhf_energy: f64) -> (f64, f64) 
         &ctx,
         "E_RHF (terfc ref)",
         rhf_energy,
-        num(&v, "/rhf_energy", &ctx),
+        num_ctx(&v, "/rhf_energy", &ctx),
         TOL_RHF,
     );
     let block = v["energies"]
@@ -590,13 +585,13 @@ fn check_terfc(ctx: &str, res: &AttVv10Result, (os, ss): (f64, f64), r: &Value) 
         ctx,
         "terfc ref vs erfc control",
         want,
-        num(r, "/mp2_erfc_control/e_corr", ctx),
+        num_ctx(r, "/mp2_erfc_control/e_corr", ctx),
     );
     check_misses(
         ctx,
         "terfc ref vs Coulomb",
         want,
-        num(r, "/mp2_erfc_control/coulomb_e_corr", ctx),
+        num_ctx(r, "/mp2_erfc_control/coulomb_e_corr", ctx),
     );
 }
 
@@ -626,7 +621,7 @@ fn check_chain(c: &Case, with_uhf: bool) {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(r, "/rhf_energy", &ctx),
+        num_ctx(r, "/rhf_energy", &ctx),
         TOL_RHF,
     );
 
@@ -637,7 +632,7 @@ fn check_chain(c: &Case, with_uhf: bool) {
         &ctx,
         "E_HF (result)",
         res.e_hf,
-        num(r, "/rhf_energy", &ctx),
+        num_ctx(r, "/rhf_energy", &ctx),
         TOL_RHF,
     );
     check_result(&ctx, r, &res, TOL_CORR, TOL_VV10_CHAIN);
@@ -676,7 +671,7 @@ fn check_chain(c: &Case, with_uhf: bool) {
         &uctx,
         "E_UHF",
         uhf.energy,
-        num(r, "/rhf_energy", &uctx),
+        num_ctx(r, "/rhf_energy", &uctx),
         TOL_RHF,
     );
     let ures = u_att_mp2_vv10(&l.mol, &l.obs, &l.bs, &dfbs, &uhf, &cfg)

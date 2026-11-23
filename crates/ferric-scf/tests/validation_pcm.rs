@@ -91,6 +91,7 @@ use ferric_pcm::solver::solve_pcm_charges;
 use ferric_pcm::{PcmConfig, ProbeKind, Tessera};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use ndarray::{Array1, Array2};
 use serde_json::Value;
 
@@ -166,12 +167,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
@@ -308,7 +303,7 @@ fn solver_case(system: &str, basis_name: &str) {
     for (i, key) in EPS_KEYS.iter().enumerate() {
         let ctx = format!("{ctx0}/eps={key}");
         let base = format!("/solvents/{key}");
-        let eps = num(&r, &format!("{base}/epsilon"), &ctx);
+        let eps = num_ctx(&r, &format!("{base}/epsilon"), &ctx);
         let v_ref = vec_f64(&r, &format!("{base}/v_grids"), &ctx);
         let v = Array1::from_vec(v_ref.clone());
 
@@ -338,7 +333,7 @@ fn solver_case(system: &str, basis_name: &str) {
             &ctx,
             "f(eps)",
             f_eps,
-            num(&r, &format!("{base}/f_epsilon"), &ctx),
+            num_ctx(&r, &format!("{base}/f_epsilon"), &ctx),
             1e-15,
         );
         let dkv = max_abs_diff(
@@ -360,12 +355,12 @@ fn solver_case(system: &str, basis_name: &str) {
         );
         eprintln!("{ctx}: q_sym max|d| {dq:.2e} (tol {TOL_Q:.0e})");
         assert!(dq < TOL_Q, "{ctx}: symmetrized charges differ by {dq:.2e}");
-        let e_ref = num(&r, &format!("{base}/e_pcm"), &ctx);
+        let e_ref = num_ctx(&r, &format!("{base}/e_pcm"), &ctx);
         check_close(&ctx, "E_pcm", res.e_pcm, e_ref, TOL_E_PCM);
 
         // CONTROL: the other dielectric's reference must be missed.
         let other = EPS_KEYS[1 - i];
-        let e_other = num(&r, &format!("/solvents/{other}/e_pcm"), &ctx);
+        let e_other = num_ctx(&r, &format!("/solvents/{other}/e_pcm"), &ctx);
         check_misses(&ctx, "eps swap", res.e_pcm, e_other, MUST_MISS_SOLVER);
 
         // CONTROL: a 1% error in the D self-term must be resolved.
@@ -416,7 +411,7 @@ fn load(system: &str, basis_name: &str) -> Loaded {
         &ctx,
         "E_nuc",
         enuc,
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         1e-9,
     );
     let bs = basis::bundled(basis_name).unwrap();
@@ -480,31 +475,31 @@ fn scf_case(system: &str, basis_name: &str, probe_control: bool) {
         &ctx0,
         "E_vac",
         e_vac,
-        num(&l.r, "/vacuum_energy", &ctx0),
+        num_ctx(&l.r, "/vacuum_energy", &ctx0),
         TOL_E_VAC,
     );
 
     for (i, key) in EPS_KEYS.iter().enumerate() {
         let ctx = format!("{ctx0}/eps={key}");
-        let eps = num(&l.r, &format!("/solvents/{key}/epsilon"), &ctx);
+        let eps = num_ctx(&l.r, &format!("/solvents/{key}/epsilon"), &ctx);
         let e = run(
             &l,
             Some(injected(eps, &tess, ProbeKind::GaussianSmeared)),
             &ctx,
         );
-        let e_ref = num(&l.r, &format!("/solvents/{key}/energy"), &ctx);
+        let e_ref = num_ctx(&l.r, &format!("/solvents/{key}/energy"), &ctx);
         check_close(&ctx, "E_total", e, e_ref, TOL_E_SCF);
         check_close(
             &ctx,
             "E_solv",
             e - e_vac,
-            num(&l.r, &format!("/solvents/{key}/e_solv"), &ctx),
+            num_ctx(&l.r, &format!("/solvents/{key}/e_solv"), &ctx),
             TOL_E_SCF,
         );
 
         // CONTROL: the other dielectric's reference must be missed.
         let other = EPS_KEYS[1 - i];
-        let e_other = num(&l.r, &format!("/solvents/{other}/energy"), &ctx);
+        let e_other = num_ctx(&l.r, &format!("/solvents/{other}/energy"), &ctx);
         check_misses(&ctx, "eps swap", e, e_other, MUST_MISS_SCF);
 
         // CONTROL (one system): point probes on the same cavity must miss.
@@ -545,7 +540,7 @@ fn scf_nh3_ccpvdz_on_pyscf_cavity() {
 fn native_case(system: &str, basis_name: &str, key: &str) {
     let l = load(system, basis_name);
     let ctx = format!("{system}/{basis_name}/native/eps={key}");
-    let eps = num(&l.r, &format!("/solvents/{key}/epsilon"), &ctx);
+    let eps = num_ctx(&l.r, &format!("/solvents/{key}/epsilon"), &ctx);
     let e_vac = run(&l, None, &ctx);
     let e = run(
         &l,
@@ -556,7 +551,7 @@ fn native_case(system: &str, basis_name: &str, key: &str) {
         &ctx,
     );
     let got = (e - e_vac) * HARTREE_TO_KCAL;
-    let want = num(&l.r, &format!("/solvents/{key}/e_solv"), &ctx) * HARTREE_TO_KCAL;
+    let want = num_ctx(&l.r, &format!("/solvents/{key}/e_solv"), &ctx) * HARTREE_TO_KCAL;
     let gap = (got - want) / want.abs();
     eprintln!(
         "{ctx}: E_solv ferric-native {got:.4} kcal/mol, PySCF {want:.4} kcal/mol, \

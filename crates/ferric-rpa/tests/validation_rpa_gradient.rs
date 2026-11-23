@@ -82,6 +82,7 @@ use ferric_rpa::gradient::total_rpa_gradient;
 use ferric_rpa::run_pdep_rpa;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -152,12 +153,6 @@ fn reference(system: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn grad_at(v: &Value, ptr: &str, natm: usize, ctx: &str) -> Array2<f64> {
@@ -247,7 +242,7 @@ fn load_system(system: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     let obs_bs = basis::bundled(BASIS).unwrap();
@@ -397,14 +392,14 @@ fn energy_case(system: &str) {
         &ctx,
         "E_RHF",
         e_hf,
-        num(&sys.r, "/energy/e_rhf", &ctx),
+        num_ctx(&sys.r, "/energy/e_rhf", &ctx),
         TOL_E_RHF,
     );
     check_close(
         &ctx,
         "E_c (40-pt GL)",
         e_c,
-        num(&sys.r, "/energy/e_c", &ctx),
+        num_ctx(&sys.r, "/energy/e_c", &ctx),
         TOL_E_C,
     );
     let (_, e_c6) = own_energy(&sys, &sys.mol, &rpa_cfg(N_QUAD_COARSE, 0));
@@ -412,7 +407,7 @@ fn energy_case(system: &str) {
         &ctx,
         "E_c (6-pt GL)",
         e_c6,
-        num(&sys.r, "/energy/e_c_coarse", &ctx),
+        num_ctx(&sys.r, "/energy/e_c_coarse", &ctx),
         TOL_E_C,
     );
     if let Some(nc) = sys.r["frozen_core_block"].as_u64() {
@@ -421,7 +416,7 @@ fn energy_case(system: &str) {
             &ctx,
             "E_c (frozen core)",
             e_fc,
-            num(&sys.r, "/energy/e_c_fc", &ctx),
+            num_ctx(&sys.r, "/energy/e_c_fc", &ctx),
             TOL_E_C,
         );
     }
@@ -436,7 +431,7 @@ fn gradient_vs_pyscf_case(system: &str) {
         &ctx,
         "E_tot (total_rpa_gradient)",
         e_tot,
-        num(&sys.r, "/energy/e_total", &ctx),
+        num_ctx(&sys.r, "/energy/e_total", &ctx),
         TOL_E_TOT_LIB,
     );
     let fd = |name: &str, block: &str| {

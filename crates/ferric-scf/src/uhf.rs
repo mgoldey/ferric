@@ -520,6 +520,7 @@ pub fn solve_uhf_fockmod(
 /// which only [`solve_uhf_blocked`] honours. A Fock `hook` acts on the target
 /// solve only, never on the secondary-basis SCF or the Fock projection behind
 /// `guess_basis` (see `rhf::solve_rhf_routed`).
+#[allow(clippy::too_many_arguments)]
 fn solve_uhf_molecular(
     ctx: &ParallelContext,
     mol: &Molecule,

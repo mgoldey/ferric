@@ -119,6 +119,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -178,12 +179,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// ferric's spelling of each functional.
 fn ferric_xc(xc: &str) -> &'static str {
     match xc {
@@ -226,7 +221,7 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     let label = format!("{system}/{basis_name}");
     // Geometry like-for-like FIRST: a constant or unit slip fails here as a
     // geometry defect, not later as an unexplained energy offset.
-    let enuc_ref = num(reference, "/nuclear_repulsion", &label);
+    let enuc_ref = num_ctx(reference, "/nuclear_repulsion", &label);
     let enuc = mol.nuclear_repulsion();
     eprintln!(
         "{label}: E_nuc ferric {enuc:.12} ref {enuc_ref:.12} |d| {:.2e}",
@@ -378,21 +373,21 @@ fn run_rks(system: &str, xc: &str) {
                 &ctx,
                 "energy",
                 res.energy,
-                num(&r, &format!("{key}/energy"), &ctx),
+                num_ctx(&r, &format!("{key}/energy"), &ctx),
                 TOL_E,
             );
             check_close(
                 &ctx,
                 "HOMO",
                 res.eps_alpha[nocc - 1],
-                num(&r, &format!("{key}/homo"), &ctx),
+                num_ctx(&r, &format!("{key}/homo"), &ctx),
                 TOL_EPS,
             );
             check_close(
                 &ctx,
                 "LUMO",
                 res.eps_alpha[nocc],
-                num(&r, &format!("{key}/lumo"), &ctx),
+                num_ctx(&r, &format!("{key}/lumo"), &ctx),
                 TOL_EPS,
             );
 
@@ -402,22 +397,22 @@ fn run_rks(system: &str, xc: &str) {
                 &ctx,
                 &format!("{xc_swap} {j}-J"),
                 res.energy,
-                num(&r, &format!("/rks_{xc_swap}_{j}/energy"), &ctx),
+                num_ctx(&r, &format!("/rks_{xc_swap}_{j}/energy"), &ctx),
             );
             let j_swap = if j == "rij" { "exact" } else { "rij" };
             assert_misses(
                 &ctx,
                 &format!("{xc} {j_swap}-J"),
                 res.energy,
-                num(&r, &format!("/rks_{xc}_{j_swap}/energy"), &ctx),
+                num_ctx(&r, &format!("/rks_{xc}_{j_swap}/energy"), &ctx),
             );
             assert_misses(
                 &ctx,
                 other_basis(basis_name),
                 res.energy,
-                num(&r_other, &format!("{key}/energy"), &ctx),
+                num_ctx(&r_other, &format!("{key}/energy"), &ctx),
             );
-            let e_rhf = num(&r, "/rhf_control/energy", &ctx);
+            let e_rhf = num_ctx(&r, "/rhf_control/energy", &ctx);
             assert!(
                 (res.energy - e_rhf).abs() > CONTROL_GAP,
                 "{ctx}: RKS {:.10} is within {CONTROL_GAP:.0e} of the exact RHF control \
@@ -516,14 +511,14 @@ fn run_uks(system: &str, xc: &str) {
             &ctx,
             "<S2>",
             s2,
-            num(&r, &format!("{key}/s_squared"), &ctx),
+            num_ctx(&r, &format!("{key}/s_squared"), &ctx),
             TOL_S2,
         );
         check_close(
             &ctx,
             "energy",
             res.energy,
-            num(&r, &format!("{key}/energy"), &ctx),
+            num_ctx(&r, &format!("{key}/energy"), &ctx),
             TOL_E,
         );
         let eb = res.eps_beta.as_ref().expect("UKS beta orbital energies");
@@ -537,7 +532,7 @@ fn run_uks(system: &str, xc: &str) {
                 &ctx,
                 what,
                 got,
-                num(&r, &format!("{key}/{field}"), &ctx),
+                num_ctx(&r, &format!("{key}/{field}"), &ctx),
                 TOL_EPS,
             );
         }
@@ -548,15 +543,15 @@ fn run_uks(system: &str, xc: &str) {
             &ctx,
             xc_swap,
             res.energy,
-            num(&r, &format!("/uks_{xc_swap}_rij/energy"), &ctx),
+            num_ctx(&r, &format!("/uks_{xc_swap}_rij/energy"), &ctx),
         );
         assert_misses(
             &ctx,
             other_basis(basis_name),
             res.energy,
-            num(&r_other, &format!("{key}/energy"), &ctx),
+            num_ctx(&r_other, &format!("{key}/energy"), &ctx),
         );
-        let e_uhf = num(&r, "/uhf_control/energy", &ctx);
+        let e_uhf = num_ctx(&r, "/uhf_control/energy", &ctx);
         assert!(
             (res.energy - e_uhf).abs() > CONTROL_GAP,
             "{ctx}: UKS {:.10} is within {CONTROL_GAP:.0e} of the exact UHF control \

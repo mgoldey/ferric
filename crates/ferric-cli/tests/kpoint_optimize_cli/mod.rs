@@ -53,6 +53,7 @@ pub fn run(tag: &str, xyz: &str, kind: &str, mult: usize, kmesh: &str, optimize:
 }
 
 /// [`run`] with an explicit basis and J/K lines.
+#[allow(clippy::too_many_arguments)]
 pub fn run_with(
     tag: &str,
     xyz: &str,

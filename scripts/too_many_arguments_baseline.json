@@ -1,0 +1,21 @@
+{
+  "_comment": "Item-level #[allow(clippy::too_many_arguments)] per crate. Only ever lowered: scripts/too_many_arguments_ratchet.py --update-baseline.",
+  "crates": {
+    "benchmarks": 3,
+    "ferric-cc": 11,
+    "ferric-cli": 22,
+    "ferric-core": 3,
+    "ferric-dft": 39,
+    "ferric-gw": 20,
+    "ferric-integrals": 14,
+    "ferric-mm": 2,
+    "ferric-mp2": 132,
+    "ferric-pbc": 172,
+    "ferric-pcm": 1,
+    "ferric-python": 90,
+    "ferric-rpa": 31,
+    "ferric-scf": 126,
+    "ferric-tddft": 2,
+    "ferric-tensors": 2
+  }
+}

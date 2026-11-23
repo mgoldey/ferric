@@ -190,6 +190,7 @@ use ferric_mp2::laplace::LaplaceMp2;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/laplace_mp2";
@@ -282,12 +283,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<30} ferric {got:+.13} ref {want:+.13} |d| {d:.2e} (tol {tol:.0e})");
@@ -343,7 +338,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str, run_ao: bool) {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -376,7 +371,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str, run_ao: bool) {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&r, "/e_rhf", &ctx),
+        num_ctx(&r, "/e_rhf", &ctx),
         TOL_E_RHF,
     );
 
@@ -394,19 +389,19 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str, run_ao: bool) {
         &ctx,
         "ymin",
         ymin,
-        num(&r, "/laplace_range/ymin", &ctx),
+        num_ctx(&r, "/laplace_range/ymin", &ctx),
         1e-8,
     );
     check_close(
         &ctx,
         "ymax",
         ymax,
-        num(&r, "/laplace_range/ymax", &ctx),
+        num_ctx(&r, "/laplace_range/ymax", &ctx),
         1e-7,
     );
     eprintln!(
         "{ctx}: R = {r_range:.4} (reference {:.4})",
-        num(&r, "/laplace_range/r", &ctx)
+        num_ctx(&r, "/laplace_range/r", &ctx)
     );
 
     let su = Setup {
@@ -458,21 +453,21 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str, run_ao: bool) {
             &ctx,
             &format!("vs quadrature ref (n_quad={n_quad})"),
             e_mo,
-            num(row, "/e_corr", &ctx),
+            num_ctx(row, "/e_corr", &ctx),
             TOL_VS_QUADRATURE,
         );
     }
 
     // ---- ferric vs EXACT DF-MP2, spin-resolved, at production n_quad ----
-    let e_os_ref = num(&r, "/exact/e_os", &ctx);
-    let e_ss_ref = num(&r, "/exact/e_ss", &ctx);
-    let e_corr_ref = num(&r, "/exact/e_corr", &ctx);
+    let e_os_ref = num_ctx(&r, "/exact/e_os", &ctx);
+    let e_ss_ref = num_ctx(&r, "/exact/e_ss", &ctx);
+    let e_corr_ref = num_ctx(&r, "/exact/e_corr", &ctx);
     // The reference's own anchor: its exact sum IS PySCF DF-MP2.
     check_close(
         &ctx,
         "ref exact vs PySCF DFMP2",
         e_corr_ref,
-        num(&r, "/exact/pyscf_dfmp2_e_corr", &ctx),
+        num_ctx(&r, "/exact/pyscf_dfmp2_e_corr", &ctx),
         1e-10,
     );
 

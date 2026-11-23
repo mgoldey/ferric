@@ -43,47 +43,18 @@
 // by ~1e-7..1e-6 Ha between nearby geometries; site/src/methods/scf.md, "RI-J
 // tensor precision").
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
-use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
-
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
+use ferric_testkit::molecules::water_xyz;
+use ferric_testkit::pool::CleanSlot;
 
 /// A PBE/RI-J single point. `Err` carries the refusal text.
 fn try_ksdft(basis: &str) -> Result<f64, String> {
-    let mol = water();
+    let mol = water_xyz();
     let bs = ferric_core::basis::bundled(basis).expect("basis");
     let obs = PreparedBasis::new(&mol, &bs).expect("prepared basis");
     let op = Operator::coulomb();
@@ -110,7 +81,7 @@ fn a_built_three_index_source_keeps_its_charge_outstanding() {
     let pool = MemoryPool::with_capacity_bytes(8_000_000_000);
     install_global(pool.clone());
 
-    let mol = water();
+    let mol = water_xyz();
     let bs = ferric_core::basis::bundled("cc-pvdz").expect("cc-pvdz");
     let aux = ferric_core::basis::bundled("def2-universal-jkfit").expect("jkfit");
     let obs = PreparedBasis::new(&mol, &bs).expect("obs");
@@ -170,7 +141,7 @@ fn a_live_grid_cache_keeps_its_charge_outstanding() {
     let pool = MemoryPool::with_capacity_bytes(8_000_000_000);
     install_global(pool.clone());
 
-    let mol = water();
+    let mol = water_xyz();
     let bs = ferric_core::basis::bundled("cc-pvdz").expect("cc-pvdz");
     let main = ferric_dft::grid::AtomicGridConfig::default();
     let nlc = ferric_dft::grid::AtomicGridConfig {

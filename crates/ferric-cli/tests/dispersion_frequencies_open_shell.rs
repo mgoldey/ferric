@@ -45,6 +45,7 @@ use ferric_scf::frequencies::{
 };
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 // Bent off the symmetric geometry (as in ferric-rpa's mbd_scf_gradient_roks.rs)
@@ -70,10 +71,6 @@ fn fd(reference: FrequencyReference) -> FrequencyConfig {
         hessian: HessianMethod::FiniteDifference,
         ..Default::default()
     }
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn to_array(rows: &[[f64; 3]]) -> Array2<f64> {

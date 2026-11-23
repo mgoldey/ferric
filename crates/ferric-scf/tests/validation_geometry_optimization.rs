@@ -133,6 +133,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -268,12 +269,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn arr<'a>(v: &'a Value, ptr: &str, ctx: &str) -> &'a Vec<Value> {
@@ -514,7 +509,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
         &ctx,
         "E_nuc (start)",
         start.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let bs = basis::bundled(m.basis).unwrap();
@@ -531,11 +526,11 @@ fn check_method(system: &str, m: &Method) -> Molecule {
         &ctx,
         "E_nuc (ref minimum)",
         ref_min.nuclear_repulsion(),
-        num(&r, &format!("{blk}/nuclear_repulsion_opt"), &ctx),
+        num_ctx(&r, &format!("{blk}/nuclear_repulsion_opt"), &ctx),
         TOL_ENUC,
     );
     let at_ref = single_point(&ctx, m, &ref_min);
-    let e_opt_ref = num(&r, &format!("{blk}/energy_opt"), &ctx);
+    let e_opt_ref = num_ctx(&r, &format!("{blk}/energy_opt"), &ctx);
     check_close(&ctx, "E at ref minimum", at_ref.energy, e_opt_ref, TOL_E_SP);
     let g_at_ref = max_abs(&at_ref.grad);
     eprintln!(
@@ -548,7 +543,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
 
     // 3. Start point: same state and integrals before the optimizer runs.
     let at_start = single_point(&ctx, m, &start);
-    let e_start_ref = num(&r, &format!("{blk}/energy_start"), &ctx);
+    let e_start_ref = num_ctx(&r, &format!("{blk}/energy_start"), &ctx);
     check_close(&ctx, "E at start", at_start.energy, e_start_ref, TOL_E_SP);
     if m.kind == Kind::Uhf {
         assert_stable(&format!("{ctx} (start)"), &at_start);
@@ -556,7 +551,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
             &ctx,
             "<S^2> start",
             s_squared(&at_start, &start),
-            num(&r, &format!("{blk}/s_squared_start"), &ctx),
+            num_ctx(&r, &format!("{blk}/s_squared_start"), &ctx),
             TOL_S2,
         );
     }
@@ -577,7 +572,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
         res.steps,
         res.energy_trace.len(),
         res.converged,
-        num(
+        num_ctx(
             &r,
             &format!("{blk}/optimizer/energy_gradient_evaluations"),
             &ctx
@@ -651,7 +646,7 @@ fn check_method(system: &str, m: &Method) -> Molecule {
             &ctx,
             "<S^2> at ref minimum",
             s_squared(&at_ref, &ref_min),
-            num(&r, &format!("{blk}/s_squared_opt"), &ctx),
+            num_ctx(&r, &format!("{blk}/s_squared_opt"), &ctx),
             TOL_S2,
         );
         eprintln!(

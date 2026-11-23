@@ -228,6 +228,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use num_complex::Complex64;
 use serde_json::Value;
 
@@ -334,12 +335,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
@@ -475,7 +470,7 @@ fn load_system(system: &str, xyz_rel: &str, basis_name: &str, ecp: bool) -> Sys 
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -543,7 +538,7 @@ fn rhf(sys: &Sys, tol_e: f64) -> ScfResult {
         &sys.label,
         "E_RHF",
         scf.energy,
-        num(&sys.r, "/rhf/energy", &sys.label),
+        num_ctx(&sys.r, "/rhf/energy", &sys.label),
         tol_e,
     );
     scf
@@ -554,7 +549,7 @@ fn rhf(sys: &Sys, tol_e: f64) -> ScfResult {
 /// NH2/cc-pVDZ and OH/aug-cc-pVTZ are known to need; the state is accepted
 /// only if its energy equals the stability-checked reference's.
 fn uhf(sys: &Sys) -> ScfResult {
-    let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
+    let e_ref = num_ctx(&sys.r, "/uhf/energy", &sys.label);
     let steered = uhf_config().with_level_shift(0.5).with_mom_after_iter(5);
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", uhf_config()), ("ls0.5+MOM5", steered)] {
@@ -842,7 +837,7 @@ fn g0w0_pbe_case(system: &str, basis_name: &str, quadrature_control: bool) {
         &ctx,
         "E_RKS",
         scf.energy,
-        num(&sys.r, "/g0w0_pbe/rks_energy", &ctx),
+        num_ctx(&sys.r, "/g0w0_pbe/rks_energy", &ctx),
         TOL_E_SCF,
     );
     let (vxc, _) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", &scf)
@@ -954,7 +949,7 @@ fn ferric_sigma_c_iw(
     let orbs = vec_usize(&sys.r, &format!("/{block}/orbs"), ctx);
     let omegas = vec_f64(&sys.r, &format!("/{block}/ac/ac_nodes_omega"), ctx);
     let node_idx = vec_usize(&sys.r, &format!("/{block}/ac/ac_nodes_index"), ctx);
-    let ef_ref = num(&sys.r, &format!("/{block}/ef"), ctx);
+    let ef_ref = num_ctx(&sys.r, &format!("/{block}/ef"), ctx);
     assert_eq!(res.mo_indices, orbs, "{ctx}: QP window");
 
     // The stored nodes are ferric's own AC grid: [0] + GL(100, u0 = 0.5)
@@ -1495,7 +1490,7 @@ fn uks_pbe_config(grid: &AtomicGridConfig) -> RhfConfig {
 /// the spread is 7x below `TOL_E_SCF` and 16x below `TOL_EPS_MF`, so any
 /// start that converges is the reference state.
 fn uks_pbe(sys: &Sys) -> ScfResult {
-    let e_ref = num(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
+    let e_ref = num_ctx(&sys.r, "/u_g0w0_uks_pbe/uks/energy", &sys.label);
     let grid = uks_grid(sys);
     let steered = uks_pbe_config(&grid)
         .with_level_shift(0.5)
@@ -1631,7 +1626,7 @@ fn ferric_u_sigma_c_iw(
     let orbs = vec_usize(&sys.r, "/u_g0w0_uks_pbe/orbs", ctx);
     let omegas = vec_f64(&sys.r, &format!("{p}/ac/ac_nodes_omega"), ctx);
     let node_idx = vec_usize(&sys.r, &format!("{p}/ac/ac_nodes_index"), ctx);
-    let ef_ref = num(&sys.r, &format!("{p}/ef"), ctx);
+    let ef_ref = num_ctx(&sys.r, &format!("{p}/ef"), ctx);
     let (leg, _) = ferric_rpa::quadrature::gauss_legendre_nodes(100, 0.5);
     for (&i, &w) in node_idx.iter().zip(&omegas) {
         let mine = if i == 0 { 0.0 } else { leg[i - 1] };
@@ -1999,7 +1994,7 @@ fn cohsex_ks_case(system: &str) {
         &ctx,
         "E_RKS",
         scf.energy,
-        num(&sys.r, "/cohsex_pbe/rks_energy", &ctx),
+        num_ctx(&sys.r, "/cohsex_pbe/rks_energy", &ctx),
         TOL_E_SCF,
     );
     let (vxc, _) = vxc_diagonal_mo(&sys.mol, &sys.obs_bs, "pbe", &scf)

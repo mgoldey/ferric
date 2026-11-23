@@ -25,8 +25,6 @@
 //! pool -- and `mwe_t_band_width_is_not_an_energy_knob.rs` independently pins
 //! that narrowing does not move `et`, so this is a pure performance tradeoff.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_cc::ccsd::ccsd;
 use ferric_cc::ccsd_t::{ccsd_t, t_band_width, t_floor_bytes, t_per_triple_bytes};
 use ferric_cc::CcConfig;
@@ -39,34 +37,11 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::pool::CleanSlot;
 
 /// H2O / STO-3G: no2 = 10, nv2 = 4 spin-orbitals.
 const NO2: usize = 10;
 const NV2: usize = 4;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 struct Fixture {
     mol: Molecule,

@@ -13,5 +13,6 @@ ferric-md = { path = "../ferric-md" }
 ndarray = { workspace = true }
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde = { workspace = true }
 serde_json = { workspace = true }

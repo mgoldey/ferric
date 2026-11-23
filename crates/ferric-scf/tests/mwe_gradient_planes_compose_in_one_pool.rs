@@ -35,8 +35,6 @@
 //! admitted everything) fails one of the two. A test whose GO conditions
 //! cannot both be reached returns arithmetic, not measurement.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -48,35 +46,9 @@ use ferric_scf::ks_gradient::ks_gradient_closed;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::molecules::water_xyz;
+use ferric_testkit::pool::CleanSlot;
 use ndarray::Array2;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
-
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
 
 /// Converge the SCF ONCE, with no pool installed, and hand back everything the
 /// gradient needs.
@@ -93,7 +65,7 @@ struct Fixture {
 }
 
 fn fixture(xc: Option<&str>) -> Fixture {
-    let mol = water();
+    let mol = water_xyz();
     let bs = ferric_core::basis::bundled("6-31g").expect("6-31g");
     let obs = PreparedBasis::new(&mol, &bs).expect("prepared basis");
     let op = Operator::coulomb();

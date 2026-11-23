@@ -3397,6 +3397,7 @@ pub fn amplitude_lmp2_direct_on(
 /// `cfg.compute_reference` (default false) opts in to the canonical
 /// `ri_mp2` reference, which DOES form the global `(naux, no·nv)` tensor
 /// this path otherwise never builds — leave it off for a reduced-cost run.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_lmp2_direct(
     mol: &Molecule,
     obs: &PreparedBasis,

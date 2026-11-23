@@ -67,6 +67,8 @@ use ferric_scf::hessian::rohf_hessian_parts;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::compare::max_abs_diff;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -126,12 +128,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -156,13 +152,6 @@ fn matrix(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
         }
     }
     m
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim(), "Hessian shape");
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
 }
 
 fn max_freq_diff(got: &[f64], want: &[f64]) -> f64 {
@@ -194,17 +183,17 @@ fn check_system(system: &str) {
     }
     let ctx = format!("{system}/cc-pvdz");
     let r = reference(system);
-    let mult = num(&r, "/multiplicity", &ctx) as usize;
+    let mult = num_ctx(&r, "/multiplicity", &ctx) as usize;
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, mult).unwrap();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     assert_eq!(
         prep.nbasis() as f64,
-        num(&r, "/nao", &ctx),
+        num_ctx(&r, "/nao", &ctx),
         "{ctx}: AO count differs"
     );
-    let enuc = (mol.nuclear_repulsion() - num(&r, "/nuclear_repulsion", &ctx)).abs();
+    let enuc = (mol.nuclear_repulsion() - num_ctx(&r, "/nuclear_repulsion", &ctx)).abs();
     eprintln!("{ctx}: |E_nuc - ref| {enuc:.2e}");
     assert!(
         enuc < TOL_ENUC,
@@ -216,7 +205,7 @@ fn check_system(system: &str) {
     let cfg = scf_config();
     let rohf = solve_rohf(&pctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(rohf.converged, "{ctx}: ROHF did not converge");
-    let de = (rohf.energy - num(&r, "/energy", &ctx)).abs();
+    let de = (rohf.energy - num_ctx(&r, "/energy", &ctx)).abs();
     eprintln!("{ctx}: |E_SCF - ref| {de:.2e} Ha");
     assert!(
         de < TOL_ENERGY,

@@ -30,6 +30,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::Array2;
 
 const AUX: &str = "def2-universal-jkfit";
@@ -128,17 +129,13 @@ fn reuse_and_recompute(s: &Setup, r: Ref) -> (Array2<f64>, Array2<f64>) {
     (g_reuse, g_rec)
 }
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 fn hydroxyl() -> Molecule {
     Molecule::parse_xyz("2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n", 0, 2).expect("OH")
 }
 
 #[test]
 fn pure_functional_gradient_reads_the_kept_ri_j_tensor_bitwise() {
-    let s = setup(water());
+    let s = setup(water_xyz());
     let (reuse, recompute) = reuse_and_recompute(&s, Ref::Rks);
     assert_eq!(bits(&reuse), bits(&recompute));
 }

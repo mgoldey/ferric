@@ -826,6 +826,7 @@ pub fn u_oo_ri_mp2_on(
 ///
 /// The returned `mos_alpha`/`mos_beta` are in the per-spin SEMICANONICAL frame
 /// and `eps_alpha`/`eps_beta` are the MP2 denominators actually used.
+#[allow(clippy::too_many_arguments)]
 pub fn u_oo_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,

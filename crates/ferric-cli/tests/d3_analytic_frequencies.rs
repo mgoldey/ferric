@@ -35,6 +35,7 @@ use ferric_scf::frequencies::{
     FrequencyReference, FrequencyResult, GeometricCorrection, HessianMethod, HessianSource,
 };
 use ferric_scf::rhf::RhfConfig;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 /// Near-equilibrium water (Angstrom), tilted off the symmetry planes.
@@ -74,10 +75,6 @@ fn run(mol: &Molecule, c: &RhfConfig, f: &FrequencyConfig) -> FrequencyResult {
         d3,
     )
     .expect("KS + D3 frequencies")
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 fn max_dnu(a: &[f64], b: &[f64]) -> f64 {

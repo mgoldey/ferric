@@ -16,6 +16,7 @@ use ferric_core::external_potential::{ExternalPotential, PointCharge};
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::nuclear_with_external;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 /// Deterministic pseudo-random field: `n` charges of both signs 6..40 Bohr from the origin.
@@ -49,10 +50,6 @@ fn v_of(prep: &PreparedBasis, charges: Vec<PointCharge>) -> Array2<f64> {
         field: None,
     };
     nuclear_with_external(prep, &ext)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 #[test]

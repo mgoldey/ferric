@@ -227,6 +227,7 @@ impl DfJ<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ferric_testkit::compare::max_abs;
 
     /// The pass width reads the sizes and the budget only: the same under
     /// every pool, at least one, and its live set within the budget whenever
@@ -252,10 +253,6 @@ mod tests {
                 assert_eq!(lockstep_band(40, 3403, 1), 1);
             });
         }
-    }
-
-    fn max_abs(a: &Array2<f64>) -> f64 {
-        a.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
     }
 
     /// A symmetric, unstructured density for slot `k`.

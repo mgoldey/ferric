@@ -51,6 +51,7 @@ gpu = ["ferric-core/gpu", "ferric-tensors/gpu"]
 test-seams = ["gpu", "ferric-core/test-seams"]
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ferric-d3 = { path = "../ferric-d3" }

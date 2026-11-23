@@ -89,6 +89,7 @@ use ferric_mp2::scs::{scs_mp2, ScsMp2Config};
 use ferric_scf::gradient::rhf_gradient_exact_jk;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -142,12 +143,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn grad(v: &Value, ptr: &str, natm: usize, ctx: &str) -> Array2<f64> {
@@ -230,7 +225,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs_bs = basis::bundled(basis_name).unwrap();
@@ -265,7 +260,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&r, "/pyscf/e_rhf", &ctx),
+        num_ctx(&r, "/pyscf/e_rhf", &ctx),
         TOL_E,
     );
 
@@ -284,14 +279,14 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
             &ctx,
             &format!("E_OS fc={fc}"),
             e_os,
-            num(&r, os_key, &ctx),
+            num_ctx(&r, os_key, &ctx),
             TOL_E,
         );
         check_close(
             &ctx,
             &format!("E_SS fc={fc}"),
             e_ss,
-            num(&r, ss_key, &ctx),
+            num_ctx(&r, ss_key, &ctx),
             TOL_E,
         );
     }

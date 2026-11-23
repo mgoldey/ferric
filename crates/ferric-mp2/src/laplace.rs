@@ -628,6 +628,7 @@ pub fn laplace_ri_mp2_on(
 }
 
 /// AO-Laplace RI-MP2 via pseudo-density factorization of the denominator.
+#[allow(clippy::too_many_arguments)]
 pub fn laplace_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,

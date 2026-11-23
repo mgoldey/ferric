@@ -4477,6 +4477,7 @@ fn run_drpa_kpts(
     mol, lattice, basis_set, auxbasis, range_split=None, sr_column_rotation=None,
     memory_budget_gb=None,
 ))]
+#[allow(clippy::too_many_arguments)]
 fn auto_gdf_omega(
     py: Python<'_>,
     mol: &PyMolecule,

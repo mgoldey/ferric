@@ -632,6 +632,7 @@ pub(crate) fn build_b_matrix(
 /// both cross-checked against PySCF's `oscillator_strength`. This helper
 /// previously omitted it (so TDA `f` was half PySCF's) and fed the Casida
 /// branch an un-normalized `(A−B)^{1/2} Z`; both are fixed here.
+#[allow(clippy::too_many_arguments)]
 fn oscillator_strengths(
     obs: &PreparedBasis,
     c_occ: &Array2<f64>,
@@ -1168,6 +1169,7 @@ fn response_operator<'a>(
 }
 
 /// The matrix-free path.
+#[allow(clippy::too_many_arguments)]
 fn solve_davidson(
     config: &TddftConfig,
     scf: &ScfResult,

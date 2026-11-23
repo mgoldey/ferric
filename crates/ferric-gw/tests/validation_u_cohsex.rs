@@ -111,6 +111,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/u_cohsex";
@@ -181,12 +182,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
@@ -311,7 +306,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -377,7 +372,7 @@ fn rhf(sys: &Sys) -> ScfResult {
         &sys.label,
         "E_RHF",
         scf.energy,
-        num(&sys.r, "/rhf/energy", &sys.label),
+        num_ctx(&sys.r, "/rhf/energy", &sys.label),
         TOL_E_SCF,
     );
     scf
@@ -387,7 +382,7 @@ fn rhf(sys: &Sys) -> ScfResult {
 /// descent first, then level shift + MOM), accepted only at the reference
 /// energy.
 fn uhf(sys: &Sys) -> ScfResult {
-    let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
+    let e_ref = num_ctx(&sys.r, "/uhf/energy", &sys.label);
     let steered = uhf_config().with_level_shift(0.5).with_mom_after_iter(5);
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", uhf_config()), ("ls0.5+MOM5", steered)] {

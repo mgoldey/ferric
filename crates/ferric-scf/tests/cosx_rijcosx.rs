@@ -55,6 +55,7 @@ use ferric_scf::result::ScfResult;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use rayon::prelude::*;
 
@@ -84,10 +85,6 @@ fn displaced(mol: &Molecule, atom: usize, c: usize, d: f64) -> Molecule {
         _ => m.atoms[atom].zpos += d,
     }
     m
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 /// COSX with the screens and the fit OFF: the energy the gradient

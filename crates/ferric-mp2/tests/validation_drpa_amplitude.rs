@@ -116,6 +116,7 @@ use ferric_mp2::lmp2_direct::DirectConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/drpa_amplitude";
@@ -174,12 +175,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<28} ferric {got:+.13} ref {want:+.13} |d| {d:.2e} (tol {tol:.0e})");
@@ -223,7 +218,7 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs_bs = basis::bundled(basis_name).unwrap();
@@ -259,7 +254,7 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&r, "/e_rhf", &ctx),
+        num_ctx(&r, "/e_rhf", &ctx),
         TOL_E_RHF,
     );
     Setup {
@@ -308,8 +303,8 @@ fn frozen_settings(su: &Setup) -> Vec<(usize, f64, f64)> {
             assert_eq!(b["frozen_core"].as_u64(), Some(fc as u64), "{}", su.ctx);
             (
                 fc,
-                num(b, "/e_corr", &su.ctx),
-                num(b, "/e_corr_ring_dropped", &su.ctx),
+                num_ctx(b, "/e_corr", &su.ctx),
+                num_ctx(b, "/e_corr_ring_dropped", &su.ctx),
             )
         })
         .collect();
@@ -387,7 +382,7 @@ fn check_eps_zero(system: &str, basis_name: &str, aux_name: &str) -> Setup {
 fn drpa_amplitude_h2_sto3g_vs_numpy_plasmon() {
     let su = check_eps_zero("h2", "sto-3g", "sto-3g");
     // The proof notebook's value, recorded by the generator next to its own.
-    let nb = num(&su.r, "/frozen_core/0/proof_notebook_value", &su.ctx);
+    let nb = num_ctx(&su.r, "/frozen_core/0/proof_notebook_value", &su.ctx);
     let e = amplitude_drpa(
         &su.mol,
         &su.obs,

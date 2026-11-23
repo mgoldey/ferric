@@ -93,6 +93,7 @@ fn flush_launch(n_elems: usize) -> LaunchConfig {
 /// result is `left·right` (beta 0). Returns the number of panels flushed.
 /// Operand shapes and both buffer lengths are checked first (typed
 /// `GpuError::Layout`, nothing launched or written).
+#[allow(clippy::too_many_arguments)]
 pub fn gemm_f32_f64acc_dev(
     dev: &Device,
     m: usize,

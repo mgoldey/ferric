@@ -108,6 +108,7 @@ use ferric_mp2::dlpno_mp2::{
 use ferric_mp2::rimp2::{ri_mp2_spin_components, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -186,12 +187,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<34} ferric {got:+.13} ref {want:+.13} |d| {d:.2e} (tol {tol:.0e})");
@@ -261,7 +256,7 @@ fn run_system(system: &str, variants_wanted: &[usize]) {
         &ctx0,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx0),
+        num_ctx(&r, "/nuclear_repulsion", &ctx0),
         TOL_ENUC,
     );
     let obs_bs = basis::bundled(BASIS).unwrap();
@@ -290,7 +285,7 @@ fn run_system(system: &str, variants_wanted: &[usize]) {
         &ctx0,
         "E_RHF",
         rhf.energy,
-        num(&r, "/e_rhf", &ctx0),
+        num_ctx(&r, "/e_rhf", &ctx0),
         TOL_E_RHF,
     );
 
@@ -305,7 +300,7 @@ fn run_system(system: &str, variants_wanted: &[usize]) {
         let v = &variants[vi];
         let fc = v["frozen_core"].as_u64().unwrap() as usize;
         let ctx = format!("{system}/fc={fc}");
-        let e_pyscf = num(v, "/pyscf_dfmp2/e_corr", &ctx);
+        let e_pyscf = num_ctx(v, "/pyscf_dfmp2/e_corr", &ctx);
 
         let rcfg = RiMp2Config {
             frozen_core: fc,
@@ -341,7 +336,7 @@ fn run_system(system: &str, variants_wanted: &[usize]) {
             d_exact.virtual_retention, 1.0,
             "{ctx}: exact() drops virtuals"
         );
-        let d_orca = num(v, "/orca_ri_mp2_vs_pyscf_dfmp2_abs_diff", &ctx);
+        let d_orca = num_ctx(v, "/orca_ri_mp2_vs_pyscf_dfmp2_abs_diff", &ctx);
         assert!(
             d_orca < TOL_ORCA_RIMP2,
             "{ctx}: ORCA RI-MP2 vs PySCF {d_orca:.2e} exceeds {TOL_ORCA_RIMP2:.0e}"
@@ -448,7 +443,7 @@ fn run_system(system: &str, variants_wanted: &[usize]) {
 
         // ---- ORCA side, recorded for context (never a bar) ----
         for tag in ["dlpno_normalpno", "dlpno_tightpno"] {
-            let p = num(v, &format!("/orca/{tag}/pct_of_orca_ri_mp2"), &ctx);
+            let p = num_ctx(v, &format!("/orca/{tag}/pct_of_orca_ri_mp2"), &ctx);
             eprintln!("{ctx}: ORCA {tag:<16} {p:.6}% of ORCA RI-MP2 (different localization; not a ranking)");
         }
         eprintln!("{ctx}: mutation ledger: {MUTATIONS}");

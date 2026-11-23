@@ -50,6 +50,7 @@ use ferric_scf::link_k::LinkK;
 use ferric_scf::pairs::{DensityPairs, SignificantPairs};
 use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::screening::{Bound, SchwarzBounds};
+use ferric_testkit::compare::max_abs_diff;
 use ndarray::Array2;
 use std::time::Instant;
 
@@ -142,10 +143,6 @@ fn load_matrix(path: &str, nbf: usize) -> Array2<f64> {
         .map(|c| f64::from_le_bytes(*c))
         .collect();
     Array2::from_shape_vec((nbf, nbf), vals).expect("matrix shape")
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// PRE-fix pair-list criteria (origin/main a131b69f `pairs.rs`), recomputed on

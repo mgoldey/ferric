@@ -146,6 +146,7 @@ use ferric_rpa::config::{Eigensolver, PdepRpaConfig, QuadratureConfig, Quadratur
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use ndarray_linalg::{Eigh, UPLO};
 use serde_json::Value;
@@ -255,12 +256,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn vec_f64(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
@@ -444,7 +439,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     assert_eq!(
@@ -486,7 +481,7 @@ fn load_system(system: &str, basis_name: &str) -> Sys {
         &label,
         "E_RHF",
         scf.energy,
-        num(&r, "/rhf/energy", &label),
+        num_ctx(&r, "/rhf/energy", &label),
         TOL_E_SCF,
     );
     check_vec(
@@ -669,7 +664,7 @@ fn bse_case(system: &str, basis_name: &str) -> Vec<f64> {
 
     // HEADLINE: the reference kernel on FERRIC's QP energies.
     let (om_sub, f_sub) = kernel_spectrum(&sys, &res.eps_qp, n);
-    let degenerate = num(r, "/degenerate_rotation_ambiguity", &ctx) > 0.0;
+    let degenerate = num_ctx(r, "/degenerate_rotation_ambiguity", &ctx) > 0.0;
     let tol = if degenerate {
         TOL_OMEGA_DEGENERATE
     } else {
@@ -783,7 +778,7 @@ fn cis_case(system: &str, basis_name: &str) {
         &exact[..n],
         TOL_CIS_VS_EXACT,
     );
-    let recorded = num(r, "/cis_df_vs_exact_max", &ctx);
+    let recorded = num_ctx(r, "/cis_df_vs_exact_max", &ctx);
     eprintln!("{ctx}: DF error vs exact TDA {d_exact:.3e} Ha (generator: {recorded:.3e})");
     // Control: CIS is not BSE.
     assert_misses(

@@ -64,6 +64,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::{Array1, Array2, ArrayView2};
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -552,13 +553,9 @@ fn budget(sys: &System, f64_run: &ScfResult) -> Budget {
 
 // ---------------------------------------------------------------- the sweep
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap()
-}
-
 fn sized_systems() -> Vec<System> {
     vec![
-        System::new("H2O/cc-pVDZ", water(), "cc-pvdz", Kind::Rhf),
+        System::new("H2O/cc-pVDZ", water_xyz(), "cc-pvdz", Kind::Rhf),
         System::new(
             "C6H6/def2-SVP",
             Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap(),
@@ -869,7 +866,13 @@ fn f64_default_matches_pre_ladder_golden() {
         return;
     }
     let golden: [(&str, Molecule, &str, u64, usize); 2] = [
-        ("H2O/cc-pVDZ", water(), "cc-pvdz", 0xc053_01b6_0893_26f6, 13),
+        (
+            "H2O/cc-pVDZ",
+            water_xyz(),
+            "cc-pvdz",
+            0xc053_01b6_0893_26f6,
+            13,
+        ),
         (
             "C6H6/def2-SVP",
             Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap(),

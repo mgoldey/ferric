@@ -149,6 +149,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -235,12 +236,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn grad(v: &Value, ptr: &str, natm: usize, ctx: &str) -> Array2<f64> {
     let rows = v
         .pointer(ptr)
@@ -300,18 +295,18 @@ fn check_grad(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64>, tol:
 fn check_oo_energies(ctx: &str, r: &Value, label: &str, e_ref: f64, e_dbl: f64, e_tot: f64) -> f64 {
     // The numpy reference itself: converged and anchored (generator-asserted,
     // re-checked so a hand-edited JSON cannot slip through).
-    let g_np = num(r, "/numpy_oo/max_orbital_gradient", ctx);
+    let g_np = num_ctx(r, "/numpy_oo/max_orbital_gradient", ctx);
     assert!(
         g_np <= NUMPY_MAX_ORBITAL_GRAD,
         "{ctx}: numpy OO reference max |dE/dkappa| {g_np:.2e} > {NUMPY_MAX_ORBITAL_GRAD:.0e}"
     );
-    let anchor = num(r, "/numpy_oo/anchor_kappa0_diff", ctx);
+    let anchor = num_ctx(r, "/numpy_oo/anchor_kappa0_diff", ctx);
     assert!(
         anchor.abs() <= 1e-10,
         "{ctx}: numpy OO kappa=0 anchor vs PySCF SCF+DF-MP2 {anchor:.2e}"
     );
-    let np_tot = num(r, "/numpy_oo/e_total", ctx);
-    let orca_tot = num(r, "/orca_oo/e_total", ctx);
+    let np_tot = num_ctx(r, "/numpy_oo/e_total", ctx);
+    let orca_tot = num_ctx(r, "/orca_oo/e_total", ctx);
     // ORCA stops ABOVE the minimum of the functional (module doc). If this
     // flips, ORCA's OO solver changed and the loose ORCA bars must be revisited.
     let offset = orca_tot - np_tot;
@@ -326,28 +321,28 @@ fn check_oo_energies(ctx: &str, r: &Value, label: &str, e_ref: f64, e_dbl: f64, 
         ctx,
         &format!("{label} reference vs numpy"),
         e_ref,
-        num(r, "/numpy_oo/e_reference", ctx),
+        num_ctx(r, "/numpy_oo/e_reference", ctx),
         TOL_E_OO_SPLIT_NUMPY,
     );
     check_close(
         ctx,
         &format!("{label} doubles vs numpy"),
         e_dbl,
-        num(r, "/numpy_oo/e_doubles", ctx),
+        num_ctx(r, "/numpy_oo/e_doubles", ctx),
         TOL_E_OO_SPLIT_NUMPY,
     );
     check_close(
         ctx,
         &format!("{label} reference vs ORCA"),
         e_ref,
-        num(r, "/orca_oo/e_reference", ctx),
+        num_ctx(r, "/orca_oo/e_reference", ctx),
         TOL_E_OO_SPLIT_ORCA,
     );
     check_close(
         ctx,
         &format!("{label} doubles vs ORCA"),
         e_dbl,
-        num(r, "/orca_oo/e_doubles", ctx),
+        num_ctx(r, "/orca_oo/e_doubles", ctx),
         TOL_E_OO_SPLIT_ORCA,
     );
     check_close(
@@ -405,7 +400,7 @@ fn load(system: &str, r: &Value) -> Sys {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(r, "/nuclear_repulsion", &ctx),
+        num_ctx(r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let s = Sys::new(mol);
@@ -503,14 +498,14 @@ fn check_closed(system: &str) {
         &ctx,
         "E_RHF vs ORCA",
         rhf.energy,
-        num(&r, "/orca_rimp2/e_scf", &ctx),
+        num_ctx(&r, "/orca_rimp2/e_scf", &ctx),
         TOL_E_SCF,
     );
     check_close(
         &ctx,
         "E_RHF vs PySCF",
         rhf.energy,
-        num(&r, "/pyscf/e_scf", &ctx),
+        num_ctx(&r, "/pyscf/e_scf", &ctx),
         TOL_E_SCF,
     );
     let mp2_cfg = RiMp2Config::default();
@@ -520,14 +515,14 @@ fn check_closed(system: &str) {
         &ctx,
         "E_RIMP2 vs ORCA",
         mp2.total_energy,
-        num(&r, "/orca_rimp2/e_total", &ctx),
+        num_ctx(&r, "/orca_rimp2/e_total", &ctx),
         TOL_E_RIMP2,
     );
     check_close(
         &ctx,
         "E_corr(RI) vs PySCF DF-MP2",
         mp2.mp2_corr,
-        num(&r, "/pyscf/e_corr_dfmp2", &ctx),
+        num_ctx(&r, "/pyscf/e_corr_dfmp2", &ctx),
         TOL_E_RIMP2,
     );
 
@@ -545,8 +540,8 @@ fn check_closed(system: &str) {
     check_miss_e(
         &ctx,
         "ORCA RI-MP2 vs ORCA OO",
-        num(&r, "/orca_rimp2/e_total", &ctx),
-        num(&r, "/orca_oo/e_total", &ctx),
+        num_ctx(&r, "/orca_rimp2/e_total", &ctx),
+        num_ctx(&r, "/orca_oo/e_total", &ctx),
     );
 
     // ---- OO nuclear gradient ----
@@ -648,14 +643,14 @@ fn check_open(system: &str) {
         &ctx,
         "E_UHF vs ORCA",
         uhf.energy,
-        num(&r, "/orca_rimp2/e_scf", &ctx),
+        num_ctx(&r, "/orca_rimp2/e_scf", &ctx),
         TOL_E_SCF,
     );
     check_close(
         &ctx,
         "E_UHF vs PySCF (stable)",
         uhf.energy,
-        num(&r, "/pyscf/e_scf", &ctx),
+        num_ctx(&r, "/pyscf/e_scf", &ctx),
         TOL_E_SCF,
     );
     let mp2_cfg = RiMp2Config::default();
@@ -665,7 +660,7 @@ fn check_open(system: &str) {
         &ctx,
         "E_URIMP2 vs ORCA",
         mp2.total_energy,
-        num(&r, "/orca_rimp2/e_total", &ctx),
+        num_ctx(&r, "/orca_rimp2/e_total", &ctx),
         TOL_E_RIMP2,
     );
 
@@ -703,8 +698,8 @@ fn check_open(system: &str) {
     check_miss_e(
         &ctx,
         "ORCA U-RI-MP2 vs ORCA OO",
-        num(&r, "/orca_rimp2/e_total", &ctx),
-        num(&r, "/orca_oo/e_total", &ctx),
+        num_ctx(&r, "/orca_rimp2/e_total", &ctx),
+        num_ctx(&r, "/orca_oo/e_total", &ctx),
     );
 }
 

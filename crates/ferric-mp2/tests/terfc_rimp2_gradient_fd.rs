@@ -75,6 +75,7 @@ use ferric_scf::scf_jk::{ScfJk, ScfJkMode};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::warm_start::ScfWarmStart;
 use ferric_scf::ScfResult;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 use std::path::Path;
 
@@ -176,10 +177,6 @@ fn displaced(mol: &Molecule, atom: usize, coord: usize, h: f64) -> Molecule {
         _ => m.atoms[atom].zpos += h,
     }
     m
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 struct Case {

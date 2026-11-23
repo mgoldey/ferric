@@ -332,6 +332,7 @@ mod tests {
     use ferric_scf::rhf::solve_rhf;
     use ferric_scf::scf_jk::ScfJkMode;
     use ferric_scf::Spin;
+    use ferric_testkit::compare::{max_abs, max_abs_diff};
     use std::path::Path;
 
     const WATER: &str = "3\nwater, off C2v\nO 0.02 -0.01 0.117790\nH 0.0 0.785453 -0.451161\nH 0.03 -0.735453 -0.491161\n";
@@ -367,14 +368,6 @@ mod tests {
             );
             std::env::set_var("FERRIC_TERF_TABLE_DIR", &repo);
         });
-    }
-
-    fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-        (a - b).iter().fold(0.0f64, |m, v| m.max(v.abs()))
-    }
-
-    fn max_abs(a: &Array2<f64>) -> f64 {
-        a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
     }
 
     fn scf_cfg(fit: bool) -> RhfConfig {

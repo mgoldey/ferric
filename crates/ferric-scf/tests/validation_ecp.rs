@@ -117,6 +117,8 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::compare::max_abs;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -211,12 +213,6 @@ fn orca_reference(system: &str, basis_name: &str) -> (Value, f64) {
     (v, tol)
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<14} ferric {got:+.12} ref {want:+.12} |d| {d:.2e} (tol {tol:.0e})");
@@ -264,7 +260,7 @@ fn load_system(system: &str, basis_name: &str, r: &Value) -> System {
         "{ctx}: electron count after apply_ecp"
     );
 
-    let enuc_ref = num(r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", &ctx);
     check_close(&ctx, "E_nuc", mol.nuclear_repulsion(), enuc_ref, TOL_ENUC);
 
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -298,10 +294,6 @@ fn uhf_config() -> RhfConfig {
         .with_energy_conv(1e-11)
         .with_density_conv(1e-9)
         .with_stability(ferric_scf::options::Stability::Descend)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// Whether this system is expected to take the ECP path.
@@ -359,7 +351,7 @@ fn check_rhf(system: &str, basis_name: &str, ecp: Ecp) -> f64 {
         &ctx,
         "energy",
         res.energy,
-        num(&r, "/rhf/energy", &ctx),
+        num_ctx(&r, "/rhf/energy", &ctx),
         TOL_E,
     );
     let nocc = (sys.mol.nelec() / 2) as usize;
@@ -367,7 +359,7 @@ fn check_rhf(system: &str, basis_name: &str, ecp: Ecp) -> f64 {
         &ctx,
         "HOMO",
         res.eps_alpha[nocc - 1],
-        num(&r, "/rhf/homo", &ctx),
+        num_ctx(&r, "/rhf/homo", &ctx),
         TOL_EPS,
     );
 
@@ -427,14 +419,14 @@ fn check_rhf(system: &str, basis_name: &str, ecp: Ecp) -> f64 {
         &octx,
         "E_nuc",
         sys.mol.nuclear_repulsion(),
-        num(&o, "/nuclear_repulsion", &octx),
+        num_ctx(&o, "/nuclear_repulsion", &octx),
         TOL_ENUC_ORCA,
     );
     check_close(
         &octx,
         "energy",
         res.energy,
-        num(&o, "/energy", &octx),
+        num_ctx(&o, "/energy", &octx),
         tol_orca,
     );
 
@@ -487,7 +479,7 @@ fn check_uhf_atom(system: &str, basis_name: &str) -> f64 {
         &ctx,
         "energy",
         res.energy,
-        num(&r, "/uhf/energy", &ctx),
+        num_ctx(&r, "/uhf/energy", &ctx),
         TOL_E,
     );
     let nelec = sys.mol.nelec() as usize;
@@ -506,7 +498,7 @@ fn check_uhf_atom(system: &str, basis_name: &str) -> f64 {
         &ctx,
         "<S^2>",
         s_squared(&res, &s, na, nb),
-        num(&r, "/uhf/s_squared", &ctx),
+        num_ctx(&r, "/uhf/s_squared", &ctx),
         TOL_S2,
     );
     res.energy
@@ -518,7 +510,7 @@ fn check_uhf_atom(system: &str, basis_name: &str) -> f64 {
 fn assert_basis_discriminates(system: &str, method: &str, energies: &[f64; 2]) {
     for (i, b_self) in BASES.iter().enumerate() {
         let b_other = BASES[1 - i];
-        let other = num(
+        let other = num_ctx(
             &reference(system, b_other),
             &format!("/{method}/energy"),
             system,

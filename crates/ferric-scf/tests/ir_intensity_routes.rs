@@ -44,7 +44,7 @@ use ferric_scf::infrared::{
 };
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::Array2;
+use ferric_testkit::compare::max_abs;
 
 const DC: f64 = 1.0e-10;
 
@@ -77,10 +77,6 @@ fn scf(xc: Option<&str>) -> RhfConfig {
         .with_max_iter(300);
     c.xc = xc.map(str::to_string);
     c
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// `(K_g, K_mu)`: max change of the gradient and of the dipole per unit

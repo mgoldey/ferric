@@ -49,6 +49,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::molecules::water_xyz;
 use ndarray::Array2;
 
 const AUX: &str = "def2-universal-jkfit";
@@ -154,14 +155,10 @@ fn reuse_vs_recompute(s: &Setup, r: Ref, cfg: &RhfConfig, expect_bytes: Option<u
     max_abs_diff(&g_reuse, &g_rec)
 }
 
-fn water() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/water.xyz").expect("water.xyz")
-}
-
 #[test]
 fn reused_raw_gradient_equals_recomputed() {
     // Water, default budget: the unpacked in-core tier.
-    let s = setup(water());
+    let s = setup(water_xyz());
     let d = reuse_vs_recompute(&s, Ref::Rks, &b3lyp_geometry_config(), None);
     eprintln!("water/def2-SVP B3LYP: max|g_reuse - g_recompute| = {d:.3e}");
     assert!(d <= BAR, "water: {d:e}");
@@ -200,8 +197,8 @@ fn reused_raw_open_shell_gradients_equal_recomputed() {
 
 #[test]
 fn mismatched_geometry_recomputes() {
-    let a = setup(water());
-    let mut moved = water();
+    let a = setup(water_xyz());
+    let mut moved = water_xyz();
     moved.atoms[1].y += 0.01;
     let b = setup(moved);
     let base = b3lyp_geometry_config();
@@ -230,7 +227,7 @@ fn guess_basis_tensor_never_reaches_the_gradient() {
     // (def2-SVP), a slot the secondary SCF could fill — and nobody cleared —
     // would hand the gradient a tensor in the wrong basis. The slot must hold
     // the main SCF's tensor or nothing.
-    let s = setup(water());
+    let s = setup(water_xyz());
     let aux = ferric_core::basis::bundled(AUX).unwrap();
     let naux = PreparedBasis::new(&s.mol, &aux).unwrap().nbasis();
     let sto = ferric_core::basis::bundled("sto-3g").unwrap();

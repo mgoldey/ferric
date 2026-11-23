@@ -1424,6 +1424,7 @@ mod tests {
 
     /// Central-difference the floor-free polarized GGA V_xc (first derivative)
     /// w.r.t. a density-matrix perturbation:  δV ≈ [V(D+εδD) − V(D−εδD)]/(2ε).
+    #[allow(clippy::too_many_arguments)]
     fn fd_vxc_response(
         grid: &[GridPoint],
         chi: &Array2<f64>,
