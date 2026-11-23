@@ -805,6 +805,7 @@ pub struct AttVv10ScanResult {
 /// its `r0_bohr`/`omega`/`vv10.b` are ignored. A single arm with a single `b`
 /// reproduces [`att_mp2_vv10`] with the same settings exactly (asserted in the
 /// tests).
+#[allow(clippy::too_many_arguments)]
 pub fn att_mp2_vv10_scan(
     mol: &Molecule,
     obs: &PreparedBasis,

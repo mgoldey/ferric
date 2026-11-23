@@ -20,6 +20,7 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::oneelectron::{ecp_potential, ecp_potential_deriv};
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 // Three distinct atoms, so (H shell, H shell | I ECP) and (H shell, I shell | I ECP)
@@ -34,10 +35,6 @@ fn displaced(mol: &Molecule, atom: usize, axis: usize, d: f64) -> Molecule {
         _ => m.atoms[atom].zpos += d,
     }
     m
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 /// Stencil of `dV/dR_{a,x}` with respect to coordinate (b, y).

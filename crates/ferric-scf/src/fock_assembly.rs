@@ -942,6 +942,7 @@ pub(crate) fn exchange_route_when_df_active(
 ///
 /// The `link_bound` reference is the caller's own `SchwarzBounds`, kept alive
 /// by the caller for the builder's lifetime.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
     kind: Option<KBuilderKind>,
     ctx: &'a ParallelContext,

@@ -63,6 +63,7 @@ use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::gradient::rhf_gradient_exact_jk;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -121,12 +122,6 @@ fn reference() -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("reference field {ptr} missing or not a number"))
 }
 
 fn grad(v: &Value, ptr: &str, natm: usize) -> Array2<f64> {

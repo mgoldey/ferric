@@ -502,6 +502,7 @@ pub fn solve_kroks_on_grid_keep(
     Ok((r, kept))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drive(
     who: &str,
     cell: &Cell,

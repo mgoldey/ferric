@@ -449,6 +449,7 @@ fn uhf_cfg(xc: &str) -> RhfConfig {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_uks_vs_pyscf(
     label: &str,
     xyz: &str,

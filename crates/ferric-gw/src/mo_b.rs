@@ -216,6 +216,7 @@ pub fn build_full_b(
 ///
 /// `nocc_σ` is read from the molecule's nelec + 2S:
 ///   nocc_α = (nelec + 2S) / 2, nocc_β = (nelec − 2S) / 2.
+#[allow(clippy::too_many_arguments)]
 pub fn build_full_b_spin(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -255,6 +256,7 @@ pub fn build_full_b_spin(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_full_b_with_mos(
     obs: &PreparedBasis,
     dfbs: &PreparedBasis,

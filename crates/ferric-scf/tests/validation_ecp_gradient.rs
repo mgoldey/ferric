@@ -121,6 +121,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf_with_guess;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -194,12 +195,6 @@ fn read_json(name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn matrix(v: &Value, ptr: &str, natoms: usize, ctx: &str) -> Array2<f64> {
@@ -507,7 +502,7 @@ fn check_named_case(case: &str, system: &str, basis_name: &str, kind: Kind, ecp:
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let ecp_atom = match ecp {
@@ -552,7 +547,7 @@ fn check_named_case(case: &str, system: &str, basis_name: &str, kind: Kind, ecp:
         &ctx,
         "energy",
         res.energy,
-        num(&r, &format!("/{key}/energy"), &ctx),
+        num_ctx(&r, &format!("/{key}/energy"), &ctx),
         tol_e,
     );
     if matches!(kind, Kind::Uhf | Kind::Uks) {
@@ -563,7 +558,7 @@ fn check_named_case(case: &str, system: &str, basis_name: &str, kind: Kind, ecp:
             &ctx,
             "<S^2>",
             s_squared(&res, &s, na, nb),
-            num(&r, &format!("/{key}/s_squared"), &ctx),
+            num_ctx(&r, &format!("/{key}/s_squared"), &ctx),
             TOL_S2,
         );
     }
@@ -667,7 +662,7 @@ fn check_named_case(case: &str, system: &str, basis_name: &str, kind: Kind, ecp:
 fn assert_basis_discriminates(system: &str, key: &str, energies: &[f64; 2]) {
     for (i, b_self) in BASES.iter().enumerate() {
         let b_other = BASES[1 - i];
-        let other = num(
+        let other = num_ctx(
             &read_json(&format!("{system}_{b_other}.json")),
             &format!("/{key}/energy"),
             system,

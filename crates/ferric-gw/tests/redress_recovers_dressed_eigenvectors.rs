@@ -24,15 +24,8 @@ use ferric_mp2::rimp2::metric_inverse_sqrt;
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ndarray::Array2;
+use ferric_testkit::compare::max_abs_diff;
 use ndarray_linalg::{Diag, SolveTriangular, UPLO};
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0_f64, |m, (x, y)| m.max((x - y).abs()))
-}
 
 fn setup(
     obs_name: &str,

@@ -105,6 +105,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf_best_effort;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess};
+use ferric_testkit::compare::{max_abs, max_abs_diff};
 use ndarray::Array2;
 
 /// Closed-shell RHF re-labelled as UHF vs the RHF Hessian, per term,
@@ -298,17 +299,6 @@ fn fd_hessian(
         }
     }
     out
-}
-
-fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 fn assert_close(ctx: &str, got: &Array2<f64>, want: &Array2<f64>, tol: f64) {

@@ -99,7 +99,7 @@
 # against a checked-in baseline (scripts/complexity_baseline.json). This is
 # NOT an absolute threshold -- several SCF/RPA numerical kernels are already
 # legitimately complex (CC 100-134) and explicitly out of scope for
-# splitting, same reasoning as the too_many_arguments allow-list above. The
+# splitting, same reasoning as the allow-list above. The
 # gate only fails on a REGRESSION (a function getting worse vs. baseline, or
 # a brand-new function appearing above a generous ceiling) -- see the
 # script's own doc comment for the full rationale. Soft-skips (does not fail
@@ -504,7 +504,6 @@ ALLOWED_LINTS=(
     "clippy::neg_multiply"
     "clippy::needless_range_loop"
     "clippy::doc_lazy_continuation"
-    "clippy::too_many_arguments"
     "clippy::derivable_impls"
     "clippy::field_reassign_with_default"
     "clippy::redundant_pattern_matching"
@@ -723,6 +722,25 @@ if [[ "${CI_GATE_SKIP_COMPLEXITY:-0}" != "1" ]]; then
     fi
 else
     echo "-- complexity regression: SKIPPED (CI_GATE_SKIP_COMPLEXITY=1) --"
+fi
+echo
+
+# ---- 3a. too_many_arguments ratchet + testkit dev-only check -----------
+# Pure python, no tool to install, so unlike the complexity step it never
+# soft-skips. See scripts/too_many_arguments_ratchet.py: the number of
+# item-level `#[allow(clippy::too_many_arguments)]` per crate may only go down.
+if [[ "${CI_GATE_SKIP_RATCHET:-0}" != "1" ]]; then
+    echo "-- too_many_arguments ratchet (scripts/too_many_arguments_ratchet.py) --"
+    if python3 "$REPO_ROOT/scripts/too_many_arguments_ratchet.py" \
+        && python3 "$REPO_ROOT/scripts/check_testkit_dev_only.py"; then
+        echo "-- too_many_arguments ratchet: PASS --"
+    else
+        echo "-- too_many_arguments ratchet: FAIL --"
+        FAILED=1
+        STEP_CHECK_FAILED=1
+    fi
+else
+    echo "-- too_many_arguments ratchet: SKIPPED (CI_GATE_SKIP_RATCHET=1) --"
 fi
 echo
 

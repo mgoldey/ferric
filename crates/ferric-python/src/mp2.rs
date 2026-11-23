@@ -711,6 +711,7 @@ pub(crate) fn run_rimp2_exact(
 /// `ValueError` naming `who` (an unknown `k_builder` is
 /// [`parse_k_builder`]'s `RuntimeError`), raised before any integral is
 /// computed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn mp2_reference_config(
     who: &str,
     k_builder: Option<&str>,

@@ -137,6 +137,7 @@ use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess};
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use rayon::prelude::*;
 use serde_json::Value;
@@ -214,12 +215,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 /// A `(natoms, 3)` gradient stored as a list of rows at JSON pointer `ptr`.
 fn grad_at(v: &Value, ptr: &str, ctx: &str) -> Array2<f64> {
     let rows = v
@@ -280,7 +275,7 @@ fn load_system(system: &str, basis_name: &str, reference: &Value) -> System {
     let label = format!("{system}/{basis_name}");
     // Geometry like-for-like FIRST: a constant or unit slip fails here as a
     // geometry defect, not later as an unexplained gradient offset.
-    let enuc_ref = num(reference, "/nuclear_repulsion", &label);
+    let enuc_ref = num_ctx(reference, "/nuclear_repulsion", &label);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -537,7 +532,7 @@ fn run_closed(system: &str, basis_name: &str, other_basis: &str) {
             assert_j_route(&res, j, &ctx);
 
             let key = format!("/rks_{xc}_{j}");
-            let e_ref = num(&r, &format!("{key}/energy"), &ctx);
+            let e_ref = num_ctx(&r, &format!("{key}/energy"), &ctx);
             let de = (res.energy - e_ref).abs();
             eprintln!(
                 "{ctx}: E ferric {:.10} ref {e_ref:.10} |d| {de:.2e}",
@@ -640,10 +635,10 @@ fn run_uks(system: &str, basis_name: &str) {
         assert_j_route(&res, "rij", &ctx);
 
         // State first: energy and ⟨S²⟩ (ferric skips meta-GGA stability).
-        let e_ref = num(&r, &format!("{key}/energy"), &ctx);
+        let e_ref = num_ctx(&r, &format!("{key}/energy"), &ctx);
         let de = (res.energy - e_ref).abs();
         let s2 = s_squared(&res, &s, na, nb);
-        let s2_ref = num(&r, &format!("{key}/s_squared"), &ctx);
+        let s2_ref = num_ctx(&r, &format!("{key}/s_squared"), &ctx);
         eprintln!(
             "{ctx}: E ferric {:.10} ref {e_ref:.10} |d| {de:.2e}; <S2> {s2:.8} ref {s2_ref:.8}",
             res.energy
@@ -731,7 +726,7 @@ fn mgga_gradient_roks_nh2_631g_vs_pyscf_fd() {
         .unwrap_or_else(|e| panic!("{ctx}: SCF failed: {e:?}"));
         assert!(res.converged, "{ctx}: SCF did not converge");
         assert_j_route(&res, "rij", &ctx);
-        let e_ref = num(&r, &format!("{key}/energy"), &ctx);
+        let e_ref = num_ctx(&r, &format!("{key}/energy"), &ctx);
         let de = (res.energy - e_ref).abs();
         eprintln!(
             "{ctx}: E ferric {:.10} ref {e_ref:.10} |d| {de:.2e}",

@@ -343,6 +343,15 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The count of item-level `#[allow(clippy::too_many_arguments)]` per
+      # crate may only go down (scripts/too_many_arguments_baseline.json);
+      # clippy above rejects a new offender without an allow. Also: the
+      # ferric-testkit crate may only be a dev-dependency.
+      - name: too_many_arguments ratchet, testkit dev-only
+        run: |
+          python3 scripts/too_many_arguments_ratchet.py
+          python3 scripts/check_testkit_dev_only.py
+
       # The gpu feature must build and run its skip paths on a machine with NO
       # CUDA toolkit or driver (this runner). cudarc's `dynamic-loading` links
       # nothing at build time; the probe test proves the missing-driver path

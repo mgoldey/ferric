@@ -9,7 +9,6 @@
 // energies, frequency grid, QP indices); bundling them into structs would only
 // move the boilerplate to the call sites. type_complexity likewise flags the
 // multi-array return tuples, which are self-documenting and used once.
-#![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
 // NOTE: no `///` summary here on purpose. `assign.rs` carries its own `//!`
@@ -306,6 +305,7 @@ impl std::fmt::Display for UGwResult {
 /// KS orbitals and held fixed across the outer loop; for U-COHSEX (static, no
 /// QP root search) it is added to ε_mf + Σ_c. `None` ⇒ HF reference (UHF/ROHF):
 /// no shift, and the QP solve is exactly the shift-zero path.
+#[allow(clippy::too_many_arguments)]
 pub fn run_u_gw(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -447,6 +447,7 @@ fn default_u_qp_range(mol: &Molecule, scf: &ScfResult) -> std::ops::Range<usize>
 /// self-consistency loop — it is a property of the KS reference, not
 /// something that evolves with QP self-consistency (see the doc comments on
 /// `sigma::run_evgw0`/`sigma::run_evgw`).
+#[allow(clippy::too_many_arguments)]
 pub fn run_gw(
     mol: &Molecule,
     obs: &PreparedBasis,

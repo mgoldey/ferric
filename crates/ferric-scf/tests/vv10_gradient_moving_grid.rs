@@ -26,6 +26,7 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::compare::max_abs;
 use ndarray::Array2;
 
 /// Asymmetric water (Å): no component of the gradient vanishes by symmetry.
@@ -132,10 +133,6 @@ fn uks_total_density(xyz: &str, basis_name: &str) -> (Molecule, basis::BasisSet,
     // E_nl is a functional of the total density; the UKS/ROKS gradients pass
     // alpha + beta (`ks_gradient.rs::add_xc_gradient`).
     (mol, bs, res.density_total)
-}
-
-fn max_abs(a: &Array2<f64>) -> f64 {
-    a.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
 }
 
 fn net_force(g: &Array2<f64>) -> f64 {

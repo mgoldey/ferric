@@ -68,6 +68,7 @@ use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
 use ferric_scf::{ScfResult, Spin};
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/uccsd";
@@ -121,12 +122,6 @@ fn reference(system: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<10} ferric {got:+.12} ref {want:+.12} |d| {d:.2e} (tol {tol:.0e})");
@@ -169,7 +164,7 @@ fn load(system: &str) -> Sys {
         &label,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &label),
+        num_ctx(&r, "/nuclear_repulsion", &label),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(BASIS).unwrap()).unwrap();
@@ -198,7 +193,7 @@ fn load(system: &str) -> Sys {
 /// The CLI's UHF (exact J/K) with the stability descent that pins it to
 /// PySCF's stability-followed state (as validation_u_rimp2.rs).
 fn uhf(sys: &Sys) -> ScfResult {
-    let e_ref = num(&sys.r, "/uhf/energy", &sys.label);
+    let e_ref = num_ctx(&sys.r, "/uhf/energy", &sys.label);
     let base = RhfConfig {
         max_iter: 400,
         energy_conv: 1e-11,
@@ -267,10 +262,10 @@ fn check_block(sys: &Sys, frozen_core: usize, cc: &UCcsdResult, t: &UTriples) {
     let r = &sys.r;
     assert_eq!(r[&block]["frozen_core"].as_u64(), Some(frozen_core as u64));
     for key in ["numpy_anchor_ccsd_diff", "numpy_anchor_t_diff"] {
-        let a = num(r, &format!("/{block}/{key}"), &ctx);
+        let a = num_ctx(r, &format!("/{block}/{key}"), &ctx);
         assert!(a.abs() < TOL_NUMPY_ANCHOR, "{ctx}: generator {key} {a:.2e}");
     }
-    let want = |k: &str| num(r, &format!("/{block}/{k}"), &ctx);
+    let want = |k: &str| num_ctx(r, &format!("/{block}/{k}"), &ctx);
     check_close(
         &ctx,
         "E_CCSD",
@@ -307,14 +302,14 @@ fn uccsd_case(system: &str) {
         &sys.label,
         "fc1 E_CCSD vs fc0 reference",
         cc1.correlation_energy,
-        num(r, "/uccsd_fc0/e_corr", &sys.label),
+        num_ctx(r, "/uccsd_fc0/e_corr", &sys.label),
         TOL_E_CC,
     );
     check_miss(
         &sys.label,
         "fc0 E_CCSD vs fc1 reference",
         cc0.correlation_energy,
-        num(r, "/uccsd_fc1/e_corr", &sys.label),
+        num_ctx(r, "/uccsd_fc1/e_corr", &sys.label),
         TOL_E_CC,
     );
 }

@@ -87,6 +87,7 @@ use ferric_rpa::PdepRpaConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -138,12 +139,6 @@ fn reference(system: &str, basis_name: &str) -> Value {
         )
     });
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
-}
-
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
 }
 
 fn text<'a>(v: &'a Value, ptr: &str, ctx: &str) -> &'a str {
@@ -220,7 +215,7 @@ fn alpha_row(system: &str, basis_name: &str) {
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), 0, 1)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
-    let enuc_ref = num(&r, "/nuclear_repulsion", &ctx);
+    let enuc_ref = num_ctx(&r, "/nuclear_repulsion", &ctx);
     assert!(
         (mol.nuclear_repulsion() - enuc_ref).abs() < TOL_ENUC,
         "{ctx}: nuclear repulsion mismatch — geometry/unit slip"
@@ -253,7 +248,7 @@ fn alpha_row(system: &str, basis_name: &str) {
     check(
         &ctx,
         "RHF energy |d|",
-        (own.energy - num(&r, "/scf/energy", &ctx)).abs(),
+        (own.energy - num_ctx(&r, "/scf/energy", &ctx)).abs(),
         TOL_E_SCF,
     );
 

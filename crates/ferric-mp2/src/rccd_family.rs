@@ -390,6 +390,7 @@ fn min_omega_sq(
 }
 
 /// Assemble the localized dense problem shared by every entry point here.
+#[allow(clippy::too_many_arguments)]
 fn localized(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -413,6 +414,7 @@ fn localized(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn localized_with_virtuals(
     mol: &Molecule,
     obs: &PreparedBasis,

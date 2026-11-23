@@ -83,6 +83,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::laplace::{laplace_sos_mp2, SosFormulation, SosMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::reference::num_ctx;
 use serde_json::Value;
 
 const ROW_DIR: &str = "testdata/reference/validation/sos_mp2";
@@ -137,12 +138,6 @@ fn read_json(dir: &str, system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn check_close(ctx: &str, what: &str, got: f64, want: f64, tol: f64) {
     let d = (got - want).abs();
     eprintln!("{ctx}: {what:<34} ferric {got:+.13} ref {want:+.13} |d| {d:.2e} (tol {tol:.0e})");
@@ -178,7 +173,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_nuc",
         mol.nuclear_repulsion(),
-        num(&r, "/nuclear_repulsion", &ctx),
+        num_ctx(&r, "/nuclear_repulsion", &ctx),
         TOL_ENUC,
     );
     let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
@@ -202,12 +197,12 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
         &ctx,
         "E_RHF",
         rhf.energy,
-        num(&r, "/e_rhf", &ctx),
+        num_ctx(&r, "/e_rhf", &ctx),
         TOL_E_RHF,
     );
 
-    let e_os_ref = num(&r, "/dfmp2/e_os", &ctx);
-    let e_ss_ref = num(&r, "/dfmp2/e_ss", &ctx);
+    let e_os_ref = num_ctx(&r, "/dfmp2/e_os", &ctx);
+    let e_ss_ref = num_ctx(&r, "/dfmp2/e_ss", &ctx);
 
     let sos = |n_quad: usize, formulation: SosFormulation| {
         let c = SosMp2Config {
@@ -243,7 +238,7 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
             &ctx,
             &format!("vs quadrature ref (n_quad={n_quad})"),
             mo.e_os,
-            num(row, "/e_os", &ctx),
+            num_ctx(row, "/e_os", &ctx),
             TOL_VS_QUADRATURE,
         );
         e_os_by_n.push((n_quad, mo.e_os));
@@ -299,20 +294,20 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     let d = SosMp2Config::default();
     let res = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &d, SosFormulation::Mo)
         .unwrap_or_else(|e| panic!("{ctx}: default laplace_sos_mp2 failed: {e:?}"));
-    let c_ref = num(&r, "/sos/c_os_default", &ctx);
+    let c_ref = num_ctx(&r, "/sos/c_os_default", &ctx);
     assert_eq!(res.c_os, c_ref, "{ctx}: default c_os");
     check_close(
         &ctx,
         "default sos_corr vs c_os*E_OS",
         res.sos_corr,
-        num(&r, "/sos/sos_corr_default", &ctx),
+        num_ctx(&r, "/sos/sos_corr_default", &ctx),
         c_ref * TOL_VS_EXACT,
     );
     check_close(
         &ctx,
         "default total vs E_RHF + c_os*E_OS",
         res.total_energy,
-        num(&r, "/sos/sos_total_default", &ctx),
+        num_ctx(&r, "/sos/sos_total_default", &ctx),
         c_ref * TOL_VS_EXACT + TOL_E_RHF,
     );
 }

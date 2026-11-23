@@ -25,7 +25,7 @@
 //! the peak in different stages (amplitudes for water/STO-3G, the VVVV build
 //! for H2/cc-pVDZ).
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::MutexGuard;
 
 use ferric_core::memory::pool::{clear_global, install_global, reserve_global, MemoryPool};
 use ferric_core::mol::Molecule;
@@ -37,16 +37,9 @@ use ferric_mp2::canonical::canonical_mp2;
 use ferric_mp2::mp3::mp3_energy;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
+use ferric_testkit::pool::global_lock;
 
 const AMPLE: usize = 64_000_000_000;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
 
 /// Serialize, clear the process-global pool on entry AND exit, and pin the
 /// budget env so the caller's environment cannot move a ceiling.

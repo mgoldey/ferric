@@ -86,6 +86,7 @@ use ndarray::Array2;
 /// here to [`REUSE_TOL`]; otherwise they are built.
 ///
 /// With `FERRIC_TIMING` set, prints a phase table ("OO-RI-MP2 gradient").
+#[allow(clippy::too_many_arguments)]
 pub fn oo_ri_mp2_gradient(
     mol: &Molecule,
     obs: &PreparedBasis,

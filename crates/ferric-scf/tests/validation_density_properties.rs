@@ -111,6 +111,7 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf;
+use ferric_testkit::reference::num_ctx;
 use ndarray::Array2;
 use serde_json::Value;
 
@@ -184,12 +185,6 @@ fn reference(dir: &str, system: &str, basis_name: &str) -> Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: bad JSON: {e}", path.display()))
 }
 
-fn num(v: &Value, ptr: &str, ctx: &str) -> f64 {
-    v.pointer(ptr)
-        .and_then(Value::as_f64)
-        .unwrap_or_else(|| panic!("{ctx}: reference field {ptr} missing or not a number"))
-}
-
 fn vec1(v: &Value, ptr: &str, ctx: &str) -> Vec<f64> {
     v.pointer(ptr)
         .and_then(Value::as_array)
@@ -234,7 +229,7 @@ fn load_system(system: &str, basis_name: &str, r: &Value, ctx: &str) -> System {
     let xyz = workspace_root().join(MOL_DIR).join(format!("{system}.xyz"));
     let mol = Molecule::load_xyz_with_charge(xyz.to_str().unwrap(), charge, mult)
         .unwrap_or_else(|e| panic!("{}: {e:?}", xyz.display()));
-    let enuc_ref = num(r, "/nuclear_repulsion", ctx);
+    let enuc_ref = num_ctx(r, "/nuclear_repulsion", ctx);
     let enuc = mol.nuclear_repulsion();
     assert!(
         (enuc - enuc_ref).abs() < TOL_ENUC,
@@ -452,7 +447,7 @@ fn check_molecule(system: &str, basis_name: &str) -> Vec<f64> {
     check(
         &ctx,
         "SCF energy",
-        (res.energy - num(&r, "/scf/energy", &ctx)).abs(),
+        (res.energy - num_ctx(&r, "/scf/energy", &ctx)).abs(),
         TOL_E_SCF,
     );
     let p2 = props(&sys, res.density_total());
@@ -554,7 +549,7 @@ fn atom_row(symbol_lc: &str) {
     check(
         &ctx,
         "UKS-PBE energy",
-        (res.energy - num(&r, "/uks/energy", &ctx)).abs(),
+        (res.energy - num_ctx(&r, "/uks/energy", &ctx)).abs(),
         TOL_E_ATOM,
     );
     let v2 =

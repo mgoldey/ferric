@@ -43,8 +43,6 @@
 //! is the reachability guard for that, and it is why the budget here is
 //! calibrated to a MEASURED figure rather than guessed.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -53,35 +51,7 @@ use ferric_integrals::operator::Operator;
 use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit. Both halves are needed:
-/// `e9949eed` on the integrals path found that a separate test binary alone
-/// still let one test's pool refuse a SIBLING that never asked for it, and
-/// that running two pool tests concurrently made a KILLED mutation look like a
-/// survivor.
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
+use ferric_testkit::pool::CleanSlot;
 
 struct Fixture {
     mol: Molecule,

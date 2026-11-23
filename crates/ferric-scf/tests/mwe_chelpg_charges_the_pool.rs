@@ -8,8 +8,6 @@
 //! recomputed here; the in-module test `chelpg_peak_counts_kept_values_and_output`
 //! pins the 64 B/pt figure itself.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use ferric_core::basis;
 use ferric_core::memory::pool::{clear_global, install_global, reserve_global, MemoryPool};
 use ferric_core::mol::Molecule;
@@ -20,33 +18,9 @@ use ferric_scf::properties::chelpg_charges;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::ScfResult;
+use ferric_testkit::pool::CleanSlot;
 
 const AMPLE: usize = 64_000_000_000;
-
-fn global_lock() -> MutexGuard<'static, ()> {
-    static L: OnceLock<Mutex<()>> = OnceLock::new();
-    match L.get_or_init(|| Mutex::new(())).lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    }
-}
-
-/// Clear the process-global pool on entry AND exit.
-struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
-
-impl CleanSlot {
-    fn acquire() -> Self {
-        let g = global_lock();
-        clear_global();
-        Self(g)
-    }
-}
-
-impl Drop for CleanSlot {
-    fn drop(&mut self) {
-        clear_global();
-    }
-}
 
 /// Water/STO-3G RHF, converged BEFORE any pool is installed.
 fn water() -> (Molecule, PreparedBasis, ScfResult) {

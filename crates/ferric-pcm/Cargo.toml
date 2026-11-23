@@ -19,5 +19,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+ferric-testkit = { path = "../ferric-testkit" }
 serde_json = { workspace = true }
 toml = { workspace = true }

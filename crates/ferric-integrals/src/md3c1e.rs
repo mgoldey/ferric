@@ -592,6 +592,7 @@ fn contract_tile<const FMA: bool>(
 
 /// Everything grid-dependent for one primitive pair on one tile of points.
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 fn tile_kernel<const FMA: bool>(
     prog: &RProgram,
     l: usize,
@@ -656,6 +657,7 @@ fn build_r_tile<const FMA: bool>(
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
 unsafe fn tile_kernel_avx2(
     prog: &RProgram,
     l: usize,

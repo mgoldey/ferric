@@ -129,6 +129,7 @@ pub struct AmplitudeLinLccdResult {
 }
 
 /// Amplitude-threshold LinLCCD with the VV-HV space built internally.
+#[allow(clippy::too_many_arguments)]
 pub fn amplitude_linlccd(
     mol: &Molecule,
     obs: &PreparedBasis,
