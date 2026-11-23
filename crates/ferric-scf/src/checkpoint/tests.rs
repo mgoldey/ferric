@@ -82,7 +82,7 @@ fn fixed_process() -> ProcessSettings {
         gpu_mode: "Off".to_string(),
         libint_version: "2.7.2".to_string(),
         cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
-        env: vec![None; 8],
+        env: vec![None; 9],
     }
 }
 
