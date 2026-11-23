@@ -83,7 +83,7 @@ impl PyOpmp3Result {
             .find(|(k, _)| *k == model)
             .map(|&(_, e)| self.inner.total(e))
             .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(format!(
+                crate::errors::input_err(format!(
                     "unknown OP-MP3 model {model:?}; one of mp2, mp3, p-mp3, op-mp3, sop-mp3, \
                      ssd-opmp3"
                 ))
@@ -95,7 +95,7 @@ impl PyOpmp3Result {
         match order {
             2 => channels_dict(py, &self.inner.w.w2),
             3 => channels_dict(py, &self.inner.w.w3),
-            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            _ => Err(crate::errors::input_err(format!(
                 "order must be 2 or 3, got {order}"
             ))),
         }
@@ -179,8 +179,7 @@ pub(crate) fn run_opmp3(
     virtual_solve_radius: Option<f64>,
     virtual_boys_tau: Option<f64>,
 ) -> PyResult<PyOpmp3Result> {
-    let kind = Opmp3RefKind::parse_config_str(reference)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let kind = Opmp3RefKind::parse_config_str(reference).map_err(crate::errors::input_err)?;
     let model = crate::mp2::local_model_from_kwargs(
         "run_opmp3",
         ferric_cli::LocalCfg {
@@ -198,7 +197,7 @@ pub(crate) fn run_opmp3(
         },
     )?;
     if model.is_some() && (auxbasis.is_none() || mol.inner.multiplicity != 1) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_opmp3: local=\"amplitude-threshold\" runs on RI integrals of a closed-shell \
              molecule: pass auxbasis= (and a singlet)",
         ));

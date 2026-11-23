@@ -128,7 +128,7 @@ pub(crate) fn local_model_from_kwargs(
     cfg: ferric_cli::LocalCfg,
 ) -> PyResult<Option<ferric_cli::LocalModel>> {
     cfg.model().map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(format!(
+        crate::errors::input_err(format!(
             "{fname}: {} (Python kwargs mirror the CLI [local] keys: local= is scheme, \
              compute_reference= is reference)",
             e.trim_start_matches("[local] ")
@@ -350,7 +350,7 @@ pub(crate) fn att_keys_from_kwargs(
 }
 
 pub(crate) fn att_keys_on_exact_error() -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(
+    crate::errors::input_err(
         "run_rimp2: att_operator / omega / att_r0 / att_omega select the attenuated \
          correlation operator of the LOCAL (amplitude-threshold) MP2 and are not read \
          by the exact method; use run_terfc_rimp2 / run_attenuated_rimp2 for exact \
@@ -366,7 +366,7 @@ pub(crate) fn local_correlation_operator(
     model: &ferric_cli::LocalModel,
     basis_name: &str,
 ) -> PyResult<Operator> {
-    let value_err = pyo3::exceptions::PyValueError::new_err;
+    let value_err = crate::errors::input_err;
     let Some(k) = att_keys else {
         return Ok(Operator::coulomb());
     };
@@ -593,7 +593,7 @@ pub(crate) fn refuse_rimp2_gradient(
     jk: &ferric_scf::scf_jk::ScfJk,
 ) -> PyResult<()> {
     let refuse = |what: String| {
-        Err(pyo3::exceptions::PyValueError::new_err(format!(
+        Err(crate::errors::input_err(format!(
             "run_rimp2: with_gradient=True {what}"
         )))
     };
@@ -648,7 +648,7 @@ pub(crate) fn run_rimp2_exact(
     let mp2_budget = budget_bytes_from_gb(memory_budget_gb);
     let open_shell = raw_mol.multiplicity > 1;
     if open_shell && kappa.is_some() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_rimp2: kappa is not supported for an open-shell molecule (multiplicity {}): \
              kappa-regularization exists for the closed-shell kernel only. Omit kappa for \
              plain unrestricted RI-MP2.",
@@ -724,7 +724,7 @@ pub(crate) fn mp2_reference_config(
         default,
         ferric_scf::scf_jk::ScfJkKeys::PYTHON,
     )
-    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{who}: {e}")))?;
+    .map_err(|e| crate::errors::input_err(format!("{who}: {e}")))?;
     if let Some(w) = jk.aux_warning(ferric_scf::scf_jk::ScfJkKeys::PYTHON) {
         eprintln!("[ferric] warning: {who}: {w}");
     }
@@ -838,7 +838,7 @@ pub(crate) fn run_rimp2_local(
     use ferric_mp2::lmp2_amplitude::amplitude_lmp2_on;
     use ferric_mp2::lmp2_direct::amplitude_lmp2_direct_on;
     if mol.inner.multiplicity > 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_rimp2: local=\"amplitude-threshold\" is closed-shell only (it localizes a \
              single restricted occupied space), but the molecule has multiplicity {}. Omit \
              local= for the exact unrestricted RI-MP2.",
@@ -846,7 +846,7 @@ pub(crate) fn run_rimp2_local(
         )));
     }
     if let Some(k) = kappa {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_rimp2: kappa = {k} is not read by the local (amplitude-threshold) MP2; \
              kappa-regularized MP2 exists for the exact rimp2 only. Omit kappa or local=."
         )));
@@ -1059,7 +1059,7 @@ pub(crate) fn run_drpa(
         },
     )?;
     if model.is_none() && eps_rtol_factor.is_some() {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_drpa: eps_rtol_factor links the stopping tolerance to eps and is a no-op at \
              eps = 0, i.e. on the exact method; pass it only with local=\"amplitude-threshold\"",
         ));
@@ -1293,9 +1293,8 @@ pub(crate) fn run_linlccd(
     use ferric_cc::linlccd_amplitude::{amplitude_linlccd_on, AmplitudeLinLccdConfig};
     let var = match variant {
         None => LadderVariant::Hh,
-        Some(v) => LadderVariant::parse_config_str(v).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("run_linlccd: variant: {e}"))
-        })?,
+        Some(v) => LadderVariant::parse_config_str(v)
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("run_linlccd: variant: {e}")))?,
     };
     let model = local_model_from_kwargs(
         "run_linlccd",
@@ -1307,7 +1306,7 @@ pub(crate) fn run_linlccd(
         },
     )?;
     if mol.inner.multiplicity > 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_linlccd: closed-shell (RHF) only, but the molecule has multiplicity {}; \
              open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u)",
             mol.inner.multiplicity
@@ -1676,9 +1675,9 @@ pub(crate) fn run_oo_rimp2(
         ferric_scf::scf_jk::ScfJkKeys::PYTHON,
         ferric_scf::scf_jk::OO_BUILDS_EXACT_OR_RIJK,
     )
-    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("run_oo_rimp2: {e}")))?;
+    .map_err(|e| crate::errors::input_err(format!("run_oo_rimp2: {e}")))?;
     if with_gradient && frozen_core.unwrap_or(0) > 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_oo_rimp2: with_gradient=True needs frozen_core=0: the core-active and \
              core-virtual rotations are not optimised, so the zero-response OO-MP2 gradient is \
              not the derivative of the frozen-core energy",
@@ -1754,12 +1753,15 @@ pub(crate) fn oo_rimp2_gradient(
     r: &ferric_mp2::oo_rimp2::OoRiMp2Result,
 ) -> PyResult<Array2<f64>> {
     if !r.converged {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "run_oo_rimp2: with_gradient=True: the orbital optimisation did not converge \
+        return Err(crate::errors::raise(
+            crate::errors::Kind::Convergence,
+            format!(
+                "run_oo_rimp2: with_gradient=True: the orbital optimisation did not converge \
              ({} iterations, orbital gradient norm {:.2e}); the zero-response gradient holds only \
              at a stationary point. Raise oo_max_iter or loosen grad_conv",
-            r.iterations, r.grad_norm
-        )));
+                r.iterations, r.grad_norm
+            ),
+        ));
     }
     py.allow_threads(|| ferric_mp2::oo_rimp2_gradient::oo_ri_mp2_gradient_on(dfbs, r, 0, None))
         .map_err(make_err)
@@ -2345,7 +2347,7 @@ pub(crate) fn run_terfc_rimp2(
     let mol = sys.mol();
     // r0 supplied in Å; convert to Bohr for the operator.
     let resolved = ferric_mp2::terfc_r0::resolve_terfc_r0(&basis_set.inner.name, r0)
-        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        .map_err(crate::errors::input_err)?;
     if let Some(note) = &resolved.note {
         println!("{note}");
     }
@@ -2593,7 +2595,7 @@ pub(crate) fn run_scs_mp2_2terfc(
         c_os,
         c_ss,
     )
-    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    .map_err(crate::errors::input_err)?;
     if let Some(note) = &params.note {
         println!("{note}");
     }
@@ -2606,9 +2608,7 @@ pub(crate) fn run_scs_mp2_2terfc(
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
     };
     if cfg.r0_nonbonded <= cfg.r0_bonded {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "r0_nonbonded must be > r0_bonded",
-        ));
+        return Err(crate::errors::input_err("r0_nonbonded must be > r0_bonded"));
     }
     let r = scs_mp2_2terfc_on(&dfbs, &rhf, &cfg).map_err(make_err)?;
     let certificate_data = ferric_mp2::certificate::scs_mp2_2terfc_certificate(
@@ -2756,7 +2756,7 @@ pub(crate) fn run_mp2_v(
         "terfc" => AttVv10Attenuator::Terfc,
         "erfc" => AttVv10Attenuator::Erfc,
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
             "unknown attenuator \"{other}\"; expected \"terfc\" (published) or \"erfc\" (control)"
         )))
         }
@@ -2769,13 +2769,13 @@ pub(crate) fn run_mp2_v(
             omega_bohr_inv: None,
         },
         "none" => ferric_dft::vv10::Vv10Damping::None,
-        other => return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        other => return Err(crate::errors::input_err(format!(
             "unknown vv10_damping \"{other}\"; expected \"terfc\" (published, Eq. 11) or \"none\" (bare VV10, double-counts short range)"
         ))),
     };
     if let Some(r0_ang) = r0 {
         if !r0_ang.is_finite() || r0_ang <= 0.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "r0 must be finite and > 0 (got {r0_ang} A)"
             )));
         }
@@ -2865,7 +2865,7 @@ pub(crate) fn run_mp2_v_scan(
     use pyo3::types::{PyDict, PyList};
     for (r0, _) in &arms {
         if !r0.is_finite() || *r0 <= 0.0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "r0 must be finite and > 0 (got {r0} A)"
             )));
         }
@@ -3003,7 +3003,7 @@ pub(crate) fn run_vv10_variants(
                 power: *power,
             },
             other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                     "unknown kind \"{other}\"; expected none|eq11|terf"
                 )))
             }

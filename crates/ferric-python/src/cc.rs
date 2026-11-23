@@ -103,7 +103,7 @@ fn run_u_ccsd_inner(
 /// route on an open-shell molecule is refused rather than ignored.
 fn refuse_open_shell_ladder(mol: &Molecule, ladder: &str) -> PyResult<()> {
     if mol.multiplicity > 1 && ladder != "auto" {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "ladder={ladder:?} is read by closed-shell CCSD only; the UHF route for an \
              open-shell molecule builds its VVVV blocks densely (use ladder=\"auto\")"
         )));
@@ -222,7 +222,7 @@ fn cc_config(
         frozen_core: frozen_core.unwrap_or(0),
         memory_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
         ladder: ferric_cc::CcsdLadder::parse_config_str(ladder)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+            .map_err(crate::errors::input_err)?,
         ..Default::default()
     })
 }
@@ -497,7 +497,7 @@ pub(crate) fn run_eom_ccsd(
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyEomCcsdResult> {
     if n_roots == 0 || max_iter == 0 || !(conv_tol.is_finite() && conv_tol > 0.0) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "run_eom_ccsd: n_roots and max_iter must be at least 1 and conv_tol positive",
         ));
     }

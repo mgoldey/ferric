@@ -100,11 +100,49 @@ ferric-core
   (`CliError::msg` / `verbatim` / `usage`; there is no `From<String>`, so a
   site cannot get a prefix by accident) and never prints the error itself.
 - **Python:** convert a `FerricError` with the crate-local `IntoPyResult`
-  extension trait (`.py()?`), not a fresh `map_err` per call site. A blanket
-  `From<FerricError> for PyErr` is not possible (orphan rule). Older
-  `map_err(make_err)` sites migrate as their files are touched. Exception
-  classes only ever become narrower subclasses of the class raised today;
-  they are never swapped.
+  extension trait (`.py()?`) or `make_err`, not a fresh `map_err` per call
+  site. A blanket `From<FerricError> for PyErr` is not possible (orphan
+  rule). Both end in `errors::from_core`, the one place that decides the
+  exception class (`ferric-python/src/errors.rs`). Exception classes only
+  ever become narrower subclasses of the class raised today; they are never
+  swapped. Every class derives from `ferric.FerricError(Exception)` and from
+  the builtin it raised before, so `except RuntimeError` / `ValueError` /
+  `NotImplementedError` handlers are unchanged:
+
+  | class | also | raised for |
+  |---|---|---|
+  | `ConvergenceError` | `RuntimeError` | `ScfConvergence`, `Convergence` (typed only; also the orbital-optimisation gradient refusal) |
+  | `BasisError` | `InputError`, `RuntimeError` | `Basis` (unknown bundled name, unparsable or non-covering basis/ECP); both builtins because `BasisSet.bundled` / `n_functions` raised `ValueError` and the `run_*` drivers `RuntimeError` |
+  | `NumericalError` | `RuntimeError` | `Lapack` |
+  | `MemoryBudgetError` | `RuntimeError` | `MemoryExhausted` (typed only: `ferric-core`'s `check_alloc` returns `General`, so it is a `ComputationError`) |
+  | `UnsupportedError` | `NotImplementedError` | `Unsupported` |
+  | `ComputationError` | `RuntimeError` | every other `FerricError` (`General`, `Io`, `Libint`, `XyzParse`) and binding-level runtime failures |
+  | `InputError` | `ValueError` | binding-level invalid arguments (`errors::input_err`); a core error passed to it is a `BasisError` if it is `Basis`, else an `InputError` whatever its variant (these sites raised `ValueError`) |
+  | periodic drivers | `ValueError` | `pbc.rs::refusal_text` maps `General` and `MemoryExhausted` to `InputError` (`ValueError`, as before) and everything else through `from_core` with the `run_x:` prefix |
+
+  `General` still carries invalid-configuration text (it is a string
+  variant), so those stay a `ComputationError`; only a typed variant can be
+  told apart reliably. `TypeError`/`KeyError`/`OSError` raised by argument
+  extraction or the file helpers stay plain, as does anything raised from
+  pure Python. The classes are built with `type()` at module init (pyo3's
+  `create_exception!` takes one base), carry `__module__ = "ferric"` and are
+  module attributes, so they pickle. Messages are unchanged.
+
+  The decision is `FerricError::category()` (`ErrorCategory`, an exhaustive
+  match in ferric-core) mapped by `errors::kind_of`, so a new variant cannot
+  be added without choosing its class; `FerricError::samples` (one value per
+  variant) feeds the `ferric._raise_core_error` test hook and a unit test.
+  `tests/test_exception_sites_are_typed.py` fails on a new bare
+  `PyValueError::new_err` / `PyRuntimeError::new_err` outside a short
+  allowlist (the GPU/precision settings, `set_blas_threads`, a libint test
+  hook).
+
+  **Which variant to return (method authors):** return `Convergence` /
+  `ScfConvergence`, `MemoryExhausted`, `Unsupported` (`FerricError::unsupported`)
+  or `Basis` for those failures, never `General` with a descriptive string:
+  only the typed variant reaches Python as `ConvergenceError`,
+  `MemoryBudgetError`, `UnsupportedError` or `BasisError`. `General` ends up
+  as `ComputationError`.
 
 ## Python API compatibility
 
@@ -195,6 +233,18 @@ Done:
    `RhfConfig` literal), removing the hand-kept "CLI and Python agree"
    parity. It is also the template for 12: a `Result<_, CliError>`
    function with one `.or_exit()` at the call site.
+10. The Python exception hierarchy described under Errors (`FerricError`
+    root; `ConvergenceError`, `BasisError`, `NumericalError`,
+    `MemoryBudgetError`, `UnsupportedError`, `ComputationError`,
+    `InputError`), all also subclasses of the builtin they raised before.
+    Follow-ups: `General` cannot be split further until invalid-option
+    failures get a typed variant (item 11e's `OptionError`); `check_alloc`
+    in `ferric-core/src/memory.rs` returns `General` and should return
+    `MemoryExhausted` (it changes the message prefix, so it needs its own
+    PR). `BasisSet.n_functions` raises `BasisError`; `from_bse_json` raises
+    `BasisError` for malformed JSON and `InputError` for an unreadable file.
+    `ferric.qcschema.run` now classifies by these classes (a driver basis
+    failure is `input_error`, not `execution_error`).
 9a. `energy`/`total_energy` aliases on every SCF result class (molecular,
     CDFT and periodic), so callers no longer branch on the result type.
 -  API snapshot coverage extends to the pure-Python submodules
@@ -745,7 +795,6 @@ Next, each as its own PR following the patterns above:
       another molecule raise `PanicException` (ndarray shape);
       `hirshfeld_charges(HI, def2-svp, rhf)` panics in `UhfState::new`
       ("end <= axis_len") in the iodine proatom SCF.
-10. A Python exception hierarchy rooted in today's classes.
 11. `RhfConfig` in steps, each with a field-by-field oracle test:
     (a) route every literal site through an options lowering, then mark it
     `#[non_exhaustive]`; (b) group fields into sub-configs (`Convergence`,
