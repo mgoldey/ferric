@@ -527,13 +527,42 @@ fn fast_path_plan(
 const DRESS_COL_BLOCK: usize = 512;
 
 /// `out += m_rows · panel` as ONE GEMM (see [`DRESS_COL_BLOCK`] for why its row
-/// count is free).
+/// count is free), skipping the leading rows of `m_rows` that are exactly zero.
+///
+/// A lower-triangular metric factor (DF-K's Cholesky `L⁻¹`) has `m[P, Q] = 0`
+/// for every `Q > P`, so the Q block `[qa, qb)` contributes nothing to rows
+/// `P < qa`: those rows are skipped, which halves the dressing's flops (the
+/// flop count of a triangular solve). The skipped products are exact zeros
+/// and the kept rows see the same term sequence, so the result is the dense
+/// GEMM's (only the GEMM's row count changes, which does not move a bit). A
+/// dense (symmetric) factor has a nonzero first row and is dressed as before.
 fn dress_tile(
     m_rows: &ndarray::ArrayView2<'_, f64>,
     panel: &ndarray::ArrayView2<'_, f64>,
     out: &mut ndarray::ArrayViewMut2<'_, f64>,
 ) {
-    ndarray::linalg::general_mat_mul(1.0, m_rows, panel, 1.0, out);
+    let r0 = leading_zero_rows(m_rows);
+    if r0 == m_rows.nrows() {
+        return;
+    }
+    if r0 == 0 {
+        ndarray::linalg::general_mat_mul(1.0, m_rows, panel, 1.0, out);
+    } else {
+        ndarray::linalg::general_mat_mul(
+            1.0,
+            &m_rows.slice(ndarray::s![r0.., ..]),
+            panel,
+            1.0,
+            &mut out.slice_mut(ndarray::s![r0.., ..]),
+        );
+    }
+}
+
+/// How many leading rows of `m` are exactly zero (stops at the first nonzero).
+fn leading_zero_rows(m: &ndarray::ArrayView2<'_, f64>) -> usize {
+    m.outer_iter()
+        .position(|row| row.iter().any(|&x| x != 0.0))
+        .unwrap_or(m.nrows())
 }
 
 /// Split a packed accumulator `(rows, pair)` into disjoint column tiles of

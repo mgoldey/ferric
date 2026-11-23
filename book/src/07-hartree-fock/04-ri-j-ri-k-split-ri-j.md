@@ -178,16 +178,37 @@ once per geometry, so RI-K stores the dressed tensor and needs no solve per
 build. RI-J stores the raw tensor and solves with $V$ each build, which costs
 one $N_{\rm aux}$-vector solve.
 
-The dressing for K is the symmetric $M = U_s\lambda_s^{-1/2}U_s^{\mathsf T}$
-over the eigenpairs of $V$ above a cut; the subscript $s$ marks the kept
-("surviving") eigenpairs (`v_inv_sqrt_lindep`). $M^{\mathsf T}M$ is the
-pseudo-inverse of $V$ on the kept span. The cut is the nominal
+The dressing for K is either $M = L^{-1}$ ($V = LL^{\mathsf T}$) or the
+symmetric $M = U_s\lambda_s^{-1/2}U_s^{\mathsf T}$ over the eigenpairs of $V$
+above a cut; the subscript $s$ marks the kept ("surviving") eigenpairs
+(`v_inv_sqrt_lindep`). $M^{\mathsf T}M$ is the pseudo-inverse of $V$ on the
+kept span. The cut is the nominal
 $\tau = 10^{-10}$ (`DFK_LINDEP_THRESH`) unless an eigenvalue lies within
 $100\,\varepsilon\max|\lambda|$ of it; then
 `ferric-scf/src/df_k.rs::metric_lindep_cut` moves the cut to the nearest point
 in the window $[\tau/100, 100\tau]$ that is that far from every eigenvalue,
 so that two eigensolvers that differ by rounding keep the same modes. RI-J uses the full Cholesky inverse,
 so the two fits differ only when modes are cut.
+
+Which factor (`DfkMetricRoute`): Cholesky when it proves that the cut would
+keep every mode, the eigendecomposition otherwise
+(`ferric-scf/src/df_k.rs::certified_cholesky_factor`). From the factor,
+$1/\lambda_{\min} = \lVert L^{-1}\rVert_2^2 \le
+\min(\lVert L^{-1}\rVert_F^2, \lVert L^{-1}\rVert_1\lVert L^{-1}\rVert_\infty)$
+and $\max\lambda \le \lVert V\rVert_\infty$; Cholesky is taken when that
+lower bound on $\lambda_{\min}$ is at least twice $\tau + 100\,\varepsilon\lVert V\rVert_\infty$,
+which puts every eigenvalue above the cut with its margin. A metric with
+eigenvalues near or below the cut (erf metrics, near-linearly-dependent
+auxiliary sets), an indefinite one (`dpotrf` fails), and every DF-K built
+while a geometry task's gradient captures the metric eigendecomposition (the
+gradient reuses it) take the eigendecomposition; so does
+`FERRIC_DFK_METRIC=eigh`. The two factors fit the same span then and differ
+only in rounding (about $10^{-11}$ Ha in a converged SCF energy, measured on
+C8–C16 alkanes). A lower-triangular $M$ also halves the dressing: the GEMM of
+the $Q$ block $[q_a, q_b)$ skips the rows $P < q_a$, where $M$ is zero
+(the flop count of a triangular solve). On C16H34/def2-SVP the factor step
+fell from 1.5 s to 0.1 s and the dressing from 8.9 s to 7.1 s
+(4 threads, a shared machine).
 
 **Three contractions.** They give the same $K$ and differ in cost:
 
@@ -272,7 +293,7 @@ response form $G + G^{\mathsf T}$ is claim F1 of
 
 | Step | RI-J | RI-K | Split-RI-J |
 |---|---|---|---|
-| once per geometry | $(P\vert\mu\nu)$ packed, Cholesky of $V$ | $B = M(P\vert\mu\nu)$, $M$ the truncated $V^{-1/2}$ | Cholesky of $V$ only |
+| once per geometry | $(P\vert\mu\nu)$ packed, Cholesky of $V$ | $B = M(P\vert\mu\nu)$, $M = L^{-1}$ or the truncated $V^{-1/2}$ | Cholesky of $V$ only |
 | per build | $\gamma = (P\vert\mu\nu)\,w$, solve $Vc = \gamma$, $J = (\mu\nu\vert P)c$ | one of the three routes | recompute the integrals, contract $D$ and $c$ in Hermite form |
 | storage | $N_{\rm aux}N(N+1)/2$, f32 by default | $N_{\rm aux}N(N+1)/2$ f64 (packed; f32 with `ri_k_precision = "f32"`), in core or spilled | none |
 

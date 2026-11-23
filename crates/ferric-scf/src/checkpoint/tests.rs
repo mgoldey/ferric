@@ -82,7 +82,7 @@ fn fixed_process() -> ProcessSettings {
         gpu_mode: "Off".to_string(),
         libint_version: "2.7.2".to_string(),
         cargo_features: "mpi=false gpu=false cfmm-incomplete=false".to_string(),
-        env: vec![None; 8],
+        env: vec![None; 9],
     }
 }
 
@@ -840,6 +840,9 @@ fn identity_table() -> Vec<(&'static str, FieldClass, Mutator)> {
         }),
         ("FERRIC_DF_GUESS_TIGHT", StateSelecting, |s| {
             s.process.env[7] = Some("0".to_string());
+        }),
+        ("FERRIC_DFK_METRIC", Route, |s| {
+            s.process.env[8] = Some("eigh".to_string());
         }),
         ("use_sad_guess", StateSelecting, |s| {
             s.config.use_sad_guess = false;
@@ -1713,6 +1716,7 @@ fn each_process_setting_reaches_the_identity_from_the_environment() {
             "FERRIC_TERF_TABLE_DIR",
         ),
         ("FERRIC_DF_GUESS_TIGHT", "0", "FERRIC_DF_GUESS_TIGHT"),
+        ("FERRIC_DFK_METRIC", "eigh", "FERRIC_DFK_METRIC"),
     ] {
         let changed = key(&[(variable, value)]);
         let moved: Vec<&str> = changed

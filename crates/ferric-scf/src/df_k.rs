@@ -280,7 +280,9 @@ seam_flag!(
     skew_dfk_packed_unpack
 );
 
-/// DF-K exchange builder. Caches the V^{-1/2}-dressed 3-center source; the
+/// DF-K exchange builder. Caches the metric-dressed 3-center source
+/// `B = M (Q|μν)`, `MᵀM = V⁻¹` (`M = L⁻¹` or the truncated `V^{-1/2}`, see
+/// [`DfkMetricRoute`]); the
 /// per-chunk repack/GEMM scratch in `build` is allocated per rayon task
 /// (O(chunk·n²), negligible against the O(chunk·n³) GEMM it feeds).
 ///
@@ -295,7 +297,7 @@ seam_flag!(
 /// feature off) the band is `0..naux` and the reduction is skipped, so behavior
 /// is byte-identical to the serial path.
 pub struct DfK<'a> {
-    /// Budget-bounded dressed 3-center source B\[P,μ,ν\] = Σ_Q V^{-1/2}_{PQ} (Q|μν)
+    /// Budget-bounded dressed 3-center source B\[P,μ,ν\] = Σ_Q M_{PQ} (Q|μν)
     /// — holds only this rank's aux band `[band_p0, band_p1)`.
     dressed: ThreeIndexSource,
     /// Parallel context for the final cross-rank K reduction. `None` → serial /
@@ -308,6 +310,8 @@ pub struct DfK<'a> {
     /// The storage precision the dressed tensor actually has (after any
     /// fallback): `F32` only for the packed f32 tier.
     precision: RiKPrecision,
+    /// How the metric was factored for the dressing.
+    metric_route: DfkMetricRoute,
     /// Device-resident copy state (feature `gpu`); `Untried` until the first
     /// occupied-path build asks for it. See `crate::df_k_gpu`.
     #[cfg(feature = "gpu")]
@@ -564,6 +568,127 @@ pub(crate) fn warn_if_no_safe_gap(cut: &LindepCut, who: &str) {
     }
 }
 
+/// How [`DfK`] factored its auxiliary metric `V` for the dressing
+/// `B = M (Q|μν)`. Any `M` with `MᵀM = V⁻¹` gives the same `K = Σ_P B_P D B_P`;
+/// the two routes differ in cost and in rounding (about 1e-13 Ha in the SCF
+/// energy, measured), never in which modes are fitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DfkMetricRoute {
+    /// `M = L⁻¹` with `V = L Lᵀ` (LAPACK `dpotrf` + `dtrtri`): taken when the
+    /// factorization succeeds and its own bound on the smallest eigenvalue of
+    /// `V` proves that `metric_lindep_cut` would drop no mode
+    /// (`certified_cholesky_factor`). The dressing then skips the zero upper
+    /// triangle, half the flops of a dense `M`.
+    Cholesky,
+    /// `M = U_s λ_s^{-1/2} U_sᵀ` over the eigenpairs kept by
+    /// `metric_lindep_cut` (`dsyevd`): every metric the Cholesky route does
+    /// not certify (near-singular, e.g. erf), every DF-K built while a
+    /// geometry task's gradient captures the metric `eigh` (it reuses this
+    /// decomposition), and `FERRIC_DFK_METRIC=eigh`.
+    Eigh,
+}
+
+/// `FERRIC_DFK_METRIC`: `auto` (default; Cholesky when certified, else `eigh`)
+/// or `eigh` (always the eigendecomposition, the route before 2026-11-23).
+static DFK_METRIC: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_DFK_METRIC",
+    default: false,
+    parse: |s| match s.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(false),
+        "eigh" => Ok(true),
+        other => Err(format!("{other:?} is not one of auto, eigh")),
+    },
+    validate: ferric_core::config::accept_any,
+};
+
+thread_local! {
+    /// Test override of `FERRIC_DFK_METRIC` on this thread (`Some(true)` forces
+    /// `eigh`, `Some(false)` forces `auto`).
+    static DFK_METRIC_EIGH_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Force the metric route of every DfK built on THIS thread from now on
+/// (`Some(true)`: always `eigh`; `Some(false)`: `auto`), or return to
+/// `FERRIC_DFK_METRIC` (`None`). Test hook; thread-local, so parallel tests do
+/// not see each other's setting.
+#[doc(hidden)]
+pub fn set_dfk_metric_eigh_for_test(on: Option<bool>) {
+    DFK_METRIC_EIGH_OVERRIDE.with(|c| c.set(on));
+}
+
+fn metric_eigh_forced() -> Result<bool, FerricError> {
+    if let Some(on) = DFK_METRIC_EIGH_OVERRIDE.with(|c| c.get()) {
+        return Ok(on);
+    }
+    DFK_METRIC
+        .get()
+        .map(|r| r.value)
+        .map_err(|e| FerricError::General(format!("FERRIC_DFK_METRIC: {e}")))
+}
+
+/// Safety factor on the eigenvalue bound of [`certified_cholesky_factor`].
+const CHOLESKY_CERT_FACTOR: f64 = 2.0;
+
+/// `L⁻¹` for `V = L Lᵀ` when the Cholesky route is certified to fit exactly
+/// what the `eigh` route fits, else `None` (the caller takes `eigh`).
+///
+/// The `eigh` route keeps every mode iff [`metric_lindep_cut`] drops none,
+/// which holds when every eigenvalue is at least
+/// `τ + m` (`τ` = [`DFK_LINDEP_THRESH`], `m` = [`LINDEP_CUT_MARGIN_ROUNDINGS`]
+/// `· ε · max|λ|`): the nominal cut is then safe and below the spectrum. From
+/// the factor itself, `1/λ_min = ‖V⁻¹‖₂ = ‖L⁻¹‖₂² ≤ min(‖L⁻¹‖_F², ‖L⁻¹‖₁‖L⁻¹‖_∞)`
+/// and `max|λ| ≤ ‖V‖_∞`, so requiring the resulting lower bound on `λ_min` to
+/// be [`CHOLESKY_CERT_FACTOR`] times `τ + m` (with `‖V‖_∞` in `m`) proves no
+/// mode is dropped, with a margin far beyond the eigensolver's rounding. The
+/// bound is loose by at most a factor `naux`, so a well-conditioned metric whose
+/// `λ_min` lies within that factor of the cut also goes to `eigh` (correct,
+/// only slower). `dpotrf` failing (an indefinite metric) also returns `None`.
+pub(crate) fn certified_cholesky_factor(v: &Array2<f64>) -> Option<Array2<f64>> {
+    let linv = with_blas_threads(opt_in_blas_threads(), || {
+        ferric_core::linalg::cholesky_inverse_lower(v)
+    })
+    .ok()?;
+    let abs_row_max = |a: &Array2<f64>| {
+        a.rows()
+            .into_iter()
+            .map(|r| r.iter().map(|x| x.abs()).sum::<f64>())
+            .fold(0.0f64, f64::max)
+    };
+    let abs_col_max = |a: &Array2<f64>| {
+        a.columns()
+            .into_iter()
+            .map(|c| c.iter().map(|x| x.abs()).sum::<f64>())
+            .fold(0.0f64, f64::max)
+    };
+    let frob2: f64 = linv.iter().map(|x| x * x).sum();
+    let inv_norm = frob2.min(abs_row_max(&linv) * abs_col_max(&linv));
+    let lambda_min_lower = 1.0 / inv_norm;
+    let margin = LINDEP_CUT_MARGIN_ROUNDINGS * f64::EPSILON * abs_row_max(v);
+    let need = CHOLESKY_CERT_FACTOR * (DFK_LINDEP_THRESH + margin);
+    (lambda_min_lower.is_finite() && lambda_min_lower >= need).then_some(linv)
+}
+
+/// The dressing factor `M` of DF-K's metric and the route that produced it.
+fn dfk_metric_factor(
+    op: Operator,
+    dfbs: &PreparedBasis,
+    v: &Array2<f64>,
+) -> Result<(Array2<f64>, DfkMetricRoute), FerricError> {
+    // A geometry task's gradient reuses this DF-K's `eigh` (raw_handoff), so
+    // there the eigendecomposition is not extra work and keeps the energy
+    // and gradient on one decomposition.
+    if !metric_eigh_forced()? && !crate::raw_handoff::metric_capture_active() {
+        let t_st = ferric_core::timing::Stage::start("dfk:metric-cholesky");
+        let linv = certified_cholesky_factor(v);
+        t_st.end();
+        if let Some(linv) = linv {
+            return Ok((linv, DfkMetricRoute::Cholesky));
+        }
+    }
+    Ok((v_inv_sqrt_lindep(op, dfbs, v)?, DfkMetricRoute::Eigh))
+}
+
 fn v_inv_sqrt_lindep(
     op: Operator,
     dfbs: &PreparedBasis,
@@ -629,9 +754,11 @@ impl<'a> DfK<'a> {
     /// Build the DF-K cache from orbital and auxiliary bases (FULL aux range,
     /// serial / single-rank — byte-identical to the pre-MPI path).
     ///
-    /// Computes V^{-1/2} = U · diag(λ^{-1/2}) · U^T from the symmetric eigendecomp
-    /// of the (P|Q) Coulomb metric, then forms `B[P,μ,ν] = Σ_Q V^{-1/2}_{PQ} (Q|μν)`
-    /// via ThreeIndexSource::build_dressed, honouring `budget_bytes`.
+    /// Factors the (P|Q) metric as `M` with `MᵀM = V⁻¹` ([`DfkMetricRoute`]:
+    /// the Cholesky `L⁻¹` when certified, else the truncated symmetric
+    /// `V^{-1/2} = U · diag(λ^{-1/2}) · U^T`), then forms
+    /// `B[P,μ,ν] = Σ_Q M_{PQ} (Q|μν)` via ThreeIndexSource::build_dressed,
+    /// honouring `budget_bytes`.
     ///
     /// Stores the tensor at [`RiKPrecision::F64`]; [`DfK::new_with_precision`]
     /// chooses.
@@ -690,11 +817,11 @@ impl<'a> DfK<'a> {
         // spilling build already uses the whole budget.
         let mut raw = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
         let v = coulomb_metric_2c(op, dfbs)?;
-        let v_inv_sqrt = v_inv_sqrt_lindep(op, dfbs, &v)?;
+        let (factor, route) = dfk_metric_factor(op, dfbs, &v)?;
         Self::from_raw(
             &mut raw,
             dfbs,
-            v_inv_sqrt,
+            (factor, route),
             budget_bytes,
             ctx,
             (p0, p1),
@@ -737,7 +864,7 @@ impl<'a> DfK<'a> {
     ) -> Result<Self, FerricError> {
         let _ = obs;
         let v = coulomb_metric_2c(op, dfbs)?;
-        let v_inv_sqrt = v_inv_sqrt_lindep(op, dfbs, &v)?;
+        let (factor, route) = dfk_metric_factor(op, dfbs, &v)?;
         let naux = dfbs.nbasis();
         let (p0, p1) = match ctx {
             Some(c) => c.aux_band(naux),
@@ -746,7 +873,7 @@ impl<'a> DfK<'a> {
         Self::from_raw(
             raw,
             dfbs,
-            v_inv_sqrt,
+            (factor, route),
             budget_bytes,
             ctx,
             (p0, p1),
@@ -761,7 +888,7 @@ impl<'a> DfK<'a> {
     fn from_raw(
         raw: &mut ThreeIndexSource,
         dfbs: &PreparedBasis,
-        v_inv_sqrt: Array2<f64>,
+        (v_inv_sqrt, metric_route): (Array2<f64>, DfkMetricRoute),
         budget_bytes: usize,
         ctx: Option<&'a ParallelContext>,
         (p0, p1): (usize, usize),
@@ -856,9 +983,16 @@ impl<'a> DfK<'a> {
             ctx,
             budget_bytes,
             precision: stored,
+            metric_route,
             #[cfg(feature = "gpu")]
             device: crate::df_k_gpu::DeviceSlot::default(),
         })
+    }
+
+    /// How the auxiliary metric was factored for the dressing
+    /// ([`DfkMetricRoute`]).
+    pub fn metric_route(&self) -> DfkMetricRoute {
+        self.metric_route
     }
 
     /// Bytes of the packed dressed band of `band` aux rows at `precision`
@@ -1604,6 +1738,196 @@ mod tests {
             "DF-K vs direct-K max diff = {} too large",
             max_diff
         );
+    }
+
+    /// `DfK` on `op` with the metric route forced (`eigh`) or left to `auto`.
+    fn dfk_on_route(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        eigh: bool,
+    ) -> DfK<'static> {
+        set_dfk_metric_eigh_for_test(Some(eigh));
+        let dfk = DfK::new(op, obs, dfbs, usize::MAX);
+        set_dfk_metric_eigh_for_test(None);
+        dfk.unwrap()
+    }
+
+    /// `J_μν = Σ_P B_P,μν Σ_λσ B_P,λσ D_λσ` from the packed dressed rows.
+    fn j_from_packed(dfk: &DfK<'_>, d: &Array2<f64>) -> Array2<f64> {
+        let Some(DressedRows::F64(b)) = dfk.dressed_rows_for_test() else {
+            panic!("expected the packed f64 tier");
+        };
+        let n = d.nrows();
+        let mut w = Vec::with_capacity(b.ncols());
+        for mu in 0..n {
+            for nu in 0..=mu {
+                w.push(if mu == nu {
+                    d[(mu, nu)]
+                } else {
+                    d[(mu, nu)] + d[(nu, mu)]
+                });
+            }
+        }
+        let gamma = b.dot(&ndarray::Array1::from(w));
+        let jp = b.t().dot(&gamma);
+        let mut j = Array2::zeros((n, n));
+        let mut k = 0;
+        for mu in 0..n {
+            for nu in 0..=mu {
+                j[(mu, nu)] = jp[k];
+                j[(nu, mu)] = jp[k];
+                k += 1;
+            }
+        }
+        j
+    }
+
+    fn max_abs(a: &Array2<f64>) -> f64 {
+        a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
+    }
+
+    /// On a well-conditioned Coulomb metric `auto` takes the Cholesky route,
+    /// and its `L⁻¹`-dressed tensor gives the same J and K (density and
+    /// occupied paths) as the symmetric `V^{-1/2}` one to reassociation noise.
+    #[test]
+    fn cholesky_dressing_matches_the_eigh_dressing_on_j_and_k() {
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+        let mut chol = dfk_on_route(op, &obs, &dfbs, false);
+        let mut eigh = dfk_on_route(op, &obs, &dfbs, true);
+        assert_eq!(chol.metric_route(), DfkMetricRoute::Cholesky);
+        assert_eq!(eigh.metric_route(), DfkMetricRoute::Eigh);
+
+        // A symmetric, indefinite density (a guess-like D plus a perturbation)
+        // and a 5-column occupied factor.
+        let c = Array2::from_shape_fn((n, 5), |(i, j)| ((i * 7 + j * 3) as f64 * 0.37).sin());
+        let mut d = c.dot(&c.t());
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] += 0.01 * (((i + 2 * j) as f64).cos() + ((j + 2 * i) as f64).cos());
+            }
+        }
+
+        let (mut k_c, mut k_e) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        chol.build(&d, &mut k_c).unwrap();
+        eigh.build(&d, &mut k_e).unwrap();
+        let (dk, sk) = (max_abs(&(&k_c - &k_e)), max_abs(&k_e));
+        eprintln!("K density path: max|dK| = {dk:e}, max|K| = {sk:e}");
+        assert!(
+            sk > 1e-2 && dk <= 1e-12 * sk,
+            "K differs by {dk:e} (|K| {sk:e})"
+        );
+
+        let (mut k_c, mut k_e) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+        chol.build_from_occ(&c, &mut k_c).unwrap();
+        eigh.build_from_occ(&c, &mut k_e).unwrap();
+        let (dk, sk) = (max_abs(&(&k_c - &k_e)), max_abs(&k_e));
+        eprintln!("K occupied path: max|dK| = {dk:e}, max|K| = {sk:e}");
+        assert!(
+            sk > 1e-2 && dk <= 1e-12 * sk,
+            "K_occ differs by {dk:e} (|K| {sk:e})"
+        );
+
+        let (j_c, j_e) = (j_from_packed(&chol, &d), j_from_packed(&eigh, &d));
+        let (dj, sj) = (max_abs(&(&j_c - &j_e)), max_abs(&j_e));
+        eprintln!("J: max|dJ| = {dj:e}, max|J| = {sj:e}");
+        assert!(
+            sj > 1e-1 && dj <= 1e-12 * sj,
+            "J differs by {dj:e} (|J| {sj:e})"
+        );
+    }
+
+    /// The certificate refuses a positive definite metric whose smallest
+    /// eigenvalue the `eigh` route would cut (`dpotrf` succeeds there), and an
+    /// indefinite one, and accepts one safely above the cut.
+    #[test]
+    fn cholesky_certificate_refuses_a_metric_the_eigh_route_would_cut() {
+        let n = 6;
+        // A fixed orthogonal Q from the eigenvectors of a symmetric matrix.
+        let a = Array2::from_shape_fn((n, n), |(i, j)| ((i * j + i + j) as f64 * 0.7).sin());
+        let (_, q) = (&a + &a.t()).eigh(UPLO::Upper).unwrap();
+        let with_spectrum = |lam: &[f64]| {
+            let mut ql = q.clone();
+            for (k, &l) in lam.iter().enumerate() {
+                ql.column_mut(k).mapv_inplace(|x| x * l);
+            }
+            let v = ql.dot(&q.t());
+            (&v + &v.t()) * 0.5
+        };
+        let base = [3.0, 2.0, 1.5, 1.0, 0.5];
+        for (lmin, certified) in [
+            (1e-11, false), // below the cut: eigh drops it
+            (1e-10, false), // at the cut
+            (-1e-3, false), // indefinite: dpotrf fails
+            (1e-6, true),
+            (0.2, true),
+        ] {
+            let mut lam = base.to_vec();
+            lam.push(lmin);
+            let v = with_spectrum(&lam);
+            let got = certified_cholesky_factor(&v);
+            assert_eq!(got.is_some(), certified, "lambda_min {lmin:e}");
+            if let Some(linv) = got {
+                // L⁻¹ V L⁻ᵀ = I.
+                let id = linv.dot(&v).dot(&linv.t());
+                let err = max_abs(&(&id - &Array2::<f64>::eye(n)));
+                assert!(err < 1e-8, "L^-1 V L^-T - I = {err:e}");
+                assert!((0..n).all(|i| (i + 1..n).all(|j| linv[(i, j)] == 0.0)));
+            }
+            if lmin > 0.0 {
+                let (ev, _) =
+                    ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper).unwrap();
+                // Certified exactly when nothing would be dropped (on these spectra).
+                assert_eq!(metric_lindep_cut(&ev).n_dropped == 0, certified);
+            }
+        }
+    }
+
+    /// A near-singular metric (erf, whose smooth kernel leaves near-null modes
+    /// in a Coulomb-fitted aux basis) is not certified: `auto` falls back to
+    /// `eigh` and keeps exactly the modes the eigh route keeps, so its K is
+    /// that route's bit for bit.
+    #[test]
+    fn near_singular_metric_falls_back_to_eigh_with_the_same_kept_rank() {
+        let mol = Molecule::parse_xyz(
+            "4\nH2O+H\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\nH 0.93 0 -0.2600001\n",
+            0,
+            2,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        for op in [Operator::coulomb(), Operator::erf(0.33)] {
+            let v = coulomb_metric_2c(op, &dfbs).unwrap();
+            let (ev, _) =
+                ferric_core::linalg::eigh_dc(&v, ferric_core::linalg::Uplo::Upper).unwrap();
+            let cut = metric_lindep_cut(&ev);
+            eprintln!(
+                "{:?}: naux {}, lambda_min {:e}, eigh drops {}",
+                op.kind,
+                ev.len(),
+                ev[0],
+                cut.n_dropped
+            );
+            assert!(cut.n_dropped > 0, "{:?}: not near-singular", op.kind);
+            assert!(certified_cholesky_factor(&v).is_none());
+            let n = obs.nbasis();
+            let d = Array2::from_shape_fn((n, n), |(i, j)| 1.0 / (1.0 + (i + j) as f64));
+            let mut auto = dfk_on_route(op, &obs, &dfbs, false);
+            let mut eigh = dfk_on_route(op, &obs, &dfbs, true);
+            assert_eq!(auto.metric_route(), DfkMetricRoute::Eigh);
+            let (mut k_a, mut k_e) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+            auto.build(&d, &mut k_a).unwrap();
+            eigh.build(&d, &mut k_e).unwrap();
+            assert_eq!(k_a, k_e);
+        }
     }
 
     #[test]
