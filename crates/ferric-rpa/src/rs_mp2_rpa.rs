@@ -698,8 +698,7 @@ fn scan_impl(
                 dfbs,
                 op,
                 rhf,
-                &drpa_cfg,
-                panels.drpa,
+                (&drpa_cfg, panels.drpa),
             )?;
             Ok(r.e_rpa)
         };

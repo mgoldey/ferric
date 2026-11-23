@@ -1120,8 +1120,7 @@ pub fn run_pdep_rpa_from_intermediates(
         dfbs,
         op,
         rhf,
-        config,
-        config.memory_budget_bytes.into(),
+        (config, config.memory_budget_bytes.into()),
     )
 }
 
@@ -1130,7 +1129,6 @@ pub fn run_pdep_rpa_from_intermediates(
 /// planes beside the dRPA (the rs-mp2-rpa scan) passes what the budget leaves
 /// after them ([`budget::panel_budget_beside`]); everything else (the
 /// eigensolve, the stage-seam check) still reads `config`.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_pdep_rpa_from_intermediates_panelled(
     inter: &ferric_mp2::rimp2::RpaIntermediates,
     mol: &Molecule,
@@ -1138,8 +1136,7 @@ pub(crate) fn run_pdep_rpa_from_intermediates_panelled(
     dfbs: &PreparedBasis,
     op: Operator,
     rhf: &ScfResult,
-    config: &PdepRpaConfig,
-    freq: energy::PanelAllowance,
+    (config, freq): (&PdepRpaConfig, energy::PanelAllowance),
 ) -> Result<PdepRpaResult, FerricError> {
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
