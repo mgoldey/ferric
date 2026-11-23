@@ -16,25 +16,23 @@
 //! venv caveat is under "Python bindings from source" in
 //! `site/src/using/installation.md`.
 
-use ferric_cc::ccd::ccd as run_ccd_inner;
+use ferric_cc::ccd::ccd_on;
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::att_vv10::{
-    att_mp2_vv10, att_mp2_vv10_scan, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
+    att_mp2_vv10_on, att_mp2_vv10_scan_on, AttVv10Attenuator, AttVv10Config, AttVv10ScanArm,
     AttVv10SpinComponents,
 };
-use ferric_mp2::attenuated::{attenuated_ri_mp2, AttenuatedMp2Config};
-use ferric_mp2::double_hybrid::{mp2_double_hybrid, u_mp2_double_hybrid, DoubleHybridKind};
-use ferric_mp2::laplace::{
-    laplace_ri_mp2, laplace_sos_mp2_with_basis, SosFormulation, SosMp2Config,
-};
-use ferric_mp2::mp3::mp3_energy;
-use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
-use ferric_mp2::rimp2::{ri_mp2, RiMp2Config};
-use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
+use ferric_mp2::attenuated::{attenuated_ri_mp2_on, AttenuatedMp2Config};
+use ferric_mp2::double_hybrid::{mp2_double_hybrid_on, u_mp2_double_hybrid_on, DoubleHybridKind};
+use ferric_mp2::laplace::{laplace_ri_mp2_on, laplace_sos_mp2_on, SosFormulation, SosMp2Config};
+use ferric_mp2::mp3::mp3_energy_on;
+use ferric_mp2::oo_rimp2::{oo_ri_mp2_on, OoRiMp2Config};
+use ferric_mp2::rimp2::{ri_mp2_with_op_on, RiMp2Config};
+use ferric_mp2::scs::{scs_mp2_2terfc_on, scs_mp2_on, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_scf::ks_gradient::{ks_gradient_closed_with_exchange_on_grids, KsGradGrids};
 use ferric_scf::noise_floor::SolverFamily;
 use ferric_scf::optimize::OptimizeConfig;
@@ -50,7 +48,7 @@ use std::sync::Arc;
 // solvers; an open-shell molecule takes the spin-blocked `ferric_cc::u_ccsd`
 // and `ferric_cc::u_ccsd_t` (see `cc.rs`).
 use ferric_cc::ccsd_closed_shell::ccsd_closed_shell_on;
-use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell as run_ccsd_t_cs_inner;
+use ferric_cc::ccsd_t_closed_shell::ccsd_t_closed_shell_on;
 use ferric_cc::CcConfig;
 use ndarray::{Array2, Array3};
 use numpy::{PyArray1, PyArray2, PyArray3};
@@ -67,6 +65,8 @@ macro_rules! method_certificate_doc {
     };
 }
 
+mod errors;
+use errors::{_core_error_variants, _raise_core_error};
 #[macro_use]
 mod method_result;
 
@@ -138,8 +138,7 @@ impl PyMolecule {
     #[staticmethod]
     #[pyo3(signature = (s, charge=0, multiplicity=1))]
     fn from_xyz_string(s: &str, charge: i32, multiplicity: usize) -> PyResult<Self> {
-        let mol = Molecule::parse_xyz(s, charge, multiplicity)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let mol = Molecule::parse_xyz(s, charge, multiplicity).map_err(crate::errors::input_err)?;
         Ok(PyMolecule { inner: mol })
     }
     /// Build a molecule from arrays: `elements` holds one element symbol
@@ -161,7 +160,7 @@ impl PyMolecule {
         ghost: Option<Vec<bool>>,
     ) -> PyResult<Self> {
         let inner = molecule_from_arrays(&elements, &coords, units, charge, multiplicity, ghost)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+            .map_err(crate::errors::input_err)?;
         Ok(PyMolecule { inner })
     }
     /// Classical nuclear repulsion energy in Hartree.
@@ -397,8 +396,7 @@ impl PyBasisSet {
     /// `gto.M(..., cart=True)` (water/6-31G*: about 1.4 mHa otherwise).
     #[staticmethod]
     fn bundled(name: &str) -> PyResult<Self> {
-        let bs = basis::bundled(name)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let bs = basis::bundled(name).map_err(crate::errors::input_err)?;
         Ok(PyBasisSet { inner: bs })
     }
     /// Primary names of every bundled basis set (aliases such as
@@ -420,12 +418,10 @@ impl PyBasisSet {
     /// coefficients of NORMALISED primitives. Raises `ValueError` when the
     /// basis has no shells for `z`.
     fn shells(&self, z: i32) -> PyResult<Vec<(i32, bool, Vec<f64>, Vec<f64>)>> {
-        let shells = self.inner.for_element(z).ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "{}",
-                self.inner.missing_element_error(z)
-            ))
-        })?;
+        let shells = self
+            .inner
+            .for_element(z)
+            .ok_or_else(|| crate::errors::input_err(self.inner.missing_element_error(z)))?;
         Ok(shells
             .iter()
             .map(|s| (s.l, s.pure, s.exponents.clone(), s.coefficients.clone()))
@@ -446,8 +442,7 @@ impl PyBasisSet {
     /// is visible at the 1e-8 Ha level.
     #[staticmethod]
     fn from_bse_json(path: &str) -> PyResult<Self> {
-        let bs = basis::load_bse_json(path)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let bs = basis::load_bse_json(path).map_err(crate::errors::input_err)?;
         Ok(PyBasisSet { inner: bs })
     }
     /// Number of basis functions this set places on `mol` (spherical or
@@ -460,44 +455,34 @@ impl PyBasisSet {
     /// square). Builds no integrals.
     /// Raises `ValueError` when the basis does not cover an element of `mol`.
     fn n_functions(&self, mol: &PyMolecule) -> PyResult<usize> {
-        let prep = PreparedBasis::new(&mol.inner, &self.inner)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let prep = PreparedBasis::new(&mol.inner, &self.inner).map_err(crate::errors::input_err)?;
         Ok(prep.nbasis())
     }
 }
 
 // ── Helper ──
 
-fn make_err(e: impl std::fmt::Display) -> PyErr {
-    pyo3::exceptions::PyRuntimeError::new_err(format!("{e}"))
-}
-
-/// [`make_err`] for a [`ferric_core::FerricError`], keeping the typed
-/// refusal: `FerricError::Unsupported` (an option combination the method does
-/// not implement) becomes `NotImplementedError`, everything else
-/// `RuntimeError` as before.
-fn make_ferric_err(e: ferric_core::FerricError) -> PyErr {
-    match e {
-        ferric_core::FerricError::Unsupported { .. } => {
-            pyo3::exceptions::PyNotImplementedError::new_err(e.to_string())
-        }
-        other => make_err(other),
-    }
+/// Raise a failure as the `ferric` exception class for it (see `errors`).
+/// A [`ferric_core::FerricError`] is classified by variant; text is a
+/// `ComputationError`.
+/// Every class here was a `RuntimeError` (or a `NotImplementedError`, itself a
+/// `RuntimeError`) before the hierarchy existed, and still is.
+fn make_err<E: std::fmt::Display + 'static>(e: E) -> PyErr {
+    errors::core_or_computation(e)
 }
 
 /// `?`-friendly conversion of a method-crate `Result` into a `PyResult`
-/// with exactly the exception class and message of [`make_ferric_err`]
-/// (`NotImplementedError` for `FerricError::Unsupported`, `RuntimeError`
-/// otherwise). A crate-local extension trait because `From<FerricError> for
+/// with the exception class [`errors::kind_of`] picks for the variant (see
+/// `errors`) and the `Display` message. A crate-local extension trait because `From<FerricError> for
 /// PyErr` would break the orphan rule.
 pub(crate) trait IntoPyResult<T> {
-    /// Convert, mapping the error through [`make_ferric_err`].
+    /// Convert, classifying by variant (see `errors::from_core`).
     fn py(self) -> PyResult<T>;
 }
 
 impl<T> IntoPyResult<T> for Result<T, ferric_core::FerricError> {
     fn py(self) -> PyResult<T> {
-        self.map_err(make_ferric_err)
+        self.map_err(|e| errors::from_core(&e))
     }
 }
 
@@ -677,12 +662,12 @@ fn parse_cosx_grid(
     } else if let Ok((r, a, p)) = v.extract::<(usize, usize, String)>() {
         (r, a, Some(p))
     } else {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{name} must be (radial, angular) or (radial, angular, prune)"
         )));
     };
     ferric_scf::cosx_k::grid_from_parts(r, a, p.as_deref())
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{name}: {e}")))
+        .map_err(|e| crate::errors::input_err_msg(&e, format!("{name}: {e}")))
 }
 
 /// The `cosx_*` kwargs of `run_rhf` / `run_uhf` / `run_dft` (same names and
@@ -704,7 +689,7 @@ fn resolve_cosx_kwargs(
     // it (`parse_k_builder`) after this check, which came first before.
     let cosx = k_builder.is_some_and(ferric_scf::options::KBuilderKind::spells_cosx);
     if any && !cosx {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "cosx_grid / cosx_final_pass / cosx_final_grid / cosx_overlap_fit are only read with \
              k_builder=\"cosx\" (got k_builder={k_builder:?})"
         )));
@@ -717,7 +702,7 @@ fn resolve_cosx_kwargs(
         .map(|v| parse_cosx_grid("cosx_final_grid", v))
         .transpose()?;
     ferric_scf::cosx_k::apply_grid_knobs(&mut cfg, grid, cosx_final_pass, final_grid)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        .map_err(crate::errors::input_err)?;
     if let Some(fit) = cosx_overlap_fit {
         cfg.overlap_fit = fit;
     }
@@ -895,13 +880,13 @@ fn resolve_dft_grid_with_cut(
     let prune = match grid_prune {
         None => None,
         Some(s) => PruneScheme::parse_config_str(s)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?,
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("grid_prune: {e}")))?,
     };
     let weight_cut = match grid_weight_cut {
         None => None,
         Some(c) if c.is_finite() && c >= 0.0 => (c > 0.0).then_some(c),
         Some(c) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "grid_weight_cut = {c} is invalid: it must be a finite number >= 0 \
                  (e.g. 1e-14; 0 or None = no cutoff)"
             )))
@@ -933,18 +918,16 @@ fn resolve_dft_grid_with_cut(
         sized.weight_cut
     };
     if n_radial == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "grid_radial must be > 0",
-        ));
+        return Err(crate::errors::input_err("grid_radial must be > 0"));
     }
     if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "grid_angular = {n_angular} is not a supported Lebedev order \
              (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
         )));
     }
     if prune == Some(PruneScheme::Sgx) {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "grid_prune = \"sgx\" is the COSX exchange grid's scheme (cosx_grid=); the XC \
              grid takes \"none\", \"nwchem\", \"nwchem-radial\" or \"defgrid1/2/3\"",
         ));
@@ -952,14 +935,14 @@ fn resolve_dft_grid_with_cut(
     if matches!(prune, Some(PruneScheme::DefGrid(_)))
         && (grid_radial.is_some() || grid_angular.is_some())
     {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "grid_prune = \"defgrid1/2/3\" fixes the radial and angular grid; \
              remove grid_radial / grid_angular",
         ));
     }
     if let Some(scheme) = prune {
         validate_xc_scheme(scheme, n_angular)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?;
+            .map_err(|e| crate::errors::input_err_msg(&e, format!("grid_prune: {e}")))?;
     }
     Ok(Some(ferric_dft::grid::AtomicGridConfig {
         n_radial,
@@ -999,13 +982,10 @@ fn build_pcm_config(
     };
     let cfg = if let Ok(eps) = obj.extract::<f64>() {
         ferric_pcm::PcmConfig::with_epsilon(eps)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("solvent: {}", msg(e))))?
+            .map_err(|e| crate::errors::input_err(format!("solvent: {}", msg(e))))?
     } else if let Ok(name) = obj.extract::<String>() {
         ferric_pcm::PcmConfig::for_solvent(&name).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "solvent: {} (e.g. solvent=78.4)",
-                msg(e)
-            ))
+            crate::errors::input_err(format!("solvent: {} (e.g. solvent=78.4)", msg(e)))
         })?
     } else {
         return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1015,9 +995,9 @@ fn build_pcm_config(
     let cfg = match lebedev_order {
         // Checked here so a bad order is a ValueError naming the kwarg, not a
         // RuntimeError from deep inside RHF setup.
-        Some(order) => cfg.with_lebedev_order(order).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("pcm_lebedev_order: {}", msg(e)))
-        })?,
+        Some(order) => cfg
+            .with_lebedev_order(order)
+            .map_err(|e| crate::errors::input_err(format!("pcm_lebedev_order: {}", msg(e))))?,
         None => cfg,
     };
     Ok(Some(cfg))
@@ -1030,8 +1010,7 @@ fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavo
     use ferric_scf::diis::DiisFlavor;
     match diis {
         None => Ok(DiisFlavor::Pulay),
-        Some(s) => DiisFlavor::parse_config_str(s)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+        Some(s) => DiisFlavor::parse_config_str(s).map_err(crate::errors::input_err),
     }
 }
 
@@ -1041,7 +1020,7 @@ fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavo
 fn parse_ri_j_precision(s: Option<&str>) -> PyResult<Option<ferric_scf::df_j::RiJPrecision>> {
     s.map(ferric_scf::df_j::RiJPrecision::parse_config_str)
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(crate::errors::input_err)
 }
 
 /// The geometry/frequency entry points' (`run_optimize*`, `run_frequencies`,
@@ -1064,7 +1043,7 @@ fn parse_guess(guess: Option<&str>) -> PyResult<bool> {
         None => Ok(true),
         Some(s) => ferric_scf::guess::InitialGuess::parse_config_str(s)
             .map(|g| g.use_sad_guess())
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+            .map_err(crate::errors::input_err),
     }
 }
 
@@ -1076,13 +1055,14 @@ fn parse_guess_basis(
     guess_basis: Option<&str>,
     guess_projection: Option<&str>,
 ) -> PyResult<Option<ferric_scf::basis2::GuessBasis>> {
-    let bad = |e: String| pyo3::exceptions::PyValueError::new_err(e);
+    let bad = |e: String| crate::errors::input_err(e);
     match (guess_basis, guess_projection) {
         (None, None) => Ok(None),
         (None, Some(_)) => Err(bad("guess_projection is set but guess_basis is not".into())),
         (Some(b), p) => ferric_scf::basis2::GuessBasis::bundled(b, p.unwrap_or("fock"))
             .map(Some)
-            .map_err(|e| bad(e.to_string())),
+            // Keep the `FerricError` so an unknown basis is a `BasisError`.
+            .map_err(crate::errors::input_err),
     }
 }
 
@@ -1093,7 +1073,7 @@ fn spin_counts(mol: &Molecule, who: &str) -> PyResult<(usize, usize)> {
     let nelec = mol.nelec() as i64;
     let two_s = mol.multiplicity as i64 - 1;
     if two_s < 0 || nelec < two_s || (nelec - two_s) % 2 != 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "{who}: {nelec} electrons cannot have multiplicity {}",
             mol.multiplicity
         )));
@@ -1118,7 +1098,7 @@ fn refuse_dm0_with_guess(
         (None, Some(_)) => "guess_basis",
         (None, None) => return Ok(()),
     };
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "{who}: dm0 and {other} both set the starting point; pass one of them"
     )))
 }
@@ -1136,8 +1116,8 @@ fn parse_mom_reference(
     let Some(value) = value else {
         return Ok(None);
     };
-    let reference = ferric_scf::mom::MomReference::parse_config_str(value)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let reference =
+        ferric_scf::mom::MomReference::parse_config_str(value).map_err(crate::errors::input_err)?;
     // The rule lives in `MomReference::check_initial`; this layer only words
     // either conflict in kwarg terms (one message naming both kwargs).
     reference
@@ -1146,7 +1126,7 @@ fn parse_mom_reference(
             stability_descent.unwrap_or(false),
         )
         .map_err(|_conflict| {
-            pyo3::exceptions::PyValueError::new_err(format!(
+            crate::errors::input_err(format!(
                 "{who}: mom_reference=\"initial\" applies MOM from the first iteration and \
                      holds the starting occupation; pass neither mom_after_iter nor \
                      stability_descent"
@@ -1372,17 +1352,16 @@ fn parse_saddle_hessian(
     delta: Option<f64>,
 ) -> PyResult<ferric_scf::frequencies::HessianMethod> {
     use ferric_scf::frequencies::HessianMethod;
-    let method = HessianMethod::parse_config_str(hessian)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let method = HessianMethod::parse_config_str(hessian).map_err(crate::errors::input_err)?;
     if method == HessianMethod::AnalyticMovingGrid {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+        return Err(crate::errors::input_err(
             "hessian=\"analytic-moving-grid\" is not available in run_saddle as an explicit \
              value; \"auto\" selects the moving-grid Kohn-Sham Hessian wherever it applies \
              (use \"fd\", \"auto\" or \"analytic\")",
         ));
     }
     if delta.is_some() && method != HessianMethod::FiniteDifference {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "delta= is the finite-difference displacement and is ignored by an \
              analytic Hessian; it is only valid with hessian=\"fd\" (got \
              hessian={hessian:?})"
@@ -1458,7 +1437,7 @@ fn run_saddle(
 
     if let Some(t) = trust_radius {
         if !(t.is_finite() && t > 0.0) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "trust_radius must be finite and > 0 (got {t})"
             )));
         }
@@ -1476,7 +1455,7 @@ fn run_saddle(
     // reference and return a confident answer for a state that does not exist.
     // Refuse rather than silently choosing the wrong physics.
     if m.multiplicity != 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_saddle currently supports closed-shell (multiplicity = 1) \
              references only; got multiplicity = {}. Both the gradient and the \
              Hessian callbacks are restricted, so an open-shell request would \
@@ -1727,7 +1706,7 @@ fn run_irc(
     // below is `solve_rhf` plus a closed-shell gradient, so an open-shell
     // request would be answered with a closed-shell reference.
     if m.multiplicity != 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "run_irc currently supports closed-shell (multiplicity = 1) \
              references only; got multiplicity = {}.",
             m.multiplicity
@@ -1894,6 +1873,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ferric_core::INTERRUPT.store(true, std::sync::atomic::Ordering::SeqCst);
     });
 
+    errors::register(m)?;
     m.add_class::<PyMolecule>()?;
     m.add_class::<PyBasisSet>()?;
     add_rhf_result_classes(m)?;
@@ -1953,6 +1933,13 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_build_identity(m)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(_scf_refused, m)?)?;
+    m.add_function(wrap_pyfunction!(_raise_core_error, m)?)?;
+    m.add_function(wrap_pyfunction!(_core_error_variants, m)?)?;
+    // Test hooks: reachable as `ferric.ferric._raise_core_error`, not part of the
+    // `ferric` namespace (`from .ferric import *` follows `__all__`).
+    for hook in ["_raise_core_error", "_core_error_variants"] {
+        m.index()?.call_method1("remove", (hook,))?;
+    }
     m.add_function(wrap_pyfunction!(run_rhf_gamma, m)?)?;
     m.add_class::<PyGammaRhfResult>()?;
     pbc::register(m)?;

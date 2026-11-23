@@ -50,6 +50,7 @@ use ferric_scf::engine_pool::EnginePool;
 use ferric_scf::response_jk::ResponseJk;
 use ferric_scf::result::DfJkRoute;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::PreparedAux;
 use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
 use std::cell::RefCell;
@@ -1473,6 +1474,31 @@ fn integral_response_kernel(
     );
     acc.stop_nested(tok);
     g
+}
+
+/// [`oo_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn oo_ri_mp2_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    config: &OoRiMp2Config,
+    ext: Option<&ExternalPotential>,
+) -> Result<OoRiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    oo_ri_mp2(
+        sys.mol(),
+        sys.basis(),
+        aux.basis(),
+        sys.op(),
+        sys.bounds(),
+        rhf,
+        config,
+        ext,
+    )
 }
 
 /// Run OO-RI-MP2.

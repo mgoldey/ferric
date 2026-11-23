@@ -40,6 +40,7 @@
 //! `wiki/amplitude-threshold-drpa.md`) — that is not a property of the
 //! threshold. Closed-shell, library-only.
 
+use ferric_scf::PreparedAux;
 use ndarray::{s, Array2, Array4};
 
 use ferric_core::basis::BasisSet;
@@ -261,6 +262,29 @@ fn unflatten_blocks(flat: &Array2<f64>, shapes: &[(usize, usize)]) -> Vec<Array2
     out
 }
 
+/// [`amplitude_drpa`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn amplitude_drpa_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    cfg: &AmplitudeDrpaConfig,
+) -> Result<AmplitudeDrpaResult, FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    amplitude_drpa(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        cfg,
+    )
+}
+
 /// Amplitude-threshold dRPA with the VV-HV space built internally.
 pub fn amplitude_drpa(
     mol: &Molecule,
@@ -331,6 +355,31 @@ pub fn amplitude_drpa_scan(
         )?);
     }
     Ok(out)
+}
+
+/// [`amplitude_drpa_scan_timed`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `rhf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+pub fn amplitude_drpa_scan_timed_on(
+    aux: &PreparedAux<'_>,
+    rhf: &ScfResult,
+    base_cfg: &AmplitudeDrpaConfig,
+    eps_list: &[f64],
+) -> Result<(Vec<AmplitudeDrpaResult>, f64, Vec<f64>), FerricError> {
+    let sys = aux.system();
+    aux.check_restricted_reference(rhf)?;
+    amplitude_drpa_scan_timed(
+        sys.mol(),
+        sys.basis(),
+        sys.basis_set(),
+        aux.basis(),
+        sys.op(),
+        rhf,
+        base_cfg,
+        eps_list,
+    )
 }
 
 /// [`amplitude_drpa_scan`] with wall-clock instrumentation: also returns

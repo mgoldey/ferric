@@ -105,11 +105,49 @@ ferric-core
   (`CliError::msg` / `verbatim` / `usage`; there is no `From<String>`, so a
   site cannot get a prefix by accident) and never prints the error itself.
 - **Python:** convert a `FerricError` with the crate-local `IntoPyResult`
-  extension trait (`.py()?`), not a fresh `map_err` per call site. A blanket
-  `From<FerricError> for PyErr` is not possible (orphan rule). Older
-  `map_err(make_err)` sites migrate as their files are touched. Exception
-  classes only ever become narrower subclasses of the class raised today;
-  they are never swapped.
+  extension trait (`.py()?`) or `make_err`, not a fresh `map_err` per call
+  site. A blanket `From<FerricError> for PyErr` is not possible (orphan
+  rule). Both end in `errors::from_core`, the one place that decides the
+  exception class (`ferric-python/src/errors.rs`). Exception classes only
+  ever become narrower subclasses of the class raised today; they are never
+  swapped. Every class derives from `ferric.FerricError(Exception)` and from
+  the builtin it raised before, so `except RuntimeError` / `ValueError` /
+  `NotImplementedError` handlers are unchanged:
+
+  | class | also | raised for |
+  |---|---|---|
+  | `ConvergenceError` | `RuntimeError` | `ScfConvergence`, `Convergence` (typed only; also the orbital-optimisation gradient refusal) |
+  | `BasisError` | `InputError`, `RuntimeError` | `Basis` (unknown bundled name, unparsable or non-covering basis/ECP); both builtins because `BasisSet.bundled` / `n_functions` raised `ValueError` and the `run_*` drivers `RuntimeError` |
+  | `NumericalError` | `RuntimeError` | `Lapack` |
+  | `MemoryBudgetError` | `RuntimeError` | `MemoryExhausted` (typed only: `ferric-core`'s `check_alloc` returns `General`, so it is a `ComputationError`) |
+  | `UnsupportedError` | `NotImplementedError` | `Unsupported` |
+  | `ComputationError` | `RuntimeError` | every other `FerricError` (`General`, `Io`, `Libint`, `XyzParse`) and binding-level runtime failures |
+  | `InputError` | `ValueError` | binding-level invalid arguments (`errors::input_err`); a core error passed to it is a `BasisError` if it is `Basis`, else an `InputError` whatever its variant (these sites raised `ValueError`) |
+  | periodic drivers | `ValueError` | `pbc.rs::refusal_text` maps `General` and `MemoryExhausted` to `InputError` (`ValueError`, as before) and everything else through `from_core` with the `run_x:` prefix |
+
+  `General` still carries invalid-configuration text (it is a string
+  variant), so those stay a `ComputationError`; only a typed variant can be
+  told apart reliably. `TypeError`/`KeyError`/`OSError` raised by argument
+  extraction or the file helpers stay plain, as does anything raised from
+  pure Python. The classes are built with `type()` at module init (pyo3's
+  `create_exception!` takes one base), carry `__module__ = "ferric"` and are
+  module attributes, so they pickle. Messages are unchanged.
+
+  The decision is `FerricError::category()` (`ErrorCategory`, an exhaustive
+  match in ferric-core) mapped by `errors::kind_of`, so a new variant cannot
+  be added without choosing its class; `FerricError::samples` (one value per
+  variant) feeds the `ferric._raise_core_error` test hook and a unit test.
+  `tests/test_exception_sites_are_typed.py` fails on a new bare
+  `PyValueError::new_err` / `PyRuntimeError::new_err` outside a short
+  allowlist (the GPU/precision settings, `set_blas_threads`, a libint test
+  hook).
+
+  **Which variant to return (method authors):** return `Convergence` /
+  `ScfConvergence`, `MemoryExhausted`, `Unsupported` (`FerricError::unsupported`)
+  or `Basis` for those failures, never `General` with a descriptive string:
+  only the typed variant reaches Python as `ConvergenceError`,
+  `MemoryBudgetError`, `UnsupportedError` or `BasisError`. `General` ends up
+  as `ComputationError`.
 
 ## Python API compatibility
 
@@ -144,10 +182,12 @@ keyword arguments through `**kwargs` and catches exceptions by class, so:
   drivers and the CLI's molecular run functions go through it (roadmap
   items 8, 8b and 8c), and the system owns its screening (its solve
   methods refuse a config whose screening is not `PreparedSystem::screening`). The
-  frontend-facing drivers of the CAS, OP-MP3, RI-MP2, CC, GW, PDEP-RPA and
-  TDDFT families take `&PreparedSystem` or `&PreparedAux`; most kernels
-  underneath still take a loose `&Molecule` and `&PreparedBasis`, so the
-  types do not enforce the invariant there yet (item 8d).
+  frontends reach the correlated kernels only through `*_on` entry points
+  taking `&PreparedAux` or `&PreparedSystem`, which also check the
+  reference SCF result against the system (item 8d; `PreparedAux` no
+  longer dereferences to its fitting basis). The loose kernels under them
+  (`&Molecule`, `&PreparedBasis`, ...) stay public for tests, other crates
+  and the per-geometry gradient paths.
 - **Units (target):** newtypes at API boundaries only (`Bohr`/`Angstrom` on
   molecule constructors and accessors, `Hartree` on result energies), with
   kernels keeping raw `f64` and arrays. No such newtypes exist yet. Today the
@@ -198,6 +238,18 @@ Done:
    `RhfConfig` literal), removing the hand-kept "CLI and Python agree"
    parity. It is also the template for 12: a `Result<_, CliError>`
    function with one `.or_exit()` at the call site.
+10. The Python exception hierarchy described under Errors (`FerricError`
+    root; `ConvergenceError`, `BasisError`, `NumericalError`,
+    `MemoryBudgetError`, `UnsupportedError`, `ComputationError`,
+    `InputError`), all also subclasses of the builtin they raised before.
+    Follow-ups: `General` cannot be split further until invalid-option
+    failures get a typed variant (item 11e's `OptionError`); `check_alloc`
+    in `ferric-core/src/memory.rs` returns `General` and should return
+    `MemoryExhausted` (it changes the message prefix, so it needs its own
+    PR). `BasisSet.n_functions` raises `BasisError`; `from_bse_json` raises
+    `BasisError` for malformed JSON and `InputError` for an unreadable file.
+    `ferric.qcschema.run` now classifies by these classes (a driver basis
+    failure is `input_error`, not `execution_error`).
 9a. `energy`/`total_energy` aliases on every SCF result class (molecular,
     CDFT and periodic), so callers no longer branch on the result type.
 -  API snapshot coverage extends to the pure-Python submodules
@@ -354,10 +406,13 @@ Done:
       through `PrepareOptions`.
     - `ferric_ci::driver::rhf_start_prepared` is `rhf_start` again.
     - Drivers taking the system: `ferric_ci::driver::{nevpt2_on_rhf,
-      casscf_on_rhf, casci_on_rhf}` (`&PreparedSystem`);
+      casscf_on_rhf, casci_on_rhf}` (`&PreparedSystem`; renamed
+      `nevpt2_on` / `casscf_on` / `casci_on` in 8d);
       `opmp3_driver::{opmp3_scf, opmp3_on_reference, run_opmp3}`
-      (`&PreparedSystem`, `Opmp3Integrals::Ri(&PreparedAux)`);
-      `local_opmp3::{local_opmp3_on_reference, run_local_opmp3}`,
+      (`&PreparedSystem`, `Opmp3Integrals::Ri(&PreparedAux)`;
+      `opmp3_on_reference` renamed `opmp3_on` in 8d);
+      `local_opmp3::{local_opmp3_on_reference, run_local_opmp3}` (renamed
+      `local_opmp3_on` in 8d),
       `rimp2::{ri_mp2_on, ri_mp2_fitted_on}`, `u_rimp2::u_ri_mp2_on`,
       `ccsd_closed_shell_on`, `u_ccsd_on`, `ferric_gw::run_gw_on`,
       `ferric_rpa::run_pdep_rpa_on`, `ferric_tddft::run_tddft_on`
@@ -446,6 +501,130 @@ Done:
       by the open-shell entry (`OpenShellEntry`, `run_open_ks`).
     - `ferric.pyi`: the `run_dft` / `run_ksdft` `symmetry=True` overloads
       type `with_gradient` as `Literal[False]` and `dispersion` as `None`.
+
+8d. (first part) The correlated kernels behind `*_on` entry points,
+    results and messages bitwise unchanged (compared against an origin/main
+    build: 172 CLI inputs, the repository examples plus error and new
+    local / open-shell / NPZ-export cases, identical stdout, stderr and
+    exit status after masking timings; 152 Python calls, energies and
+    gradients as hex floats and arrays by hash, identical except timing
+    fields, errors identical in class and message):
+    - `PreparedSystem::check_reference(&ScfResult)` (and
+      `PreparedAux::check_reference`, the same on `aux.system()`): the one
+      check that a reference SCF result fits the system, a
+      `FerricError::General` ("the reference SCF result does not belong to
+      this system: ...") naming what does not fit: the β fields match
+      `ScfResult::spin` (`Restricted`: no β MOs or orbital energies;
+      `Unrestricted`: both; `RestrictedOpen`: both or neither), the total
+      density is `nbasis × nbasis`, each spin's MO coefficients are
+      `nbasis × nbasis` (every solver, linear-dependency removal included,
+      pads the MO space to the basis size, and the fixed-width kernels size
+      their virtual space from `nbasis`) with one orbital energy per MO,
+      and the occupied orbitals of the molecule's electron count and
+      multiplicity fit. Two narrower checks sit on top of it:
+      `check_restricted_reference` (the closed-shell entries whose kernels
+      read `ScfResult::mos_r` and the other restricted accessors, which
+      assert the spin: the restricted `ri_mp2*`, MP3, OO-MP2, the double
+      hybrid, ω-RI-CDD, Laplace, the RI-MP2 gradient, the amplitude
+      LMP2 / dRPA / LinLCCD, CCD, LinLCCD, PDEP-RPA and the RPA gradient)
+      and `check_virtual_orbitals` (the entries whose kernels read the
+      lowest virtual orbital: ω-RI-CDD, Laplace, PDEP-RPA, RS-MP2-RPA, and
+      for closed-shell references GW, BSE-TDA and RPAx). The entries that
+      already refused another spin with their own message (attenuated
+      MP2-V, CCSD, GW, BSE, RPAx) keep it. ferric-cli's
+      `on_entries_never_panic` sweeps every reference-taking entry over
+      UHF, ROHF, rectangular-MO, He / STO-3G and H-atom UHF references
+      under `catch_unwind`. `PreparedSystem::check_closed_shell_orbitals(mos, eps)` is the
+      per-spin part for orbitals that are not an `ScfResult` ("the
+      orbitals do not belong ..."). Every `*_on` entry that takes a
+      reference calls one of them first: the new ones below (with
+      `oo_ri_mp2_gradient_on` checking `OoRiMp2Result::{mos,
+      orbital_energies}`) and `ri_mp2_fitted_on` (so `ri_mp2_on`),
+      `u_ri_mp2_on`, `ccsd_closed_shell_on`, `u_ccsd_on`, `run_gw_on`,
+      `run_pdep_rpa_on`, `run_tddft_on`, `opmp3_on`, `local_opmp3_on`,
+      `casscf_on`, `casci_on`, `nevpt2_on`. The two that take none,
+      `aux_route_charge_bytes_on` (a budget estimate) and
+      `run_wb97x_l_v_on` (it solves its own reference), check nothing.
+      `compute_pdep_properties` checks too and returns a typed
+      `PropertyBundleError { Config(String), Reference(FerricError) }`: a
+      mismatch is a run error (CLI `error: ...`, Python `RuntimeError`),
+      while the `c6_source` / `c6_partition` errors keep their text and
+      class (CLI `config error: [rpa] ...`, Python `ValueError`). So
+      `ri_mp2_on(&a_aux, &b_rhf, ..)` with another basis size is an error
+      where the loose kernel panics slicing the MOs (the
+      `on_entries_refuse_a_reference_of_another_system` tests in ferric-mp2,
+      ferric-cc, ferric-gw, ferric-rpa, ferric-ci and ferric-tddft, the
+      mp2 one pinning that the loose `ri_mp2` panics on the same pair, and
+      ferric-rpa's `a_reference_of_another_system_is_a_reference_error`
+      for the property bundle). An
+      `ScfResult` carries no molecule, so a reference of another molecule
+      or geometry in a basis of the same size passes. The check cannot be
+      reached from Python or the CLI: every binding and CLI arm solves its
+      reference on the system it then passes, and no Python driver takes a
+      result object as its reference; so no Python test.
+    - New entries, each `<kernel>_on(aux, [op,] reference, ..)` next to its
+      kernel: ferric-mp2 `amplitude_lmp2_on`, `amplitude_lmp2_direct_on`,
+      `mp3_energy_on`, `oo_ri_mp2_on`, `u_oo_ri_mp2_on`,
+      `oo_ri_mp2_gradient_on`, `attenuated_ri_mp2_on`, `ri_mp2_with_op_on`,
+      `u_ri_mp2_with_op_on`, `ri_mp2_spin_components_any_on`,
+      `ri_mp2_spin_components_fitted_on`, `scs_mp2_on`,
+      `scs_mp2_2terfc_on`, `att_mp2_vv10_on`, `u_att_mp2_vv10_on`,
+      `att_mp2_vv10_scan_on`, `mp2_double_hybrid_on`,
+      `u_mp2_double_hybrid_on`, `omega_ri_cdd_mp2_on`, `laplace_ri_mp2_on`,
+      `laplace_sos_mp2_on`, `rimp2_gradient_analytical_on`,
+      `amplitude_drpa_on`, `amplitude_drpa_scan_timed_on`; ferric-cc
+      `ccd_on`, `linlccd_on`, `amplitude_linlccd_on`,
+      `ccsd_t_closed_shell_on`, `u_ccsd_t_on`, `eom_ccsd_singlets_on`,
+      `run_wb97x_l_v_on`; ferric-rpa `run_pdep_rpa_fitted_on`,
+      `run_u_pdep_rpa_fitted_on`, `run_pdep_rpa_energy_on`,
+      `aux_route_charge_bytes_on`, `rs_mp2_lr_rpa_on`,
+      `rs_mp2_lr_rpa_scan_on`, `rpa_analytic_gradient_on`; ferric-gw
+      `run_u_gw_on`, `run_bse_tda_on`, `run_rpax_static_polarizability_on`.
+      `property_bundle::PropertyInputs` takes `aux` in place of its loose
+      context, molecule, bases and operator.
+    - The CLI's correlated arms (`ferric-cli/src/lib.rs`, with `RsScanCtx`
+      carrying the `PreparedAux`) and the Python drivers (mp2.rs, cc.rs,
+      gw.rs, rpa.rs, dft.rs, omega_ri.rs, pdep_properties.rs' `BundleJob`)
+      call them, and `impl Deref for PreparedAux` is gone: a loose fitting
+      kernel is reached through `PreparedAux::basis()` only.
+    - Naming: `<kernel>_on` takes the `&PreparedAux` (or, for the CAS and
+      OP-MP3 drivers that need no fitting basis, the `&PreparedSystem`)
+      first and reads the molecule, orbital basis, its basis set, bounds,
+      context and Coulomb operator from the system; the reference result
+      is an argument and is checked; arguments after it keep the kernel's
+      order, except that `run_u_gw_on` takes `vxc_diag` right after the
+      reference, as `run_gw_on` does. An entry takes an `op` (right after
+      `aux`) only where a caller runs the kernel on another correlation
+      operator: `amplitude_lmp2_on` / `amplitude_lmp2_direct_on` (the
+      attenuated local MP2), `ri_mp2_spin_components_any_on`, and
+      `ri_mp2_with_op_on` / `u_ri_mp2_with_op_on` (terfc RI-MP2). The
+      rule: an op-taking entry ends `_with_op_on` exactly when a Coulomb
+      `_on` entry of the same kernel exists (`ri_mp2_on`, `u_ri_mp2_on`),
+      and plain `_on` otherwise. The entry is the kernel name plus `_on`,
+      `run_` prefix and all, except `laplace_sos_mp2_on` for
+      `laplace_sos_mp2_with_basis` (the basis set it adds comes from the
+      system). Renamed to fit:
+      `casscf_on_rhf`, `casci_on_rhf`, `nevpt2_on_rhf` → `casscf_on`,
+      `casci_on`, `nevpt2_on`; `opmp3_on_reference` → `opmp3_on`;
+      `local_opmp3_on_reference(obs_bs, scf, aux, ..)` →
+      `local_opmp3_on(aux, scf, ..)` and `run_local_opmp3` without
+      `obs_bs`; the loose `rpa_analytic_gradient_on(mol, obs, dfbs, op,
+      bounds, ..)` → `rpa_analytic_gradient_from_rhf`, the name now being
+      the entry. No Python name or signature changes.
+    - `PreparedSystem::basis_set()`: the system keeps a copy (a clone at
+      `prepare`; an `Arc<BasisSet>` would need callers to hand one in, as
+      `EcpMolecule` borrows the set) of the `BasisSet` it was prepared from, which the entries of the kernels that
+      read shells by element (the amplitude-threshold LMP2 / LinLCCD /
+      dRPA, MP2-V, Laplace SOS-MP2, local OP-MP3, the property bundle) read
+      instead of a loose `obs_bs`.
+    - Not done here: the loose kernels stay `pub` (integration tests,
+      benches, ferric-rpa / ferric-gw calling ferric-mp2 / ferric-rpa
+      kernels, and the per-geometry gradient paths use them; moving those
+      tests onto `*_on` entries would roughly double this diff), and
+      ferric-mp2's `total_*_gradient_on` / `optimize_geometry_*_on` keep
+      their names although `_on` there means "with the reference on the
+      J/K route `scf_jk`": they take loose `BasisSet`s and prepare per
+      geometry, and have ~110 call sites outside ferric-mp2.
 
 12. CLI run functions return `Result<_, CliError>`. `ferric_cli::try_run`
     is the whole CLI in-process: it returns `Ok(())` for a finished run and
@@ -582,21 +761,12 @@ Done:
 
 Next, each as its own PR following the patterns above:
 
-8d. What 8c left loose: (a) the kernels under the drivers still take a
-    loose `(mol, prep, dfbs, op)`: `run_casscf`, `run_cas_ci`, `sc_nevpt2`,
-    and the RI kernels without a `PreparedAux` entry point (CCD, LinLCCD,
-    CCSD(T), EOM-CCSD, MP3, OO-RI-MP2, SCS/Laplace/attenuated/terfc MP2,
-    MP2-V, RS-MP2-RPA, BSE-TDA, TDHF polarizability, the fitted and
-    energy-only PDEP-RPA routes, the analytic gradients), so
-    `PreparedAux: Deref<Target = PreparedBasis>` stays: the CLI's
-    correlated arms (37 sites in `ferric-cli/src/lib.rs`) and the Python
-    drivers in `mp2.rs`, `cc.rs`, `gw.rs`, `rpa.rs`, `dft.rs`,
-    `omega_ri.rs` pass `&aux` to them; (b) the ferric-scf solvers take
-    loose arguments, and the CLI arms, the Python block helpers,
-    `run_qmmm` and `run_cdft` call them with the system's pieces and a
-    config of their own, so the system's screening check does not cover
-    them (moving them onto the system's methods would turn a config whose
-    screening differs from `[scf] screening` into an error); (c)
+8d. (rest) What 8c and the first part of 8d left loose: (b) the ferric-scf
+    solvers take loose arguments, and the CLI arms, the Python block
+    helpers, `run_qmmm` and `run_cdft` call them with the system's pieces
+    and a config of their own, so the system's screening check does not
+    cover them (moving them onto the system's methods would turn a config
+    whose screening differs from `[scf] screening` into an error); (c)
     `run_uks`/`run_roks` share the open-shell tail of `run_uhf`/`run_rohf`
     in substance but not in code (they skip the pre-SCF noise-floor
     warning, so merging them is a behaviour change); (d) `FockResponse`
@@ -607,26 +777,28 @@ Next, each as its own PR following the patterns above:
     `apply_ecp`, the Python `pbc.rs` drivers) keep their own preparation,
     their molecule going into a `Cell`.
     Review follow-ups:
-    - One public entry per kernel: either the loose kernels become
-      `pub(crate)` (their tests move to the `*_on` entries) or the entries
-      take the plain names. Settle one naming convention (`_on` means "on
-      `aux`'s system" in `ri_mp2_on` / `run_gw_on` but "given a reference"
-      in `opmp3_on_reference` / `casscf_on_rhf`; the `run_` prefix is
-      mixed; e.g. add `run_pdep_rpa_fitted_on`), and whether an entry takes
-      an operator (terfc RI-MP2 cannot use them today).
-    - `PreparedSystem` should keep its orbital `BasisSet` (`basis_set()`),
-      closing the loose `obs_bs` of `local_opmp3_on_reference` /
-      `run_local_opmp3` and the `bs` argument of ~40 CLI functions;
-      consider an `ArmCtx` for the CLI arms' shared tail.
-    - An `ScfResult` is not tied to its system: `ri_mp2_on(&a_aux, &b_rhf,
-      ..)` compiles, and with another nbasis it can panic slicing
-      `mos_r()`. The `*_on` / `*_on_rhf` entries should check nbasis and
-      geometry (or results should carry a brand).
+    - One public entry per kernel: the loose kernels under the `*_on`
+      entries are still `pub` (see the first part); make them
+      `pub(crate)` crate by crate, moving their tests to the entries.
+    - Slim ferric-python's `BundleJob` (pdep_properties.rs) to its
+      `PreparedAux`, and remove the CLI's loose `bs` arguments (below).
+    - Rename ferric-mp2's `total_*_gradient_on` / `optimize_geometry_*_on`
+      (`_on` = "on the J/K route `scf_jk`") so `_on` means one thing.
+    - `ScfResult` carries no molecule, so `check_reference` cannot see a
+      reference of another molecule or geometry in a basis of the same
+      size. `check_reference` should return a `CheckedReference<'s>` that
+      the `*_on` entries take, carrying the brand of the system the result
+      was solved on (set by the system's solve methods), so such a
+      reference is caught at the type level and checked once.
+    - The `bs` argument of ~40 CLI functions is `sys.basis_set()` (purely
+      mechanical, left to avoid colliding with item 12's rewrite of the
+      same functions); consider an `ArmCtx` for the CLI arms' shared tail.
+      ferric-python's `BundleJob` (pdep_properties.rs) still carries the context,
+      molecule, basis set and operator next to its `PreparedAux`.
     - The system's solve methods should take a config type without
       `screening` (parse, don't validate); the refusal then goes.
-    - Exit condition for `PreparedAux: Deref`: `*_on` entries (or
-      `&PreparedAux` parameters) for the kernels listed in (a), then delete
-      `impl Deref` so any remaining `&aux` site fails to compile.
+      `run_wb97x_l_v_on` passes its caller's `RhfConfig` to the loose
+      ladder unchecked, as before.
     - Python sites not covered: the per-geometry loops of `run_saddle` /
       `run_irc` (lib.rs) and geometry.rs's own `compute_for_screening` from
       `cfg.screening` (a second home for the screening rule);
@@ -643,7 +815,6 @@ Next, each as its own PR following the patterns above:
       another molecule raise `PanicException` (ndarray shape);
       `hirshfeld_charges(HI, def2-svp, rhf)` panics in `UhfState::new`
       ("end <= axis_len") in the iodine proatom SCF.
-10. A Python exception hierarchy rooted in today's classes.
 11. `RhfConfig` in steps, each with a field-by-field oracle test:
     (a) route every literal site through an options lowering, then mark it
     `#[non_exhaustive]`; (b) group fields into sub-configs (`Convergence`,

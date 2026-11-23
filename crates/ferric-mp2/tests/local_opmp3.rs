@@ -3,7 +3,7 @@
 //! Exactness anchor first: at ε = 0 the pattern keeps everything, the
 //! pattern solves are the full localized amplitude equations, and every
 //! OP-MP3 model must equal the canonical driver's
-//! (`opmp3_on_reference`, same RI basis) on the HF AND the PBE0 reference
+//! (`opmp3_on`, same RI basis) on the HF AND the PBE0 reference
 //! (the KS one exercises the HF-Fock-of-the-KS-density localization, the
 //! non-diagonal `F_oo`/`F_vv` of `A`, and the semicanonical frozen core).
 //! W is compared by eigenvalues (`W_loc = Uᵀ W_can U`).
@@ -35,10 +35,10 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config, FOCK_SCREEN_KAPPA_DEFAULT};
-use ferric_mp2::local_opmp3::{local_opmp3_on_reference, LocalOpmp3Result};
+use ferric_mp2::local_opmp3::{local_opmp3_on, LocalOpmp3Result};
 use ferric_mp2::opmp3::{Opmp3Models, WChannels};
 use ferric_mp2::opmp3_driver::{
-    opmp3_on_reference, opmp3_scf, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
+    opmp3_on, opmp3_scf, Opmp3Config, Opmp3Integrals, Opmp3RefKind, Opmp3Result,
 };
 use ferric_scf::{PreparedSystem, ScfResult};
 use ndarray::Array2;
@@ -108,20 +108,12 @@ fn local_cfg(sys: &Sys, eps: f64) -> AmplitudeLmp2Config {
 
 fn local(sys: &Sys, eps: f64) -> LocalOpmp3Result {
     let aux = sys.sys.prepare_aux(&sys.aux_bs).unwrap();
-    local_opmp3_on_reference(
-        &sys.obs_bs,
-        &sys.scf,
-        &aux,
-        &sys.config,
-        &local_cfg(sys, eps),
-    )
-    .expect("local OP-MP3")
+    local_opmp3_on(&aux, &sys.scf, &sys.config, &local_cfg(sys, eps)).expect("local OP-MP3")
 }
 
 fn canonical(sys: &Sys) -> Opmp3Result {
     let aux = sys.sys.prepare_aux(&sys.aux_bs).unwrap();
-    opmp3_on_reference(&sys.sys, &sys.scf, Opmp3Integrals::Ri(&aux), &sys.config)
-        .expect("canonical OP-MP3")
+    opmp3_on(&sys.sys, &sys.scf, Opmp3Integrals::Ri(&aux), &sys.config).expect("canonical OP-MP3")
 }
 
 fn models(m: &Opmp3Models) -> [(&'static str, f64); 6] {

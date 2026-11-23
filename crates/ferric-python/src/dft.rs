@@ -357,7 +357,7 @@ pub(crate) fn run_double_hybrid(
         "b2plyp" => DoubleHybridKind::B2plyp,
         "dsdpbep86" => DoubleHybridKind::DsdPbep86,
         _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown double hybrid kind '{kind}'; expected 'b2plyp' or 'dsd-pbep86'"
             )))
         }
@@ -366,7 +366,7 @@ pub(crate) fn run_double_hybrid(
         None => base_kind,
         Some(d) if d == "d3bj" || d == "d3(bj)" => base_kind.with_d3bj(),
         Some(d) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dispersion={d:?} is not available for a double hybrid: pass \"d3bj\" (or \
                  \"d3(bj)\") for its own published D3(BJ) set, or omit it"
             )))
@@ -376,7 +376,7 @@ pub(crate) fn run_double_hybrid(
 
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep) = (sys.mol(), sys.basis());
+    let mol = sys.mol();
 
     let ri_j_precision = parse_ri_j_precision(scf_ri_j_precision)?;
     let cfg = rhf_config_conv(
@@ -400,9 +400,9 @@ pub(crate) fn run_double_hybrid(
     mp2_cfg.memory_budget_bytes = budget_bytes_from_gb(memory_budget_gb);
 
     let r = if ks.spin == ferric_scf::Spin::Unrestricted {
-        u_mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
+        u_mp2_double_hybrid_on(&dfbs, &ks, &mp2_cfg)
     } else {
-        mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg)
+        mp2_double_hybrid_on(&dfbs, &ks, &mp2_cfg)
     }
     .map_err(make_err)?;
     let e_dispersion = match dh_kind.d3bj_functional() {
@@ -583,7 +583,7 @@ pub(crate) fn run_dft(
     let relativistic = crate::scf::parse_relativistic(relativistic)?;
     let xc_name = ScfEntryPoint::Dft
         .functional(functional)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+        .map_err(crate::errors::input_err)?
         .expect("run_dft always resolves a functional")
         .to_string();
     // Rung 0 starts from dm0; later rungs carry the previous rung's density.
@@ -681,15 +681,14 @@ pub(crate) fn run_dft(
     // is energy-only, so a gradient run drops it (`gradient_task_config`) and
     // `total_energy` stays on the surface the gradient describes.
     if with_gradient {
-        ferric_scf::gradient::preflight_cosx_restricted(&cfg)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        ferric_scf::gradient::preflight_cosx_restricted(&cfg).map_err(crate::errors::input_err)?;
         cfg = ferric_scf::gradient::gradient_task_config(&cfg).into_owned();
     }
     // MBD@rsSCS's exact gradient needs the Z-vector relaxation term: refuse an
     // unsupported setup before the SCF and the free-atom solves, not after.
     if with_gradient && matches!(dispersion, Some(DispersionSpec::Mbd(_))) {
         if let Some(r) = ferric_scf::zvector_ks::unsupported_reason(&cfg) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "dispersion=\"mbd\" with with_gradient=True: the exact MBD@rsSCS gradient \
                  is not available: {r}"
             )));
@@ -835,7 +834,7 @@ pub(crate) fn refuse_dft_symmetry_extras(
     with_gradient: bool,
     dispersion: bool,
 ) -> PyResult<()> {
-    let refuse = |m: &str| Err(pyo3::exceptions::PyValueError::new_err(m.to_string()));
+    let refuse = |m: &str| Err(crate::errors::input_err(m.to_string()));
     if !symmetry {
         return refuse("run_dft: irrep_nelec requires symmetry=True");
     }
@@ -922,14 +921,13 @@ pub(crate) fn resolve_dispersion(spec: &str, xc_name: &str) -> PyResult<Dispersi
     let named = |prefix: &str| -> PyResult<Option<String>> {
         match lower.strip_prefix(prefix).and_then(|r| r.strip_suffix(')')) {
             None => Ok(None),
-            Some(inner) if inner.trim().is_empty() => Err(pyo3::exceptions::PyValueError::new_err(
-                format!("dispersion=\"{prefix})\" names no functional"),
-            )),
+            Some(inner) if inner.trim().is_empty() => Err(crate::errors::input_err(format!(
+                "dispersion=\"{prefix})\" names no functional"
+            ))),
             Some(inner) => Ok(Some(inner.trim().to_string())),
         }
     };
-    let value_err =
-        |e: ferric_core::FerricError| pyo3::exceptions::PyValueError::new_err(e.to_string());
+    let value_err = |e: ferric_core::FerricError| crate::errors::input_err(e);
     let d3 = |f: String| -> PyResult<DispersionSpec> {
         ferric_d3::d3bj_params_for_functional(&f).map_err(value_err)?;
         Ok(DispersionSpec::D3Bj(f))
@@ -950,7 +948,7 @@ pub(crate) fn resolve_dispersion(spec: &str, xc_name: &str) -> PyResult<Dispersi
     if let Some(f) = named("mbd(")? {
         return mbd(f);
     }
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
+    Err(crate::errors::input_err(format!(
         "unknown dispersion scheme {spec:?}; expected \"d3bj\", \"d3(bj)\", \
          \"d3bj(<functional>)\", \"mbd\" or \"mbd(<functional>)\". Pass \
          dispersion=None for no correction -- there is no value meaning \"compute zero\"."
@@ -1653,7 +1651,7 @@ pub(crate) fn register_open_shell_scf(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[pyo3(signature = (mol, functional, s9 = 0.0))]
 pub(crate) fn d3bj_energy(mol: &PyMolecule, functional: &str, s9: f64) -> PyResult<f64> {
     if !s9.is_finite() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "d3bj_energy: s9 must be finite, got {s9}"
         )));
     }
@@ -1725,15 +1723,14 @@ pub(crate) fn mbd_rsscs_energy(
     use ferric_rpa::dispersion::mbd_rsscs::MbdRsscsConfig;
     let cfg = match (beta, functional) {
         (Some(b), None) => MbdRsscsConfig::with_beta(b),
-        (None, Some(f)) => MbdRsscsConfig::for_functional(f)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?,
+        (None, Some(f)) => MbdRsscsConfig::for_functional(f).map_err(crate::errors::input_err)?,
         (Some(_), Some(_)) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "mbd_rsscs_energy: pass either beta or functional, not both",
             ))
         }
         (None, None) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
+            return Err(crate::errors::input_err(
                 "mbd_rsscs_energy: beta is functional dependent — pass beta=... or \
                  functional=... (PBE, PBE0, HSE06)",
             ))
@@ -1741,13 +1738,13 @@ pub(crate) fn mbd_rsscs_energy(
     };
     let atoms = &mol.inner.atoms;
     if let Some(i) = atoms.iter().position(|a| a.ghost) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "mbd_rsscs_energy: atom {i} is a ghost; MBD needs a real atom (and a volume \
              ratio) at every center — remove ghost atoms first"
         )));
     }
     if volume_ratios.len() != atoms.len() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "mbd_rsscs_energy: {} volume ratios for {} atoms",
             volume_ratios.len(),
             atoms.len()

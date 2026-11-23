@@ -2,9 +2,9 @@
 //!
 //! Each driver runs the exact-J/K Coulomb RHF that starts the calculation
 //! ([`rhf_start`](crate::driver::rhf_start)), then two-step CASSCF
-//! ([`casscf_on_rhf`](crate::driver::casscf_on_rhf)), CAS-CI
-//! ([`casci_on_rhf`](crate::driver::casci_on_rhf)) or a CASSCF or CAS-CI
-//! reference plus SC-NEVPT2 ([`nevpt2_on_rhf`](crate::driver::nevpt2_on_rhf)).
+//! ([`casscf_on`](crate::driver::casscf_on)), CAS-CI
+//! ([`casci_on`](crate::driver::casci_on)) or a CASSCF or CAS-CI
+//! reference plus SC-NEVPT2 ([`nevpt2_on`](crate::driver::nevpt2_on)).
 //! The Python bindings (`ferric.run_casci`, `ferric.run_casscf`,
 //! `ferric.run_nevpt2`) and the CLI kinds (`method.kind = "casscf"`,
 //! `"nevpt2"`) call these functions, so the same input gives the same number
@@ -146,20 +146,22 @@ pub fn casci_config_of(cas: &CasScfConfig) -> CasCiConfig {
 }
 
 /// Two-step CASSCF ([`run_casscf`]) on `sys` from its converged RHF `rhf`.
-pub fn casscf_on_rhf(
+pub fn casscf_on(
     sys: &PreparedSystem,
     rhf: &ScfResult,
     cas: &CasScfConfig,
 ) -> Result<CasScfResult, FerricError> {
+    sys.check_reference(rhf)?;
     run_casscf(sys.mol(), sys.basis(), rhf, cas)
 }
 
 /// CAS-CI ([`run_cas_ci`]) on `sys` from its converged RHF `rhf`.
-pub fn casci_on_rhf(
+pub fn casci_on(
     sys: &PreparedSystem,
     rhf: &ScfResult,
     cas: &CasCiConfig,
 ) -> Result<CasCiResult, FerricError> {
+    sys.check_reference(rhf)?;
     run_cas_ci(sys.mol(), sys.basis(), rhf, *cas)
 }
 
@@ -171,12 +173,13 @@ pub fn casci_on_rhf(
 /// ([`Nevpt2Integrals::of_casscf`]: density-fitted on the RI route). An
 /// unconverged reference is an error, and so is the RI route on a CAS-CI
 /// reference (the CAS-CI runs on the exact integrals).
-pub fn nevpt2_on_rhf(
+pub fn nevpt2_on(
     sys: &PreparedSystem,
     rhf: &ScfResult,
     on: Nevpt2On,
     cas: &CasScfConfig,
 ) -> Result<Nevpt2Run, FerricError> {
+    sys.check_reference(rhf)?;
     let nev = Nevpt2Config {
         memory_budget_bytes: cas.memory_budget_bytes,
         integrals: Nevpt2Integrals::of_casscf(cas.integrals),
@@ -294,6 +297,54 @@ mod tests {
                 memory_budget_bytes: Some(1 << 30),
                 compute_rdms: false,
             }
+        );
+    }
+
+    /// Water in `basis_name` (STO-3G: 7 functions, 6-31G: 13), with its
+    /// converged RHF, for the reference-check tests of the `*_on` entries.
+    fn reference_check_water(
+        basis_name: &str,
+    ) -> (ferric_scf::PreparedSystem, ferric_scf::ScfResult) {
+        let mol = ferric_core::mol::Molecule::parse_xyz(
+            "3\n\nO 0 0 0.117\nH 0 0.757 -0.467\nH 0 -0.757 -0.467\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let bs = ferric_core::basis::bundled(basis_name).unwrap();
+        let sys = ferric_scf::PreparedSystem::new(mol, &bs).unwrap();
+        let rhf = sys
+            .solve_rhf(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
+        (sys, rhf)
+    }
+
+    fn assert_reference_refused<T>(who: &str, r: Result<T, ferric_core::FerricError>) {
+        let msg = r.map(|_| ()).unwrap_err().to_string();
+        assert!(
+            msg.contains("does not belong to this system"),
+            "{who}: {msg}"
+        );
+    }
+
+    #[test]
+    fn on_entries_refuse_a_reference_of_another_system() {
+        let (small, _) = reference_check_water("sto-3g");
+        let (_large, rhf_large) = reference_check_water("6-31g");
+        let cas = CasScfConfig {
+            n_active: 2,
+            n_elec_active: (1, 1),
+            n_core: 4,
+            ..Default::default()
+        };
+        assert_reference_refused("casscf_on", casscf_on(&small, &rhf_large, &cas));
+        assert_reference_refused(
+            "casci_on",
+            casci_on(&small, &rhf_large, &casci_config_of(&cas)),
+        );
+        assert_reference_refused(
+            "nevpt2_on",
+            nevpt2_on(&small, &rhf_large, Nevpt2On::Casscf, &cas),
         );
     }
 }

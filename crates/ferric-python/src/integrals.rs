@@ -43,9 +43,7 @@ pub(crate) fn resolve_operator(
     r0: Option<f64>,
 ) -> PyResult<Operator> {
     let need = |o: Option<f64>, what: &str| {
-        o.ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!("operator '{name}' requires {what}"))
-        })
+        o.ok_or_else(|| crate::errors::input_err(format!("operator '{name}' requires {what}")))
     };
     Ok(match name {
         "coulomb" => Operator::coulomb(),
@@ -60,7 +58,7 @@ pub(crate) fn resolve_operator(
             None => Operator::terf(need(r0, "r0 (Bohr)")?),
         },
         other => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "unknown operator '{other}'; expected coulomb|erf|erfc|terf|terfc"
             )))
         }
@@ -89,7 +87,7 @@ pub(crate) fn compute_eri3_mo<'py>(
     let cl = c_left.as_array().to_owned();
     let cr = c_right.as_array().to_owned();
     if cl.nrows() != n_bf || cr.nrows() != n_bf {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "coefficient rows must equal n_bf={n_bf} (got c_left {}x{}, c_right {}x{})",
             cl.nrows(),
             cl.ncols(),
@@ -159,7 +157,7 @@ pub(crate) fn boys_localize(
     let obs = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
     let c = c_orbs.as_array().to_owned();
     if c.nrows() != obs.nbasis() {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+        return Err(crate::errors::input_err(format!(
             "c_orbs rows must equal n_bf={} (got {})",
             obs.nbasis(),
             c.nrows()

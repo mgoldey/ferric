@@ -174,6 +174,42 @@ def configure_precision(
     """
     ...
 
+# ── Exceptions ──
+# Every class below also derives from the builtin class the same failure raised
+# before the hierarchy existed, so existing `except RuntimeError` /
+# `except ValueError` / `except NotImplementedError` handlers are unchanged.
+# Messages are the same text as before. See src/errors.rs for the mapping.
+
+class FerricError(Exception):
+    """Root of the ferric exception hierarchy; never raised itself."""
+
+class ConvergenceError(FerricError, RuntimeError):
+    """A typed non-convergence (SCF, CC, a response solver, the orbital
+    optimisation). A failure still returned as untyped text is a
+    ``ComputationError``."""
+
+class NumericalError(FerricError, RuntimeError):
+    """A typed linear-algebra failure (eigensolver, factorization)."""
+
+class MemoryBudgetError(FerricError, RuntimeError):
+    """A typed memory refusal (``MemoryExhausted``). The pre-flight
+    ``check_alloc`` still returns untyped text, so it is a ``ComputationError``."""
+
+class UnsupportedError(FerricError, NotImplementedError):
+    """A valid option combination the method does not implement."""
+
+class ComputationError(FerricError, RuntimeError):
+    """Any failure that carries no type (also a ``RuntimeError``). Not "all
+    runtime failures": catch ``RuntimeError`` for that."""
+
+class InputError(FerricError, ValueError):
+    """An invalid argument or option value."""
+
+class BasisError(InputError, RuntimeError):
+    """A basis set or ECP could not be loaded, parsed or does not cover the
+    molecule. Both a ``ValueError`` and a ``RuntimeError``: ``BasisSet.bundled`` raised
+    the former and the ``run_*`` drivers the latter."""
+
 # ── Classes ──
 
 class Molecule:

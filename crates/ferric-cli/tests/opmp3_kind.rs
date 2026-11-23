@@ -236,7 +236,7 @@ fn cli_local_equals_the_driver_bit_for_bit() {
             ..Default::default()
         };
         let lib = pool
-            .install(|| run_local_opmp3(&obs_bs, &aux, &cfg, &local))
+            .install(|| run_local_opmp3(&aux, &cfg, &local))
             .unwrap();
         let comps = &res["components"];
         let m = &lib.opmp3.models;

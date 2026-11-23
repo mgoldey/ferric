@@ -98,7 +98,7 @@ fn parse_gw_method(method: Option<&str>) -> PyResult<ferric_gw::GwMethod> {
             Some("evgw0") => GwMethod::EvGw0,
             Some("evgw") => GwMethod::EvGw,
             Some(other) => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                return Err(crate::errors::input_err(format!(
                 "method: unknown value \"{other}\"; expected \"g0w0\", \"cohsex\", \"evgw0\", or \"evgw\""
             )));
             }
@@ -127,7 +127,7 @@ impl PdepArgs<'_> {
     fn config(&self, default_n_quad: usize) -> PyResult<ferric_rpa::PdepRpaConfig> {
         use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
         let scheme = QuadratureScheme::parse_config_str(self.quadrature)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("quadrature: {e}")))?;
+            .map_err(|e| crate::errors::input_err(format!("quadrature: {e}")))?;
         Ok(ferric_rpa::PdepRpaConfig {
             frozen_core: self.frozen_core,
             trunc_thresh: self.trunc_thresh.unwrap_or(1e-4),
@@ -501,14 +501,14 @@ pub(crate) fn run_u_gw(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyUGwResult> {
-    use ferric_gw::{run_u_gw as run_u_gw_inner, vxc_mo::vxc_diagonal_mo_on_grids};
+    use ferric_gw::{run_u_gw_on, vxc_mo::vxc_diagonal_mo_on_grids};
 
     let gw_method = parse_gw_method(method)?;
     let reference = match reference.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         None | Some("uhf") => "uhf",
         Some("rohf") => "rohf",
         Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            return Err(crate::errors::input_err(format!(
                 "reference: unknown value \"{other}\"; expected \"uhf\" or \"rohf\""
             )));
         }
@@ -516,7 +516,7 @@ pub(crate) fn run_u_gw(
 
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let mol = sys.mol();
 
     // `scf_ri_j_precision` is read (and parsed) only with a KS reference.
     let ri_j_precision = match xc {
@@ -591,15 +591,12 @@ pub(crate) fn run_u_gw(
         &pdep_cfg,
     );
 
-    let r = run_u_gw_inner(
-        mol,
-        prep,
+    let r = run_u_gw_on(
         &dfbs,
-        op,
         &scf,
+        vxc_diag.as_ref().map(|(a, b)| (a, b)),
         &pdep_cfg,
         &gw_cfg,
-        vxc_diag.as_ref().map(|(a, b)| (a, b)),
     )
     .map_err(make_err)?;
     if !r.outer_converged {
@@ -790,7 +787,7 @@ pub(crate) fn run_bse_tda(
     scf_energy_conv: Option<f64>,
     scf_density_conv: Option<f64>,
 ) -> PyResult<PyBseResult> {
-    use ferric_gw::bse::run_bse_tda as run_bse_tda_inner;
+    use ferric_gw::bse::run_bse_tda_on;
 
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
@@ -803,7 +800,7 @@ pub(crate) fn run_bse_tda(
         .solve_rhf(&cfg)
         .and_then(ScfResult::into_converged)
         .map_err(make_err)?;
-    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let mol = sys.mol();
 
     let fc = frozen_core.unwrap_or(0);
     let pdep_cfg = PdepArgs {
@@ -818,7 +815,7 @@ pub(crate) fn run_bse_tda(
     }
     .config(20)?;
 
-    let r = run_bse_tda_inner(mol, prep, &dfbs, op, &scf, &pdep_cfg, fc).map_err(make_err)?;
+    let r = run_bse_tda_on(&dfbs, &scf, &pdep_cfg, fc).map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::bse_tda_certificate(
         &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,
@@ -953,11 +950,11 @@ pub(crate) fn run_tdhf_static_polarizability(
     scf_density_conv: Option<f64>,
     scf_ri_j_precision: Option<&str>,
 ) -> PyResult<PyTdhfStaticPolarizabilityResult> {
-    use ferric_gw::bse::run_rpax_static_polarizability;
+    use ferric_gw::bse::run_rpax_static_polarizability_on;
 
     let sys = prepare(py, mol, basis_set)?;
     let dfbs = prepare_aux(py, &sys, auxbasis)?;
-    let (mol, prep, op) = (sys.mol(), sys.basis(), sys.op());
+    let mol = sys.mol();
 
     // KS reference (required — see doc comment above), same ladder path
     // run_gw's xc branch uses.
@@ -989,17 +986,8 @@ pub(crate) fn run_tdhf_static_polarizability(
         .config(20)?
     };
 
-    let r = run_rpax_static_polarizability(
-        mol,
-        prep,
-        &dfbs,
-        op,
-        &scf,
-        &pdep_cfg,
-        fc,
-        scissor.unwrap_or(0.0),
-    )
-    .map_err(make_err)?;
+    let r = run_rpax_static_polarizability_on(&dfbs, &scf, &pdep_cfg, fc, scissor.unwrap_or(0.0))
+        .map_err(make_err)?;
     let certificate_data = ferric_gw::certificate::tdhf_static_polarizability_certificate(
         &reference_certificate(mol, &scf, &cfg, &basis_set.inner),
         &auxbasis.inner.name,

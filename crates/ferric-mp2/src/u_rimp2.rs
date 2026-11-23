@@ -170,6 +170,22 @@ fn u_mo_side_dims(
     Ok((naux, no_a, nbas - nocc_total_a, no_b, nbas - nocc_total_b))
 }
 
+/// [`u_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+pub fn u_ri_mp2_with_op_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    scf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<URiMp2Result, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    u_ri_mp2(sys.mol(), sys.basis(), aux.basis(), op, scf, config)
+}
+
 /// Compute the U-RI-MP2 correlation energy from a UHF or ROHF reference.
 ///
 /// Reuses `compute_rpa_intermediates_spin` to build per-spin
@@ -323,6 +339,7 @@ pub fn u_ri_mp2_on(
     scf: &ScfResult,
     config: &RiMp2Config,
 ) -> Result<URiMp2Result, FerricError> {
+    aux.check_reference(scf)?;
     let sys = aux.system();
     u_ri_mp2(sys.mol(), sys.basis(), aux.basis(), sys.op(), scf, config)
 }
@@ -339,6 +356,22 @@ impl URiMp2Components {
             e_total: self.e_total,
         }
     }
+}
+
+/// [`ri_mp2_spin_components_any`] on the system `aux` was prepared on (see [`PreparedAux`]):
+/// `scf` is checked against that system first
+/// ([`PreparedAux::check_reference`]).
+/// `op` is the correlation operator (the system's Coulomb operator
+/// unless the caller attenuates it).
+pub fn ri_mp2_spin_components_any_on(
+    aux: &PreparedAux<'_>,
+    op: Operator,
+    scf: &ScfResult,
+    config: &RiMp2Config,
+) -> Result<crate::rimp2::SpinComponents, FerricError> {
+    let sys = aux.system();
+    aux.check_reference(scf)?;
+    ri_mp2_spin_components_any(sys.mol(), sys.basis(), aux.basis(), op, scf, config)
 }
 
 /// RI-MP2 opposite-/same-spin components under `op` on ANY reference.
