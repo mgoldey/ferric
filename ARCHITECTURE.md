@@ -507,6 +507,11 @@ Done:
     (`OptimizeCfg::search_options`) and `md.rs` (`md_error`) into their
     callers, so the config layer returns plain errors; `ferric-batch`
     could report a child's error class from its exit status (2 vs 1).
+    Done since: `--help` / `--version` are written by
+    `info_text::write_info` instead of `eprintln!` / `print!`, same bytes;
+    a broken pipe is success (status 0), any other write error a
+    `CliError::Msg` (status 1) instead of a panic (101), and
+    `CliError::eprint` drops a failed stderr write instead of panicking.
 13. Result storage, bitwise unchanged (old-vs-new over the 15
     `result=`-taking functions and the array getters, on two RHF and two
     KS references: 84 values):
