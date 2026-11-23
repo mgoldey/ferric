@@ -17,13 +17,11 @@ use ndarray::Array2;
 use rayon::prelude::*;
 
 fn rhf_cfg() -> RhfConfig {
-    RhfConfig {
-        xc: Some("LDA".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("LDA")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
 }
 
 /// One-sided displacement's energy (a single independent RHF solve). Each

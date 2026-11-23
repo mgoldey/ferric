@@ -305,12 +305,10 @@ fn stability<'a>(res: &'a ScfResult, ctx: &str) -> &'a StabilityResult {
 /// identical to `default_ladder()`'s, so this row tests the shipped ladder
 /// shape and not a private variant.
 fn ladder_under_test(descent: bool) -> Vec<Rung> {
-    let base = RhfConfig {
-        density_conv: DENSITY_CONV,
-        check_stability: true,
-        scf_stability_descent: descent,
-        ..Default::default()
-    };
+    let mut base = RhfConfig::default()
+        .with_density_conv(DENSITY_CONV)
+        .with_check_stability(true);
+    base.scf_stability_descent = descent;
     let ours = default_ladder_from(&base);
     let prod = default_ladder();
     assert_eq!(ours.len(), prod.len());

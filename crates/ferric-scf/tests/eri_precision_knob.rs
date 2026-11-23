@@ -50,11 +50,9 @@ fn eri_precision_knob_reaches_build_jk() {
         &prep,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-8,
-            density_conv: 1e-6,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-8)
+            .with_density_conv(1e-6),
     )
     .unwrap()
     .density_total

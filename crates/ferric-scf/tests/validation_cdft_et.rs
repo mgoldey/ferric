@@ -467,14 +467,12 @@ fn grid_cfg() -> AtomicGridConfig {
 
 /// Unconstrained UKS/PBE; exact J (no `df_j_aux`), as NWChem `direct`.
 fn base_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 500,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE")
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(500)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 struct System {
@@ -1053,22 +1051,21 @@ fn mirror_det(sys: &System, a: &Det) -> Det {
 /// Constrained UKS/PBE solve of the diabat with the hole on `frag`.
 /// The end-to-end cDFT config for one diabat (hole on fragment `frag`).
 fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
-    RhfConfig {
-        constraints: vec![Constraint {
-            fragment: vec![frag],
-            spin: SpinChannel::Total,
-            target: TARGET_N,
-        }],
-        cdft_lambda_tol: 1e-10,
-        cdft_lambda_init: Some(vec![lambda_init]),
-        cdft_max_outer: E2E_MAX_OUTER,
-        // Skipped on KS references anyway (no f_xc response kernel); off so
-        // the run cannot pay for an eigensolve it will not use.
-        cdft_stability_descent: false,
-        level_shift: E2E_LEVEL_SHIFT,
-        max_iter: E2E_INNER_MAX_ITER,
-        ..base_config()
-    }
+    let mut c = base_config()
+        .with_level_shift(E2E_LEVEL_SHIFT)
+        .with_max_iter(E2E_INNER_MAX_ITER);
+    c.constraints = vec![Constraint {
+        fragment: vec![frag],
+        spin: SpinChannel::Total,
+        target: TARGET_N,
+    }];
+    c.cdft_lambda_tol = 1e-10;
+    c.cdft_lambda_init = Some(vec![lambda_init]);
+    c.cdft_max_outer = E2E_MAX_OUTER;
+    // Skipped on KS references anyway (no f_xc response kernel); off so
+    // the run cannot pay for an eigensolve it will not use.
+    c.cdft_stability_descent = false;
+    c
 }
 
 /// The same diabat config with NO λ start (issue #283): `cdft_lambda_init` is
@@ -1081,11 +1078,10 @@ fn diabat_config(frag: usize, lambda_init: f64) -> RhfConfig {
 /// two fields the issue is about and a difference in the ROOT cannot be
 /// attributed to anything else.
 fn diabat_config_from_zero(frag: usize) -> RhfConfig {
-    RhfConfig {
-        cdft_lambda_init: None,
-        cdft_max_outer: LAM0_MAX_OUTER,
-        ..diabat_config(frag, 0.0)
-    }
+    let mut c = diabat_config(frag, 0.0);
+    c.cdft_lambda_init = None;
+    c.cdft_max_outer = LAM0_MAX_OUTER;
+    c
 }
 
 fn solve_diabat(sys: &System, frag: usize, lambda_init: f64) -> CdftResult {

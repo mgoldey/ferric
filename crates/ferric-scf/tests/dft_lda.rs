@@ -104,15 +104,13 @@ fn run_case_basis(label: &str, xyz: &str, basis_name: &str, expected_file: &str)
     // is what this test suite exists to validate, while still surfacing
     // `converged`/`iters` in the eprintln so a real future regression
     // (energy AND convergence both wrong) stays visible in the output.
-    let cfg = RhfConfig {
-        xc: Some("LDA".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
+    let cfg = RhfConfig::default()
+        .with_xc("LDA")
+        .with_df_j_aux("def2-universal-jkfit")
         // LDA has no exact exchange — no df_k_aux needed.
-        energy_conv: 1e-10,
-        density_conv: 1e-7,
-        max_iter: 800,
-        ..Default::default()
-    };
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-7)
+        .with_max_iter(800);
     let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
 
     let r: Ref =

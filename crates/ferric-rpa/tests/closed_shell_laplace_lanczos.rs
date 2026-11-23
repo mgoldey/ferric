@@ -128,10 +128,7 @@ fn closed_shell_laplace_lanczos_energy_matches_davidson_and_open_shell() {
         &s.mol,
         &s.obs,
         &s.bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
     let e_u = ferric_rpa::run_u_pdep_rpa(

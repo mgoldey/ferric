@@ -32,13 +32,11 @@ fn measure_free_atom_volume_quadratures() {
             let mol = Molecule::parse_xyz(&format!("1\n{sym}\n{sym} 0 0 0\n"), 0, mult).unwrap();
             let prep = PreparedBasis::new(&mol, &bs).unwrap();
             let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-            let cfg = RhfConfig {
-                max_iter: 300,
-                energy_conv: 1e-11,
-                density_conv: 1e-9,
-                mom_after_iter: if mult > 1 { 5 } else { 0 },
-                ..Default::default()
-            };
+            let cfg = RhfConfig::default()
+                .with_max_iter(300)
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-9)
+                .with_mom_after_iter(if mult > 1 { 5 } else { 0 });
             let d = if mult > 1 {
                 solve_uhf(&ctx, &mol, &prep, &bounds, &cfg)
                     .unwrap()

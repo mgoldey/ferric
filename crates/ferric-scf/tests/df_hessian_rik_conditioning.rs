@@ -37,15 +37,13 @@ fn has_deriv2() -> bool {
 /// RHF with RI-J and RI-K over the same fitting basis (the route a hybrid
 /// Kohn-Sham SCF takes by default), converged far below the FD noise.
 fn scf_config(aux: &str) -> RhfConfig {
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 300,
-        energy_conv: 1e-14,
-        density_conv: 1e-12,
-        df_j_aux: Some(aux.to_string()),
-        df_k_aux: Some(aux.to_string()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
+        .with_energy_conv(1e-14)
+        .with_density_conv(1e-12)
+        .with_df_j_aux(aux.to_string())
+        .with_df_k_aux(aux.to_string())
 }
 
 struct Setup {

@@ -136,22 +136,21 @@ fn sgx(cfg: CosxConfig, n_radial: usize) -> CosxConfig {
 /// `xc = None`: HF. `j_fit`: RI-J on (named), else exact J (`""`).
 /// `cosx = None`: exact K (direct, or `""` DF-K for a functional).
 fn cfg(xc: Option<&str>, j_fit: bool, cosx: Option<CosxConfig>) -> RhfConfig {
-    RhfConfig {
-        k_builder: cosx
-            .as_ref()
-            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx.unwrap_or_default(),
-        xc: xc.map(str::to_string),
-        df_j_aux: Some(if j_fit { JK.to_string() } else { String::new() }),
-        df_k_aux: Some(String::new()),
-        energy_conv: 1e-8,
-        density_conv: 1e-10,
-        max_iter: 300,
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
+        .with_df_j_aux(if j_fit { JK.to_string() } else { String::new() })
+        .with_df_k_aux(String::new())
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-10)
+        .with_max_iter(300)
         // The gradients here are checked against finite differences of the
         // energy, which the f32 RI-J tensor makes jagged; pin f64.
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    }
+        .with_ri_j_precision(RiJPrecision::F64);
+    c.k_builder = cosx
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.xc = xc.map(str::to_string);
+    c
 }
 
 fn prep_of(
@@ -205,11 +204,9 @@ fn fd(mol: &Molecule, solve: &(dyn Fn(&Molecule) -> f64 + Sync)) -> Array2<f64> 
 }
 
 fn seeded(c: &RhfConfig, seed: &Array2<f64>) -> RhfConfig {
-    RhfConfig {
-        init_guess_density: Some(seed.clone()),
-        use_sad_guess: false,
-        ..c.clone()
-    }
+    c.clone()
+        .with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 // ---------------------------------------------------------------------------
@@ -225,17 +222,12 @@ fn rijcosx_dispatch_rules() {
     assert!(scf_exchange_is_cosx(&named_j, false).unwrap());
     assert!(scf_exchange_is_cosx(&named_j, true).unwrap());
     // B3LYP with the RHF auto-defaults (df_j_aux / df_k_aux unset): RIJCOSX.
-    let auto = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        xc: Some("B3LYP".into()),
-        ..Default::default()
-    };
+    let auto = RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_xc("B3LYP");
     assert!(scf_exchange_is_cosx(&auto, false).unwrap());
     // A named DF-K next to COSX is a conflict, in the predicate AND the SCF.
-    let conflict = RhfConfig {
-        df_k_aux: Some(JK.into()),
-        ..named_j.clone()
-    };
+    let conflict = named_j.clone().with_df_k_aux(JK);
     let err = scf_exchange_is_cosx(&conflict, false).unwrap_err();
     assert!(format!("{err}").contains("df_k_aux"), "{err}");
     let mol = mol_of(WATER, 1);
@@ -254,15 +246,9 @@ fn rijcosx_dispatch_rules() {
         "{err}"
     );
     // A pure functional or an RSH functional still ignores COSX.
-    let pbe = RhfConfig {
-        xc: Some("PBE".into()),
-        ..auto.clone()
-    };
+    let pbe = auto.clone().with_xc("PBE");
     assert!(!scf_exchange_is_cosx(&pbe, false).unwrap());
-    let rsh = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        ..auto
-    };
+    let rsh = auto.with_xc("wB97X-V");
     assert!(!scf_exchange_is_cosx(&rsh, false).unwrap());
 }
 
@@ -386,20 +372,14 @@ fn rijcosx_energy_is_rij_plus_the_cosx_error_uhf() {
 #[test]
 fn b3lyp_auto_default_is_rijcosx() {
     let mol = mol_of(WATER, 1);
-    let auto = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx_exact(),
-        xc: Some("B3LYP".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-9,
-        max_iter: 300,
-        ..Default::default()
-    };
-    let named = RhfConfig {
-        df_j_aux: Some(JK.into()),
-        df_k_aux: Some(String::new()),
-        ..auto.clone()
-    };
+    let auto = RhfConfig::default()
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(cosx_exact())
+        .with_xc("B3LYP")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
+    let named = auto.clone().with_df_j_aux(JK).with_df_k_aux(String::new());
     let a = solve_r(&mol, "sto-3g", &auto);
     let b = solve_r(&mol, "sto-3g", &named);
     println!("B3LYP auto {:.12} named {:.12}", a.energy, b.energy);

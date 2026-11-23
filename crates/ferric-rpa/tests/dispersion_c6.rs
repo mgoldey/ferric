@@ -377,13 +377,11 @@ fn anisotropic_c6_vs_kumar_meath() {
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         let dp = pdep_dynamic_polarizability(

@@ -83,14 +83,12 @@ fn library(irrep_nelec: Option<Vec<(String, usize)>>) -> (f64, String) {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        symmetry: true,
-        irrep_nelec,
-        ..Default::default()
-    };
+    let mut config = RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10);
+    config.symmetry = true;
+    config.irrep_nelec = irrep_nelec;
     let r =
         solve_rhf_symmetric(&ParallelContext::new(), &mol, &prep, op, &bounds, &config).unwrap();
     (r.energy(), r.group().to_string())

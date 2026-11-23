@@ -243,11 +243,7 @@ pub fn total_u_scs_mp2_2terfc_gradient_on(
     scf_jk: &ScfJk,
     warm: &mut ScfWarmStart,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    let scf_base = RhfConfig {
-        density_conv: 1e-9,
-        external_potential: ext.cloned(),
-        ..Default::default()
-    };
+    let scf_base = RhfConfig::gradient_reference(ext.cloned());
     total_u_scs_mp2_2terfc_gradient_with(
         mol, obs_basis, aux_basis, config, ext, scf_jk, warm, scf_base,
     )
@@ -375,12 +371,10 @@ mod tests {
     }
 
     fn scf_cfg(fit: bool) -> RhfConfig {
-        let mut cfg = RhfConfig {
-            density_conv: 1e-11,
-            max_iter: 300,
-            ..Default::default()
-        }
-        .for_geometry_task();
+        let mut cfg = RhfConfig::default()
+            .with_density_conv(1e-11)
+            .with_max_iter(300)
+            .for_geometry_task();
         if fit {
             ScfJk {
                 mode: ScfJkMode::RiJk,

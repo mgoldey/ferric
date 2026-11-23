@@ -1489,11 +1489,9 @@ mod tests {
         // A plain UHF density is a perfectly good *physical* reference for the
         // kernel FD check — the f_xc response is evaluated at whatever (D_α,D_β)
         // we pass; it need not be the PBE self-consistent density.
-        let ucfg = ferric_scf::uhf::UhfConfig {
-            energy_conv: 1e-9,
-            density_conv: 1e-7,
-            ..Default::default()
-        };
+        let ucfg = ferric_scf::uhf::UhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7);
         let res = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &ucfg).unwrap();
         let d_a = res.density_alpha.clone();
         let d_b = res.density_beta.clone().unwrap();
@@ -1654,11 +1652,9 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let ucfg = ferric_scf::uhf::UhfConfig {
-            energy_conv: 1e-9,
-            density_conv: 1e-7,
-            ..Default::default()
-        };
+        let ucfg = ferric_scf::uhf::UhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7);
         let res = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &ucfg).unwrap();
         let d_a = res.density_alpha.clone();
         let d_b = res.density_beta.clone().unwrap();
@@ -1716,11 +1712,9 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let bounds =
             ferric_scf::screening::SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-        let ucfg = ferric_scf::uhf::UhfConfig {
-            energy_conv: 1e-9,
-            density_conv: 1e-7,
-            ..Default::default()
-        };
+        let ucfg = ferric_scf::uhf::UhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7);
         let ctx = ParallelContext::default();
         let res = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &ucfg).unwrap();
         let d_b = res.density_beta.clone().unwrap();

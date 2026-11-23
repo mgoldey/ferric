@@ -94,11 +94,11 @@ fn singlet_uks_hessian_equals_the_rks_hessian() {
     // f64 RI-J tensor: the f32 default's energy surface jitters (~1e-7 Ha
     // between nearby geometries), which a gradient difference amplifies; the
     // analytic Hessian follows whichever precision the SCF recorded.
-    let ri = |xc: &str| RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..config(xc)
+    let ri = |xc: &str| {
+        config(xc)
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
     };
     let cases: Vec<(&str, RhfConfig)> = vec![
         ("LDA", config("LDA")),
@@ -107,13 +107,11 @@ fn singlet_uks_hessian_equals_the_rks_hessian() {
         ("PBE", ri("PBE")),
         ("B3LYP", ri("B3LYP")),
         // The default f32 RI-J tensor: both Hessians follow the recorded route.
-        (
-            "B3LYP",
-            RhfConfig {
-                ri_j_precision: None,
-                ..ri("B3LYP")
-            },
-        ),
+        ("B3LYP", {
+            let mut c = ri("B3LYP");
+            c.ri_j_precision = None;
+            c
+        }),
     ];
     for (xc, cfg) in cases {
         let cfg = fd_reference_config(&cfg);
@@ -213,11 +211,11 @@ fn uks_hessian_matches_fd_of_the_production_gradient() {
     // f64 RI-J tensor: the f32 default's energy surface jitters (~1e-7 Ha
     // between nearby geometries), which a gradient difference amplifies; the
     // analytic Hessian follows whichever precision the SCF recorded.
-    let ri = |xc: &str| RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..config(xc)
+    let ri = |xc: &str| {
+        config(xc)
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
     };
     for (label, cfg) in [("NH2 RI-J", ri("PBE")), ("NH2 RI-J/RI-K", ri("B3LYP"))] {
         let miss = fd_case(label, &nh2(), "sto-3g", &cfg);
@@ -247,22 +245,20 @@ fn uks_hessian_matches_fd_at_6_31g() {
     // f64 RI-J tensor: the f32 default's energy surface jitters (~1e-7 Ha
     // between nearby geometries), which a gradient difference amplifies; the
     // analytic Hessian follows whichever precision the SCF recorded.
-    let ri = |xc: &str| RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..config(xc)
+    let ri = |xc: &str| {
+        config(xc)
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
     };
     for (label, cfg) in [
         ("NH2 RI-J", ri("PBE")),
         ("NH2 RI-J/RI-K", ri("B3LYP")),
-        (
-            "NH2 default grid",
-            RhfConfig {
-                dft_grid: None,
-                ..config("PBE")
-            },
-        ),
+        ("NH2 default grid", {
+            let mut c = config("PBE");
+            c.dft_grid = None;
+            c
+        }),
     ] {
         let miss = fd_case(label, &nh2(), "6-31g", &cfg);
         worst = worst.max(miss);
@@ -422,12 +418,10 @@ fn factored_cpks_exchange_equals_the_density_path_hessian() {
         return;
     }
     let xc = "B3LYP";
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..config(xc)
-    };
+    let cfg = config(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
     for (label, mol) in [("NH2", nh2()), ("O2 triplet", o2())] {
         let p = scf(&mol, "6-31g", &cfg);
         let grid = FixedGridKs::new(&p.mol, xc, &p.grid).unwrap();

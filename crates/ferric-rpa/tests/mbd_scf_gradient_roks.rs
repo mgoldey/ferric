@@ -67,13 +67,11 @@ const CH2_XYZ: &str =
 const O2_XYZ: &str = "2\nO2\nO 0.000000 0.000000 0.604000\nO 0.000000 0.020000 -0.604000\n";
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc.to_string())
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 /// FD step (Bohr); `MBD_FD_H` overrides it.
@@ -445,38 +443,35 @@ fn roks_zvector_refuses_unsupported_references() {
     for xc in ["PBE", "PBE0", "HSE06", "B3LYP", "SCAN", "r2SCAN"] {
         assert_eq!(unsupported_reason_roks(&ks(xc)), None, "{xc}");
     }
-    let fit_off = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        cosx: ferric_scf::cosx_k::CosxConfig {
+    let fit_off = ks("PBE0")
+        .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+        .with_cosx(ferric_scf::cosx_k::CosxConfig {
             overlap_fit: false,
             ..Default::default()
-        },
-        ..ks("PBE0")
-    };
+        });
     assert_eq!(unsupported_reason_roks(&fit_off), None, "fit-off COSX");
     let cases: Vec<(&str, RhfConfig, &str)> = vec![
         ("wB97X-V", ks("wB97X-V"), "VV10"),
         (
             "PBE0 fitted cosx",
-            RhfConfig {
-                k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-                ..ks("PBE0")
-            },
+            ks("PBE0").with_k_builder(ferric_scf::options::KBuilderKind::Cosx),
             "overlap_fit",
         ),
         (
             "PBE xc_omega",
-            RhfConfig {
-                xc_omega: Some(0.3),
-                ..ks("PBE")
+            {
+                let mut c = ks("PBE");
+                c.xc_omega = Some(0.3);
+                c
             },
             "xc_omega",
         ),
         (
             "PBE cosmo",
-            RhfConfig {
-                cosmo: Some(Default::default()),
-                ..ks("PBE")
+            {
+                let mut c = ks("PBE");
+                c.cosmo = Some(Default::default());
+                c
             },
             "solvation",
         ),
@@ -496,10 +491,7 @@ fn roks_zvector_refuses_unsupported_references() {
     let mbd_cfg = MbdRsscsConfig::for_functional("PBE0").expect("beta");
     let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");
     let r = roks(&mol, &bs, &cfg, None);
-    let cosx = RhfConfig {
-        k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-        ..cfg
-    };
+    let cosx = cfg.with_k_builder(ferric_scf::options::KBuilderKind::Cosx);
     let err = mbd_rsscs_for_scf(&ctx, &cache, &mol, &bs, op, &cosx, &r, &mbd_cfg)
         .expect_err("fitted-COSX ROKS must be refused");
     assert!(format!("{err:?}").contains("COSX"), "{err:?}");
@@ -544,10 +536,8 @@ fn measure_roks_full_pipeline_fd() {
                 continue;
             }
             let label = format!("{name}/6-31G {tag}");
-            let cfg = RhfConfig {
-                df_j_aux: j_aux.map(str::to_string),
-                ..ks(xc)
-            };
+            let mut cfg = ks(xc);
+            cfg.df_j_aux = j_aux.map(str::to_string);
             let mbd_cfg = MbdRsscsConfig::for_functional(xc).expect("beta");
             let mol = Molecule::parse_xyz(xyz, 0, mult).expect("mol");
             let cache = MbdFreeAtomCache::build(&ctx, &mol, &bs, op, &cfg).expect("cache");

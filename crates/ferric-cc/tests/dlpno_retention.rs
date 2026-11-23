@@ -27,11 +27,9 @@ fn boys_centers(xyz: &str, bas: &str) -> (Array2<f64>, usize, usize) {
     let mol = Molecule::load_xyz(xyz).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled(bas).unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 100,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(100);
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(
         rhf.converged,

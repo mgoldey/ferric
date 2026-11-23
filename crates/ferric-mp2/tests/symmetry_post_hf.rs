@@ -25,12 +25,11 @@ fn nh3() -> Molecule {
 }
 
 fn cfg(symmetry: bool) -> RhfConfig {
-    RhfConfig {
-        symmetry,
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        ..RhfConfig::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12);
+    c.symmetry = symmetry;
+    c
 }
 
 #[test]

@@ -80,12 +80,10 @@ fn system(xyz: &str, mult: usize, basis_name: &str) -> Sys {
 }
 
 fn scf_cfg() -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        max_iter: 300,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11)
+        .with_max_iter(300)
 }
 
 fn uhf(sys: &Sys) -> ScfResult {

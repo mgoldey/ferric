@@ -244,12 +244,10 @@ fn a_mixed_device_scf_matches_the_f64_host_scf() {
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        density_conv: 1e-10,
-        energy_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-8);
     let run = |host: bool| {
         let _seam = SeamGuard::set(&FORCE_HOST, host);
         solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap()

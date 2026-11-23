@@ -94,10 +94,7 @@ fn lmp2_bits_probe() {
             &obs,
             Operator::coulomb(),
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         for (opn, op, cal) in [

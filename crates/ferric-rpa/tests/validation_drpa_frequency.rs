@@ -154,12 +154,10 @@ struct Setup {
 fn exact_rhf(mol: &Molecule, obs: &PreparedBasis, ctx: &str) -> ScfResult {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ParallelContext::default(), mol, obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}"));
     assert!(rhf.converged, "{ctx}: RHF not converged");

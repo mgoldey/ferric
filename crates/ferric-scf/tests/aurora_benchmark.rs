@@ -99,14 +99,12 @@ fn measure(label: &str, xyz: &str, basis_name: &str, aurora: bool) -> Measuremen
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        aurora: AuroraConfig {
-            enabled: aurora,
-            ..Default::default()
-        },
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.aurora = AuroraConfig {
+        enabled: aurora,
         ..Default::default()
     };
 

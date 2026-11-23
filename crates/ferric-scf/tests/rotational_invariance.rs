@@ -77,11 +77,9 @@ fn rhf_energy(mol: &Molecule) -> f64 {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let res = solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(
         res.converged,
@@ -149,11 +147,9 @@ fn uhf_energy_default_guess(mol: &Molecule) -> (f64, bool) {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = ferric_scf::uhf::UhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = ferric_scf::uhf::UhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9);
     let res =
         ferric_scf::uhf::solve_uhf(&ParallelContext::default(), mol, &prep, &bounds, &cfg).unwrap();
     (res.energy, res.converged)

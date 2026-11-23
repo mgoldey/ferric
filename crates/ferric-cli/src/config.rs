@@ -6645,11 +6645,9 @@ mod compat_guard_tests {
             (rc.df_k_aux, rc.k_builder),
             (None, Some(ferric_scf::options::KBuilderKind::Cosx))
         );
-        let mut rs = ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..Default::default()
-        };
+        let mut rs = ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         choice("rs-mp2-rpa", "energy", "jk = \"exact\"\n")
             .unwrap()
             .unwrap()
@@ -6896,10 +6894,9 @@ mod compat_guard_tests {
         assert_eq!(c.scf.df_k_aux_resolved().as_deref(), Some(""));
         let rungs = c
             .scf
-            .build_ladder(&ferric_scf::rhf::RhfConfig {
-                df_j_aux: Some("def2-universal-jkfit".into()),
-                ..Default::default()
-            })
+            .build_ladder(
+                &ferric_scf::rhf::RhfConfig::default().with_df_j_aux("def2-universal-jkfit"),
+            )
             .unwrap();
         assert_eq!(rungs[0].config.df_j_aux.as_deref(), Some(""));
         // Anchors: a basis name and an omitted key are unchanged.
@@ -12661,11 +12658,9 @@ kind = "rhf"
     /// `ksdft_ladder` does (docs/profiles-2026-07-14.md 2026-07-19 correction).
     #[test]
     fn empty_ladder_ksdft_base_dispatches_to_ksdft_ladder() {
-        let base = ferric_scf::rhf::RhfConfig {
-            xc: Some("B3LYP".to_string()),
-            max_iter: 100,
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default()
+            .with_xc("B3LYP")
+            .with_max_iter(100);
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
         let built = cfg.build_ladder(&base).unwrap();
@@ -12696,10 +12691,7 @@ kind = "rhf"
         // max_iter per rung (60/60/60/80/100), so a user's flat [scf]
         // max_iter is a starting point each rung's own budget overrides, not
         // a value every rung inherits unchanged.
-        let base = ferric_scf::rhf::RhfConfig {
-            mom_after_iter: 5,
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default().with_mom_after_iter(5);
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
         let built = cfg.build_ladder(&base).unwrap();
@@ -12737,11 +12729,9 @@ kind = "rhf"
     fn empty_ladder_default_escalation_does_not_override_user_df_aux() {
         // If the user already set df_j_aux/df_k_aux in [scf], the default
         // escalation must not clobber it with def2-universal-jkfit.
-        let base = ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("cc-pvdz-jkfit".to_string()),
-            df_k_aux: Some("cc-pvdz-jkfit".to_string()),
-            ..Default::default()
-        };
+        let base = ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("cc-pvdz-jkfit")
+            .with_df_k_aux("cc-pvdz-jkfit");
         let cfg = ScfCfg::default();
         let built = cfg.build_ladder(&base).unwrap();
         for rung in &built {

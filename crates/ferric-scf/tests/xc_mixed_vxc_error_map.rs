@@ -51,12 +51,10 @@ fn scf(xyz: &str, bas: &str, xc: &str, (charge, mult): (i32, usize), conv: f64, 
     let prep = PreparedBasis::new(&mol, &basis::bundled(bas).unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        density_conv: conv,
-        energy_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_density_conv(conv)
+        .with_energy_conv(1e-8);
     let ctx = ParallelContext::default();
     let r = if mult == 1 {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
@@ -116,14 +114,13 @@ fn a_meta_gga_never_runs_mixed() {
 /// mixed (the exit's ΔP is far above `MIXED_VXC_LADDER_THRESH`): exact J (so
 /// the Fock matrix can be rebuilt independently) and PBE (no exchange term).
 fn loose_cfg() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        density_conv: LOOSE_CONV,
-        energy_conv: 1e-2,
-        df_j_aux: Some(String::new()),
-        three_index_budget_bytes: 2 << 30,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        .with_density_conv(LOOSE_CONV)
+        .with_energy_conv(1e-2)
+        .with_df_j_aux(String::new());
+    c.three_index_budget_bytes = 2 << 30;
+    c
 }
 
 const LOOSE_CONV: f64 = 1e-3;
@@ -303,12 +300,8 @@ fn a_converged_roks_exit_returns_the_f64_spin_fock_matrices() {
     let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e3,
-        energy_conv: 1e3,
-        rohf_occupation_guard: false,
-        ..loose_cfg()
-    };
+    let mut cfg = loose_cfg().with_density_conv(1e3).with_energy_conv(1e3);
+    cfg.rohf_occupation_guard = false;
     let run = |twin: bool| {
         FORCE_HOST.store(true, Ordering::SeqCst);
         MIXED_VXC_HOST_TWIN.store(twin, Ordering::SeqCst);

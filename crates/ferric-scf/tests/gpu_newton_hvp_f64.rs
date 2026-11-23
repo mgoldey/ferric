@@ -129,14 +129,12 @@ fn newton_hvp_fitted_jk_runs_f64_under_mixed_settings() {
     let nocc = mol.nelec() as usize / 2;
 
     // Orbitals from ferric's own f64 SCF, before any mixed setting is on.
-    let cfg = RhfConfig {
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_ri_j_precision(RiJPrecision::F64);
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);
     let c = res.mos_alpha.clone();
@@ -221,14 +219,12 @@ fn open_shell_newton_hvp_fitted_jk_runs_f64_under_mixed_settings() {
     let (na, nb) = (5usize, 4usize);
 
     // Orbitals from ferric's own f64 UHF, before any mixed setting is on.
-    let cfg = RhfConfig {
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX)
+        .with_ri_j_precision(RiJPrecision::F64);
     let res = ferric_scf::uhf::solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(res.converged);
     let ca = res.mos_alpha.clone();

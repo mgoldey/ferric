@@ -16,11 +16,7 @@ fn main() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     for (ls, mi) in [(0.5, 200), (1.0, 200), (2.0, 300), (0.5, 500)] {
-        let cfg = RhfConfig {
-            max_iter: mi,
-            level_shift: ls,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_max_iter(mi).with_level_shift(ls);
         match solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg) {
             Ok(r) => println!(
                 "ls={ls} maxit={mi}: conv={} iters={} E={:.6} (Δ vs PySCF {:.4})",

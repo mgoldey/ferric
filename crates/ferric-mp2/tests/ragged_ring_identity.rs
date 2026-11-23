@@ -37,10 +37,7 @@ fn two_call_ring_algebra_matches_three_call_form() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();
@@ -165,10 +162,7 @@ fn ring_product_planned_matches_ring_product_oracle() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();

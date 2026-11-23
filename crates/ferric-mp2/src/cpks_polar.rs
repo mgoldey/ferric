@@ -1219,11 +1219,9 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let cfg = RhfConfig {
-            energy_conv: 1e-12,
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-10);
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
         (mol, obs, dfbs, op, bounds, ctx, rhf)
     }
@@ -1275,11 +1273,9 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &basis::bundled("aug-cc-pvdz").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-12,
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_energy_conv(1e-12)
+            .with_density_conv(1e-10);
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         (obs, bounds, rhf)
     }

@@ -141,11 +141,9 @@ fn run(case: &Case) -> f64 {
         case.nbasis
     );
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(rhf.converged, "{}: SCF must converge", case.label);
     rhf.energy
@@ -229,11 +227,9 @@ fn first_row_ccpvdz_is_unchanged() {
     );
 
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
 
     let expected = -76.0267679973766_f64;

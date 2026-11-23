@@ -80,10 +80,7 @@ fn cfg(basis_cfg: RhfConfig, lo: f64, hi: f64) -> OmegaTuneConfig {
 fn continuation_off_is_bit_identical_to_independent_eval_j() {
     let (mol, prep, bounds) = load("h2.xyz", "6-31g");
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        energy_conv: 1e-9,
-        ..Default::default()
-    };
+    let base = RhfConfig::default().with_energy_conv(1e-9);
     let c = OmegaTuneConfig {
         continuation: false,
         branch_tol: None,
@@ -189,14 +186,7 @@ fn the_first_evaluation_has_no_seed() {
     // continuation is requested and no neighbour exists yet.
     let c = OmegaTuneConfig {
         continuation: true,
-        ..cfg(
-            RhfConfig {
-                energy_conv: 1e-9,
-                ..Default::default()
-            },
-            0.2,
-            1.2,
-        )
+        ..cfg(RhfConfig::default().with_energy_conv(1e-9), 0.2, 1.2)
     };
     assert!(
         !OmegaTuneConfig::default().continuation,
@@ -228,12 +218,10 @@ fn a_different_cation_seed_changes_the_solver_path() {
     let mut cation = mol.clone();
     cation.charge += 1;
     cation.multiplicity = 2;
-    let scf = RhfConfig {
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(300);
     let plain = solve_uhf(&ctx, &cation, &prep, &bounds, &scf).unwrap();
     // Seed from the plain run's own converged MOs: it must converge in
     // strictly FEWER iterations than from the default guess, which is only
@@ -282,13 +270,11 @@ fn the_continuation_seed_reaches_the_cation_through_eval_j_seeded() {
     let (mol, prep, bounds) = load("n2.xyz", "sto-3g");
     let ctx = ParallelContext::default();
     let c = cfg(
-        RhfConfig {
-            df_j_aux: Some(String::new()),
-            energy_conv: 1e-9,
-            density_conv: 1e-7,
-            max_iter: 300,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_df_j_aux(String::new())
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7)
+            .with_max_iter(300),
         0.3,
         0.7,
     );
@@ -373,13 +359,11 @@ fn the_continuation_seed_reaches_the_cation_through_eval_j_seeded() {
 fn an_impossibly_tight_branch_tolerance_fires() {
     let (mol, prep, bounds) = load("n2.xyz", "sto-3g");
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        df_j_aux: Some(String::new()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_df_j_aux(String::new())
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(300);
     let loose = cfg(base.clone(), 0.3, 0.7);
     let t_loose = tune_omega(&ctx, &mol, &prep, &bounds, &loose).unwrap();
     for e in &t_loose.evals {
@@ -428,13 +412,11 @@ fn an_impossibly_tight_branch_tolerance_fires() {
 fn branch_tol_none_disables_the_check_entirely() {
     let (mol, prep, bounds) = load("n2.xyz", "sto-3g");
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        df_j_aux: Some(String::new()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_df_j_aux(String::new())
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(300);
     let off = tune_omega(
         &ctx,
         &mol,

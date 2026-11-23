@@ -107,10 +107,7 @@ fn open_shell_laplace_lanczos_is_panel_width_independent() {
         &s.mol,
         &s.obs,
         &s.bounds,
-        &UhfConfig {
-            max_iter: 200,
-            ..Default::default()
-        },
+        &UhfConfig::default().with_max_iter(200),
     )
     .unwrap();
     let c = cfg(Eigensolver::Lanczos, Some(3), 1e-3);

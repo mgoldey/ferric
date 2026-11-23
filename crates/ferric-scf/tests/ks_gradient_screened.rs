@@ -58,14 +58,12 @@ fn converge(xyz: &str, mult: usize, basis_name: &str, xc: &str, path: XcGradPath
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let grid = AtomicGridConfig::production();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        dft_grid: Some(grid.clone()),
-        energy_conv: 1e-9,
-        density_conv: 1e-6,
-        max_iter: 300,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_dft_grid(grid.clone())
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-6)
+        .with_max_iter(300);
     let ctx = ParallelContext::default();
     let (d_a, d_b) = if mult == 1 {
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();

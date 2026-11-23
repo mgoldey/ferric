@@ -164,12 +164,10 @@ fn lib(xyz: &str, mult: usize, basis_name: &str) -> Lib {
 
 /// `RhfConfig::default()` with the thresholds of [`TIGHT`].
 fn tight() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        density_conv: 1e-9,
-        energy_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(200)
+        .with_density_conv(1e-9)
+        .with_energy_conv(1e-10)
 }
 
 fn rhf(l: &Lib, cfg: &RhfConfig) -> ScfResult {
@@ -195,13 +193,11 @@ fn assert_close(what: &str, cli: f64, lib: f64, tol: f64) {
 #[test]
 fn pcm_rhf_matches_the_library_and_solvates() {
     let l = lib("water.xyz", 1, "sto-3g");
-    let e_lib = rhf(
-        &l,
-        &RhfConfig {
-            pcm: Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap()),
-            ..tight()
-        },
-    )
+    let e_lib = rhf(&l, &{
+        let mut c = tight();
+        c.pcm = Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap());
+        c
+    })
     .energy;
     let by_name = run_ok(
         "pcm_name",
@@ -243,13 +239,11 @@ fn pcm_rhf_matches_the_library_and_solvates() {
 #[test]
 fn pcm_uhf_on_a_singlet_matches_solvated_rhf() {
     let l = lib("water.xyz", 1, "sto-3g");
-    let e_lib = rhf(
-        &l,
-        &RhfConfig {
-            pcm: Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap()),
-            ..tight()
-        },
-    )
+    let e_lib = rhf(&l, &{
+        let mut c = tight();
+        c.pcm = Some(ferric_pcm::PcmConfig::for_solvent("water").unwrap());
+        c
+    })
     .energy;
     let out = run_ok(
         "pcm_uhf",
@@ -333,10 +327,8 @@ fn pcm_rhf_optimize_reaches_a_solvated_stationary_point() {
     )
     .unwrap();
     let pcm = ferric_pcm::PcmConfig::for_solvent("water").unwrap();
-    let cfg = RhfConfig {
-        pcm: Some(pcm.clone()),
-        ..tight()
-    };
+    let mut cfg = tight();
+    cfg.pcm = Some(pcm.clone());
     let r = rhf(&l, &cfg);
     assert_close("optimize final E", e_cli, r.energy, 1e-8);
     let g = ferric_scf::gradient::restricted_scf_gradient(
@@ -380,11 +372,7 @@ fn stability_descent_reaches_the_library_uhf_minimum() {
         &l.mol,
         &l.prep,
         &l.bounds,
-        &RhfConfig {
-            check_stability: true,
-            scf_stability_descent: true,
-            ..tight()
-        },
+        &tight().with_stability(ferric_scf::options::Stability::Descend),
     )
     .unwrap();
     assert!(r.converged);
@@ -422,11 +410,7 @@ fn stability_descent_reaches_the_library_rhf_minimum() {
         &l.prep,
         Operator::coulomb(),
         &l.bounds,
-        &RhfConfig {
-            check_stability: true,
-            scf_stability_descent: true,
-            ..tight()
-        },
+        &tight().with_stability(ferric_scf::options::Stability::Descend),
     )
     .unwrap();
     assert!(r.converged);
@@ -478,18 +462,14 @@ fn stability_descent_is_refused_off_the_rhf_uhf_ksdft_route() {
 fn dft_grid_keys_match_the_library_grid() {
     let l = lib("water.xyz", 1, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());
-    let e_lib = rhf(
-        &l,
-        &RhfConfig {
-            xc: Some("PBE".into()),
-            df_j_aux: jk.clone(),
-            df_k_aux: jk,
-            dft_grid: Some(ferric_dft::grid::AtomicGridConfig::production_sized(
-                99, 302,
-            )),
-            ..tight()
-        },
-    )
+    let e_lib = rhf(&l, &{
+        let mut c = tight().with_xc("PBE").with_dft_grid(
+            ferric_dft::grid::AtomicGridConfig::production_sized(99, 302),
+        );
+        c.df_j_aux = jk.clone();
+        c.df_k_aux = jk;
+        c
+    })
     .energy;
     let custom = run_ok(
         "grid_custom",
@@ -546,20 +526,17 @@ fn a_smeared_charge_matches_the_library() {
     let l = lib("water.xyz", 1, "sto-3g");
     let e_lib = rhf(
         &l,
-        &RhfConfig {
-            external_potential: Some(ExternalPotential {
-                point_charges: Vec::new(),
-                smeared_charges: vec![SmearedCharge {
-                    q,
-                    x,
-                    y,
-                    z,
-                    width: w,
-                }],
-                field: None,
-            }),
-            ..tight()
-        },
+        &tight().with_external_potential(ExternalPotential {
+            point_charges: Vec::new(),
+            smeared_charges: vec![SmearedCharge {
+                q,
+                x,
+                y,
+                z,
+                width: w,
+            }],
+            field: None,
+        }),
     )
     .energy;
     let charge = |width: &str| {
@@ -658,12 +635,10 @@ fn open_shell_oo_rimp2_on_rijk_matches_the_library() {
         &l.mol,
         &l.prep,
         &l.bounds,
-        &RhfConfig {
-            df_j_aux: Some(AUX.into()),
-            df_k_aux: Some(AUX.into()),
-            ..tight()
-        }
-        .for_geometry_task(),
+        &tight()
+            .with_df_j_aux(AUX)
+            .with_df_k_aux(AUX)
+            .for_geometry_task(),
     )
     .unwrap();
     assert!(uhf.converged);
@@ -756,12 +731,9 @@ fn gw_rohf_reference_matches_the_library() {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
     let l = lib("oh.xyz", 2, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());
-    let scf_cfg = RhfConfig {
-        df_j_aux: jk.clone(),
-        df_k_aux: jk,
-        mom_after_iter: 5,
-        ..tight()
-    };
+    let mut scf_cfg = tight().with_mom_after_iter(5);
+    scf_cfg.df_j_aux = jk.clone();
+    scf_cfg.df_k_aux = jk;
     let scf = ferric_scf::rohf::solve_rohf(
         &l.ctx,
         &l.mol,
@@ -1124,14 +1096,12 @@ fn rs_mp2_rpa_terf_omega_matches_the_library() {
     let (r0_ang, w_ang) = (1.2, 2.5);
     let l = lib("water.xyz", 1, "sto-3g");
     let jk = Some("def2-universal-jkfit".to_string());
-    let r = rhf(
-        &l,
-        &RhfConfig {
-            df_j_aux: jk.clone(),
-            df_k_aux: jk,
-            ..tight()
-        },
-    );
+    let r = rhf(&l, &{
+        let mut c = tight();
+        c.df_j_aux = jk.clone();
+        c.df_k_aux = jk;
+        c
+    });
     let aux = basis::bundled("cc-pvdz-ri").unwrap();
     let dfbs = PreparedBasis::new(&l.mol, &aux).unwrap();
     let rs = ferric_rpa::rs_mp2_lr_rpa(

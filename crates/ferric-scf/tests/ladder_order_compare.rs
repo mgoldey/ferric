@@ -150,22 +150,18 @@ fn run(label: &str, mol: &Molecule, bas: &str, base: &RhfConfig, aurora_applies:
 }
 
 fn hf(stab: bool) -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-8,
-        density_conv: 1e-7,
-        check_stability: stab,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-7)
+        .with_check_stability(stab)
 }
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-7,
-        check_stability: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-7)
+        .with_check_stability(true)
 }
 
 /// The case the current ladder is documented to FAIL (`trah_hard_systems.rs`,

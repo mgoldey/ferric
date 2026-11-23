@@ -131,11 +131,9 @@ fn missing_libint_classes_are_refused_before_libint_and_auto_falls_back() {
     );
 
     // --- (d) RI-JK has no four-centre skeleton: still analytic --------------
-    let rijk = RhfConfig {
-        df_j_aux: Some("cc-pvdz-ri".into()),
-        df_k_aux: Some("cc-pvdz-ri".into()),
-        ..Default::default()
-    };
+    let rijk = RhfConfig::default()
+        .with_df_j_aux("cc-pvdz-ri")
+        .with_df_k_aux("cc-pvdz-ri");
     analytic_hessian_available(&mol, &prep, op, &rijk).unwrap();
     let fitted = freq(&mol, &rijk, HessianMethod::Analytic).unwrap();
     assert_eq!(fitted.hessian_source, HessianSource::Analytic);

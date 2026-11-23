@@ -186,11 +186,9 @@ fn scf_energy_under_a_refusing_pool_is_bit_identical_to_the_forced_host_run() {
     let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let run = || match solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg) {
         Ok(r) => (r.energy.to_bits(), r.iterations),
         Err(FerricError::ScfConvergence { last_energy, .. }) => (last_energy.to_bits(), usize::MAX),

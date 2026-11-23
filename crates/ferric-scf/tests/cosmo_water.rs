@@ -85,15 +85,11 @@ fn water_ccpvdz_rhf(config: &RhfConfig) -> ferric_scf::ScfResult {
 
 #[test]
 fn cosmo_none_is_byte_identical_to_no_cosmo_support() {
-    let base = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
-    let with_none = RhfConfig {
-        cosmo: None,
-        ..base.clone()
-    };
+    let base = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
+    let mut with_none = base.clone();
+    with_none.cosmo = None;
     let r_base = water_ccpvdz_rhf(&base);
     let r_none = water_ccpvdz_rhf(&with_none);
     assert!(r_base.converged && r_none.converged);
@@ -102,11 +98,9 @@ fn cosmo_none_is_byte_identical_to_no_cosmo_support() {
 
 #[test]
 fn cosmo_water_in_water_solvation_energy_is_negative_and_right_order_of_magnitude() {
-    let tight = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let tight = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
 
     let vacuum = water_ccpvdz_rhf(&tight);
     assert!(vacuum.converged, "vacuum RHF did not converge");
@@ -117,10 +111,8 @@ fn cosmo_water_in_water_solvation_energy_is_negative_and_right_order_of_magnitud
         lebedev_order: 110,
         ..Default::default()
     };
-    let solvated_config = RhfConfig {
-        cosmo: Some(cosmo_cfg),
-        ..tight
-    };
+    let mut solvated_config = tight;
+    solvated_config.cosmo = Some(cosmo_cfg);
     let solvated = water_ccpvdz_rhf(&solvated_config);
     assert!(solvated.converged, "solvated RHF did not converge");
 
@@ -176,11 +168,9 @@ fn cosmo_charges_have_correct_sign_and_magnitude_for_polar_water() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10);
     let vacuum = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
 
     let cosmo_cfg = CosmoConfig {

@@ -62,6 +62,10 @@ ferric-core
   leaves `None` takes the method crate's default.
 - Every lowering has a test asserting it reproduces the previous construction
   field by field, for defaults and for an all-options case.
+- `RhfConfig` is `#[non_exhaustive]`: outside ferric-scf there is no struct
+  literal. Build it with `ScfOptions::into_rhf_config`, a named constructor
+  (`RhfConfig::periodic`, `RhfConfig::gradient_reference`) or
+  `RhfConfig::default()` plus the `with_*` setters / field assignments.
 
 ## Function signatures
 
@@ -770,6 +774,84 @@ Done:
       functions, `hirshfeld_polarizability` and `response_modes`
       (response_modes.rs).
 
+11a. `RhfConfig` is `#[non_exhaustive]`, bitwise unchanged results and
+    messages (compared against origin/main on Python and CLI runs of
+    every SCF family, the correlated drivers, CDFT, QM/MM, periodic
+    Gamma, MD, frequencies, optimize, saddle/IRC and TDDFT, error cases
+    included). The rule: **no `RhfConfig` (or `UhfConfig` / `RohfConfig`)
+    struct literal outside ferric-scf**, so a new field takes its default
+    at every external site and adding one breaks nothing outside the
+    crate. A config is built from
+    - `ScfOptions::into_rhf_config`, for a frontend lowering its own
+      keywords: `rhf_config_budgeted` (the correlated Python entry
+      points), `run_cdft`, `run_saddle` / `run_irc` / `run_frequencies` /
+      `run_optimize` (xc, MM field, PCM), and the ferric-ci RHF start
+      (`start_config`, now also carrying the system's screening). A field
+      whose `ScfOptions` mapping differs from the old literal is written
+      after the lowering (`run_cdft`'s `level_shift`, through the setter:
+      `ScfOptions::level_shift` also clears the meta-GGA automatic shift;
+      the cDFT knobs, which `ScfOptions` does not carry);
+    - two named constructors for the repeated production patterns:
+      `RhfConfig::periodic(density_conv, max_iter)` (the core-Hamiltonian
+      guess of the Gamma configs in ferric-pbc and the CLI / Python
+      periodic helpers) and `RhfConfig::gradient_reference(ext)`
+      (`density_conv = GRADIENT_REFERENCE_DENSITY_CONV` = 1e-9 and an
+      optional MM field: the gradient / geometry-task reference SCFs of
+      ferric-mp2, ferric-rpa and the Python geometry drivers; it leaves
+      `ri_j_task` at `Energy`, and geometry drivers add
+      `.for_geometry_task()`);
+    - `RhfConfig::default()` (or an existing config) plus the `with_*`
+      setters, each writing exactly one field (`with_stability` the pair
+      it names), `#[must_use]`: next to the existing ten, `with_energy_conv`,
+      `with_ri_j_precision`, `with_dft_grid`, `with_guess(Guess)`,
+      `with_init_guess_density`, `with_external_potential(impl
+      Into<Option<_>>)`, `with_stability(Stability)` and
+      `with_mom_after_iter`; or a plain field assignment for everything
+      else (the fields stay public). No catch-all builder: the setters
+      cover the knobs tests set most; sub-config setters belong to 11(b).
+      `xc` / `df_j_aux` / `df_k_aux` keep their `impl Into<String>`
+      setters only: an `Option` form would need its own conversion trait
+      (`Option<String>` is not `From<&str>`, and a bare `None` would not
+      infer), so sites passing an `Option` assign the field.
+    - `with_level_shift` and `ScfOptions::level_shift` differ on purpose:
+      the setter writes `level_shift` only, so `with_level_shift(0.0)` on
+      the defaults keeps the meta-GGA automatic 0.5 Ha shift, while the
+      options lowering also clears `meta_gga_auto_level_shift` (an explicit
+      0 runs unshifted). A new frontend lowering a user's `level_shift`
+      goes through `ScfOptions`; the setter is the literal field write.
+    Oracle tests (old literal vs new construction, field by field through
+    `Debug`, since `RhfConfig` has no `PartialEq`):
+    `rhf::construction_oracle` (both constructors; each setter on its own
+    against its one-field struct update, from the defaults and from a base
+    where every setter-written field is non-default),
+    `options::tests::python_struct_update_sites_lower_through_options`
+    (each Python site's old literal against the `ScfOptions` form it now
+    uses, for unset and all-set keywords) and ferric-ci's
+    `start_config_is_the_old_literal`. The ~1300 test, bench and example
+    literals (ferric-scf's own integration tests included: they are
+    outside the crate too) were rewritten mechanically: the fields with a
+    setter for that value as a setter chain first, then assignments for
+    the rest (`let mut`, or, in ~25 argument positions whose fields need
+    an assignment, a block expression). The base of a `..base` update, and
+    the setter fields, are now evaluated before the assigned fields rather
+    than in the literal's order; none of the rewritten sites depends on
+    that order (reviewed). The CLI's item-7 oracle `old_literal` became
+    the defaults plus one assignment per field, so it no longer fails to
+    compile when a field is added; nothing guards that oracle against a
+    new field now (`every_rhf_config_field_is_classified` covers the
+    `ScfOptions` lowering, not this oracle). Literals remain inside
+    ferric-scf (its unit tests, the `options` oracles, `..config.clone()`
+    updates in the solvers, the free-atom guess configs).
+    Follow-ups:
+    - Python `run_cdft` and `run_qmmm` keep the meta-GGA automatic shift
+      for an explicit `level_shift=` (unchanged from before 11a), against
+      the convention on `RhfConfig::meta_gga_auto_level_shift` that the
+      CLI and the six SCF entry points follow. Fixing it changes results
+      for a meta-GGA with an explicit shift, so it is its own PR.
+    - Move the Python `run_cdft` / geometry keyword → `ScfOptions` mapping
+      into ferric-scf, so its oracle tests the code the binding runs
+      instead of a hand copy in `options::tests`.
+
 Next, each as its own PR following the patterns above:
 
 8d. (rest) What 8c and the first part of 8d left loose: (b) the ferric-scf
@@ -826,9 +908,8 @@ Next, each as its own PR following the patterns above:
       another molecule raise `PanicException` (ndarray shape);
       `hirshfeld_charges(HI, def2-svp, rhf)` panics in `UhfState::new`
       ("end <= axis_len") in the iodine proatom SCF.
-11. `RhfConfig` in steps, each with a field-by-field oracle test:
-    (a) route every literal site through an options lowering, then mark it
-    `#[non_exhaustive]`; (b) group fields into sub-configs (`Convergence`,
+11. `RhfConfig` in steps, each with a field-by-field oracle test
+    ((a) is done, as 11a above): (b) group fields into sub-configs (`Convergence`,
     `Diis`, `JkRoute` (holding `Option<KBuilderKind>` with `df_j_aux` /
     `df_k_aux`, the request), `Guess`, `Mom`, `Stability`, `Occupation`,
     `Option<KsConfig>`, `Option<CdftConfig>`); (c) replace correlated

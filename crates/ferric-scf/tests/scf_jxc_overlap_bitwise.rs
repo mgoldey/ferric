@@ -108,13 +108,11 @@ fn solve(c: &Case) -> (ScfResult, usize) {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some(c.xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(c.xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let before = JXC_OVERLAP_BUILDS.load(Ordering::Relaxed);
     let r = if c.mult == 1 {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap()

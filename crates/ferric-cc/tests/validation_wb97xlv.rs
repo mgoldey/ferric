@@ -328,19 +328,17 @@ fn dh_tight() -> DoubleHybridConfig {
 /// `exact_j`: explicit conventional J (`Some("")`); K stays RI in the
 /// attenuated metrics with def2-universal-jkfit (the only RSH-K path).
 fn ks_config(exact_j: bool) -> RhfConfig {
-    let mut cfg = RhfConfig {
+    let mut cfg = RhfConfig::default()
         // The PySCF RI-J reference fits J in f64. The f32 RI-J default moves
         // the energy by 1e-7..1e-6 Ha, above TOL_E_KS. The exact-J runs ignore
         // the field.
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
         // `Default` of `AtomicGridConfig` is the flat (75,110) grid.
-        dft_grid: Some(Default::default()),
-        ..Default::default()
-    };
-    cfg.xc = Some(WB97X_L_V_NAME.to_string());
+        .with_dft_grid(Default::default())
+        .with_xc(WB97X_L_V_NAME.to_string());
     assert!(cfg.nlc_grid.is_none(), "default VV10 grid expected");
     if exact_j {
         cfg.df_j_aux = Some(String::new());
@@ -653,19 +651,10 @@ fn wb97xlv_oh_def2svp_components_vs_pyscf() {
     let mut runs = Vec::new();
     for (name, cfg) in [
         ("minao", ks_config(false)),
-        (
-            "minao ls0.5",
-            RhfConfig {
-                level_shift: 0.5,
-                ..ks_config(false)
-            },
-        ),
+        ("minao ls0.5", ks_config(false).with_level_shift(0.5)),
         (
             "hcore",
-            RhfConfig {
-                use_sad_guess: false,
-                ..ks_config(false)
-            },
+            ks_config(false).with_guess(ferric_scf::options::Guess::Core),
         ),
     ] {
         let res = solve_rohf(

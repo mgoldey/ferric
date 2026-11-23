@@ -48,12 +48,10 @@ fn seed_from_smaller_basis(
     let small_obs = PreparedBasis::new(mol, &small_bs)?;
     let small_bounds = SchwarzBounds::compute(op, &small_obs)?;
     // Physical aDZ-PP reference (the ladder gets Ag2 right here — no g-functions).
-    let cfg = ferric_scf::rhf::RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = ferric_scf::rhf::RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_max_iter(200);
     let small_rhf = ferric_scf::rhf::solve_rhf(ctx, mol, &small_obs, op, &small_bounds, &cfg)?;
     // Closed-shell total density = 2 · (occ Cᵀ C). density_alpha holds ½D_full.
     let d_small = 2.0 * &small_rhf.density_alpha;
@@ -134,15 +132,13 @@ fn main() {
         let init = seed_from_smaller_basis(&ctx, &mol, &obs, op)
             .map_err(|e| eprintln!("  [!] aDZ-PP seed failed: {e:?}"))
             .ok();
-        let cfg = ferric_scf::rhf::RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            level_shift: 0.5,
-            max_iter: 300,
-            init_guess_density: init,
-            use_sad_guess: false, // explicit init density overrides
-            ..Default::default()
-        };
+        let mut cfg = ferric_scf::rhf::RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_level_shift(0.5)
+            .with_max_iter(300)
+            .with_guess(ferric_scf::options::Guess::Core);
+        cfg.init_guess_density = init; // explicit init density overrides
         ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("RHF rescue")
     } else {
         lr.result

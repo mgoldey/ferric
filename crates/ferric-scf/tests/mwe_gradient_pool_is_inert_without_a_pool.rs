@@ -98,10 +98,7 @@ fn run_ks_gradient() -> Array2<f64> {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("PBE");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("KS-DFT must converge");
     ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "PBE", &scf, None).expect("KS gradient")
 }

@@ -92,12 +92,10 @@ fn terpinyl_cation_pbe_ladder_vs_trah() {
         prep.nbasis()
     );
 
-    let base = RhfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-7,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-7);
 
     let t0 = Instant::now();
     let plain = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ksdft_ladder(&base)).unwrap();
@@ -137,12 +135,10 @@ fn benzene_b3lyp_ladder_vs_trah() {
         prep.nbasis()
     );
 
-    let base = RhfConfig {
-        xc: Some("B3LYP".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-7,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-7);
 
     let t0 = Instant::now();
     let plain = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ksdft_ladder(&base)).unwrap();
@@ -181,22 +177,16 @@ fn water_iteration_and_walltime_comparison() {
         ("RHF", None, 0.0),
         ("RKS/PBE", Some("PBE".to_string()), 0.2),
     ] {
-        let diis = RhfConfig {
-            xc: xc.clone(),
-            level_shift: ls,
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            max_iter: 300,
-            ..Default::default()
-        };
-        let newton = RhfConfig {
-            newton_trigger: 1e-2,
-            ..diis.clone()
-        };
-        let trah = RhfConfig {
-            trah_trigger: Some(1e-2),
-            ..diis.clone()
-        };
+        let mut diis = RhfConfig::default()
+            .with_level_shift(ls)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
+            .with_max_iter(300);
+        diis.xc = xc.clone();
+        let mut newton = diis.clone();
+        newton.newton_trigger = 1e-2;
+        let mut trah = diis.clone();
+        trah.trah_trigger = Some(1e-2);
 
         for (name, cfg) in [("DIIS", &diis), ("Newton", &newton), ("TRAH", &trah)] {
             let t = Instant::now();

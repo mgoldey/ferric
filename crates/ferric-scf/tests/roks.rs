@@ -18,13 +18,11 @@ fn run(xc: &str, xyz: &str, mult: usize, basis_name: &str) -> f64 {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-6,
-        density_conv: 1e-3,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-6)
+        .with_density_conv(1e-3)
+        .with_max_iter(400);
     // Doublet OH at LDA/PBE develops a DIIS plateau where err_max won't drop
     // below ~1e-3 (and oscillates), so SCF returns Err(ScfConvergence) even
     // though the energy is converged to ~1 mHa. Accept the plateau energy.

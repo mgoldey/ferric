@@ -117,12 +117,10 @@ fn system(file: &str, frozen_core: usize) -> System {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(RI_AUX).unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        df_j_aux: Some(JK_AUX.into()),
-        df_k_aux: Some(JK_AUX.into()),
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux(JK_AUX)
+        .with_df_k_aux(JK_AUX)
+        .with_density_conv(1e-9);
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged, "{file}: RHF not converged");
     let mp2_cfg = RiMp2Config {

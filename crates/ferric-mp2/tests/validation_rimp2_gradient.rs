@@ -266,11 +266,9 @@ fn check_system(system: &str, basis_name: &str, aux_name: &str) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // Exact J/K (no df_j_aux/df_k_aux), as in `total_rimp2_gradient`. Tight ΔP:
     // the MP2 part is not variational in the orbitals.
-    let cfg = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     assert!(cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none());
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg)
         .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}"));

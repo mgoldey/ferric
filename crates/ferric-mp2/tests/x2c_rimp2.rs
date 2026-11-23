@@ -58,15 +58,11 @@ fn rimp2_on_an_x2c_reference_matches_pyscf_dfmp2() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let nr_cfg = RhfConfig {
-        energy_conv: ENERGY_CONV,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
-    let x2c_cfg = RhfConfig {
-        relativistic: Some(Relativistic::X2c1e),
-        ..nr_cfg.clone()
-    };
+    let nr_cfg = RhfConfig::default()
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(1e-8);
+    let mut x2c_cfg = nr_cfg.clone();
+    x2c_cfg.relativistic = Some(Relativistic::X2c1e);
     let mp2 = RiMp2Config::default();
     let nr = solve_rhf(&ctx, &mol, &obs, op, &bounds, &nr_cfg).unwrap();
     let rel = solve_rhf(&ctx, &mol, &obs, op, &bounds, &x2c_cfg).unwrap();

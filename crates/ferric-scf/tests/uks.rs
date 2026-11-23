@@ -18,13 +18,11 @@ fn run(xc: &str, xyz: &str, mult: usize, basis_name: &str) -> f64 {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
     let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!(
         "UKS {xc} {xyz} (mult={mult}, {basis_name}): E = {:.8} ({} iter)",
@@ -77,13 +75,11 @@ fn uks_h_atom_ccpvdz_wb97x_v() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
     let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!(
         "UKS wB97X-V H/cc-pVDZ: E = {:.8} ({} iter)",
@@ -104,13 +100,11 @@ fn uks_oh_doublet_ccpvdz_wb97x_v() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-5,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-5)
+        .with_max_iter(400);
     let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!(
         "UKS wB97X-V OH/cc-pVDZ: E = {:.8} ({} iter)",
@@ -135,13 +129,11 @@ fn uks_oh_doublet_ccpvdz_b3lyp() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("B3LYP".into()),
-        energy_conv: 1e-7,
-        density_conv: 1e-5,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_energy_conv(1e-7)
+        .with_density_conv(1e-5)
+        .with_max_iter(400);
     let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!(
         "UKS B3LYP OH/cc-pvdz: E = {:.8} ({} iter)",

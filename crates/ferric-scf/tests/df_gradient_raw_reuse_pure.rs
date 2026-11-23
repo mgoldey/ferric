@@ -45,11 +45,10 @@ enum Ref {
 
 /// PBE with RI-J only: a pure functional builds no K.
 fn pbe_geometry_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: None,
-        ..RhfConfig::default()
+    {
+        let mut c = RhfConfig::default().with_xc("PBE").with_df_j_aux(AUX);
+        c.df_k_aux = None;
+        c
     }
     .for_geometry_task()
 }

@@ -37,13 +37,11 @@ fn pure_functional_rks_builds_ri_j_on_the_device() {
     let prep = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        density_conv: 1e-6,
-        max_iter: 6,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_density_conv(1e-6)
+        .with_max_iter(6);
     let (a, ov0) = (stats(), JXC_OVERLAP_BUILDS.load(Ordering::Relaxed));
     let _ = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg);
     let (b, ov1) = (stats(), JXC_OVERLAP_BUILDS.load(Ordering::Relaxed));

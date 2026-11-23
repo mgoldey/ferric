@@ -76,10 +76,7 @@ fn converged_exact_rhf_is_proven_with_nothing_attached() {
 
 #[test]
 fn unconverged_rhf_is_capped_to_ungraded() {
-    let cfg = RhfConfig {
-        max_iter: 2,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_max_iter(2);
     let (mol, r) = solve(WATER, 1, &cfg);
     assert!(!r.converged, "max_iter = 2 must not converge water");
     let c = scf_certificate(&mol, &r, &cfg);
@@ -96,10 +93,7 @@ fn unconverged_rhf_is_capped_to_ungraded() {
 
 #[test]
 fn ri_j_is_reported_from_the_route_the_solver_ran() {
-    let cfg = RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_df_j_aux("def2-universal-jkfit");
     let (mol, r) = solve(WATER, 1, &cfg);
     let c = scf_certificate(&mol, &r, &cfg);
     assert_eq!(names(&c), ["ri-j"]);
@@ -110,10 +104,9 @@ fn ri_j_is_reported_from_the_route_the_solver_ran() {
     assert_eq!(c.grade, Grade::Proven);
 
     // An explicit f64 is honoured and recorded.
-    let f64_cfg = RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        ..cfg.clone()
-    };
+    let f64_cfg = cfg
+        .clone()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64);
     let (mol, r) = solve(WATER, 1, &f64_cfg);
     let c = scf_certificate(&mol, &r, &f64_cfg);
     assert_eq!(
@@ -133,10 +126,7 @@ fn ri_j_is_reported_from_the_route_the_solver_ran() {
 
 #[test]
 fn rks_reports_the_production_grid_and_meta_gga_its_auto_level_shift() {
-    let pbe = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let pbe = RhfConfig::default().with_xc("PBE");
     let (mol, r) = solve(WATER, 1, &pbe);
     let c = scf_certificate(&mol, &r, &pbe);
     assert_eq!(c.capability, "ksdft");
@@ -153,10 +143,7 @@ fn rks_reports_the_production_grid_and_meta_gga_its_auto_level_shift() {
     );
     assert!(!names(&c).contains(&"level-shift"), "{:?}", names(&c));
 
-    let scan = RhfConfig {
-        xc: Some("SCAN".into()),
-        ..Default::default()
-    };
+    let scan = RhfConfig::default().with_xc("SCAN");
     let (mol, r) = solve(WATER, 1, &scan);
     let c = scf_certificate(&mol, &r, &scan);
     let shift = c
@@ -186,10 +173,7 @@ fn uhf_warns_when_stability_was_not_checked() {
         c.warnings
     );
 
-    let checked = RhfConfig {
-        check_stability: true,
-        ..Default::default()
-    };
+    let checked = RhfConfig::default().with_check_stability(true);
     let (mol, r) = solve(OH, 2, &checked);
     let c = scf_certificate(&mol, &r, &checked);
     assert!(r.stability.is_some());
@@ -234,12 +218,10 @@ fn measured_error_is_the_solver_anchor_and_the_envelope_only_warns() {
     assert_eq!(c.measured_error.as_ref().unwrap().value, 4.0e-12);
 
     // Br is outside the def2-SVP KS anchor's elements.
-    let pbe = RhfConfig {
-        xc: Some("PBE".into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        dft_grid: Some(AtomicGridConfig::default()),
-        ..Default::default()
-    };
+    let pbe = RhfConfig::default()
+        .with_xc("PBE")
+        .with_ri_j_precision(RiJPrecision::F64)
+        .with_dft_grid(AtomicGridConfig::default());
     let (hbr, r) = solve(HBR, 1, &pbe);
     let c = scf_certificate(&hbr, &r, &pbe);
     assert_eq!(c.measured_error.as_ref().unwrap().value, 4.2e-12);

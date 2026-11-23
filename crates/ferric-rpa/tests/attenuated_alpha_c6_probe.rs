@@ -128,13 +128,11 @@ fn attenuated_water_rpa_pbe_c6_probe() {
     // PBE reference SCF (RI-J/RI-K with def2-universal-jkfit, per CLI convention).
     let scf_op = Operator::coulomb();
     let scf_bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-9,
-        xc: Some("PBE".to_string()),
-        df_j_aux: Some("def2-universal-jkfit".to_string()),
-        df_k_aux: Some("def2-universal-jkfit".to_string()),
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &scf_bounds, &scf_cfg).unwrap();
     assert!(rhf.converged, "RPA@PBE reference SCF did not converge");
 
@@ -299,13 +297,11 @@ fn screening_omega_vs_gap() {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let scf_op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
         assert!(rhf.converged, "{label}: PBE SCF not converged");
 
@@ -429,13 +425,11 @@ fn attenuation_structure_vs_scalar() {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let scf_op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
 
         let dp0 = pdep_dynamic_polarizability(
@@ -588,13 +582,11 @@ fn erf_rpa_c6_and_structure() {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let scf_op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            energy_conv: 1e-9,
-            xc: Some("PBE".to_string()),
-            df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_xc("PBE")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit");
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
 
         // Full-Coulomb baseline C6 for reference.
@@ -804,10 +796,7 @@ fn erfc_rpa_omega_to_zero_matches_coulomb_rpa() {
         &obs,
         scf_op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");
@@ -854,10 +843,7 @@ fn erfc_rpa_omega_to_infinity_vanishes() {
         &obs,
         scf_op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");

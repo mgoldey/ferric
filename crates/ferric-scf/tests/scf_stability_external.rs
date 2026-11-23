@@ -204,15 +204,13 @@ struct Rhf {
 }
 
 fn tight(check_stability: bool) -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-11,
+    RhfConfig::default()
+        .with_energy_conv(1e-11)
         // The Hessian eigenvalues are FIRST order in the orbital error, and
         // this file asserts them against PySCF at 1e-8.
-        density_conv: 1e-10,
-        max_iter: 400,
-        check_stability,
-        ..Default::default()
-    }
+        .with_density_conv(1e-10)
+        .with_max_iter(400)
+        .with_check_stability(check_stability)
 }
 
 /// Converge RHF and rebuild the MO-basis Fock AT the converged orbitals (the

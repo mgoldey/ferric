@@ -27,13 +27,13 @@ fn trace_oh_lda_plateau() {
     let ctx = ParallelContext::default();
 
     // Shared base config; each variant tweaks one knob.
-    let base = || RhfConfig {
-        xc: Some("LDA".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-5,
-        max_iter: 60,
-        level_shift: 0.2,
-        ..Default::default()
+    let base = || {
+        RhfConfig::default()
+            .with_xc("LDA")
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-5)
+            .with_max_iter(60)
+            .with_level_shift(0.2)
     };
 
     let run = |label: &str, cfg: &RhfConfig| {
@@ -54,23 +54,18 @@ fn trace_oh_lda_plateau() {
     };
 
     run("DIIS-only", &base());
-    run(
-        "AH (trigger 1e-2)",
-        &RhfConfig {
-            ah_trigger: 1e-2,
-            ..base()
-        },
-    );
+    run("AH (trigger 1e-2)", &{
+        let mut c = base();
+        c.ah_trigger = 1e-2;
+        c
+    });
     // MOM: pin the SOMO identity by AO-overlap once DIIS has descended into a
     // basin. Sweep the activation iter — too early and MOM locks onto a bad
     // guess; too late and the oscillation has already set in.
     for after in [3usize, 5, 8, 12] {
         run(
             &format!("MOM (after iter {after})"),
-            &RhfConfig {
-                mom_after_iter: after,
-                ..base()
-            },
+            &base().with_mom_after_iter(after),
         );
     }
 }

@@ -93,11 +93,9 @@ fn rimp2_total_energy(mol: &Molecule) -> f64 {
     let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-9,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-8);
     let rhf = solve_rhf(&ParallelContext::default(), mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(
         rhf.converged,

@@ -273,22 +273,18 @@ struct Sys {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn pbe_config() -> RhfConfig {
-    RhfConfig {
-        xc: Some("pbe".into()),
+    rhf_config()
+        .with_xc("pbe")
         // Exact J, as the reference (an empty name is the explicit opt-out of
         // the RI-J auto-default in rhf.rs `resolve_aux`).
-        df_j_aux: Some(String::new()),
-        ..rhf_config()
-    }
+        .with_df_j_aux(String::new())
 }
 
 fn load_system(system: &str, basis_name: &str, scf_ref: &str) -> Sys {

@@ -270,12 +270,10 @@ impl Case {
 
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            max_iter: 400,
-            energy_conv: 1e-11,
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_max_iter(400)
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-10);
         assert!(
             scf_cfg.df_j_aux.is_none() && scf_cfg.df_k_aux.is_none(),
             "exact J/K expected"

@@ -211,10 +211,7 @@ fn second_order_term_equals_the_scs_mp2_gradient() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default().with_density_conv(1e-10);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
     let ring = rpa_analytic_gradient_from_rhf(
         &mol,
@@ -312,10 +309,7 @@ fn h2o_matches_fd5_of_ferrics_own_energy() {
         let obs = PreparedBasis::new(m, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(m, &aux_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf_cfg = RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        };
+        let rhf_cfg = RhfConfig::default().with_density_conv(1e-10);
         let rhf = solve_rhf(&ctx, m, &obs, op, &bounds, &rhf_cfg).unwrap();
         rhf.energy + run_pdep_rpa(m, &obs, &dfbs, op, &rhf, &cfg).unwrap().e_rpa
     };

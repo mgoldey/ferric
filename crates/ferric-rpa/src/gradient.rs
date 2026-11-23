@@ -155,10 +155,7 @@ fn rpa_total_energy(
     // energy_conv is only a loose "not-descending" bound (floors above 1e-10
     // under DF noise), so it is left at the default rather than set to 1e-10 —
     // a tight energy_conv would hang the SCF at MaxIter. See rhf::scf_converged.
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::gradient_reference(None);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
@@ -212,10 +209,7 @@ pub fn total_rpa_gradient_warm(
     let bounds = SchwarzBounds::compute(op, &obs)?;
     // Tight SCF via density_conv (reachable under the ΔP gate); energy_conv left
     // at the loose default — a tight 1e-10 would hang at MaxIter. See above / gradient.rs:149.
-    let rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::gradient_reference(None);
     let rhf = solve_rhf_warm(&ctx, mol, &obs, op, &bounds, &rhf_cfg, warm)?;
     if !rhf.converged {
         return Err(FerricError::ScfConvergence {
@@ -417,10 +411,7 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let at = |dc: f64| {
-            let rhf_cfg = RhfConfig {
-                density_conv: dc,
-                ..Default::default()
-            };
+            let rhf_cfg = RhfConfig::default().with_density_conv(dc);
             let rhf = ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
             let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
             (rhf.energy + r.e_rpa, rhf.density_total)
