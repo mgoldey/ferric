@@ -142,13 +142,18 @@ fn static_route_required(config: &PdepRpaConfig, n_atoms: usize) -> Option<&'sta
 /// [`run_pdep_rpa_energy`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn run_pdep_rpa_energy_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("run_pdep_rpa_energy_on", rhf)?;
     run_pdep_rpa_energy(sys.mol(), sys.basis(), aux.basis(), sys.op(), rhf, config)
 }
 

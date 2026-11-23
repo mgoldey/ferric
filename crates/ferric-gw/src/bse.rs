@@ -272,6 +272,8 @@ fn warn_suspect_qp_in_diagonal(label: &str, suspect: &[usize], n_total: usize) {
 /// [`run_bse_tda`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn run_bse_tda_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -280,6 +282,10 @@ pub fn run_bse_tda_on(
 ) -> Result<BseResult, FerricError> {
     let sys = aux.system();
     aux.check_reference(rhf)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if rhf.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_bse_tda_on", rhf)?;
+    }
     run_bse_tda(
         sys.mol(),
         sys.basis(),
@@ -1343,6 +1349,8 @@ pub struct RpaxStaticPolarizabilityResult {
 /// [`run_rpax_static_polarizability`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `ks` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// A closed-shell system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn run_rpax_static_polarizability_on(
     aux: &PreparedAux<'_>,
     ks: &ScfResult,
@@ -1352,6 +1360,10 @@ pub fn run_rpax_static_polarizability_on(
 ) -> Result<RpaxStaticPolarizabilityResult, FerricError> {
     let sys = aux.system();
     aux.check_reference(ks)?;
+    // The kernel refuses an open-shell reference with its own message.
+    if ks.spin == ferric_scf::Spin::Restricted {
+        aux.check_virtual_orbitals("run_rpax_static_polarizability_on", ks)?;
+    }
     run_rpax_static_polarizability(
         sys.mol(),
         sys.basis(),

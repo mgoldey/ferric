@@ -601,6 +601,10 @@ fn laplace_ao_coulomb_energy(
 /// [`laplace_ri_mp2`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn laplace_ri_mp2_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -609,7 +613,8 @@ pub fn laplace_ri_mp2_on(
     memory_budget_bytes: Option<usize>,
 ) -> Result<LaplaceMp2Result, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("laplace_ri_mp2_on", rhf)?;
     laplace_ri_mp2(
         sys.mol(),
         sys.basis(),
@@ -1632,6 +1637,10 @@ pub fn laplace_sos_mp2(
 /// [`laplace_sos_mp2_with_basis`] on the system `aux` was prepared on (see [`PreparedAux`]):
 /// `rhf` is checked against that system first
 /// ([`PreparedAux::check_reference`]).
+/// The reference must be a closed-shell restricted (RHF / RKS) result
+/// ([`PreparedAux::check_restricted_reference`]).
+/// A system with no virtual orbitals is refused
+/// ([`PreparedAux::check_virtual_orbitals`]).
 pub fn laplace_sos_mp2_on(
     aux: &PreparedAux<'_>,
     rhf: &ScfResult,
@@ -1639,7 +1648,8 @@ pub fn laplace_sos_mp2_on(
     formulation: SosFormulation,
 ) -> Result<SosMp2Result, FerricError> {
     let sys = aux.system();
-    aux.check_reference(rhf)?;
+    aux.check_restricted_reference(rhf)?;
+    aux.check_virtual_orbitals("laplace_sos_mp2_on", rhf)?;
     laplace_sos_mp2_with_basis(
         sys.mol(),
         sys.basis(),

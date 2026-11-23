@@ -231,8 +231,9 @@ impl PreparedSystem {
     /// - the β fields match [`ScfResult::spin`]: a `Restricted` result has
     ///   no β MOs or orbital energies, an `Unrestricted` one has both (a
     ///   `RestrictedOpen` result may have either);
-    /// - each spin's MO coefficients have `nbasis` AO rows ([`Self::basis`])
-    ///   and one orbital energy per MO, and the occupied orbitals of
+    /// - each spin's MO coefficients are `nbasis × nbasis` ([`Self::basis`];
+    ///   every solver pads the MO space to the basis size) with one orbital
+    ///   energy per MO, and the occupied orbitals of
     ///   [`Self::mol`]'s electron count and multiplicity fit in its MOs (a
     ///   result without β fields is checked for both spins on its α ones);
     /// - the total density is `nbasis × nbasis`.
@@ -274,10 +275,47 @@ impl PreparedSystem {
         Ok(())
     }
 
+    /// [`Self::check_reference`], then that `scf` is a closed-shell
+    /// restricted (RHF / RKS) result: the check of the `*_on` entries whose
+    /// kernel reads the restricted accessors (`ScfResult::mos_r` and
+    /// friends, which panic on another spin).
+    pub fn check_restricted_reference(&self, scf: &ScfResult) -> Result<(), FerricError> {
+        self.check_reference(scf)?;
+        if scf.spin == crate::result::Spin::Restricted {
+            Ok(())
+        } else {
+            Err(FerricError::General(format!(
+                "this method needs a closed-shell restricted (RHF or RKS) reference, but the \
+                 reference SCF result is {:?}; use the method's unrestricted variant for an \
+                 open-shell reference",
+                scf.spin
+            )))
+        }
+    }
+
+    /// `Ok` when `scf`'s α space has a virtual orbital (an α occupied count
+    /// of [`Self::mol`] below its α MO count); otherwise an error naming
+    /// `who`. For the kernels that read the lowest virtual orbital energy
+    /// (a gap, a quadrature range): a system with no virtual orbital (He in
+    /// STO-3G) has nothing to correlate, and they refuse it rather than
+    /// index past the MO space.
+    pub fn check_virtual_orbitals(&self, who: &str, scf: &ScfResult) -> Result<(), FerricError> {
+        let (n_alpha, _) = self.occupied_counts();
+        let nmo = scf.eps_alpha.len();
+        if n_alpha < nmo {
+            Ok(())
+        } else {
+            Err(FerricError::General(format!(
+                "{who}: the system has no virtual orbitals ({n_alpha} occupied of {nmo} MOs), \
+                 so there is no correlation to compute; use a basis with virtual orbitals"
+            )))
+        }
+    }
+
     /// The per-spin part of [`Self::check_reference`] for closed-shell
     /// orbitals that are not an [`ScfResult`] (e.g. the optimised orbitals
-    /// of an orbital-optimised MP2): `mos` has `nbasis` AO rows, `eps` one
-    /// entry per MO, and the system's doubly occupied orbitals fit.
+    /// of an orbital-optimised MP2): `mos` is `nbasis × nbasis`, `eps` has
+    /// one entry per MO, and the system's doubly occupied orbitals fit.
     pub fn check_closed_shell_orbitals(
         &self,
         mos: &ndarray::Array2<f64>,
@@ -319,6 +357,18 @@ impl PreparedSystem {
             return orbitals_mismatch(
                 subject,
                 format!("it has {n_eps} {spin} orbital energies for {nmo} {spin} MOs"),
+            );
+        }
+        if nmo != nbasis {
+            // Every solver pads its MOs to `nbasis` columns (dropped
+            // near-linear-dependent directions are zero columns), and the
+            // fixed-width kernels size their virtual space from `nbasis`.
+            return orbitals_mismatch(
+                subject,
+                format!(
+                    "it has {nmo} {spin} MOs, but the system's orbital basis has {nbasis} \
+                     functions (the solvers pad the MO space to the basis size)"
+                ),
             );
         }
         if n_occ > nmo {
@@ -460,6 +510,16 @@ impl<'s> PreparedAux<'s> {
     /// `scf` can be a reference on the system this basis was prepared on.
     pub fn check_reference(&self, scf: &ScfResult) -> Result<(), FerricError> {
         self.system.check_reference(scf)
+    }
+
+    /// [`PreparedSystem::check_restricted_reference`] on [`Self::system`].
+    pub fn check_restricted_reference(&self, scf: &ScfResult) -> Result<(), FerricError> {
+        self.system.check_restricted_reference(scf)
+    }
+
+    /// [`PreparedSystem::check_virtual_orbitals`] on [`Self::system`].
+    pub fn check_virtual_orbitals(&self, who: &str, scf: &ScfResult) -> Result<(), FerricError> {
+        self.system.check_virtual_orbitals(who, scf)
     }
 
     /// The prepared fitting basis, for a kernel that also holds `sys`: an
@@ -746,12 +806,15 @@ mod tests {
             msg.contains("6 alpha orbital energies for 7 alpha MOs"),
             "{msg}"
         );
-        // Fewer MOs than the molecule's occupied orbitals.
+        // Fewer MOs than basis functions (a rectangular MO space).
         let mut few = rhf_small.clone();
-        few.mos_alpha = few.mos_alpha.slice(ndarray::s![.., ..4]).to_owned();
-        few.eps_alpha.truncate(4);
+        few.mos_alpha = few.mos_alpha.slice(ndarray::s![.., ..6]).to_owned();
+        few.eps_alpha.truncate(6);
         let msg = small.check_reference(&few).unwrap_err().to_string();
-        assert!(msg.contains("occupies 5 alpha orbitals"), "{msg}");
+        assert!(
+            msg.contains("it has 6 alpha MOs, but the system's orbital basis has 7"),
+            "{msg}"
+        );
         // A UHF result's beta channel is checked too.
         let cation = water("sto-3g", 1, 2);
         let mut uhf = cation.solve_uhf(&RhfConfig::default()).unwrap();
@@ -802,6 +865,41 @@ mod tests {
             .to_string();
         assert!(
             msg.starts_with("General error: the orbitals do not belong to this system"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn the_restricted_and_virtual_checks_name_what_is_missing() {
+        let sys = water("sto-3g", 0, 1);
+        let rhf = sys.solve_rhf(&RhfConfig::default()).unwrap();
+        sys.check_restricted_reference(&rhf).unwrap();
+        sys.check_virtual_orbitals("test", &rhf).unwrap();
+        let cation = water("sto-3g", 1, 2);
+        for scf in [
+            cation.solve_uhf(&RhfConfig::default()).unwrap(),
+            cation.solve_rohf(&RhfConfig::default()).unwrap(),
+        ] {
+            cation.check_reference(&scf).unwrap();
+            let msg = cation
+                .check_restricted_reference(&scf)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                msg.contains("needs a closed-shell restricted (RHF or RKS) reference"),
+                "{msg}"
+            );
+        }
+        let he = Molecule::parse_xyz("1\n\nHe 0 0 0\n", 0, 1).unwrap();
+        let he = PreparedSystem::new(he, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let he_rhf = he.solve_rhf(&RhfConfig::default()).unwrap();
+        he.check_restricted_reference(&he_rhf).unwrap();
+        let msg = he
+            .check_virtual_orbitals("laplace", &he_rhf)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("laplace: the system has no virtual orbitals (1 occupied of 1 MOs)"),
             "{msg}"
         );
     }
