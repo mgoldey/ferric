@@ -86,8 +86,7 @@ pub enum F32Declined {
     Policy(JkStorage),
     /// The f32 tensor plus its build block does not fit the budget. The
     /// decision reads the budget only, never the shared pool's free bytes, so
-    /// one input under one budget always gets one precision; a pool that then
-    /// cannot hold the tensor refuses the build (`MemoryExhausted`).
+    /// one input under one budget always gets one precision.
     DoesNotFit { need: usize, budget: usize },
     /// A finite integral beyond `f32::MAX` (global aux row, stored column).
     OutOfRange { row: usize, col: usize, value: f64 },
@@ -166,22 +165,18 @@ fn f32_fits(tensor: usize, rows: usize, scratch_row: usize, budget: usize) -> F3
     }
 }
 
-/// The hard pool charge of an f32 RI-J tensor the budget admitted: a pool
-/// that cannot hold it refuses, naming the two ways out, rather than leaving
-/// the tensor in f64 (which would make the precision depend on the pool).
-fn charge_f32(
-    label: &str,
-    bytes: usize,
-) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
-    ferric_core::memory::pool::reserve_global(label, bytes).map_err(|e| {
-        FerricError::MemoryExhausted(format!(
-            "{e}: the f32 RI-J tensor ({:.3} GB) fits the memory budget but not the memory \
-             pool beside what is already reserved; its precision is fixed by the budget, so \
-             the build is refused rather than kept in f64. Raise [memory] budget_gb / \
-             FERRIC_MEM_BUDGET_GB, or set [scf] ri_j_precision = \"f64\"",
-            bytes as f64 / 1e9
-        ))
-    })
+/// The pool charge of an f32 RI-J tensor the budget admitted. Soft: when the
+/// pool cannot take it beside what is already reserved (soft-charged spill
+/// scratch, a transient f64 copy), nothing is recorded and the tensor is built
+/// anyway, exactly as the spill planes of `charge_three_index_soft`. The
+/// precision is then fixed by the budget alone; the budget check already
+/// covers the tensor (and, for a conversion, the f64 tensor beside it), so the
+/// most the pool can be overrun by is soft-charged scratch it never held.
+/// Declining to f64 here made the stored precision, and the energy, depend on
+/// what else happened to be reserved.
+fn charge_f32(label: &str, bytes: usize) -> ferric_core::memory::pool::Reservation {
+    ferric_core::memory::pool::try_reserve_global(label, bytes)
+        .unwrap_or_else(|| ferric_core::memory::pool::Reservation::inert(label))
 }
 
 /// Rows per f64 build block: the budget left after the f32 tensor, capped at
@@ -294,8 +289,8 @@ impl ThreeIndexSource {
     /// rounding that tier's tensor.
     ///
     /// `Ok(Err(why))` when not taken: a `disk`/`direct` policy, a tensor that
-    /// does not fit the budget, or a value beyond `f32::MAX`. A tensor the
-    /// budget admits but the pool cannot hold is a `MemoryExhausted` error.
+    /// does not fit the budget, or a value beyond `f32::MAX`. The pool's free
+    /// bytes never decide it (`charge_f32`).
     pub fn build_ri_j_f32(
         op: Operator,
         obs: &PreparedBasis,
@@ -333,7 +328,7 @@ impl ThreeIndexSource {
         } else {
             "DF 3-index (P|mn) in-core packed, f32"
         };
-        let _charge = charge_f32(label, bytes)?;
+        let _charge = charge_f32(label, bytes);
         let step = block_rows(bytes, scratch_row, budget_bytes).min(rows.max(1));
         if super::ooc_trace() {
             eprintln!(
@@ -379,10 +374,9 @@ impl ThreeIndexSource {
     /// (the shared RI-JK path, where DF-K dresses it). Whether it converts is
     /// decided by the budget alone (the f32 tensor plus this f64 tensor's
     /// resident bytes; the caller passes the budget left beside anything else
-    /// it holds, such as the dressed DF-K band); the f32 charge is then taken (hard) while
-    /// the f64 tensor still holds its own, so a pool that cannot hold both at
-    /// once refuses (`MemoryExhausted`) instead of leaving the precision to the
-    /// pool. Returns the source (the f32 one, or this one unchanged) and, when
+    /// it holds, such as the dressed DF-K band); the f32 pool charge is then
+    /// soft (see `charge_f32`), so the pool's state never changes the
+    /// precision. Returns the source (the f32 one, or this one unchanged) and, when
     /// it was not converted, why. On success the f64 tensor and its charge are
     /// dropped.
     pub fn into_ri_j_f32(
@@ -425,7 +419,7 @@ impl ThreeIndexSource {
         } else {
             "DF 3-index (P|mn) in-core packed, f32"
         };
-        let charge = charge_f32(label, bytes)?;
+        let charge = charge_f32(label, bytes);
         enum Kind {
             InMemory,
             Stream,
