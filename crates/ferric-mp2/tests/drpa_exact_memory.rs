@@ -32,7 +32,7 @@ use ferric_mp2::lmp2_amplitude::{
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_testkit::pool::global_lock;
+use ferric_testkit::pool::pool_lock;
 
 struct Setup {
     mol: Molecule,
@@ -180,7 +180,7 @@ fn the_riccati_solve_charges_the_pool() {
             &cfg,
         )
     };
-    let _g = global_lock();
+    let _g = pool_lock();
 
     clear_global();
     let reference = run().expect("no pool: the solve runs");

@@ -79,14 +79,20 @@ def test_allow_in_a_new_crate_fails(tmp_path):
     assert r.returncode == 1 and "c: 1" in r.stdout
 
 
-def test_lowering_must_be_recorded_then_passes(tmp_path):
+def test_lowering_is_a_notice_not_a_failure(tmp_path):
+    # Two PRs that each lower the same crate merge cleanly to a baseline that
+    # is now too high; main must not go red for that.
     root = tree(tmp_path, {"a": 3})
     run(RATCHET, root, "--update-baseline")
     (root / "crates/a/src/lib.rs").write_text((ALLOW + FN) * 1)
-    assert run(RATCHET, root).returncode == 1  # improvement not locked in yet
+    r = run(RATCHET, root)
+    assert r.returncode == 0
+    assert "NOTE" in r.stdout and "--update-baseline" in r.stdout
+    assert run(RATCHET, root, "--strict").returncode == 1
     assert run(RATCHET, root, "--update-baseline").returncode == 0
     assert baseline(root)["crates"] == {"a": 1}
-    assert run(RATCHET, root).returncode == 0
+    assert "total" not in baseline(root)
+    assert run(RATCHET, root, "--strict").returncode == 0
 
 
 def test_update_baseline_never_raises(tmp_path):
@@ -120,6 +126,35 @@ def test_multi_lint_and_multiline_allows_are_counted(tmp_path):
     )
     run(RATCHET, root, "--update-baseline")
     assert baseline(root)["crates"] == {"a": 2}
+
+
+def test_cfg_attr_allow_is_counted(tmp_path):
+    root = tree(tmp_path, {"a": 0})
+    (root / "crates/a/src/lib.rs").write_text(
+        '#[cfg_attr(feature = "x", allow(clippy::too_many_arguments))]\n'
+        + FN
+        + "#[expect(clippy::too_many_arguments)]\n"
+        + FN
+    )
+    run(RATCHET, root, "--update-baseline")
+    assert baseline(root)["crates"] == {"a": 2}
+
+
+@pytest.mark.parametrize(
+    "attr",
+    [
+        "#[allow(clippy::complexity)]",
+        "#![allow(clippy::all)]",
+        "#[allow(dead_code, clippy::all)]",
+    ],
+)
+def test_group_allows_are_errors(tmp_path, attr):
+    root = tree(tmp_path, {"a": 1})
+    run(RATCHET, root, "--update-baseline")
+    lib = root / "crates/a/src/lib.rs"
+    lib.write_text(attr + "\n" + lib.read_text())
+    r = run(RATCHET, root)
+    assert r.returncode == 1 and "group" in r.stdout
 
 
 def test_workspace_allow_in_manifest_is_an_error(tmp_path):

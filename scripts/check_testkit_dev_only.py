@@ -21,22 +21,30 @@ NAME = "ferric-testkit"
 
 
 def offending_lines(manifest: Path):
-    """Yield (line number, section) for each mention outside dev-dependencies."""
+    """Yield (line number, section) for each mention outside dev-dependencies.
+
+    A mention is the crate name as a key, a renamed dependency
+    (`x = { package = "ferric-testkit" }`), a path ending in the crate's
+    directory, or the `[dependencies.ferric-testkit]` table form.
+    """
     section = ""
     for n, raw in enumerate(manifest.read_text().splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
         m = re.match(r"\[(.+)\]$", line)
         if m:
             section = m.group(1).strip()
-            continue
-        if re.match(rf'"?{re.escape(NAME)}"?\s*(=|\.)', line):
-            if "dev-dependencies" not in section:
+            if (
+                section.endswith(f"dependencies.{NAME}")
+                and "dev-dependencies" not in section
+            ):
                 yield n, section
-        # `[dependencies.ferric-testkit]` table form.
-        if (
-            section.endswith(f"dependencies.{NAME}")
-            and "dev-dependencies" not in section
-        ):
+            continue
+        if "dev-dependencies" in section or "dependencies" not in section:
+            continue
+        keyed = re.match(rf'"?{re.escape(NAME)}"?\s*(=|\.)', line)
+        renamed = re.search(rf'package\s*=\s*"{re.escape(NAME)}"', line)
+        pathed = re.search(rf'path\s*=\s*"[^"]*{re.escape(NAME)}/?"', line)
+        if keyed or renamed or pathed:
             yield n, section
 
 

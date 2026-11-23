@@ -37,7 +37,7 @@ use ferric_mp2::canonical::canonical_mp2;
 use ferric_mp2::mp3::mp3_energy;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_testkit::pool::global_lock;
+use ferric_testkit::pool::pool_lock;
 
 const AMPLE: usize = 64_000_000_000;
 
@@ -47,7 +47,7 @@ struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
 
 impl CleanSlot {
     fn acquire() -> Self {
-        let g = global_lock();
+        let g = pool_lock();
         clear_global();
         pin_env_budget("64");
         Self(g)

@@ -1,6 +1,5 @@
 {
   "_comment": "Item-level #[allow(clippy::too_many_arguments)] per crate. Only ever lowered: scripts/too_many_arguments_ratchet.py --update-baseline.",
-  "total": 670,
   "crates": {
     "benchmarks": 3,
     "ferric-cc": 11,

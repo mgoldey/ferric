@@ -842,7 +842,7 @@ Next, each as its own PR following the patterns above:
       tests two copies of `ferric-core`); everything above can. Helpers that
       need `ferric-integrals` or `ferric-scf` types therefore stay local.
       Contents, each one a helper that was copied verbatim into three or
-      more test files: `pool::{global_lock, CleanSlot}` (the process-global
+      more test files: `pool::{pool_lock, CleanSlot}` (the process-global
       memory-pool test slot: binary-wide lock, pool cleared on entry and
       exit), `compare::{max_abs, max_abs_diff}` over `Array2<f64>` (return
       the number; every call site keeps its own tolerance),
@@ -855,18 +855,25 @@ Next, each as its own PR following the patterns above:
       ferric-mp2, ferric-rpa, ferric-cc, ferric-gw, ferric-pbc,
       ferric-integrals, ferric-dft, ferric-pcm, ferric-cli, ferric-ci and
       ferric-mm: 226 files. Copies removed: 72 `num`, 51 `max_abs`, 24
-      `max_abs_diff`, 22 `global_lock`, 20 `CleanSlot` (struct, `acquire`,
-      `Drop`), 15 `water` (the `testdata/molecules/water.xyz` loader). Only byte-identical copies (after
-      comment and whitespace normalisation) were replaced. The two
-      `max_abs_diff` shapes (`assert_eq!` on dims, and `(a - b)`) now both
-      assert dims, which can only fail louder. `pub fn max_abs` in the
+      `max_abs_diff`, 22 `global_lock` (now `pool_lock`), 20 `CleanSlot` (struct, `acquire`,
+      `Drop`), 15 `water` (the `testdata/molecules/water.xyz` loader). Only semantically
+      identical copies, never weaker ones, were replaced (compared after
+      comment and whitespace normalisation). Two `max_abs_diff` variants
+      were merged: the `assert_eq!(a.dim(), b.dim())` plus zip-fold form
+      (ferric-scf) and the `(a - b).iter()` form (ferric-mp2, ferric-scf);
+      the testkit asserts dims, so it can only fail louder. The testkit
+      norms also return NaN when any entry is NaN (`f64::max` would drop it
+      and an all-NaN result would read as 0.0); a `< tol` check on a NaN
+      now fails, as does a `> tol` "must matter" check. `pub fn max_abs` in the
       `*_support/mod.rs` and `*_common/mod.rs` test modules became
       `pub use` re-exports so the including binaries are unchanged.
     - Deliberately left: the many `water()` / `h2o()` fixtures with
       inline coordinates (different geometries per test, not copies), the
       `vec_f64` readers (three different bodies), the xorshift `Rng`
       structs (3 crates, method-bearing, different state types),
-      `has_deriv2` (needs `ferric-integrals`), and in-`src` unit-test
+      `has_deriv2` (needs `ferric-integrals`), `parts_diff` (ferric-pbc
+      `kxcgrad_hybrid_support` and `kuxcgrad_support`: a max over
+      per-part differences, not a copy of `max_abs_diff`), and in-`src` unit-test
       modules whose helper is also used by non-test code.
     - `too_many_arguments` ratchet. Before: the lint was
       `allow` in `[workspace.lints.clippy]`, so the 594 item-level
@@ -890,6 +897,14 @@ Next, each as its own PR following the patterns above:
       `crates/ferric-python/tests/test_too_many_arguments_ratchet.py`.
       `ferric-core` appears at 3 because the gpu-feature code was only
       visible under `--features ferric-core/gpu`.
+    - Follow-ups: use `#[expect(clippy::too_many_arguments)]` instead of
+      `#[allow]` so a fixed offender's attribute becomes a warning (stable
+      since Rust 1.81; the manifests declare no `rust-version` and CI uses
+      stable, but check any pinned toolchain before the sweep, and the
+      ratchet already counts `expect`); shared `vec_f64` / `matrix` reference
+      readers (their bodies differ today, so unify them with a decision on
+      the panic text); and a `max_abs_diff_at` returning the location of the
+      worst entry, for the tests that print it.
 14b. (Open) File splits. Files over 3000 lines today (generated tables
     excluded: `ferric-d3/src/tables.rs`, `ferric-quadrature/.../tables.rs`,
     `ferric-integrals/tests/data/yukawa_urr_ref.rs`): ferric-cli
@@ -903,55 +918,49 @@ Next, each as its own PR following the patterns above:
     3043; ferric-dft `xc_batch.rs` 3207. Not split here: every one is hot in
     in-flight branches, and a split is move-only with `pub use`
     re-exports, so it goes one file per PR, when nothing else is open
-    against that file. Plan for `ferric-cli/src/lib.rs` (line numbers at
-    the time of writing; `try_run`'s ~700-line dispatch stays in `lib.rs`
+    against that file. Plan for `ferric-cli/src/lib.rs` (`try_run`'s ~700-line dispatch stays in `lib.rs`
     and only calls into these):
     - `args.rs`: `usage_text`, `USAGE_SYNOPSIS`, `version_text`,
       `libint_summary`, `CliArgs`, `parse_args`, `run`, `main`, the
       `SUPPORTED_*` / `EPISTEMIC_WARNINGS` tables and the unsupported-*
-      messages (l.67-275, 677-766).
+      messages.
     - `install.rs`: `load_and_install`, `install_gpu`,
-      `install_integral_settings` (l.284-320, 766-839).
+      `install_integral_settings`.
     - `scf_setup.rs`: `apply_scf_jk`, `scf_jk_route_line`,
       `print_df_guess_outcome`, `refuse_dispersion_without_ks`,
       `resolve_grid_prune`, `ScfConfigInputs`, `try_scf_config`,
-      `prepare_system`, `resolve_geometry`, `log_jk_path` (l.320-677,
-      1536-1660, 2154-2225), with its `scf_config_lowering_tests`.
+      `prepare_system`, `resolve_geometry`, `log_jk_path`, with its `scf_config_lowering_tests`.
     - `scf.rs`: `run_rhf`, `run_symmetric_rhf`, `run_ksdft`, `run_uhf*`,
       `run_rohf`, `solve_open_shell_reference`, the certificate printers,
-      `print_cosx_final`, `energy_conv_advisory`, `scf_functional`
-      (l.1574-1840, 2225-2256, 6436-6587), with `scf_functional_tests` and
+      `print_cosx_final`, `energy_conv_advisory`, `scf_functional`, with `scf_functional_tests` and
       `energy_conv_advisory_tests`.
     - `dispersion.rs`: `DispersionCorrection`, `DispersionGradientModel`,
       `dispersion_*`, `mbd_free_atom_cache`, `print_scf_energy`,
       `log_scf_dispersion`, and the D3 helpers `d3_frequencies`,
-      `d3_geometric_correction`, `frequencies_maybe_dispersion`
-      (l.1841-2154, 7070-7198).
+      `d3_geometric_correction`, `frequencies_maybe_dispersion`.
     - `mp2_arms.rs`: `LocalPrint` and the local-MP2 JSON/certificate
       printers, `run_rimp2_local`, `run_rimp2`, `run_u_rimp2`, `run_mp3`,
       `run_oo_rimp2`, `run_u_oo_rimp2`, `run_att_rimp2*`, `run_scs_mp2*`,
       `run_mp2_v`, `run_laplace_*`, `run_omega_ri_cdd`, the double-hybrid
       arms (`run_wb97x_l_v_arm`, `run_mp2_double_hybrid_arm`,
-      `DhPrint`, `double_hybrid_*`) and the MP2-variant notices
-      (l.2256-3236, 3256-3434, 3856-4175, 4965-5572), with
+      `DhPrint`, `double_hybrid_*`) and the MP2-variant notices, with
       `local_printout_tests`, `mp2v_notice_tests`.
     - `cc_arms.rs`: `closed_shell_cc_config`, `ladder_label`, `run_ccsd`,
       `run_linlccd`, `correlation_aux`, `require_restricted`, `run_ccd`,
-      `run_ccsd_t`, `run_u_ccsd`, `run_eom_ccsd` (l.4175-4748).
+      `run_ccsd_t`, `run_u_ccsd`, `run_eom_ccsd`.
     - `rpa_gw_arms.rs`: `run_rs_mp2_rpa*`, `RsScanCtx`,
       `rs_mp2_rpa_notices`, `run_drpa`, `run_exact_drpa`,
       `preflight_exact_drpa`, `run_pdep_rpa_arm`, the PDEP export helpers,
       `run_gw`, `gw_open_shell_reference*`, `run_bse_tda`,
       `run_tdhf_static_polarizability`, `run_tddft_arm`,
-      `refuse_tddft_xc_without_kernel`, `tddft_*` (l.3434-3856, 4748-4965,
-      5572-6436, 8379-8523), with `rs_mp2_rpa_notice_tests`.
+      `refuse_tddft_xc_without_kernel`, `tddft_*`, with `rs_mp2_rpa_notice_tests`.
     - `frequencies.rs`: `run_frequencies*`, `print_frequency_table`,
       `frequency_*`, `log_frequencies`, `LastScf` and its tests, the
-      gradient-kind tables (l.6587-7070, 7198-7328).
+      gradient-kind tables.
     - `optimize.rs`: `run_optimize*`, `certify_optimization`, `RefCert`,
       `task_reference_certificate*`, `rimp2_gradient_scf_jk`,
       `rpa_gradient_setup`, `att_rimp2_*`, `scs_*_config`,
-      `oo_rimp2_config` (l.7328-8379).
+      `oo_rimp2_config`.
     Do `config.rs` along the same lines (one module per `[section]`
     struct plus its validation) in a second PR, after `lib.rs`, since the
     CLI arms read it everywhere. The unit-test modules move with the code

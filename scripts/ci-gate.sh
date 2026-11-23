@@ -725,22 +725,36 @@ else
 fi
 echo
 
-# ---- 3a. too_many_arguments ratchet + testkit dev-only check -----------
-# Pure python, no tool to install, so unlike the complexity step it never
-# soft-skips. See scripts/too_many_arguments_ratchet.py: the number of
-# item-level `#[allow(clippy::too_many_arguments)]` per crate may only go down.
+# ---- 3a. too_many_arguments ratchet, testkit dev-only check -----------
+# Two separate checks, both plain python3 with no other tool. They soft-skip
+# (with a message, like the complexity step) only when python3 itself is
+# missing. See scripts/too_many_arguments_ratchet.py: the number of item-level
+# `#[allow(clippy::too_many_arguments)]` per crate may only go down; here it
+# runs --strict, so a lowered count must also be recorded in the baseline.
+# Skip both with CI_GATE_SKIP_RATCHET=1.
 if [[ "${CI_GATE_SKIP_RATCHET:-0}" != "1" ]]; then
-    echo "-- too_many_arguments ratchet (scripts/too_many_arguments_ratchet.py) --"
-    if python3 "$REPO_ROOT/scripts/too_many_arguments_ratchet.py" \
-        && python3 "$REPO_ROOT/scripts/check_testkit_dev_only.py"; then
-        echo "-- too_many_arguments ratchet: PASS --"
+    if command -v python3 >/dev/null 2>&1; then
+        echo "-- too_many_arguments ratchet (scripts/too_many_arguments_ratchet.py --strict) --"
+        if python3 "$REPO_ROOT/scripts/too_many_arguments_ratchet.py" --strict; then
+            echo "-- too_many_arguments ratchet: PASS --"
+        else
+            echo "-- too_many_arguments ratchet: FAIL --"
+            FAILED=1
+            STEP_CHECK_FAILED=1
+        fi
+        echo "-- ferric-testkit dev-only (scripts/check_testkit_dev_only.py) --"
+        if python3 "$REPO_ROOT/scripts/check_testkit_dev_only.py"; then
+            echo "-- ferric-testkit dev-only: PASS --"
+        else
+            echo "-- ferric-testkit dev-only: FAIL --"
+            FAILED=1
+            STEP_CHECK_FAILED=1
+        fi
     else
-        echo "-- too_many_arguments ratchet: FAIL --"
-        FAILED=1
-        STEP_CHECK_FAILED=1
+        echo "-- too_many_arguments ratchet, testkit dev-only: SKIPPED (python3 not installed) --"
     fi
 else
-    echo "-- too_many_arguments ratchet: SKIPPED (CI_GATE_SKIP_RATCHET=1) --"
+    echo "-- too_many_arguments ratchet, testkit dev-only: SKIPPED (CI_GATE_SKIP_RATCHET=1) --"
 fi
 echo
 

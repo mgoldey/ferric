@@ -17,7 +17,7 @@ use ferric_core::memory::pool::clear_global;
 ///
 /// The `static` lives in this crate, so it is one lock per test binary, the
 /// same scope the per-file copies had.
-pub fn global_lock() -> MutexGuard<'static, ()> {
+pub fn pool_lock() -> MutexGuard<'static, ()> {
     static L: OnceLock<Mutex<()>> = OnceLock::new();
     match L.get_or_init(|| Mutex::new(())).lock() {
         Ok(g) => g,
@@ -25,13 +25,16 @@ pub fn global_lock() -> MutexGuard<'static, ()> {
     }
 }
 
-/// Holds [`global_lock`] and clears the global pool on acquire and on drop.
+/// Holds [`pool_lock`] and clears the global pool on acquire and on drop.
+///
+/// It touches only the pool: it does not read, set or restore any environment
+/// variable. A test that sets one (`FERRIC_*`) must restore it itself.
 #[must_use = "the lock is released when the slot is dropped"]
 pub struct CleanSlot(#[allow(dead_code)] MutexGuard<'static, ()>);
 
 impl CleanSlot {
     pub fn acquire() -> Self {
-        let g = global_lock();
+        let g = pool_lock();
         clear_global();
         Self(g)
     }
