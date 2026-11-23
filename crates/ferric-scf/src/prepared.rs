@@ -293,16 +293,33 @@ impl PreparedSystem {
         }
     }
 
-    /// `Ok` when `scf`'s α space has a virtual orbital (an α occupied count
-    /// of [`Self::mol`] below its α MO count); otherwise an error naming
-    /// `who`. For the kernels that read the lowest virtual orbital energy
+    /// `Ok` when the system has an occupied orbital and a virtual one: for a
+    /// closed-shell reference an α virtual (α occupied count of
+    /// [`Self::mol`] below its α MO count), for an open-shell one a virtual
+    /// in either spin; otherwise an error naming `who`. For the kernels that read the lowest virtual orbital energy
     /// (a gap, a quadrature range): a system with no virtual orbital (He in
     /// STO-3G) has nothing to correlate, and they refuse it rather than
     /// index past the MO space.
     pub fn check_virtual_orbitals(&self, who: &str, scf: &ScfResult) -> Result<(), FerricError> {
-        let (n_alpha, _) = self.occupied_counts();
+        let (n_alpha, n_beta) = self.occupied_counts();
         let nmo = scf.eps_alpha.len();
-        if n_alpha < nmo {
+        // The kernels also read the highest occupied orbital energy, so a
+        // system with no electrons (H+ as a singlet) is refused too.
+        if n_alpha == 0 {
+            return Err(FerricError::General(format!(
+                "{who}: the system has no occupied orbitals, so there is no correlation \
+                 to compute"
+            )));
+        }
+        // An open-shell reference is correlated as long as either spin has a
+        // virtual orbital (an empty same-spin channel contributes zero); a
+        // closed-shell one needs an alpha virtual.
+        let nmo_beta = scf.eps_beta.as_ref().map_or(nmo, Vec::len);
+        let has_virtual = match scf.spin {
+            crate::result::Spin::Restricted => n_alpha < nmo,
+            _ => n_alpha < nmo || n_beta < nmo_beta,
+        };
+        if has_virtual {
             Ok(())
         } else {
             Err(FerricError::General(format!(
@@ -902,5 +919,22 @@ mod tests {
             msg.contains("laplace: the system has no virtual orbitals (1 occupied of 1 MOs)"),
             "{msg}"
         );
+        // Triplet O/STO-3G: alpha 5 of 5 occupied, beta 3 of 5. The beta
+        // channel has virtuals, so an open-shell reference passes.
+        let o = Molecule::parse_xyz("1\n\nO 0 0 0\n", 0, 3).unwrap();
+        let o = PreparedSystem::new(o, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let o_uhf = o.solve_uhf(&RhfConfig::default()).unwrap();
+        o.check_virtual_orbitals("rs_mp2_lr_rpa_on", &o_uhf)
+            .unwrap();
+        // A system with no electrons (H+ as a singlet) has no occupied
+        // orbital to read: refused, not indexed at `nocc - 1`. The check only
+        // reads the MO count and spin, so He's one-MO result stands in.
+        let hp = Molecule::parse_xyz("1\n\nH 0 0 0\n", 1, 1).unwrap();
+        let hp = PreparedSystem::new(hp, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let msg = hp
+            .check_virtual_orbitals("omega_ri_cdd_mp2_on", &he_rhf)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("no occupied orbitals"), "{msg}");
     }
 }

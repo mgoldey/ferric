@@ -571,6 +571,14 @@ fn an_open_shell_reference_is_refused_by_the_closed_shell_entries() {
                     "[{label}] {name} must refuse: {o:?}"
                 );
             }
+            // Positive controls: open-shell entries that need nothing else
+            // must still accept a valid UHF / ROHF reference.
+            if ["u_ri_mp2_on", "rs_mp2_lr_rpa_on"].contains(&name) {
+                assert!(
+                    matches!(o, Outcome::Ok),
+                    "[{label}] {name} must accept: {o:?}"
+                );
+            }
         }
     }
 }
