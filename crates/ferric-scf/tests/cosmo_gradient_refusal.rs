@@ -37,10 +37,9 @@ fn water() -> Molecule {
 }
 
 fn cosmo() -> RhfConfig {
-    RhfConfig {
-        cosmo: Some(CosmoConfig::default()),
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default();
+    c.cosmo = Some(CosmoConfig::default());
+    c
 }
 
 fn has_msg<T>(r: Result<T, ferric_core::error::FerricError>, what: &str) {

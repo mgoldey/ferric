@@ -173,15 +173,13 @@ fn rhf(sys: &System, precision: Option<RiKPrecision>) -> ferric_scf::ScfResult {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &sys.obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-3,
-        density_conv: 1e-8,
-        max_iter: 100,
-        df_j_aux: Some(AUX.into()),
-        df_k_aux: Some(AUX.into()),
-        ri_k_precision: precision,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-3)
+        .with_density_conv(1e-8)
+        .with_max_iter(100)
+        .with_df_j_aux(AUX)
+        .with_df_k_aux(AUX);
+    cfg.ri_k_precision = precision;
     solve_rhf(&ctx, &sys.mol, &sys.obs, op, &bounds, &cfg).unwrap()
 }
 

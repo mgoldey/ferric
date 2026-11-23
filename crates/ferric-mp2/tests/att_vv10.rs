@@ -48,8 +48,8 @@ fn build_case(xyz: &str, basis_name: &str) -> Case {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
+        &RhfConfig::default()
+            .with_energy_conv(1e-10)
             // density_conv tightened 2026-09-17. It was left at the default
             // while energy_conv was 1e-10, so the SCF exited on the ENERGY
             // criterion with the DENSITY converged only loosely. E_HF is
@@ -63,9 +63,7 @@ fn build_case(xyz: &str, basis_name: &str) -> Case {
             // That is a loose test, not a physics change: the pinned E_c digits
             // were only ever reproducible because nothing upstream of them had
             // moved. Converging the density makes the pin mean what it claims.
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+            .with_density_conv(1e-9),
     )
     .unwrap();
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -101,10 +99,7 @@ fn build_uhf_case(xyz: &str, charge: i32, mult: usize, basis_name: &str) -> Open
         &mol,
         &obs,
         &bounds,
-        &ferric_scf::uhf::UhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &ferric_scf::uhf::UhfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     assert_eq!(scf.spin, Spin::Unrestricted);
@@ -132,10 +127,7 @@ fn build_rohf_case(xyz: &str, charge: i32, mult: usize, basis_name: &str) -> Ope
         &obs,
         op,
         &bounds,
-        &ferric_scf::rohf::RohfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        },
+        &ferric_scf::rohf::RohfConfig::default().with_energy_conv(1e-10),
     )
     .unwrap();
     assert_eq!(scf.spin, Spin::RestrictedOpen);

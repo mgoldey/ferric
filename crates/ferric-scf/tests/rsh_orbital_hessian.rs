@@ -111,12 +111,10 @@ fn omega_zero_matvec_is_deterministic_through_the_none_path() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(res.converged);
 
@@ -271,11 +269,11 @@ fn omega_zero_hybrid_newton_still_matches_diis() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RhfConfig {
-        xc: Some("B3LYP".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 300,
+    let cfg_diis = RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(300)
         // The stationarity bound is ~2e-9 Ha, below f32 RI-J rounding: pin f64.
         // The 1.7e-6 CI gap (DIIS −75.7319370340, Newton −75.7319387216) was
         // NOT RI-J: the guess left the β π hole's orientation to LAPACK
@@ -287,13 +285,9 @@ fn omega_zero_hybrid_newton_still_matches_diis() {
         // starts both runs on the same orientation; both now exit at
         // −75.7319390077 (the lower of the two minima; DIIS 22 iterations,
         // Newton 14, |dE| 9e-12).
-        ri_j_precision: Some(RiJPrecision::F64),
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+        .with_ri_j_precision(RiJPrecision::F64);
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
     let r_diis = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_diis)
         .unwrap_or_else(|e| panic!("DIIS SCF failed: {e:?}"));
     let r_newton = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_newton).unwrap_or_else(|e| {
@@ -1006,13 +1000,11 @@ fn omega_zero_production_stability_takes_the_coulomb_arm() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        check_stability: true,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_check_stability(true);
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(res.converged);
     let prod = res

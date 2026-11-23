@@ -51,14 +51,12 @@ fn run_case_basis(label: &str, xyz: &str, basis_name: &str, expected_file: &str)
     // module doc; PBE/NH3 needed this for correctness (plain DIIS landed a
     // wrong SCF solution), so it's applied uniformly across all 4 XC test
     // files rather than only where a failure happened to be observed.
-    let cfg = RhfConfig {
-        xc: Some("B3LYP".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("B3LYP")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let ladder = default_ladder_from(&cfg);
     let lr = solve_rhf_ladder(&ctx, &mol, &obs, op, &bounds, &ladder).unwrap();
     let res = lr.result;

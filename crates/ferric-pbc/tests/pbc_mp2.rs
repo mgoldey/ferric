@@ -349,10 +349,7 @@ fn molecular_ri_mp2_goes_through_the_shared_b_ov_kernel() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(rhf.converged);
@@ -465,10 +462,7 @@ fn box_limit_shifted_is_a3_with_the_predicted_coefficient_unshifted_is_1_over_a(
         &prep_mol,
         op,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     assert!(mr.converged);

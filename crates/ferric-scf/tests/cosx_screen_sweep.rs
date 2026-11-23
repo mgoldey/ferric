@@ -94,17 +94,13 @@ fn cosx_screen_sweep_cell() {
     // DF-JK: the default convergence (energy_conv is a sanity bound; a tight
     // one is unreachable on the RI noise floor). Direct: tighter is cheap.
     let scf_cfg = if env_flag("COSX_SS_DFJK") {
-        RhfConfig {
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            ..Default::default()
-        }
+        RhfConfig::default()
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
     } else {
-        RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        }
+        RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8)
     };
     let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("rhf");
     assert!(res.converged, "reference RHF did not converge");

@@ -43,21 +43,13 @@ fn level_shift_acts_on_the_virtuals_of_the_occupation_mom_kept() {
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let base = RhfConfig {
-        density_conv: 1e-9,
-        energy_conv: 1e-11,
-        max_iter: 150,
-        use_sad_guess: false,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_energy_conv(1e-11)
+        .with_max_iter(150)
+        .with_guess(ferric_scf::options::Guess::Core);
     let solve = |cfg: &RhfConfig| solve_rhf(&ctx, &mol, &prep, op, &bounds, cfg).unwrap();
-    let with_mom = |shift: f64| {
-        solve(&RhfConfig {
-            mom_after_iter: 1,
-            level_shift: shift,
-            ..base.clone()
-        })
-    };
+    let with_mom = |shift: f64| solve(&base.clone().with_mom_after_iter(1).with_level_shift(shift));
 
     let ground = solve(&base);
     assert!(ground.converged);

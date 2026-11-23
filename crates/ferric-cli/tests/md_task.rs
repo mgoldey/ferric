@@ -187,12 +187,10 @@ fn cli_trajectory_is_the_library_trajectory() {
 
     let path = workspace_root().join("testdata/molecules/h2.xyz");
     let mol = Molecule::load_xyz_with_charge(path.to_str().unwrap(), 0, 1).unwrap();
-    let scf = RhfConfig {
-        density_conv: 1e-10,
-        energy_conv: 1e-10,
-        ri_j_task: ferric_scf::df_j::RiJTask::Geometry,
-        ..Default::default()
-    };
+    let mut scf = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-10);
+    scf.ri_j_task = ferric_scf::df_j::RiJTask::Geometry;
     let config = ferric_scf::AimdConfig {
         md: MdConfig {
             n_steps: 6,

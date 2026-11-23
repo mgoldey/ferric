@@ -223,12 +223,8 @@ fn scf_in_the_refused_band_is_bitwise_the_in_core_run() {
     let a = PreparedBasis::new(&s.mol, &basis::bundled(aux).unwrap()).unwrap();
     let needed = a.nbasis() * s.obs.nbasis() * s.obs.nbasis() * 8;
     let budget = needed + needed / 2;
-    let cfg = RhfConfig {
-        df_j_aux: Some(aux.into()),
-        df_k_aux: Some(aux.into()),
-        three_index_budget_bytes: budget,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default().with_df_j_aux(aux).with_df_k_aux(aux);
+    cfg.three_index_budget_bytes = budget;
     // No pool: the budget alone admits it, so this is the in-core route.
     let in_core = solve_rhf(&ctx, &s.mol, &s.obs, op, &bounds, &cfg).unwrap();
     let pool = MemoryPool::with_capacity_bytes(budget);
@@ -261,13 +257,11 @@ fn a_fully_spilled_scf_stays_within_the_df_j_backend_gap() {
     let a = PreparedBasis::new(&s.mol, &basis::bundled(aux).unwrap()).unwrap();
     let needed = a.nbasis() * s.obs.nbasis() * s.obs.nbasis() * 8;
     let run = |budget: usize| {
-        let cfg = RhfConfig {
-            df_j_aux: Some(aux.into()),
-            df_k_aux: Some(aux.into()),
-            three_index_budget_bytes: budget,
-            ri_j_precision: Some(RiJPrecision::F64),
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_df_j_aux(aux)
+            .with_df_k_aux(aux)
+            .with_ri_j_precision(RiJPrecision::F64);
+        cfg.three_index_budget_bytes = budget;
         solve_rhf(&ctx, &s.mol, &s.obs, op, &bounds, &cfg).unwrap()
     };
     let in_core = run(needed * 4);
@@ -299,16 +293,14 @@ fn hybrid_ks_energy_ignores_threads_across_the_refused_band() {
             clear_global();
             let pool = MemoryPool::with_capacity_bytes(cap);
             install_global(pool.clone());
-            let cfg = RhfConfig {
-                xc: Some("B3LYP".into()),
-                df_j_aux: Some(aux.into()),
-                df_k_aux: Some(aux.into()),
-                three_index_budget_bytes: cap,
+            let mut cfg = RhfConfig::default()
+                .with_xc("B3LYP")
+                .with_df_j_aux(aux)
+                .with_df_k_aux(aux)
                 // The capacity scan below sits where the flat 75 x 110 grid's
                 // thread-scaled XC charge leaves room; pin that grid.
-                dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
-                ..Default::default()
-            };
+                .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default());
+            cfg.three_index_budget_bytes = cap;
             let r = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg);
             clear_global();
             (

@@ -54,15 +54,13 @@ fn water_sto3g() -> (Molecule, PreparedBasis, SchwarzBounds) {
 fn rks_pbe_converges_at_default_diis_size() {
     let (mol, obs, bounds) = water_sto3g();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        density_conv: 1e-8,
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_density_conv(1e-8)
         // Generous, but far past the ~8 iterations a healthy run needs: the
         // unfixed code failed at ANY cap (it drifted away from the solution
         // rather than approaching it slowly).
-        max_iter: 100,
-        ..Default::default()
-    };
+        .with_max_iter(100);
 
     let res = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     eprintln!(
@@ -98,13 +96,11 @@ fn converged_energy_is_independent_of_diis_size() {
 
     let mut energies = Vec::new();
     for size in [4usize, 8, 12] {
-        let cfg = RhfConfig {
-            xc: Some("PBE".into()),
-            density_conv: 1e-8,
-            max_iter: 100,
-            diis_size: size,
-            ..Default::default()
-        };
+        let mut cfg = RhfConfig::default()
+            .with_xc("PBE")
+            .with_density_conv(1e-8)
+            .with_max_iter(100);
+        cfg.diis_size = size;
         let res = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
         eprintln!(
             "diis_size={size:2}: converged={} iters={:3} E={:.12}",
@@ -135,11 +131,9 @@ fn converged_energy_is_independent_of_diis_size() {
 fn plain_hf_still_converges_quickly() {
     let (mol, obs, bounds) = water_sto3g();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-8,
-        max_iter: 100,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_max_iter(100);
 
     let res = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     eprintln!(

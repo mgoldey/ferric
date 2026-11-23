@@ -119,12 +119,10 @@ fn check_closed_shell_limit(method: GwMethod, tol_ha: f64, max_ev_iter: usize) {
     let bounds = SchwarzBounds::compute(op, &obs).expect("Schwarz");
 
     // (a) Closed-shell RHF reference.
-    let rhf_cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let rhf_cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).expect("RHF");
     assert!(rhf.converged, "RHF did not converge");
 

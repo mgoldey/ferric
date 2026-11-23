@@ -87,12 +87,10 @@ fn system(xyz: &str, charge: i32, mult: usize, orb: &str, aux: &str) -> Sys {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        max_iter: 400,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(400)
 }
 
 fn assert_ecp_active(s: &Sys, ctx: &str) {

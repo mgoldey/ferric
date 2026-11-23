@@ -1905,10 +1905,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -2273,12 +2270,13 @@ mod tests {
                 &obs,
                 op,
                 &bounds,
-                &RhfConfig {
-                    energy_conv: 1e-11,
-                    density_conv: 1e-10,
-                    df_j_aux: jk_aux.map(str::to_string),
-                    df_k_aux: jk_aux.map(str::to_string),
-                    ..Default::default()
+                &{
+                    let mut c = RhfConfig::default()
+                        .with_energy_conv(1e-11)
+                        .with_density_conv(1e-10);
+                    c.df_j_aux = jk_aux.map(str::to_string);
+                    c.df_k_aux = jk_aux.map(str::to_string);
+                    c
                 }
                 .for_geometry_task(),
             )
@@ -2771,10 +2769,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -2894,10 +2889,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -3197,10 +3189,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -3310,10 +3299,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();

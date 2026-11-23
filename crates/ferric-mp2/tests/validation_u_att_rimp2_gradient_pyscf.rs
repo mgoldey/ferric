@@ -116,12 +116,10 @@ fn check(system: &str) {
             aux: None,
         },
         &mut ScfWarmStart::new(false),
-        RhfConfig {
-            density_conv: 1e-12,
-            energy_conv: 1e-13,
-            max_iter: 300,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_density_conv(1e-12)
+            .with_energy_conv(1e-13)
+            .with_max_iter(300),
     )
     .unwrap();
     let e_ref = num(&r, "/energy_total");

@@ -52,13 +52,11 @@ fn a_pool_that_fits_k_but_not_j_and_k_gives_the_card_to_k() {
     );
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-6,
-        max_iter: 4,
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-6)
+        .with_max_iter(4)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit");
     let a = stats();
     // A few iterations are enough: both tensors are placed on the first build.
     let _ = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg);

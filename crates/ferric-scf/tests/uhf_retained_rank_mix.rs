@@ -27,11 +27,8 @@ fn forced_uhf_first_beta_density_keeps_its_electron_at_full_retained_rank() {
     let s = overlap(&prep);
     assert_eq!(s.nrows(), 2);
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        check_stability: false,
-        scf_stability_descent: false,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default().with_check_stability(false);
+    cfg.scf_stability_descent = false;
     let mut electrons_b: Vec<f64> = Vec::new();
     let mut hook = |_d_a: &Array2<f64>, d_b: &Array2<f64>| {
         electrons_b.push((d_b * &s).sum());

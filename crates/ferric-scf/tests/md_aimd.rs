@@ -43,11 +43,9 @@ fn oh() -> Molecule {
 }
 
 fn tight_scf() -> RhfConfig {
-    RhfConfig {
-        density_conv: 1e-10,
-        energy_conv: 1e-12,
-        ..RhfConfig::default()
-    }
+    RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-12)
 }
 
 fn nve(n_steps: usize, dt_fs: f64, init_t: Option<f64>, seed: u64) -> AimdConfig {
@@ -273,10 +271,7 @@ fn oh_radical_uhf_nve_conserves_energy() {
 
 #[test]
 fn h2_rks_lda_nve_conserves_energy() {
-    let scf = RhfConfig {
-        xc: Some("LDA".to_string()),
-        ..tight_scf()
-    };
+    let scf = tight_scf().with_xc("LDA");
     let r = run(&h2(), &scf, Spin::Restricted, &nve(10, 0.2, Some(300.0), 6));
     let drift = report("H2 RKS/LDA NVE", &r);
     assert_eq!(r.md.label, "rks:LDA/sto-3g");

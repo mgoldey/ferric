@@ -622,21 +622,19 @@ fn pbe0_box_limit_is_hyb_times_the_hf_madelung_term() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &su.prep).unwrap();
     let molecular = |xc: &str| {
-        let cfg = RhfConfig {
-            xc: Some(xc.to_string()),
-            dft_grid: Some(AtomicGridConfig {
+        let cfg = RhfConfig::default()
+            .with_xc(xc.to_string())
+            .with_dft_grid(AtomicGridConfig {
                 n_radial: 75,
                 n_angular: 302,
                 prune: None,
                 weight_cut: None,
-            }),
+            })
             // Exact four-centre J/K (no RI fitting error).
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(String::new()),
-            density_conv: 1e-10,
-            max_iter: 200,
-            ..Default::default()
-        };
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(String::new())
+            .with_density_conv(1e-10)
+            .with_max_iter(200);
         let r = solve_rhf(
             &ParallelContext::default(),
             &mol,
@@ -798,10 +796,7 @@ fn uhf_injected_refuses_a_closed_shell_only_xc_builder() {
         k: Box::new(su.eri.k_builder()),
         xc: Some(Box::new(ClosedOnly(pxc))),
     };
-    let cfg = UhfConfig {
-        use_sad_guess: false,
-        ..Default::default()
-    };
+    let cfg = UhfConfig::default().with_guess(ferric_scf::options::Guess::Core);
     let e = solve_uhf_injected(
         &ParallelContext::default(),
         su.cell.mol(),

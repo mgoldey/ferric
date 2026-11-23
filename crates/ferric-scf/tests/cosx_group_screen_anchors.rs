@@ -93,12 +93,10 @@ fn converged(label: &'static str, mol: Molecule, basis: &str) -> Setup {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        integral_thresh: 1e-14,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
+    cfg.integral_thresh = 1e-14;
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
     assert!(res.converged, "{label}: reference RHF did not converge");
     let d = res.density_total.clone();

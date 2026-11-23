@@ -281,24 +281,19 @@ fn load_system(system: &str, basis_name: &str, r: &Value) -> System {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
         // The gradient is FIRST order in the density error.
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+        .with_density_conv(1e-10)
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 /// Whether this system is expected to take the ECP path.

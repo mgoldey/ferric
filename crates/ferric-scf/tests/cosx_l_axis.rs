@@ -327,11 +327,9 @@ fn cosx_l_axis_cell() {
         println!("density loaded from {path} (nbf={nbf}, nocc={nocc}); tr(DS) check skipped, provenance = earlier DF-JK SCF process");
         (d, c)
     } else {
-        let scf_cfg = RhfConfig {
-            df_j_aux: Some(JKFIT.to_string()),
-            df_k_aux: Some(JKFIT.to_string()),
-            ..RhfConfig::default()
-        };
+        let scf_cfg = RhfConfig::default()
+            .with_df_j_aux(JKFIT.to_string())
+            .with_df_k_aux(JKFIT.to_string());
         let t0 = Instant::now();
         let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("DF-JK RHF");
         println!(

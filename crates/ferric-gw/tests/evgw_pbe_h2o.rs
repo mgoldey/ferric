@@ -43,10 +43,7 @@ fn evgw0_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
     let (mol, obs, dfbs, op) = h2o_setup();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("pbe");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;
@@ -152,10 +149,7 @@ fn evgw_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
     let (mol, obs, dfbs, op) = h2o_setup();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("pbe");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;

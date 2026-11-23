@@ -86,14 +86,12 @@ fn water() -> Molecule {
 /// through that same broken direct path even under an active multi-rank MPI
 /// world.
 fn df_rhf_config() -> RhfConfig {
-    RhfConfig {
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        use_sad_guess: false,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 fn pdep_cfg() -> PdepRpaConfig {

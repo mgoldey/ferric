@@ -3661,10 +3661,7 @@ mod stage_b_tests {
         let dfbs =
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(
             &ParallelContext::default(),
             &mol,
@@ -3858,10 +3855,7 @@ mod stage_b_tests {
                 PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap())
                     .unwrap();
             let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-            let cfg = RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            };
+            let cfg = RhfConfig::default().with_energy_conv(1e-10);
             let rhf = solve_rhf(
                 &ParallelContext::default(),
                 &mol,
@@ -4035,10 +4029,7 @@ mod stage_b_tests {
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
         let (vvhv, _) = checked_vvhv(&mol, &obs, &obs_bs, &rhf, "test").unwrap();
         let spaces = localized_spaces(&mol, &obs, &rhf, 4, &vvhv).unwrap();
@@ -4290,10 +4281,7 @@ mod stage_c_tests {
         let dfbs =
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-        let cfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(
             &ParallelContext::default(),
             &mol,
@@ -4827,10 +4815,7 @@ mod memory_gate_tests {
         let dfbs =
             PreparedBasis::new(&mol, &ferric_core::basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-        let rcfg = RhfConfig {
-            energy_conv: 1e-10,
-            ..Default::default()
-        };
+        let rcfg = RhfConfig::default().with_energy_conv(1e-10);
         let rhf = solve_rhf(
             &ParallelContext::default(),
             &mol,

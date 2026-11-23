@@ -1808,10 +1808,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1846,10 +1843,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1913,10 +1907,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -1951,10 +1942,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2013,10 +2001,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2075,10 +2060,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2148,10 +2130,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         (mol, obs, dfbs, rhf)
@@ -2386,10 +2365,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2513,10 +2489,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
 
@@ -2642,10 +2615,7 @@ mod tests {
                 &obs,
                 op,
                 &bounds,
-                &RhfConfig {
-                    energy_conv: 1e-10,
-                    ..Default::default()
-                },
+                &RhfConfig::default().with_energy_conv(1e-10),
             )
             .unwrap();
             let cfg = SosMp2Config {
@@ -2740,10 +2710,7 @@ mod tests {
                     &obs,
                     op,
                     &bounds,
-                    &RhfConfig {
-                        energy_conv: 1e-10,
-                        ..Default::default()
-                    },
+                    &RhfConfig::default().with_energy_conv(1e-10),
                 )
                 .unwrap();
                 (mol, obs, dfbs, rhf)
@@ -2804,10 +2771,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         (mol, obs, dfbs, rhf)

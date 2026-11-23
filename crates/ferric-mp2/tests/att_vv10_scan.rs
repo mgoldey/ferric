@@ -35,11 +35,9 @@ fn scan_matches_all_in_one_for_every_arm_and_b() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            energy_conv: 1e-10,
-            density_conv: 1e-9,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-9),
     )
     .unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();

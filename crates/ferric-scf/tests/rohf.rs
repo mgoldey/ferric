@@ -28,12 +28,10 @@ fn run_rohf(
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RohfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RohfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     (res, mol, prep)
@@ -94,12 +92,10 @@ fn fd_energy(mol: &Molecule, basis_name: &str) -> f64 {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RohfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RohfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     solve_rohf(&ctx, mol, &prep, op, &bounds, &cfg)
         .unwrap()
@@ -114,12 +110,10 @@ fn rohf_gradient_oh_sto3g_fd() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RohfConfig {
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RohfConfig::default()
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     let res = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let analytic = rohf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();

@@ -99,10 +99,7 @@ fn report_gradient_plane_peaks_by_system_size() {
         clear_global();
 
         // KS-DFT (PBE) gradient — the ddchi path.
-        let kscfg = RhfConfig {
-            xc: Some("PBE".into()),
-            ..Default::default()
-        };
+        let kscfg = RhfConfig::default().with_xc("PBE");
         let ksscf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &kscfg).expect("KS-DFT must converge");
         install_global(MemoryPool::with_capacity_bytes(AMPLE));
         ks_gradient_closed(&mol, &obs, &bs, op, &bounds, "PBE", &ksscf, None).expect("KS gradient");
@@ -201,10 +198,7 @@ fn report_ks_gradient_peak_under_a_real_budget() {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
         let ctx = ParallelContext::default();
-        let cfg = RhfConfig {
-            xc: Some("PBE".into()),
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default().with_xc("PBE");
         let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("KS-DFT must converge");
         let npts = ferric_dft::grid::build_atomic_grid(
             &mol,
@@ -258,11 +252,9 @@ fn report_ks_gradient_peak_against_the_scf_that_precedes_it() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_df_j_aux("def2-universal-jkfit");
 
     // SCF inside the pool window: its peak is what an optimizer is holding.
     install_global(MemoryPool::with_capacity_bytes(AMPLE));
@@ -299,10 +291,7 @@ fn find_minimum_pool_that_completes_the_ks_gradient() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("PBE");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("KS-DFT must converge");
 
     let mut lo = 0usize;

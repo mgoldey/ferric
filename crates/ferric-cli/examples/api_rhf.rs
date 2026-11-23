@@ -27,11 +27,9 @@ fn main() {
     let bounds = SchwarzBounds::compute(op, &prep).expect("Schwarz screening failed");
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
 
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("SCF failed");
 

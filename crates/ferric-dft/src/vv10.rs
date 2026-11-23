@@ -1862,14 +1862,12 @@ mod cutoff_tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let cfg = RhfConfig {
-            xc: Some("wB97X-V".into()),
-            df_j_aux: Some("def2-universal-jkfit".into()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            energy_conv: 1e-10,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_xc("wB97X-V")
+            .with_df_j_aux("def2-universal-jkfit")
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-8);
         let res = solve_rhf(&ctx, mol, &obs, op, &bounds, &cfg).unwrap();
         let d = res.density_total().clone();
 

@@ -1326,12 +1326,10 @@ mod fused_vs_legacy_tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
-        let cfg = ferric_scf::rhf::RhfConfig {
-            xc: Some(xc_name.into()),
-            density_conv: 1e-6,
-            max_iter: 300,
-            ..Default::default()
-        };
+        let cfg = ferric_scf::rhf::RhfConfig::default()
+            .with_xc(xc_name)
+            .with_density_conv(1e-6)
+            .with_max_iter(300);
         let ctx = ParallelContext::default();
         let (d_a, d_b) = if mult == 1 {
             let r = ferric_scf::rhf::solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();

@@ -50,16 +50,12 @@ fn rhf_newton_water_matches_diis_only() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg_diis = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
 
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_newton).unwrap();
@@ -107,18 +103,14 @@ fn rks_pbe_newton_engages_gga_fxc_and_matches_diis() {
     // -76.3334866645, matching the Newton/GGA-fxc path (which does not use
     // this config's `level_shift` for anything but its own damping) to
     // 2.1e-8, and matching plain unassisted Newton's -76.3334866667 to 2e-9.
-    let cfg_diis = RhfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        level_shift: 0.2,
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let cfg_diis = RhfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        .with_level_shift(0.2);
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
 
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
 
@@ -170,12 +162,10 @@ fn rhf_hessian_matvec_matches_finite_difference() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);
 
@@ -316,12 +306,10 @@ fn converged_water_rhf_inputs() -> (
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);
     let n = prep.nbasis();
@@ -545,16 +533,14 @@ fn fitted_newton_hvp_matches_finite_difference_of_the_fitted_gradient() {
     let h = oneelectron::hcore(&prep);
 
     // ferric's own fitted-HF SCF supplies a sensible occupied space.
-    let cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        max_iter: 200,
-        df_j_aux: Some(aux_name.into()),
-        df_k_aux: Some(aux_name.into()),
-        ri_j_precision: Some(RiJPrecision::F64),
-        ri_k_precision: Some(ferric_scf::df_k::RiKPrecision::F64),
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8)
+        .with_max_iter(200)
+        .with_df_j_aux(aux_name)
+        .with_df_k_aux(aux_name)
+        .with_ri_j_precision(RiJPrecision::F64);
+    cfg.ri_k_precision = Some(ferric_scf::df_k::RiKPrecision::F64);
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(res.converged);
 
@@ -691,20 +677,16 @@ fn newton_matches_diis_with_fitted_response(xyz: &str, basis_name: &str, xc: &st
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg_diis = RhfConfig {
-        xc: Some(xc.into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        level_shift: 0.2,
-        df_j_aux: Some(aux.into()),
-        df_k_aux: hybrid.then(|| aux.into()),
-        ..Default::default()
-    };
-    let cfg_newton = RhfConfig {
-        newton_trigger: 1e-2,
-        ..cfg_diis.clone()
-    };
+    let mut cfg_diis = RhfConfig::default()
+        .with_xc(xc)
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200)
+        .with_level_shift(0.2)
+        .with_df_j_aux(aux);
+    cfg_diis.df_k_aux = hybrid.then(|| aux.into());
+    let mut cfg_newton = cfg_diis.clone();
+    cfg_newton.newton_trigger = 1e-2;
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let (hvp0, dir0) = (
         hvp_calls_on_this_thread(),
@@ -774,14 +756,12 @@ fn rsh_newton_trigger_runs_no_hvp() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-7,
-        max_iter: 200,
-        newton_trigger: 1e-2,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-7)
+        .with_max_iter(200);
+    cfg.newton_trigger = 1e-2;
     let before = hvp_calls_on_this_thread();
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let hvps = hvp_calls_on_this_thread() - before;

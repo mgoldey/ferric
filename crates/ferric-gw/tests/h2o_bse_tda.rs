@@ -239,10 +239,7 @@ fn rpax_pbe_c6_h2o_vs_dosd() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        xc: Some("PBE".to_string()),
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_xc("PBE");
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
     let (freqs, weights) = cp_grid(0.6);
@@ -313,10 +310,7 @@ fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig {
-        xc: Some("PBE".to_string()),
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default().with_xc("PBE");
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
     let res = run_rpax_static_polarizability(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, SCISSOR)
@@ -399,10 +393,7 @@ fn rpax_pbe_scissor_scan_h2o() {
         &obs,
         op,
         &bounds,
-        &RhfConfig {
-            xc: Some("PBE".to_string()),
-            ..Default::default()
-        },
+        &RhfConfig::default().with_xc("PBE"),
     )
     .unwrap();
     let (freqs, weights) = cp_grid(0.6);

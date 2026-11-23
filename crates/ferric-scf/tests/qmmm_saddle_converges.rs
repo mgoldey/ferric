@@ -101,11 +101,9 @@ fn embedded_search(
         QmmmAtom::new("X", 0, 0.0, 0.0, -6.0, q_below),
     ];
     let system = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3]), 0, 1)?;
-    let mut scf = RhfConfig {
-        external_potential: system.to_external_potential(),
-        ..Default::default()
-    };
-    scf.max_iter = 300;
+    let scf = RhfConfig::default()
+        .with_external_potential(system.to_external_potential())
+        .with_max_iter(300);
 
     let s1 = scf.clone();
     let eg = move |m: &Molecule| -> Result<(f64, Array1<f64>), FerricError> {

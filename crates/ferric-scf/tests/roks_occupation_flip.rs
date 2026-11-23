@@ -53,13 +53,11 @@ fn oh_doublet() -> (Molecule, PreparedBasis, SchwarzBounds) {
 fn roks_pbe_converges_with_mom() {
     let (mol, obs, bounds) = oh_doublet();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        xc: Some("PBE".into()),
-        mom_after_iter: 3,
-        density_conv: 1e-8,
-        max_iter: 100,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("PBE")
+        .with_mom_after_iter(3)
+        .with_density_conv(1e-8)
+        .with_max_iter(100);
 
     let res = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg)
         .expect("ROKS/PBE with MOM must converge");
@@ -126,12 +124,10 @@ fn roks_hybrids_converge_without_mom() {
     let ctx = ParallelContext::default();
 
     for xc in ["B3LYP", "wB97X-V"] {
-        let cfg = RhfConfig {
-            xc: Some(xc.into()),
-            density_conv: 1e-8,
-            max_iter: 100,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_xc(xc)
+            .with_density_conv(1e-8)
+            .with_max_iter(100);
         let res = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg)
             .unwrap_or_else(|e| panic!("ROKS/{xc} errored: {e:?}"));
         eprintln!(
@@ -156,11 +152,9 @@ fn roks_hybrids_converge_without_mom() {
 fn plain_rohf_converges() {
     let (mol, obs, bounds) = oh_doublet();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig {
-        density_conv: 1e-8,
-        max_iter: 100,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_density_conv(1e-8)
+        .with_max_iter(100);
 
     let res = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     eprintln!(

@@ -53,12 +53,10 @@ fn sys(xyz: &str, charge: i32) -> Sys {
 }
 
 fn ks(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        density_conv: 1e-6,
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_density_conv(1e-6)
+        .with_max_iter(200)
 }
 
 fn solve(sys: &Sys, cfg: &RhfConfig) -> ScfResult {
@@ -110,10 +108,8 @@ fn ascending(e: &[f64]) -> bool {
 /// HF config and the result with its recorded functional (`ScfResult::xc`)
 /// cleared, so neither KS check fires first (as in `uhf_degenerate_swap.rs`).
 fn hessian_state_refusal(sys: &Sys, r: &ScfResult, cfg: &RhfConfig) -> String {
-    let hf = RhfConfig {
-        xc: None,
-        ..cfg.clone()
-    };
+    let mut hf = cfg.clone();
+    hf.xc = None;
     let r = &ScfResult {
         xc: None,
         ..r.clone()
@@ -263,11 +259,9 @@ fn ordinary_uks_exit_keeps_canonical_eigenvectors() {
 }
 
 fn hf(density_conv: f64) -> RhfConfig {
-    RhfConfig {
-        density_conv,
-        max_iter: 200,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_density_conv(density_conv)
+        .with_max_iter(200)
 }
 
 const SH: &str = "2\nSH\nS 0 0 0\nH 0 0 1.3409\n";
@@ -428,10 +422,8 @@ fn symmetry_blocked_exit_keeps_blocked_eigenpairs() {
         ("B2".into(), (1, 1)),
     ];
     for dconv in [1e-2, 1e-4] {
-        let cfg = RhfConfig {
-            symmetry: true,
-            ..hf(dconv)
-        };
+        let mut cfg = hf(dconv);
+        cfg.symmetry = true;
         let u = ferric_scf::symmetric_open::solve_uhf_symmetric(
             &ParallelContext::default(),
             &mol,

@@ -106,13 +106,11 @@ fn h2o_tuning_raises_no_branch_flag() {
     let (mol, prep, bounds) = load("water.xyz", "6-31g");
     let ctx = ParallelContext::default();
     let c = cfg(
-        RhfConfig {
-            df_j_aux: Some(String::new()),
-            energy_conv: 1e-10,
-            density_conv: 1e-7,
-            max_iter: 500,
-            ..Default::default()
-        },
+        RhfConfig::default()
+            .with_df_j_aux(String::new())
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-7)
+            .with_max_iter(500),
         0.2,
         0.8,
     );
@@ -141,14 +139,12 @@ fn h2o_tuning_raises_no_branch_flag() {
 fn n2_cation_branch_sweep_measurement() {
     let (mol, prep, bounds) = load("validation/n2.xyz", "def2-svp");
     let ctx = ParallelContext::default();
-    let base = RhfConfig {
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-7,
-        max_iter: 500,
-        ..Default::default()
-    };
+    let base = RhfConfig::default()
+        .with_df_j_aux(String::new())
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-7)
+        .with_max_iter(500);
     let c = cfg(base, 0.2, 0.8);
     let omegas: Vec<f64> = (50..=60).map(|k| k as f64 / 100.0).collect();
 
@@ -212,14 +208,12 @@ fn n2_cation_branch_sweep_measurement() {
 fn n2_broken_branch_probe_measurement() {
     let (mol, prep, bounds) = load("validation/n2.xyz", "def2-svp");
     let ctx = ParallelContext::default();
-    let scf_base = RhfConfig {
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-7,
-        max_iter: 500,
-        ..Default::default()
-    };
+    let scf_base = RhfConfig::default()
+        .with_df_j_aux(String::new())
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-7)
+        .with_max_iter(500);
     let mut cation = mol.clone();
     cation.charge += 1;
     cation.multiplicity = 2;
@@ -343,10 +337,7 @@ fn omega_star_before_and_after_continuation() {
     for (xyz, basis, lo, hi, tol, maxev) in cases {
         let (mol, prep, bounds) = load(xyz, basis);
         let scf = if basis == "6-31g" {
-            RhfConfig {
-                energy_conv: 1e-9,
-                ..Default::default()
-            }
+            RhfConfig::default().with_energy_conv(1e-9)
         } else {
             // H2O runs at the tight setting its ΔJ assertion needs (below);
             // NH3 keeps the validation row's 1e-10 / 1e-7.
@@ -355,14 +346,12 @@ fn omega_star_before_and_after_continuation() {
             } else {
                 (1e-10, 1e-7)
             };
-            RhfConfig {
-                df_j_aux: Some(String::new()),
-                df_k_aux: Some("def2-universal-jkfit".into()),
-                max_iter: 500,
-                energy_conv: e_conv,
-                density_conv: d_conv,
-                ..Default::default()
-            }
+            RhfConfig::default()
+                .with_df_j_aux(String::new())
+                .with_df_k_aux("def2-universal-jkfit")
+                .with_max_iter(500)
+                .with_energy_conv(e_conv)
+                .with_density_conv(d_conv)
         };
         let base = OmegaTuneConfig {
             omega_tol: tol,
@@ -501,14 +490,12 @@ fn omega_star_before_and_after_continuation() {
 fn n2_onset_is_not_visible_without_an_orbital_hessian() {
     let (mol, prep, bounds) = load("validation/n2.xyz", "def2-svp");
     let ctx = ParallelContext::default();
-    let scf = RhfConfig {
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-7,
-        max_iter: 500,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_df_j_aux(String::new())
+        .with_df_k_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-7)
+        .with_max_iter(500);
     let c = cfg(scf.clone(), 0.2, 0.8);
     let omegas = [0.50_f64, 0.53, 0.56, 0.60];
 
@@ -645,14 +632,12 @@ fn h2o_continuation_dj_vs_scf_convergence_measurement() {
     let ctx = ParallelContext::default();
     let (mol, prep, bounds) = load("validation/h2o.xyz", "def2-svp");
     for (e_conv, d_conv) in [(1e-9, 1e-6), (1e-10, 1e-7), (1e-11, 1e-8), (1e-12, 1e-9)] {
-        let scf = RhfConfig {
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some("def2-universal-jkfit".into()),
-            max_iter: 500,
-            energy_conv: e_conv,
-            density_conv: d_conv,
-            ..Default::default()
-        };
+        let scf = RhfConfig::default()
+            .with_df_j_aux(String::new())
+            .with_df_k_aux("def2-universal-jkfit")
+            .with_max_iter(500)
+            .with_energy_conv(e_conv)
+            .with_density_conv(d_conv);
         let base = OmegaTuneConfig {
             omega_tol: 1e-5,
             max_evals: 40,

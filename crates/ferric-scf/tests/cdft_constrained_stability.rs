@@ -209,29 +209,28 @@ fn hene_xyz() -> String {
 /// iters`. Every baseline in this file was recorded against the hcore-started
 /// solver, so the pin belongs where all of them inherit it.
 fn hene_cfg() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        level_shift: HENE_LEVEL_SHIFT,
-        cdft_lambda_tol: HENE_LAMBDA_TOL,
-        // Pinned so "this path converges" is not also an assertion about
-        // how many outer iterations a particular CPU needs -- CI and this
-        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
-        //
-        // 40, not higher: every path in this repo that converges at all does
-        // so in <= 23 outer iters locally, and the cap is also the price paid
-        // by paths that NEVER converge (each wasted outer iteration runs a
-        // full inner SCF). At 64 this file took 462 s; the non-convergent
-        // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
-        cdft_stability_descent: false,
-        use_sad_guess: false,
-        dft_grid: Some(AtomicGridConfig {
+    let mut c = RhfConfig::default()
+        .with_max_iter(400)
+        .with_level_shift(HENE_LEVEL_SHIFT)
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_dft_grid(AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
             ..Default::default()
-        }),
-        ..Default::default()
-    }
+        });
+    c.cdft_lambda_tol = HENE_LAMBDA_TOL;
+    // Pinned so "this path converges" is not also an assertion about
+    // how many outer iterations a particular CPU needs -- CI and this
+    // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+    //
+    // 40, not higher: every path in this repo that converges at all does
+    // so in <= 23 outer iters locally, and the cap is also the price paid
+    // by paths that NEVER converge (each wasted outer iteration runs a
+    // full inner SCF). At 64 this file took 462 s; the non-convergent
+    // R = 2.5/3.0 sigma points burn the whole cap before failing.
+    c.cdft_max_outer = 40;
+    c.cdft_stability_descent = false;
+    c
 }
 
 /// Tightly-converged variant for the UNCONSTRAINED reference states and the FD
@@ -239,11 +238,7 @@ fn hene_cfg() -> RhfConfig {
 /// point that is not actually stationary, so the anchors get 1e-11/1e-9 even
 /// though the cDFT lane itself runs at the defaults.
 fn hene_cfg_tight() -> RhfConfig {
-    RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..hene_cfg()
-    }
+    hene_cfg().with_energy_conv(1e-11).with_density_conv(1e-9)
 }
 
 /// Build the constraint weight matrix `W` for a fragment, on the SAME grid the
@@ -940,10 +935,7 @@ fn lambda_zero_augmented_hessian_is_bit_identical_to_unconstrained() {
 fn unconstrained_hene_is_unstable_known_reference() {
     let sys = build_sys(&hene_xyz(), 1, 2, "def2-svp");
     let h = oneelectron::hcore(&sys.prep);
-    let cfg = RhfConfig {
-        use_sad_guess: false,
-        ..hene_cfg_tight()
-    };
+    let cfg = hene_cfg_tight().with_guess(ferric_scf::options::Guess::Core);
     let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
     assert!(res.converged, "the reference state must be a CONVERGED one");
     let c_a = res.mos_alpha.clone();
@@ -1003,12 +995,10 @@ fn known_stable_reference_reports_positive_lambda_min() {
     ] {
         let sys = build_sys(xyz, charge, mult, bset);
         let h = oneelectron::hcore(&sys.prep);
-        let cfg = RhfConfig {
-            energy_conv: 1e-11,
-            density_conv: 1e-9,
-            max_iter: 200,
-            ..Default::default()
-        };
+        let cfg = RhfConfig::default()
+            .with_energy_conv(1e-11)
+            .with_density_conv(1e-9)
+            .with_max_iter(200);
         let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
         assert!(res.converged);
         let c_a = res.mos_alpha.clone();
@@ -1075,12 +1065,10 @@ fn dense_cross_check_rejects_the_symmetry_block_root() {
         "sto-3g",
     );
     let h = oneelectron::hcore(&sys.prep);
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
     assert!(res.converged);
     let c_a = res.mos_alpha.clone();
@@ -1284,14 +1272,12 @@ fn constrained_state_stability(
     label: &str,
 ) -> (f64, f64, f64, f64, f64, usize) {
     let h = oneelectron::hcore(&sys.prep);
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: fragment.to_vec(),
-            target,
-            spin: SpinChannel::Total,
-        }],
-        ..hene_cfg()
-    };
+    let mut cfg = hene_cfg();
+    cfg.constraints = vec![Constraint {
+        fragment: fragment.to_vec(),
+        target,
+        spin: SpinChannel::Total,
+    }];
     let cd = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap();
     assert!(cd.scf.converged, "{label}: inner SCF must be converged");
     let lam = cd.lambdas[0];
@@ -1511,14 +1497,12 @@ fn following_state_b_instability_reaches_a_lower_energy() {
     let fragment = [0usize];
     let target = 2.0;
 
-    let cfg = RhfConfig {
-        constraints: vec![Constraint {
-            fragment: fragment.to_vec(),
-            target,
-            spin: SpinChannel::Total,
-        }],
-        ..hene_cfg()
-    };
+    let mut cfg = hene_cfg();
+    cfg.constraints = vec![Constraint {
+        fragment: fragment.to_vec(),
+        target,
+        spin: SpinChannel::Total,
+    }];
     let cd = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap();
     assert!(cd.scf.converged);
     let lam = cd.lambdas[0];

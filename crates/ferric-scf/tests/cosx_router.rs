@@ -44,13 +44,11 @@ fn setup(mol: Molecule, basis: &str) -> Setup {
     let bs = bundled(basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).expect("schwarz");
-    let cfg = RhfConfig {
-        df_j_aux: Some(JK.to_string()),
-        df_k_aux: Some(JK.to_string()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_df_j_aux(JK.to_string())
+        .with_df_k_aux(JK.to_string())
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let r = solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -364,18 +362,16 @@ fn rijcosx_scf_energy_is_bit_identical_with_the_router_on() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let run = |m: f64| {
-        let c = RhfConfig {
-            k_builder: Some(ferric_scf::options::KBuilderKind::Cosx),
-            cosx: CosxConfig {
+        let c = RhfConfig::default()
+            .with_k_builder(ferric_scf::options::KBuilderKind::Cosx)
+            .with_cosx(CosxConfig {
                 fp64_multiplier: m,
                 ..CosxConfig::default()
-            },
-            df_j_aux: Some(JK.to_string()),
-            df_k_aux: Some(String::new()),
-            energy_conv: 1e-9,
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+            })
+            .with_df_j_aux(JK.to_string())
+            .with_df_k_aux(String::new())
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-8);
         pool().install(|| {
             solve_rhf(
                 &ParallelContext::default(),

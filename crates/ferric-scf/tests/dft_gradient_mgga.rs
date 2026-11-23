@@ -37,16 +37,14 @@ use std::path::PathBuf;
 /// A tighter energy_conv would limit-cycle and leave perturbed geometries with
 /// a stale density, poisoning the FD reference.
 fn cfg_for(xc: &str) -> RhfConfig {
-    RhfConfig {
+    RhfConfig::default()
         // PySCF references were generated on the flat 75 x 110 grid.
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-8,
-        max_iter: 500,
-        ..Default::default()
-    }
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-8)
+        .with_max_iter(500)
 }
 
 fn fd_gradient_closed(xyz: &str, basis_name: &str, xc: &str, delta: f64) -> Array2<f64> {
@@ -69,11 +67,9 @@ fn fd_gradient_closed(xyz: &str, basis_name: &str, xc: &str, delta: f64) -> Arra
         &base_cfg,
     )
     .unwrap();
-    let cfg = RhfConfig {
-        init_guess_density: Some(res0.density_r().clone()),
-        use_sad_guess: false,
-        ..base_cfg
-    };
+    let cfg = base_cfg
+        .with_init_guess_density(res0.density_r().clone())
+        .with_guess(ferric_scf::options::Guess::Core);
 
     let pairs: Vec<(usize, usize)> = (0..natoms)
         .flat_map(|a| (0..3).map(move |c| (a, c)))
@@ -437,16 +433,14 @@ fn scan_gradient_h2o_631g_vs_pyscf() {
 // 1e-4 — the same tolerance as closed-shell.
 
 fn uhf_cfg(xc: &str) -> RhfConfig {
-    RhfConfig {
+    RhfConfig::default()
         // PySCF references were generated on the flat 75 x 110 grid.
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-9,
-        density_conv: 1e-8,
-        max_iter: 500,
-        ..Default::default()
-    }
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-8)
+        .with_max_iter(500)
 }
 
 #[allow(clippy::too_many_arguments)]

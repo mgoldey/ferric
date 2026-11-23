@@ -239,12 +239,10 @@ fn setup(system: &str, basis_name: &str, aux_name: &str) -> Setup {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // dRPA is FIRST order in a Fock/orbital inconsistency (proof notebook
     // §3), so the density is converged one decade past the κ-MP2 harness.
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_max_iter(200);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K expected"

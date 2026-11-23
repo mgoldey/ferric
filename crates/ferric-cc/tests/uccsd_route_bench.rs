@@ -46,10 +46,7 @@ fn uccsd_route_timing() {
         &mol,
         &obs,
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            ..Default::default()
-        },
+        &RhfConfig::default().with_density_conv(1e-10),
     )
     .unwrap();
     let t_scf = t0.elapsed().as_secs_f64();

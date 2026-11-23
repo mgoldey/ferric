@@ -75,11 +75,9 @@ fn total_energy(
     let prep = PreparedBasis::new(mol, obs).unwrap();
     let dfbs = PreparedBasis::new(mol, aux).unwrap();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let mut rhf_cfg = RhfConfig {
-        density_conv: 1e-9,
-        ..Default::default()
-    }
-    .for_geometry_task();
+    let mut rhf_cfg = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .for_geometry_task();
     jk.apply(&mut rhf_cfg);
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, mol, &prep, op, &bounds, &rhf_cfg).unwrap();

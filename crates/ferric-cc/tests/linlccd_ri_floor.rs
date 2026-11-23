@@ -36,11 +36,9 @@ fn converged_rhf(mol: &Molecule, obs: &PreparedBasis) -> ferric_scf::result::Scf
         obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig {
-            density_conv: 1e-10,
-            max_iter: 200,
-            ..Default::default()
-        },
+        &RhfConfig::default()
+            .with_density_conv(1e-10)
+            .with_max_iter(200),
     )
     .unwrap();
     assert!(rhf.converged, "reference SCF must converge");

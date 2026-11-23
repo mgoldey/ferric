@@ -194,19 +194,12 @@ fn load(system: &str) -> Sys {
 /// PySCF's stability-followed state (as validation_u_rimp2.rs).
 fn uhf(sys: &Sys) -> ScfResult {
     let e_ref = num_ctx(&sys.r, "/uhf/energy", &sys.label);
-    let base = RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    };
-    let steered = RhfConfig {
-        level_shift: 0.5,
-        mom_after_iter: 5,
-        ..base.clone()
-    };
+    let base = RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_stability(ferric_scf::options::Stability::Descend);
+    let steered = base.clone().with_level_shift(0.5).with_mom_after_iter(5);
     let mut tried = Vec::new();
     for (name, cfg) in [("stability-descent", base), ("ls0.5+MOM5", steered)] {
         let res = solve_uhf(

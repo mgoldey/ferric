@@ -58,22 +58,18 @@ const H2O_XYZ: &str = "3\nwater\nO 0.000000 0.000000 0.117300\nH 0.000000 0.7572
 const H2_XYZ: &str = "2\nh2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n";
 
 fn rks_pbe() -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".to_string()),
-        max_iter: 300,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc("PBE")
+        .with_max_iter(300)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn tight_hf() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
 }
 
 fn fd_config() -> FrequencyConfig {

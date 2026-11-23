@@ -132,18 +132,16 @@ fn config(functional: &str, lo: f64, hi: f64, check: bool) -> OmegaTuneConfig {
         omega_hi: hi,
         omega_tol: 2e-2,
         max_evals: 4,
-        scf: RhfConfig {
-            df_j_aux: Some(String::new()),
-            df_k_aux: Some(AUX.into()),
-            max_iter: 500,
-            energy_conv: 1e-10,
-            density_conv: 1e-7,
+        scf: RhfConfig::default()
+            .with_df_j_aux(String::new())
+            .with_df_k_aux(AUX)
+            .with_max_iter(500)
+            .with_energy_conv(1e-10)
+            .with_density_conv(1e-7)
             // The references are PySCF on the flat (75,110) grid
             // (gen_rsh_cation_stability.py: prune=None), not the pruned KS
             // default AtomicGridConfig::production().
-            dft_grid: Some(AtomicGridConfig::default()),
-            ..Default::default()
-        },
+            .with_dft_grid(AtomicGridConfig::default()),
         check_cation_stability: check,
         ..Default::default()
     }

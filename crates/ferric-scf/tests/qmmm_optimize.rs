@@ -208,10 +208,7 @@ fn full_ethane_topology() -> MmTopology {
 fn optimize_qmmm_with_no_mm_matches_optimize_geometry() {
     let ctx = ParallelContext::default();
     let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default().with_energy_conv(1e-10);
     // The search before the model Hessian existed (identity start).
     let opt_config = OptimizeConfig {
         trust_radius: 0.1,
@@ -274,10 +271,7 @@ fn optimize_qmmm_default_start_with_no_mm_matches_optimize_geometry() {
         ("H", 1, [0.0, -0.3, 0.85]),
     ];
     let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n", 0, 1).unwrap();
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default().with_energy_conv(1e-10);
     let opt_config = OptimizeConfig::default();
     assert_eq!(opt_config.initial_hessian, None);
     let plain = optimize_geometry(
@@ -331,11 +325,9 @@ fn optimize_qmmm_default_start_with_no_mm_matches_optimize_geometry() {
 fn optimize_qmmm_lindh_start_reaches_the_identity_start_minimum() {
     let ctx = ParallelContext::default();
     let system = capped_ethane();
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
     let run = |ih: Option<InitialHessian>| {
         let cfg = QmmmOptimizeConfig {
             method: QmmmMethod::Rhf,
@@ -378,11 +370,9 @@ fn optimize_qmmm_capped_ethane_converges_with_small_final_gradient() {
         max_steps: 60,
         ..Default::default()
     };
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let cfg = QmmmOptimizeConfig {
         method: QmmmMethod::Rhf,
@@ -449,11 +439,9 @@ fn optimize_qmmm_full_topology_move_all_returns_its_lowest_energy_and_converges(
         max_steps: 80,
         ..Default::default()
     };
-    let rhf_config = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let rhf_config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
 
     let cfg = QmmmOptimizeConfig {
         method: QmmmMethod::Rhf,
@@ -535,9 +523,10 @@ fn cosmo_scf_is_refused_before_the_first_step() {
         move_mm: MoveMm::None,
         opt: OptimizeConfig::default(),
         mm_topology: None,
-        scf: RhfConfig {
-            cosmo: Some(ferric_scf::cosmo::CosmoConfig::default()),
-            ..Default::default()
+        scf: {
+            let mut c = RhfConfig::default();
+            c.cosmo = Some(ferric_scf::cosmo::CosmoConfig::default());
+            c
         },
     };
     let err = optimize_qmmm(&ctx, &capped_ethane(), "sto-3g", &cfg).unwrap_err();
@@ -582,8 +571,9 @@ fn move_with_polarizable_scf_config_is_a_typed_error() {
         move_mm: MoveMm::None,
         opt: OptimizeConfig::default(),
         mm_topology: None,
-        scf: RhfConfig {
-            polarizable: Some(PolarizableSites {
+        scf: {
+            let mut c = RhfConfig::default();
+            c.polarizable = Some(PolarizableSites {
                 sites: vec![PolarizableSite {
                     x: 5.0,
                     y: 0.0,
@@ -591,8 +581,8 @@ fn move_with_polarizable_scf_config_is_a_typed_error() {
                     alpha: 1.0,
                 }],
                 ..Default::default()
-            }),
-            ..Default::default()
+            });
+            c
         },
     };
     let err = optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap_err();

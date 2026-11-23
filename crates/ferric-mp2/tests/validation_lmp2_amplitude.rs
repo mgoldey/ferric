@@ -212,12 +212,10 @@ fn setup(system: &str, basis_name: &str, r: &Value) -> Setup {
     );
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     assert!(
         cfg.df_j_aux.is_none() && cfg.df_k_aux.is_none(),
         "exact J/K expected"
@@ -570,10 +568,7 @@ fn default_cg_rtol_size_rows_are_within_their_bound() {
             &obs,
             coul,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         for (name, op, cal) in [("coul", coul, 0.7), ("erfc", Operator::erfc(1.0), 0.02)] {

@@ -67,11 +67,9 @@ fn try_prepare(label: &str, path: &str, bas: &str) -> Result<System, String> {
     )
     .map_err(|e| format!("{e:?}"))?;
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).map_err(|e| format!("{e:?}"))?;
-    let scf = RhfConfig {
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let scf = RhfConfig::default()
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
         .map_err(|e| format!("{e:?}"))?;
     if !rhf.converged {

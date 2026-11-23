@@ -14,14 +14,9 @@ use ndarray::Array2;
 use rayon::prelude::*;
 
 fn rhf_cfg(xc: &str, hybrid: bool) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: if hybrid {
-            Some("def2-universal-jkfit".into())
-        } else {
-            None
-        },
+    let mut c = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
         // energy_conv follows rhf.rs's documented convergence philosophy
         // (RhfConfig::default doc comment): dp_rms is the real convergence
         // signal; ΔE floors with naux (DF-J/DF-K are in play here) and is
@@ -32,11 +27,15 @@ fn rhf_cfg(xc: &str, hybrid: bool) -> RhfConfig {
         // root cause of the FD reference blowing up at isolated
         // displacements while every other component tracked the analytic
         // gradient.
-        energy_conv: 1e-8,
-        density_conv: 1e-8,
-        max_iter: 500,
-        ..Default::default()
-    }
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-8)
+        .with_max_iter(500);
+    c.df_k_aux = if hybrid {
+        Some("def2-universal-jkfit".into())
+    } else {
+        None
+    };
+    c
 }
 
 fn fd_gradient(xyz: &str, basis_name: &str, xc: &str, hybrid: bool, delta: f64) -> Array2<f64> {
@@ -68,11 +67,9 @@ fn fd_gradient(xyz: &str, basis_name: &str, xc: &str, hybrid: bool, delta: f64) 
         &base_cfg,
     )
     .unwrap();
-    let cfg = RhfConfig {
-        init_guess_density: Some(res0.density_r().clone()),
-        use_sad_guess: false,
-        ..base_cfg
-    };
+    let cfg = base_cfg
+        .with_init_guess_density(res0.density_r().clone())
+        .with_guess(ferric_scf::options::Guess::Core);
 
     // Each (atom, coord) displacement pair is independent given the shared
     // `cfg` (which embeds the common equilibrium-density seed established

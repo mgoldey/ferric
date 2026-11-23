@@ -64,7 +64,7 @@ use ferric_pbc::mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, Mp2Denominat
 use ferric_pbc::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_pbc::rsgdf::RsGdfConfig;
 use ferric_scf::result::ScfResult;
-use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection, RhfConfig};
+use ferric_scf::rhf::{solve_rhf_injected, PeriodicInjection};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 use num_complex::Complex64;
@@ -159,10 +159,7 @@ fn gamma_rhf_tight(
         k: Box::new(eri.k_builder()),
         xc: None,
     };
-    let cfg = RhfConfig {
-        density_conv: 1e-11,
-        ..gamma_config()
-    };
+    let cfg = gamma_config().with_density_conv(1e-11);
     let r = solve_rhf_injected(&ctx, cell.mol(), prep, op, &bounds, &cfg, inj)
         .expect("gamma-point RHF");
     assert!(r.converged, "gamma-point RHF did not converge");

@@ -54,12 +54,10 @@ fn rhf_energy(xyz: &str, bs: &BasisSet) -> f64 {
     let prep = PreparedBasis::new(&mol, bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        energy_conv: 1e-11,
-        density_conv: 1e-9,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-9)
+        .with_max_iter(200);
     let ctx = ParallelContext::default();
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
     assert!(res.converged, "RHF did not converge for {xyz}");

@@ -285,35 +285,31 @@ fn check_harness(s: &Setup, r: &Value) {
 /// `xc = None` is RHF. J is always exact four-centre (`df_j_aux = ""` for KS,
 /// which otherwise defaults to RI-J), so COSX is the only approximation.
 fn scf_cfg(xc: Option<&str>, cosx: Option<CosxConfig>) -> RhfConfig {
-    RhfConfig {
-        k_builder: cosx
-            .as_ref()
-            .map(|_| ferric_scf::options::KBuilderKind::Cosx),
-        cosx: cosx.unwrap_or_default(),
-        xc: xc.map(str::to_string),
-        df_j_aux: xc.map(|_| String::new()),
-        df_k_aux: xc.map(|_| String::new()),
-        // The XC grid (B3LYP only) is pinned to the reference's (75,110) flat.
-        dft_grid: xc.map(|_| AtomicGridConfig {
-            n_radial: 75,
-            n_angular: 110,
-            ..Default::default()
-        }),
+    let mut c = RhfConfig::default()
+        .with_cosx(cosx.clone().unwrap_or_default())
         // density_conv is ferric's primary criterion; energy_conv is a sanity
         // bound, reachable here because nothing is density-fitted.
-        energy_conv: 1e-9,
-        density_conv: 1e-9,
-        max_iter: 300,
+        .with_energy_conv(1e-9)
+        .with_density_conv(1e-9)
+        .with_max_iter(300);
+    c.k_builder = cosx
+        .as_ref()
+        .map(|_| ferric_scf::options::KBuilderKind::Cosx);
+    c.xc = xc.map(str::to_string);
+    c.df_j_aux = xc.map(|_| String::new());
+    c.df_k_aux = xc.map(|_| String::new());
+    // The XC grid (B3LYP only) is pinned to the reference's (75,110) flat.
+    c.dft_grid = xc.map(|_| AtomicGridConfig {
+        n_radial: 75,
+        n_angular: 110,
         ..Default::default()
-    }
+    });
+    c
 }
 
 fn seeded(cfg: RhfConfig, seed: &Array2<f64>) -> RhfConfig {
-    RhfConfig {
-        init_guess_density: Some(seed.clone()),
-        use_sad_guess: false,
-        ..cfg
-    }
+    cfg.with_init_guess_density(seed.clone())
+        .with_guess(ferric_scf::options::Guess::Core)
 }
 
 fn solve(s: &Setup, cfg: &RhfConfig, what: &str) -> ScfResult {

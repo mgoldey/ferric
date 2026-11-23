@@ -53,12 +53,13 @@ fn packed_reuse_under_a_tight_pool_recomputes_instead_of_failing() {
     );
     let budget = full + dressed - 1;
     let cfg = with_fresh_handoff(
-        &RhfConfig {
-            xc: Some("B3LYP".into()),
-            df_j_aux: Some(AUX.into()),
-            df_k_aux: Some(AUX.into()),
-            three_index_budget_bytes: budget,
-            ..RhfConfig::default()
+        &{
+            let mut c = RhfConfig::default()
+                .with_xc("B3LYP")
+                .with_df_j_aux(AUX)
+                .with_df_k_aux(AUX);
+            c.three_index_budget_bytes = budget;
+            c
         }
         .for_geometry_task(),
     );

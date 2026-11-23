@@ -76,16 +76,14 @@ pub fn has_deriv2() -> bool {
 
 /// UKS config: functional `xc`, exact J and K, the test grid.
 pub fn config(xc: &str) -> RhfConfig {
-    RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        dft_grid: Some(grid_cfg()),
-        max_iter: 300,
-        energy_conv: 1e-13,
-        density_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_dft_grid(grid_cfg())
+        .with_max_iter(300)
+        .with_energy_conv(1e-13)
+        .with_density_conv(1e-11)
 }
 
 pub struct Pt {
@@ -246,11 +244,9 @@ pub fn frozen_reference(p: &Pt, xc: &str) -> FrozenRef {
 /// stops one iteration later than its neighbours breaks the cancellation of
 /// the shared residual.
 pub fn fd_reference_config(cfg: &RhfConfig) -> RhfConfig {
-    RhfConfig {
-        density_conv: cfg.density_conv.min(1e-13),
-        energy_conv: cfg.energy_conv.min(1e-14),
-        ..cfg.clone()
-    }
+    cfg.clone()
+        .with_density_conv(cfg.density_conv.min(1e-13))
+        .with_energy_conv(cfg.energy_conv.min(1e-14))
 }
 
 /// Largest DIIS `err_max` an SCF behind a gradient difference may stop at

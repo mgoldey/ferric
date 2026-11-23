@@ -171,10 +171,7 @@ fn terfc_gradients_on_term_list_kernels_match_the_reference_kernels() {
             None,
             &exact(),
             &mut ScfWarmStart::new(false),
-            RhfConfig {
-                density_conv: 1e-11,
-                ..Default::default()
-            },
+            RhfConfig::default().with_density_conv(1e-11),
         )
         .unwrap()
     });

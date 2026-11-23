@@ -60,15 +60,13 @@ fn run_case(label: &str, xyz: &str, xc: &str, expected_file: &str) {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
+    let cfg = RhfConfig::default()
         // PySCF references were generated on the flat 75 x 110 grid.
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: ENERGY_CONV,
-        density_conv: DENSITY_CONV,
-        ..Default::default()
-    };
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(DENSITY_CONV);
     let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
 
     let r: Ref =
@@ -176,16 +174,14 @@ fn run_uks_case(label: &str, xyz: &str, mult: usize, xc: &str, expected_file: &s
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
+    let cfg = RhfConfig::default()
         // PySCF references were generated on the flat 75 x 110 grid.
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: ENERGY_CONV,
-        density_conv: DENSITY_CONV,
-        max_iter: 500,
-        ..Default::default()
-    };
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(DENSITY_CONV)
+        .with_max_iter(500);
     let res = solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).unwrap();
 
     let r: Ref =
@@ -278,15 +274,13 @@ fn scan_gradient_ccpvdz_d_shell_vs_pyscf() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig {
+    let cfg = RhfConfig::default()
         // PySCF references were generated on the flat 75 x 110 grid.
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig::default()),
-        xc: Some("SCAN".into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: ENERGY_CONV,
-        density_conv: DENSITY_CONV,
-        ..Default::default()
-    };
+        .with_dft_grid(ferric_dft::grid::AtomicGridConfig::default())
+        .with_xc("SCAN")
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_energy_conv(ENERGY_CONV)
+        .with_density_conv(DENSITY_CONV);
     let res = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
 
     let grad = ks_gradient_closed_with_exchange_on_grids(

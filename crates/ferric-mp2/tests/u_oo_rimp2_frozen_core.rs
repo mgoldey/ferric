@@ -117,12 +117,10 @@ fn load(system: &str, mult: usize) -> Sys {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
 }
 
 fn u_oo_config(frozen_core: usize) -> UOoRiMp2Config {
@@ -283,11 +281,7 @@ fn check_vs_numpy(system: &str) {
         num_ctx(&r, "/nuclear_repulsion", &ctx),
         1e-9,
     );
-    let uhf_cfg = RhfConfig {
-        check_stability: true,
-        scf_stability_descent: true,
-        ..scf_config()
-    };
+    let uhf_cfg = scf_config().with_stability(ferric_scf::options::Stability::Descend);
     let uhf = solve_uhf(
         &ParallelContext::default(),
         &s.mol,

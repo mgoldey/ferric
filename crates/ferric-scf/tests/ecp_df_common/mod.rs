@@ -85,15 +85,13 @@ pub fn config(fit: Fit) -> RhfConfig {
         Fit::K(a) => (None, aux(a)),
         Fit::Jk(a) => (aux(a), aux(a)),
     };
-    RhfConfig {
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        max_iter: 300,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(j.unwrap_or_default()),
-        df_k_aux: Some(k.unwrap_or_default()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_max_iter(300)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(j.unwrap_or_default())
+        .with_df_k_aux(k.unwrap_or_default())
 }
 
 pub fn ecp_mol(xyz: &str, mult: usize, bs: &BasisSet) -> Molecule {

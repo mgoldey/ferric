@@ -99,11 +99,9 @@ fn rhf_energy(mol: &Molecule, basis_name: &str) -> f64 {
     let prep = PreparedBasis::new(mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ..Default::default()
-    };
+    let config = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
     let ctx = ParallelContext::default();
     let result = solve_rhf(&ctx, mol, &prep, op, &bounds, &config).unwrap();
     assert!(result.converged, "RHF did not converge");

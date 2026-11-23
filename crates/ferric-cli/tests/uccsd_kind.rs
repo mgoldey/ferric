@@ -162,11 +162,9 @@ fn cli_uccsd_t_equals_the_library() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig {
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11);
     let scf = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &scf_cfg).unwrap();
     let cfg = CcConfig::default();
     let cc = u_ccsd(&mol, &obs, &dfbs, op, &scf, &cfg).unwrap();

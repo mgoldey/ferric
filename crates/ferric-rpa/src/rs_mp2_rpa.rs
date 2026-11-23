@@ -1238,10 +1238,7 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default().with_energy_conv(1e-10),
         )
         .unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
@@ -1653,11 +1650,9 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-10,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-10),
         )
         .unwrap();
         assert!(rhf.converged);
@@ -1674,12 +1669,10 @@ mod tests {
             &mol,
             &obs,
             &bounds,
-            &RhfConfig {
-                energy_conv: 1e-11,
-                density_conv: 1e-9,
-                max_iter: 300,
-                ..Default::default()
-            },
+            &RhfConfig::default()
+                .with_energy_conv(1e-11)
+                .with_density_conv(1e-9)
+                .with_max_iter(300),
         )
         .unwrap();
         assert!(uhf.converged);

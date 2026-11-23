@@ -107,12 +107,10 @@ fn rks_density(xyz: &str, basis_name: &str) -> (Molecule, basis::BasisSet, Array
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6);
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     (mol, bs, res.density_total)
 }
@@ -122,13 +120,11 @@ fn uks_total_density(xyz: &str, basis_name: &str) -> (Molecule, basis::BasisSet,
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some("wB97X-V".into()),
-        energy_conv: 1e-8,
-        density_conv: 1e-6,
-        max_iter: 400,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_xc("wB97X-V")
+        .with_energy_conv(1e-8)
+        .with_density_conv(1e-6)
+        .with_max_iter(400);
     let res = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg).unwrap();
     // E_nl is a functional of the total density; the UKS/ROKS gradients pass
     // alpha + beta (`ks_gradient.rs::add_xc_gradient`).

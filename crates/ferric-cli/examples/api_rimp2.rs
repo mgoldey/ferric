@@ -30,11 +30,9 @@ fn main() {
     let ctx = ParallelContext::default();
 
     // Step 1: converge the RHF reference
-    let scf_cfg = RhfConfig {
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
-        ..Default::default()
-    };
+    let scf_cfg = RhfConfig::default()
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-8);
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).expect("SCF failed");
     println!("RHF energy:          {:.10} Ha", rhf.energy);
 

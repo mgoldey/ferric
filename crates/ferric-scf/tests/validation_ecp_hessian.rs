@@ -185,16 +185,13 @@ fn check_hessian(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64>, t
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 fn check_system(system: &str, basis_name: &str) {

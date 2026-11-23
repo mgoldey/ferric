@@ -29,10 +29,7 @@ fn g0w0_pbe_h2o_homo_ip_matches_pyscf() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
     // PBE reference.
-    let cfg = RhfConfig {
-        xc: Some("pbe".into()),
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_xc("pbe");
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;

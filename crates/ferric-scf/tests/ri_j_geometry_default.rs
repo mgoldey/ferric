@@ -33,13 +33,12 @@ fn water() -> Molecule {
 }
 
 fn config(p: Option<RiJPrecision>) -> RhfConfig {
-    RhfConfig {
-        xc: Some("PBE".into()),
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        ri_j_precision: p,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc("PBE")
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9);
+    c.ri_j_precision = p;
+    c
 }
 
 /// A plain single-point SCF at the starting geometry.

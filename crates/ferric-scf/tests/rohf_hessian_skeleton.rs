@@ -150,14 +150,12 @@ fn mol_of(xyz: &str, mult: usize) -> Molecule {
 
 /// Exact J/K, tight convergence.
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 500,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(500)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 fn prep_for(m: &Molecule, basis_name: &str) -> (PreparedBasis, SchwarzBounds) {
@@ -745,10 +743,7 @@ fn public_hessian_entry_points_refuse_rohf_and_name_the_entry_point() {
     let water = mol_of(WATER_DISTORTED, 1);
     let rhf = solve_rhf(&ctx, &water, &prep, op, &bounds, &cfg).unwrap();
     assert!(rohf_skeleton_parts(&water, &prep, op, &bounds, &rhf, &cfg).is_err());
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..scf_config()
-    };
+    let ks = scf_config().with_xc("PBE");
     assert!(rohf_skeleton_parts(&fx.mol, &fx.prep, op, &fx.bounds, &fx.rohf, &ks).is_err());
 }
 

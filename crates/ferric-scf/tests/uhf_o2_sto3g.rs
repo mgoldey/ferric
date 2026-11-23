@@ -107,12 +107,10 @@ fn o2(basis_name: &str) -> Sys {
 
 /// Tight, plain config: default guess (MINAO), no descent, no stability check.
 fn tight_cfg() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        density_conv: 1e-10,
-        energy_conv: 1e-11,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_density_conv(1e-10)
+        .with_energy_conv(1e-11)
 }
 
 fn uhf(s: &Sys, cfg: &RhfConfig) -> ScfResult {
@@ -186,11 +184,9 @@ fn default_uhf_does_not_land_on_the_hcore_saddle() {
 fn hcore_guess_reproduces_the_reported_saddle_and_it_is_flagged() {
     let e_hcore = ref_energy("energy_hcore_guess");
     let s = o2("sto-3g");
-    let cfg = RhfConfig {
-        use_sad_guess: false,
-        check_stability: true,
-        ..tight_cfg()
-    };
+    let cfg = tight_cfg()
+        .with_guess(ferric_scf::options::Guess::Core)
+        .with_check_stability(true);
     let r = uhf(&s, &cfg);
     let e_rohf = rohf(&s, &tight_cfg()).energy;
     println!(
@@ -240,20 +236,10 @@ fn the_default_state_is_a_saddle_and_the_descent_reaches_the_uhf_minimum() {
     let e_default = ref_energy("energy_default_guess");
     let s = o2("sto-3g");
 
-    let checked = uhf(
-        &s,
-        &RhfConfig {
-            check_stability: true,
-            ..tight_cfg()
-        },
-    );
+    let checked = uhf(&s, &tight_cfg().with_check_stability(true));
     let descended = uhf(
         &s,
-        &RhfConfig {
-            check_stability: true,
-            scf_stability_descent: true,
-            ..tight_cfg()
-        },
+        &tight_cfg().with_stability(ferric_scf::options::Stability::Descend),
     );
     println!(
         "O2/STO-3G: default E = {:.10} ({}, lambda_min {:+.4e}); descent E = {:.10} ({}, \
@@ -306,12 +292,9 @@ fn the_descent_also_escapes_the_hcore_saddle() {
     let s = o2("sto-3g");
     let r = uhf(
         &s,
-        &RhfConfig {
-            use_sad_guess: false,
-            check_stability: true,
-            scf_stability_descent: true,
-            ..tight_cfg()
-        },
+        &tight_cfg()
+            .with_guess(ferric_scf::options::Guess::Core)
+            .with_stability(ferric_scf::options::Stability::Descend),
     );
     println!(
         "O2/STO-3G hcore + descent: E = {:.10} ({}, lambda_min {:+.4e}); minimum {e_min:.10}",

@@ -197,10 +197,7 @@ fn sweep_negative_diagonal() {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-        let scf_cfg = RhfConfig {
-            xc: Some(c.xc.to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default().with_xc(c.xc.to_string());
         let ks = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             Ok(r) => {
@@ -302,10 +299,7 @@ fn sweep_with_scissor_correction() {
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig {
-            xc: Some(c.xc.to_string()),
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default().with_xc(c.xc.to_string());
         let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         assert!(ks.converged);
 

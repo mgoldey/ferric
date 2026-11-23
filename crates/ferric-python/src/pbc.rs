@@ -215,12 +215,7 @@ fn non_negative_angstrom(fname: &str, name: &str, v: f64) -> PyResult<f64> {
 }
 
 fn gamma_scf_config(max_iter: usize, density_conv: f64) -> RhfConfig {
-    RhfConfig {
-        use_sad_guess: false,
-        density_conv,
-        max_iter,
-        ..Default::default()
-    }
+    RhfConfig::periodic(density_conv, max_iter)
 }
 
 /// SCF knobs of `run_roks_gamma`: `GammaRoksConfig::new(functional).scf`

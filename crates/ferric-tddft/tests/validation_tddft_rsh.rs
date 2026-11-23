@@ -139,16 +139,14 @@ fn setup(refj: &Value, xc: Option<&str>) -> Setup {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux_name).unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig {
-        xc: xc.map(str::to_string),
-        dft_grid: Some(flat_grid()),
-        df_j_aux: Some(SCF_JK_AUX.to_string()),
-        df_k_aux: Some(SCF_JK_AUX.to_string()),
-        ri_j_precision: Some(ferric_scf::df_j::RiJPrecision::F64),
-        density_conv: 1e-8,
-        max_iter: 200,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_dft_grid(flat_grid())
+        .with_df_j_aux(SCF_JK_AUX.to_string())
+        .with_df_k_aux(SCF_JK_AUX.to_string())
+        .with_ri_j_precision(ferric_scf::df_j::RiJPrecision::F64)
+        .with_density_conv(1e-8)
+        .with_max_iter(200);
+    cfg.xc = xc.map(str::to_string);
     let scf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(scf.converged, "{xc:?}: reference SCF did not converge");
     Setup {

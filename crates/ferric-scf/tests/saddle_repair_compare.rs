@@ -57,19 +57,17 @@ fn n2_saddle_descent_vs_trah() {
         let ctx = ParallelContext::default();
         for (gname, sad) in [("minao", true), ("hcore", false)] {
             for arm in ["control", "descent", "trah-tail", "trah-full"] {
-                let cfg = RhfConfig {
-                    energy_conv: 1e-10,
-                    density_conv: 1e-8,
-                    max_iter: 300,
-                    use_sad_guess: sad,
-                    check_stability: true,
-                    scf_stability_descent: arm == "descent",
-                    trah_trigger: match arm {
-                        "trah-tail" => Some(1e-2),
-                        "trah-full" => Some(1e6),
-                        _ => None,
-                    },
-                    ..Default::default()
+                let mut cfg = RhfConfig::default()
+                    .with_energy_conv(1e-10)
+                    .with_density_conv(1e-8)
+                    .with_max_iter(300)
+                    .with_check_stability(true);
+                cfg.use_sad_guess = sad;
+                cfg.scf_stability_descent = arm == "descent";
+                cfg.trah_trigger = match arm {
+                    "trah-tail" => Some(1e-2),
+                    "trah-full" => Some(1e6),
+                    _ => None,
                 };
                 let jk0 = ferric_scf::aurora::target_jk_builds();
                 let ts0 = ferric_scf::trah::TRAH_STEPS_TAKEN.load(Relaxed);
@@ -134,19 +132,17 @@ fn coh_uhf_descent_vs_trah() {
             {
                 continue;
             }
-            let cfg = RhfConfig {
-                energy_conv: 1e-10,
-                density_conv: 1e-8,
-                max_iter: 300,
-                use_sad_guess: sad,
-                check_stability: true,
-                scf_stability_descent: arm == "descent",
-                trah_trigger: match arm {
-                    "trah-tail" => Some(1e-2),
-                    "trah-full" => Some(1e6),
-                    _ => None,
-                },
-                ..Default::default()
+            let mut cfg = RhfConfig::default()
+                .with_energy_conv(1e-10)
+                .with_density_conv(1e-8)
+                .with_max_iter(300)
+                .with_check_stability(true);
+            cfg.use_sad_guess = sad;
+            cfg.scf_stability_descent = arm == "descent";
+            cfg.trah_trigger = match arm {
+                "trah-tail" => Some(1e-2),
+                "trah-full" => Some(1e6),
+                _ => None,
             };
             let ts0 = ferric_scf::trah::TRAH_STEPS_TAKEN.load(Relaxed);
             let tr0 = ferric_scf::trah::TRAH_STEPS_REJECTED.load(Relaxed);

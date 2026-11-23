@@ -134,15 +134,13 @@ fn water() -> Molecule {
 }
 
 fn scf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 200,
-        energy_conv: 1e-12,
-        density_conv: 1e-10,
+    RhfConfig::default()
+        .with_max_iter(200)
+        .with_energy_conv(1e-12)
+        .with_density_conv(1e-10)
         // Explicit exact J/K (RI-J with exact K has its own tests: df_hessian_rij.rs).
-        df_j_aux: Some(String::new()),
-        df_k_aux: Some(String::new()),
-        ..Default::default()
-    }
+        .with_df_j_aux(String::new())
+        .with_df_k_aux(String::new())
 }
 
 struct Setup {
@@ -494,19 +492,14 @@ fn unsupported_configurations_are_refused() {
         "RI route that disagrees with the (exact) configuration",
     );
 
-    let ks = RhfConfig {
-        xc: Some("PBE".into()),
-        ..scf_config()
-    };
+    let ks = scf_config().with_xc("PBE");
     refused(&s.rhf, &ks, op, "KS config");
 
     // A uniform field (#286) and Gaussian-smeared external charges (#358) are
     // analytic (see field_hessian.rs, smeared_hessian.rs); a Thole polarizable
     // embedding is still refused.
-    let polarizable = RhfConfig {
-        polarizable: Some(Default::default()),
-        ..scf_config()
-    };
+    let mut polarizable = scf_config();
+    polarizable.polarizable = Some(Default::default());
     refused(&s.rhf, &polarizable, op, "polarizable embedding");
 
     refused(&s.rhf, &scf_config(), Operator::erf(0.4), "erf operator");

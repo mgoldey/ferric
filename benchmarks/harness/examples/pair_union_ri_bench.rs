@@ -273,10 +273,7 @@ fn main() {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let scf_cfg = RhfConfig {
-            density_conv: 1e-8,
-            ..Default::default()
-        };
+        let scf_cfg = RhfConfig::default().with_density_conv(1e-8);
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(res) => res,
             Err(e) => {

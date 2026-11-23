@@ -83,15 +83,13 @@ fn run_with(
     let prep = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        xc: Some(xc.into()),
-        df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: k_aux.then(|| "def2-universal-jkfit".into()),
-        ri_j_precision,
-        density_conv: 1e-6,
-        max_iter: 3,
-        ..Default::default()
-    };
+    let mut cfg = RhfConfig::default()
+        .with_xc(xc)
+        .with_df_j_aux("def2-universal-jkfit")
+        .with_density_conv(1e-6)
+        .with_max_iter(3);
+    cfg.df_k_aux = k_aux.then(|| "def2-universal-jkfit".into());
+    cfg.ri_j_precision = ri_j_precision;
     let (a, o0) = (stats(), JXC_OVERLAP_BUILDS.load(Ordering::Relaxed));
     let r = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let (b, o1) = (stats(), JXC_OVERLAP_BUILDS.load(Ordering::Relaxed));

@@ -37,12 +37,10 @@ fn solve(driver: Driver, rel: &str, mult: usize, max_iter: usize) -> ScfResult {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = RhfConfig {
-        energy_conv: 1e-5,
-        density_conv: 1e-3,
-        max_iter,
-        ..RhfConfig::default()
-    };
+    let cfg = RhfConfig::default()
+        .with_energy_conv(1e-5)
+        .with_density_conv(1e-3)
+        .with_max_iter(max_iter);
     let ctx = ParallelContext::default();
     match driver {
         Driver::Rhf => solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg),

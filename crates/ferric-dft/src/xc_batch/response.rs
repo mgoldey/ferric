@@ -689,11 +689,9 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let bounds =
             ferric_scf::screening::SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-        let cfg = ferric_scf::uhf::UhfConfig {
-            energy_conv: 1e-9,
-            density_conv: 1e-7,
-            ..Default::default()
-        };
+        let cfg = ferric_scf::uhf::UhfConfig::default()
+            .with_energy_conv(1e-9)
+            .with_density_conv(1e-7);
         let res =
             ferric_scf::uhf::solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg)
                 .unwrap();

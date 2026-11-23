@@ -316,23 +316,18 @@ enum Ecp {
 }
 
 fn rhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
 }
 
 fn uhf_config() -> RhfConfig {
-    RhfConfig {
-        max_iter: 400,
-        energy_conv: 1e-11,
-        density_conv: 1e-10,
-        check_stability: true,
-        scf_stability_descent: true,
-        ..Default::default()
-    }
+    RhfConfig::default()
+        .with_max_iter(400)
+        .with_energy_conv(1e-11)
+        .with_density_conv(1e-10)
+        .with_stability(ferric_scf::options::Stability::Descend)
 }
 
 /// KS config: PBE with EXACT four-centre J, to match plain PySCF KS. The
@@ -340,20 +335,19 @@ fn uhf_config() -> RhfConfig {
 /// `Some("")`; the open-shell solvers read `df_j_aux` verbatim, so `None` is
 /// exact there. `check_case` asserts the SCF recorded no RI-J either way.
 fn ks_config(kind: Kind) -> RhfConfig {
-    RhfConfig {
-        xc: Some(KS_XC.into()),
-        df_j_aux: if kind == Kind::Rks {
-            Some(String::new())
-        } else {
-            None
-        },
-        max_iter: 500,
-        energy_conv: 1e-10,
-        density_conv: 1e-9,
-        check_stability: kind == Kind::Uks,
-        scf_stability_descent: kind == Kind::Uks,
-        ..Default::default()
-    }
+    let mut c = RhfConfig::default()
+        .with_xc(KS_XC)
+        .with_max_iter(500)
+        .with_energy_conv(1e-10)
+        .with_density_conv(1e-9)
+        .with_check_stability(kind == Kind::Uks);
+    c.df_j_aux = if kind == Kind::Rks {
+        Some(String::new())
+    } else {
+        None
+    };
+    c.scf_stability_descent = kind == Kind::Uks;
+    c
 }
 
 /// SCF at `mol`'s geometry. For UHF, `seed` (the undisplaced MOs) keeps a

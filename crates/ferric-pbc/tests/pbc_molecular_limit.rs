@@ -56,10 +56,7 @@ fn box_residual_is_the_makov_payne_exchange_term() {
     let prep_mol = ferric_integrals::basis_bridge::PreparedBasis::new(&mol, &basis).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep_mol).unwrap();
-    let cfg = RhfConfig {
-        density_conv: 1e-10,
-        ..Default::default()
-    };
+    let cfg = RhfConfig::default().with_density_conv(1e-10);
     let mr = solve_rhf(
         &ParallelContext::default(),
         &mol,
