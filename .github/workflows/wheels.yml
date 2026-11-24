@@ -219,7 +219,8 @@ jobs:
       # it isn't a source input like OPENBLAS_VERSION/LIBXC_VERSION/etc, and
       # it's only ever read by this job's own cache key (both occurrences,
       # restore and save, below).
-      NATIVE_DEPS_CACHE_VERSION: v2
+      # v3: libxc built with -DDISABLE_KXC=ON (2026-11-24).
+      NATIVE_DEPS_CACHE_VERSION: v3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -397,7 +398,15 @@ jobs:
             NUM_THREADS="$OPENBLAS_MAX_THREADS"
           make PREFIX="$PREFIX" install
 
-          # --- libxc (dynamic; ferric-dft/build.rs: `cargo:rustc-link-lib=xc`) ---
+          # --- libxc (static: BUILD_SHARED_LIBS defaults OFF, so the .a is
+          # linked into ferric.abi3.so; ferric-dft/build.rs: `cargo:rustc-link-lib=xc`) ---
+          # -DDISABLE_KXC=ON: ferric calls only xc_*_exc_vxc and xc_*_fxc
+          # (crates/ferric-dft/src/libxc.rs), never a third derivative, and the
+          # kxc code was ~60% of libxc's bytes: measured 2026-11-24 (gcc 13,
+          # this exact configure line) the extension went from 49.2 to 31.8 MB
+          # deflated. exc/vxc/fxc are bitwise identical with and without it
+          # (all 1358 functional/spin pairs, both spins, hashed raw outputs),
+          # and so are KS-DFT and TDDFT energies.
           cd /tmp
           wget -q https://gitlab.com/libxc/libxc/-/archive/${LIBXC_VERSION}/libxc-${LIBXC_VERSION}.tar.gz
           echo "${{ env.LIBXC_SHA256 }}  libxc-${LIBXC_VERSION}.tar.gz" | sha256sum -c -
@@ -417,7 +426,7 @@ jobs:
           cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=OFF
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DDISABLE_KXC=ON
           make -j"$NPROC"
           make install
 
@@ -1090,8 +1099,12 @@ jobs:
       # bundled basis sets are 0.6 MB (crates/ferric-core/build.rs). Rust
       # growth lands here at ~0.4 MB deflated per 1 MB raw; that is what
       # pushed the 2026-11-22..24 nightlies over the cap (+3.2 MB raw). The
-      # levers already pulled: --strip, the small libint2 export, Cargo's
-      # `wheel` profile, stripping the vendored libraries, the advzip repack.
+      # levers already pulled: --strip, the small libint2 export, libxc
+      # without kxc (build-native-deps), Cargo's `wheel` profile, stripping
+      # the vendored libraries, the advzip repack. Measured 2026-11-24 with a
+      # local build of this configuration, those last four took the
+      # extension plus libs from about 105 MB to about 82 MB (projection;
+      # the first nightly after the merge is the real number).
       - name: Wheel size / contents sanity check
         env:
           VARIANT: ${{ matrix.variant }}
@@ -1671,10 +1684,11 @@ jobs:
   #      OIDC token PyPI's Trusted Publishers API exchanges for upload
   #      credentials, scoped to this one job run only.
   #   3. Wheel size is checked against PyPI's 100 MiB default per-file cap
-  #      in build-wheels and again here. The margin is THIN: nightly run
-  #      40364679793 measured 101,670,503 bytes (97.0% of 104,857,600), rc7
-  #      was 98,746,566, and the wheel has been growing ~1 MB/week. The size
-  #      table in release-check's step summary is the current number.
+  #      in build-wheels and again here. Nightly 45485448068 (2026-11-24)
+  #      failed at 105,346,503 bytes; the wheel had been growing ~1 MB/week.
+  #      build-wheels now warns from 95% of the cap and logs the top 15
+  #      members (see the wheel-size note there). The size table in
+  #      release-check's step summary is the current number.
   #
   # =====================================================================
   # OpenMPI-linked wheel variant. SEPARATE PACKAGE, NEVER PUBLISHED HERE.
