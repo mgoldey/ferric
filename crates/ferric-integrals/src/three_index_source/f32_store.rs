@@ -173,7 +173,11 @@ fn f32_fits(tensor: usize, rows: usize, scratch_row: usize, budget: usize) -> F3
 /// covers the tensor (and, for a conversion, the f64 tensor beside it), so the
 /// most the pool can be overrun by is soft-charged scratch it never held.
 /// Declining to f64 here made the stored precision, and the energy, depend on
-/// what else happened to be reserved.
+/// what else happened to be reserved. The DF-K band the shared RI-JK caller
+/// counts beside a conversion is likewise its budget-determined layout
+/// (`DfK::nominal_band_bytes` in ferric-scf): when the pool forced DF-K into
+/// the square layout instead, the band held is larger than counted by at most
+/// the square minus the packed band size.
 fn charge_f32(label: &str, bytes: usize) -> ferric_core::memory::pool::Reservation {
     ferric_core::memory::pool::try_reserve_global(label, bytes)
         .unwrap_or_else(|| ferric_core::memory::pool::Reservation::inert(label))

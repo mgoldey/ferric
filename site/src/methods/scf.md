@@ -177,9 +177,10 @@ budget, an energy (and everything correlated on that reference) can move by
 up to ~1e-5 Ha between a budget that fits the f32 tensor and one that does
 not: the f32 and f64 tensors of benzene/aug-cc-pVDZ (def2-universal-jkfit)
 give RHF references 5.3e-6 Ha apart and rs-mp2-rpa totals 7.8e-6 Ha apart.
-Set `ri_j_precision = "f64"` for energies that do not depend on the budget
-(with it, the same benzene run agrees to 7e-13 Ha from 0.12 GiB to an
-unset budget). The f32 default is kept: it halves the tensor and its error
+`ri_j_precision = "f64"` removes the budget-dependent f32 change, but
+energies can still differ in the last bits when the budget changes the
+`jk_storage` tier (with it, the same benzene run agrees to 7e-13 Ha from
+0.12 GiB to an unset budget). The f32 default is kept: it halves the tensor and its error
 is the measured one below.
 
 Measured, def2-SVP, `def2-universal-jkfit`, default grid and thresholds,

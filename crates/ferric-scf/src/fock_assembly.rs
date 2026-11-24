@@ -537,23 +537,26 @@ fn build_df_jk_impl<'a>(
     Ok((df_j, df_k))
 }
 
-/// The dressed DF-K band an f32 RI-J conversion counts beside it: its
-/// packed size `band_bytes` (`DfK::packed_band_bytes`, the figure the raw
-/// placement reserves room for) when the budget alone holds it, else 0
-/// (spilled). Not the live `DfK::resident_tensor_bytes`: whether the band
-/// stayed in core also reads the pool, and the f32/f64 choice must depend on
-/// the shapes and the budget only.
 /// What a shared RI-JK set-up's f32 RI-J conversion counts beside it: the
 /// DF-K band at its budget placement ([`budget_placed_band_bytes`]), sized in
-/// the layout the built DF-K stores ([`DfK::stored_band_bytes`]: square f64,
-/// packed f64 or packed f32), else nothing without DF-K. Whether the band
-/// stayed in core or spilled is deliberately not read.
+/// the layout the request and the inputs determine
+/// ([`DfK::nominal_band_bytes`]: square f64 only when forced, else packed at
+/// the request or packed f64 after an out-of-range fallback), else nothing
+/// without DF-K. The RI-J precision must depend on the budget only, so neither
+/// whether the band stayed in core nor the square fallback the pool can force
+/// is read. When the pool did force the square layout, the band held beside
+/// the conversion exceeds what was counted by at most the square minus the
+/// packed size; like the soft f32 pool charge (`f32_store::charge_f32`), that
+/// overrun is accepted for a deterministic precision.
 fn rij_f32_beside(df_k: Option<&DfK<'_>>, budget: usize) -> usize {
     df_k.map_or(0, |k| {
-        budget_placed_band_bytes(k.stored_band_bytes(), budget)
+        budget_placed_band_bytes(k.nominal_band_bytes(), budget)
     })
 }
 
+/// A band of `band_bytes` counted at its budget placement: all of it when the
+/// budget alone holds it, else 0 (spilled). Never the live
+/// `DfK::resident_tensor_bytes`, which also reads the pool.
 fn budget_placed_band_bytes(band_bytes: usize, budget: usize) -> usize {
     if band_bytes <= budget {
         band_bytes

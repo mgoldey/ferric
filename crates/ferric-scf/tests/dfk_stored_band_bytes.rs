@@ -1,9 +1,12 @@
-//! The DF-K band an f32 RI-J conversion counts beside it is sized in the
-//! layout the built DF-K stores (`DfK::stored_layout`): packed f32 when f32
-//! was kept, the square f64 tensor when the square layout is in force (the
-//! device K mode, or the test hook here) and, without either, when the packed
-//! dressing was not taken (the band does not fit), which keeps the square f64
-//! tensor too. Its own process: the square hook is process-wide.
+//! The DF-K band's layout and sizes. `stored_layout` / `stored_band_bytes`
+//! report what was built: packed f32 when f32 was kept, the square f64 tensor
+//! when the square layout is in force (the device K mode, or the test hook
+//! here) and, without either, when the packed dressing was not taken (the
+//! band does not fit the budget or the pool). `nominal_layout` /
+//! `nominal_band_bytes`, what the f32 RI-J decision counts, depend on the
+//! request, the inputs and the budget only: square only when forced, so a
+//! pool-forced square band gives the same figure as a packed one. Its own
+//! process: the square hook and the global pool are process-wide.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -42,13 +45,34 @@ fn stored_band_bytes_follow_the_built_layout() {
     assert_eq!(kept.stored_layout(), DressedLayout::PackedF32);
     assert_eq!(kept.stored_band_bytes(), packed32);
 
-    // Regression: an f32 request whose packed dressing is not taken (the band
-    // does not fit this budget) keeps the square f64 tensor, with no device
-    // mode and no hook; it is counted at the square size, not a packed one.
+    assert_eq!(kept.nominal_layout(), DressedLayout::PackedF32);
+    assert_eq!(kept.nominal_band_bytes(), packed32);
+
+    // An f32 request whose packed dressing is not taken (the band does not
+    // fit this budget) keeps the square f64 tensor, with no device mode and no
+    // hook. `stored_layout` reports it; the deterministic figure
+    // (`nominal_band_bytes`, what the f32 RI-J decision counts) stays packed
+    // f32.
     let declined = build(packed32 / 2, RiKPrecision::F32);
     assert_eq!(declined.precision(), RiKPrecision::F64);
     assert_eq!(declined.stored_layout(), DressedLayout::Square);
     assert_eq!(declined.stored_band_bytes(), square);
+    assert_eq!(declined.nominal_layout(), DressedLayout::PackedF32);
+    assert_eq!(declined.nominal_band_bytes(), packed32);
+
+    // The same at an ample budget when the POOL cannot hold the packed band:
+    // a pool-forced square band gives the decision the same figure as the
+    // packed band built without the pool (same shapes, same budget).
+    let pool = ferric_core::memory::pool::MemoryPool::with_capacity_bytes(square + packed32 / 2);
+    ferric_core::memory::pool::install_global(pool);
+    let pooled = build(ample, RiKPrecision::F32);
+    ferric_core::memory::pool::clear_global();
+    assert_eq!(
+        pooled.stored_layout(),
+        DressedLayout::Square,
+        "the pool must force square"
+    );
+    assert_eq!(pooled.nominal_band_bytes(), kept.nominal_band_bytes());
 
     // The square hook: the square size, where the packed-room figure of the
     // raw placement is 0.
@@ -57,15 +81,18 @@ fn stored_band_bytes_follow_the_built_layout() {
     set_dfk_square_for_test(false);
     assert_eq!(forced.stored_layout(), DressedLayout::Square);
     assert_eq!(forced.stored_band_bytes(), square);
+    // A forced square layout is the budget-determined one: counted as square.
+    assert_eq!(forced.nominal_layout(), DressedLayout::Square);
+    assert_eq!(forced.nominal_band_bytes(), square);
     assert_eq!(
         DfK::packed_band_bytes(naux, nao, RiKPrecision::F64),
         packed32 * 2
     );
 }
 
-/// The only DF-K input to the f32 RI-J decision, `stored_band_bytes`, is the
-/// same for one layout whether the band stayed in core or spilled (which also
-/// reads the pool): a resident and a spilled square band give one figure.
+/// For one layout, the band's size is the same whether it stayed in core or
+/// spilled (which also reads the pool): a resident and a spilled square band
+/// give one figure, stored and nominal.
 #[test]
 fn stored_band_bytes_do_not_depend_on_residency() {
     let _hook = HOOK
@@ -92,4 +119,5 @@ fn stored_band_bytes_do_not_depend_on_residency() {
     assert_eq!(resident.stored_layout(), spilled.stored_layout());
     assert_eq!(resident.stored_band_bytes(), square);
     assert_eq!(spilled.stored_band_bytes(), square);
+    assert_eq!(resident.nominal_band_bytes(), spilled.nominal_band_bytes());
 }
