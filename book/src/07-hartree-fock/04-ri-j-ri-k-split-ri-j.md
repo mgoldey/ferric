@@ -374,6 +374,32 @@ There is no f64 exit: the reported energy is the f32 functional's, and
 `crates/ferric-scf/tests/dfj_f32_storage.rs` checks that it lies in the
 first-order window the `df_j.rs` module doc derives.
 
+What decides f32 or f64 for an f32 request (under `jk_storage = "auto"`,
+`"memory"` or `"split"`; `"disk"` and `"direct"` keep f64). First the
+budget: the f32 tensor is built only when it fits, counted with the f64
+tensor it is converted from at its budget-only placement and, in a shared
+RI-JK set-up, the DF-K band in its nominal layout
+(`ferric-scf/src/fock_assembly.rs::rij_f32_beside`). The pool's free bytes
+are never read, so one input under one budget always gets one precision.
+Then the range, element by element as the tensor is rounded: a finite value
+beyond `f32::MAX` keeps the whole tensor f64, with a stderr notice and
+`f32_range` in the precision record
+(`ferric-integrals/src/three_index_source/f32_store.rs`, `F32Declined`).
+That depends on the integrals only, so it is deterministic too; a Coulomb
+3-index integral is bounded by its Schwarz factors, far below `f32::MAX`,
+so it is not expected to fire.
+
+Known limitation: nothing else about the values or the result decides the
+precision. An element below `f32::MIN_POSITIVE` ($\approx 1.2\times10^{-38}$)
+is stored subnormal or as zero, an absolute error of at most $2^{-150}$ (the
+$\eta$ term of the `df_j.rs` bound), and the relative rounding $2^{-24}$ of
+every element is accepted whatever it does to the energy. No run-time check
+compares the first-order error estimate (`dfj_f32_energy_error_factor` times
+$|c|^{\mathsf T}|B||w|$, which grows with the system) with a tolerance, and
+nothing falls back to f64 on it. `dfj_f32_storage.rs` checks the error window
+on its test molecules only. A large system, or an energy difference at the
+µEh scale, gets the f32 result unless `ri_j_precision = "f64"` is set.
+
 RI-K stores the dressed tensor as the packed lower triangle on the CPU, f64 by
 default; that tier is bit-identical to the square tensor
 (`crates/ferric-scf/tests/dfk_packed_storage.rs`). The square f64 tensor is
