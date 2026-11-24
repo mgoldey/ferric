@@ -1455,21 +1455,9 @@ impl DfK<'_> {
     /// to the full K on every rank. No-op without the `mpi` feature or a
     /// single-rank context.
     fn reduce_k_across_ranks(&self, k: &mut Array2<f64>) {
-        #[cfg(feature = "mpi")]
         if let Some(ctx) = self.ctx {
-            use mpi::traits::CommunicatorCollectives;
-            if let Some(world) = ctx.world() {
-                let mut k_global = Array2::<f64>::zeros(k.dim());
-                world.all_reduce_into(
-                    k.as_slice().unwrap(),
-                    k_global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *k = k_global;
-            }
+            ctx.all_reduce_sum(k.as_slice_mut().expect("K is standard layout"));
         }
-        #[cfg(not(feature = "mpi"))]
-        let _ = k;
     }
 }
 
